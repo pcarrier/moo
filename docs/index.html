@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Moo is a local-first agent harness with a Rust/V8 host, TypeScript tools, SQLite memory, MCP integrations, and an inspectable web UI." />
+    <meta name="theme-color" content="#ffffff" />
+    <meta property="og:title" content="Moo · local-first agent harness" />
+    <meta property="og:description" content="A feature-packed local agent workbench with JavaScript tools, SQLite-backed memory, MCP connectors, and a bundled web UI." />
+    <meta property="og:type" content="website" />
+    <title>Moo · local-first agent harness</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="Moo home">
+        <span class="brand__mark" aria-hidden="true">🐮</span><span><strong>Moo</strong><small>local agent harness</small></span>
+      </a>
+      <nav class="nav" aria-label="Page sections">
+        <a href="#features">Features</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#quickstart">Run it</a>
+        <a href="#limits">Limits</a>
+      </nav>
+      <a class="header-cta" href="https://github.com/pcarrier/moo" rel="noopener noreferrer">GitHub</a>
+    </header>
+
+    <main id="main" class="page" tabindex="-1">
+      <section id="top" class="hero section-pad" aria-labelledby="title">
+        <div class="hero__grid">
+          <div class="hero__copy reveal">
+            <p class="eyebrow">Rust host · V8 runtime · SQLite memory · MCP</p>
+            <h1 id="title">The local agent workbench.</h1>
+            <p class="lede">Moo bundles a TypeScript harness, a Rust/V8 host, a Solid web shell, and an inspectable SQLite store into one hackable local system. It is packed with primitives for tools, memory, chat state, MCP, subagents, prompts, diffs, and previews.</p>
+            <div class="hero__actions" aria-label="Primary calls to action">
+              <a class="button button--primary" href="https://github.com/pcarrier/moo/releases/latest" rel="noopener noreferrer">Download a release</a>
+              <a class="button" href="#quickstart">Install Moo</a>
+              <a class="button button--quiet" href="#quickstart">Run options</a>
+            </div>
+            <dl class="hero-stats" aria-label="Project highlights">
+              <div><dt>Local-first</dt><dd>No hosted backend required</dd></div>
+              <div><dt>Tool-rich</dt><dd>Files, procs, HTTP, RDF, UI, MCP</dd></div>
+              <div><dt>Inspectable</dt><dd>Chats, refs, objects, facts, diffs</dd></div>
+            </dl>
+          </div>
+        </div>
+      </section>
+      <section id="features" class="section section-pad" aria-labelledby="features-title">
+        <div class="section__intro reveal">
+          <p class="eyebrow">Feature inventory</p>
+          <h2 id="features-title">More than chat.</h2>
+          <p>Moo exposes small, orthogonal APIs so agents can do real local work while you can still inspect what happened afterward.</p>
+        </div>
+
+        <div class="feature-matrix" aria-label="Moo feature matrix">
+          <article class="feature-card reveal">
+            <h3>Agent runtime</h3>
+            <p>Run a TypeScript harness inside a Rust-hosted V8 runtime with streaming model calls, commands, async tools, startup snapshots, interrupts, queued messages, and subagent orchestration.</p>
+            <ul class="chip-list"><li>Rust host</li><li>V8 isolate</li><li>TypeScript harness</li><li>LLM streaming</li><li>subagents</li><li>interrupts</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Local state model</h3>
+            <p>Keep chats, timeline events, refs, content-addressed objects, and RDF-style facts in a local SQLite store instead of a remote service.</p>
+            <ul class="chip-list"><li>SQLite</li><li>chats</li><li>refs</li><li>objects</li><li>facts</li><li>history</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Queryable memory</h3>
+            <p>Assert, retract, patch, and query durable memory globally or per project. Use typed RDF terms, vocabulary helpers, graph history, joins, and SPARQL.</p>
+            <ul class="chip-list"><li>memory.assert</li><li>project scopes</li><li>SPARQL</li><li>vocab</li><li>typed terms</li><li>fact logs</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Files and processes</h3>
+            <p>Read, write, list, glob, stat, and patch files; run processes with cwd, stdin, env, timeouts, output caps, and checked failures.</p>
+            <ul class="chip-list"><li>fs.read/write</li><li>glob</li><li>stat</li><li>patch</li><li>proc.run</li><li>diff capture</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Network and environment</h3>
+            <p>Use host-backed HTTP fetches and streams, read selected environment values, validate IDs and paths, and publish live events to the UI.</p>
+            <ul class="chip-list"><li>HTTP fetch</li><li>HTTP stream</li><li>env refs</li><li>validators</li><li>events</li><li>timeouts</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>MCP integrations</h3>
+            <p>Discover MCP servers, inspect tools, call tools, manage configs, and support OAuth-backed servers without turning Moo into a SaaS control plane.</p>
+            <ul class="chip-list"><li>tool discovery</li><li>OAuth</li><li>tool calls</li><li>transports</li><li>headers</li><li>auth status</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Human-in-the-loop UI</h3>
+            <p>Ask for structured input, present choices, send status text, keep chat titles current, record compact summaries, and archive or fork chats.</p>
+            <ul class="chip-list"><li>ui.ask</li><li>ui.choose</li><li>ui.say</li><li>summaries</li><li>forks</li><li>archives</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Inspectable UI</h3>
+            <p>Use the bundled web shell to follow chats, inspect tool calls, review diffs, browse memory, and manage local integrations.</p>
+            <ul class="chip-list"><li>timeline</li><li>diffs</li><li>memory browser</li><li>MCP setup</li><li>refs</li><li>mobile nav</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Web shell</h3>
+            <p>Chat, browse the timeline, inspect memory, view diffs, preview Markdown and HTML, manage MCP, open generated apps, and resize the Solid UI sidebars while everything stays local.</p>
+            <ul class="chip-list"><li>timeline</li><li>markdown</li><li>diffs</li><li>HTML preview</li><li>state browser</li><li>mobile nav</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>CLI and commands</h3>
+            <p>Serve the web UI, run the harness once, eval JSON input, dump stored quads, build startup snapshots, point at a custom database, and gate the local shell with an optional PSK.</p>
+            <ul class="chip-list"><li>serve</li><li>run</li><li>eval</li><li>dump</li><li>snapshot</li><li>psk</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Developer loop</h3>
+            <p>Download release binaries with the embedded harness and UI, or run the contributor loop with process-compose when you are changing Moo itself.</p>
+            <ul class="chip-list"><li>release assets</li><li>Linux</li><li>macOS</li><li>Windows</li><li>process-compose</li><li>GitHub Pages</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Hackable primitives</h3>
+            <p>The pieces stay intentionally boring: content hashes, named refs, JSON objects, RDF quads, command files, and ordinary static docs you can replace.</p>
+            <ul class="chip-list"><li>hashes</li><li>CAS refs</li><li>JSON</li><li>quads</li><li>commands</li><li>static docs</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Trail and diffs</h3>
+            <p>Keep a right-sidebar trail of title updates, summaries, subagent jumps, file diffs, memory diffs, rendered snapshots, and source views.</p>
+            <ul class="chip-list"><li>agent trail</li><li>diff tabs</li><li>file tabs</li><li>snapshots</li><li>source mode</li><li>jump links</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Rich prompts</h3>
+            <p>Use slash-command help, chat and path autocomplete, image attachments, pending queued messages, token meters, model selection, and stop/resume controls.</p>
+            <ul class="chip-list"><li>/help</li><li>@paths</li><li>chat search</li><li>images</li><li>token bar</li><li>stop button</li></ul>
+          </article>
+        </div>
+      </section>
+
+
+      <section id="architecture" class="section section-pad split" aria-labelledby="architecture-title">
+        <div class="reveal">
+          <p class="eyebrow">Architecture</p>
+          <h2 id="architecture-title">One binary. Local store.</h2>
+          <p>Moo keeps the moving parts legible. The Rust process hosts V8, serves the web UI, stores state in SQLite, and exposes host operations. The TypeScript harness defines the agent-facing API. The Solid frontend gives you a live shell over the same local state.</p>
+          <div class="callout"><strong>Design rule:</strong> small primitives over a monolithic plugin platform. If something gets weird, you can inspect the object, ref, fact graph, chat trail, or file diff that produced it.</div>
+        </div>
+        <div class="stack-card reveal reveal--late">
+          <ol class="stack-list">
+            <li><span>01</span><div><b>Rust host</b><p>CLI, HTTP server, V8 ops, SQLite persistence, websocket events.</p></div></li>
+            <li><span>02</span><div><b>TypeScript harness</b><p>Agent loop, commands, prompts, tool wrappers, and MCP proxy.</p></div></li>
+            <li><span>03</span><div><b>SQLite store</b><p>Chats, refs, objects, quads, fact history, summaries, and local memory.</p></div></li>
+            <li><span>04</span><div><b>Solid web shell</b><p>Timeline, markdown, diffs, memory browser, MCP setup, responsive sidebars.</p></div></li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="quickstart" class="section section-pad quickstart" aria-labelledby="quickstart-title">
+        <div class="section__intro reveal">
+          <p class="eyebrow">Run it</p>
+          <h2 id="quickstart-title">Install Moo.</h2>
+          <p>Download a release binary and start the local server. If you are changing Moo itself, run process-compose from the repository.</p>
+        </div>
+        <div class="code-grid code-grid--install">
+          <article class="code-card reveal">
+            <p class="code-card__label">macOS / Linux</p>
+            <pre><code>curl -sf https://moo.pcarrier.com/install | sh
+moo serve</code></pre>
+          </article>
+          <article class="code-card reveal">
+            <p class="code-card__label">Windows PowerShell</p>
+            <pre><code>irm https://moo.pcarrier.com/install.ps1 | iex
+moo serve</code></pre>
+          </article>
+        </div>
+      </section>
+      <section id="limits" class="section section-pad limits" aria-labelledby="limits-title">
+        <div class="section__intro reveal">
+          <p class="eyebrow">Sharp edges</p>
+          <h2 id="limits-title">Local tools, local caution.</h2>
+          <p>Moo is for experimenting on your machine. Treat it like a developer harness, not a locked-down hosted assistant.</p>
+        </div>
+        <div class="limits-grid">
+          <article class="limit-card reveal"><h3>No sandbox by default</h3><p>Tools can read/write files and run processes with the permissions of the process you start.</p></article>
+          <article class="limit-card reveal"><h3>No approval gate</h3><p>The harness favors direct experimentation. Add your own policy checks where you need them.</p></article>
+          <article class="limit-card reveal"><h3>No hosted sync</h3><p>State is local-first and SQLite-backed. Bring your own backup, sync, or remote model wiring.</p></article>
+          <article class="limit-card reveal"><h3>Moving internals</h3><p>The project is hackable and evolving; APIs may shift as the harness gets smaller and sharper.</p></article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Made for calm local agent experiments.</p>
+      <a href="https://github.com/pcarrier/moo" rel="noopener noreferrer">github.com/pcarrier/moo</a>
+    </footer>
+  </body>
+</html>

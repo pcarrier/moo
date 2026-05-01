@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+repo="pcarrier/moo"
+bin_dir="${BIN_DIR:-$HOME/.local/bin}"
+tmp_dir="$(mktemp -d)"
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT INT TERM
+
+uname_s="$(uname -s)"
+uname_m="$(uname -m)"
+case "$uname_s:$uname_m" in
+  Linux:x86_64|Linux:amd64) target="x86_64-unknown-linux-gnu" ;;
+  Darwin:x86_64|Darwin:amd64) target="x86_64-apple-darwin" ;;
+  Darwin:arm64|Darwin:aarch64) target="aarch64-apple-darwin" ;;
+  *) echo "unsupported platform: $uname_s $uname_m" >&2; exit 1 ;;
+esac
+
+api="https://api.github.com/repos/$repo/releases/latest"
+asset_url="$(curl -fsSL "$api" | sed -n 's/.*"browser_download_url": "\([^"]*moo-[^"]*-'"$target"'\.tar\.gz\)".*/\1/p' | head -n 1)"
+if [ -z "$asset_url" ]; then
+  echo "could not find release asset for $target" >&2
+  exit 1
+fi
+
+mkdir -p "$bin_dir"
+curl -fL "$asset_url" -o "$tmp_dir/moo.tar.gz"
+tar -xzf "$tmp_dir/moo.tar.gz" -C "$tmp_dir"
+moo_bin="$(find "$tmp_dir" -type f -name moo | head -n 1)"
+if [ -z "$moo_bin" ]; then
+  echo "release archive did not contain moo" >&2
+  exit 1
+fi
+install -m 755 "$moo_bin" "$bin_dir/moo"
+if [ "$uname_s" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
+  codesign -s - "$bin_dir/moo" 2>/dev/null || true
+fi
+echo "installed moo to $bin_dir/moo"
+case ":$PATH:" in
+  *":$bin_dir:"*) ;;
+  *) echo "add $bin_dir to PATH, then run: moo serve" ;;
+esac

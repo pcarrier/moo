@@ -1,0 +1,20 @@
+{
+  "name": "moo-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10",
+    "vite-plugin-solid": "^2.11.12"
+  },
+  "dependencies": {
+    "marked": "^18.0.2",
+    "solid-js": "^1.9.12"
+  }
+}

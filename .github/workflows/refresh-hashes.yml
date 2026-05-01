@@ -1,0 +1,198 @@
+name: Refresh flake hashes
+
+# Captures the rusty_v8 archive + web/node_modules FOD hashes for each
+# system in flake.nix.  Useful on first setup, when bumping rusty_v8,
+# or when web/bun.lock changes.  Opens a single PR with all platforms'
+# hashes filled in.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  collect:
+    name: ${{ matrix.system }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            system: x86_64-linux
+            rustyV8Target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            system: aarch64-linux
+            rustyV8Target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            system: x86_64-darwin
+            rustyV8Target: x86_64-apple-darwin
+          - os: macos-15
+            system: aarch64-darwin
+            rustyV8Target: aarch64-apple-darwin
+    env:
+      MATRIX_SYSTEM: ${{ matrix.system }}
+      MATRIX_TARGET: ${{ matrix.rustyV8Target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Prefetch rusty_v8 archive
+        id: rusty
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver=$(sed -nE 's/.*rustyV8Version = "([0-9.]+)".*/\1/p' flake.nix | head -1)
+          url="https://github.com/denoland/rusty_v8/releases/download/v${ver}/librusty_v8_release_${MATRIX_TARGET}.a.gz"
+          hash=$(nix store prefetch-file --json "$url" | jq -r .hash)
+          echo "rusty_v8 hash: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Patch rusty_v8 hash so the build advances to webDeps
+        env:
+          RUSTY_V8_HASH: ${{ steps.rusty.outputs.hash }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os, re
+          system = os.environ["MATRIX_SYSTEM"]
+          val    = os.environ["RUSTY_V8_HASH"]
+          with open("flake.nix") as f:
+              c = f.read()
+          block = re.search(r"rustyV8Hashes = \{[^}]*?\};", c, re.DOTALL).group(0)
+          new = re.sub(
+              rf'"{re.escape(system)}" = (?:lib\.fakeHash|"[^"]*");',
+              f'"{system}" = "{val}";',
+              block, count=1,
+          )
+          with open("flake.nix", "w") as f:
+              f.write(c.replace(block, new, 1))
+          PY
+
+      - name: Build to capture webDeps hash
+        id: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          if out=$(nix build .#default 2>&1); then
+              echo "::notice::Build succeeded; webDeps hash already current. Reading from flake.nix."
+              hash=$(python3 - <<'PY'
+          import os, re
+          system = os.environ["MATRIX_SYSTEM"]
+          with open("flake.nix") as f:
+              c = f.read()
+          block = re.search(r"webDepsHashes = \{[^}]*?\};", c, re.DOTALL).group(0)
+          m = re.search(rf'"{re.escape(system)}" = "(sha256-[^"]+)";', block)
+          print(m.group(1) if m else "")
+          PY
+          )
+          else
+              hash=$(printf '%s\n' "$out" | grep -oE 'got:[[:space:]]+sha256-[A-Za-z0-9+/=]+' | head -1 | grep -oE 'sha256-[A-Za-z0-9+/=]+' || true)
+          fi
+          if [ -z "$hash" ]; then
+              echo "::error::Could not capture webDeps hash. Last 200 lines of build output:"
+              echo "${out:-<empty>}" | tail -200
+              exit 1
+          fi
+          echo "webDeps hash: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Save JSON
+        env:
+          RUSTY_V8_HASH: ${{ steps.rusty.outputs.hash }}
+          WEB_DEPS_HASH: ${{ steps.web.outputs.hash }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p hash-out
+          jq -n \
+            --arg s "$MATRIX_SYSTEM" \
+            --arg r "$RUSTY_V8_HASH" \
+            --arg w "$WEB_DEPS_HASH" \
+            '{system:$s, rustyV8:$r, webDeps:$w}' \
+            > "hash-out/${MATRIX_SYSTEM}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.system }}
+          path: hash-out/
+
+  open-pr:
+    name: Open PR
+    needs: collect
+    if: always() && needs.collect.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: hash-out
+          pattern: hashes-*
+          merge-multiple: true
+
+      - name: Patch flake.nix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la hash-out/ || { echo "no artifacts collected"; exit 0; }
+
+          python3 <<'PY'
+          import re, json, glob
+
+          with open("flake.nix") as f:
+              content = f.read()
+
+          def patch(content, block_name, system, value):
+              block_re = re.compile(rf"{block_name} = \{{[^}}]*?\}};", re.DOTALL)
+              m = block_re.search(content)
+              if not m:
+                  print(f"WARN: block {block_name!r} not found")
+                  return content
+              block = m.group(0)
+              new_block = re.sub(
+                  rf'"{re.escape(system)}" = (?:lib\.fakeHash|"[^"]*");',
+                  f'"{system}" = "{value}";',
+                  block, count=1,
+              )
+              if new_block == block:
+                  print(f"WARN: no change for {block_name}.{system}")
+              return content.replace(block, new_block, 1)
+
+          for path in sorted(glob.glob("hash-out/*.json")):
+              with open(path) as f:
+                  d = json.load(f)
+              s = d["system"]
+              content = patch(content, "rustyV8Hashes", s, d["rustyV8"])
+              content = patch(content, "webDepsHashes", s, d["webDeps"])
+
+          with open("flake.nix", "w") as f:
+              f.write(content)
+          PY
+
+          rm -rf hash-out
+          git diff -- flake.nix || true
+
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "flake: capture cross-platform hashes"
+          title: "flake: capture cross-platform hashes"
+          body: |
+            Captured `rusty_v8` archive + `web/node_modules` FOD hashes for the
+            `packages.<system>.{moo,moo-gnu}` outputs.
+
+            Generated by the [Refresh flake hashes](../../actions/workflows/refresh-hashes.yml) workflow.
+
+            > Note: PRs created by `GITHUB_TOKEN` do not trigger downstream
+            > workflows. Close and reopen the PR (or push an empty commit) to
+            > kick off `Static binaries`.
+          branch: refresh-flake-hashes
+          delete-branch: true
+          add-paths: flake.nix

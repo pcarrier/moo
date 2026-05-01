@@ -1,0 +1,8 @@
+*.log
+.process-compose/
+.vite/
+/.direnv/
+/.moo/
+/target/
+dist/
+node_modules/

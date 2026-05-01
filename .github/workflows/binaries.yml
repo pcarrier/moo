@@ -1,0 +1,127 @@
+name: Binaries
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+      - '[0-9]*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            nix-package: moo-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            nix-package: default
+          - os: macos-15
+            target: aarch64-apple-darwin
+            nix-package: default
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        if: runner.os != 'Windows'
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Magic Nix cache
+        if: runner.os != 'Windows'
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build Unix binary
+        if: runner.os != 'Windows'
+        run: nix build .#${{ matrix.nix-package }}
+
+      - name: Install Rust toolchain (Windows)
+        if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun (Windows)
+        if: runner.os == 'Windows'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build Windows binary
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          (cd web && bun install --frozen-lockfile)
+          cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            version="${GITHUB_SHA::12}"
+          fi
+          stem="moo-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${stem}"
+          cp result/bin/moo "dist/${stem}/moo"
+          chmod +x "dist/${stem}/moo"
+          tar -C dist -czf "dist/${stem}.tar.gz" "${stem}"
+          shasum -a 256 "dist/${stem}.tar.gz" > "dist/${stem}.tar.gz.sha256"
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_REF_TYPE -ne 'tag') {
+            $version = $env:GITHUB_SHA.Substring(0, 12)
+          }
+          $stem = "moo-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$stem" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/moo.exe" "dist/$stem/moo.exe"
+          Compress-Archive -Path "dist/$stem" -DestinationPath "dist/$stem.zip" -Force
+          $hash = Get-FileHash "dist/$stem.zip" -Algorithm SHA256
+          "$($hash.Hash.ToLower())  dist/$stem.zip" | Set-Content "dist/$stem.zip.sha256"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moo-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
