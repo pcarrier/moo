@@ -1,0 +1,10 @@
+{
+  "name": "moo-harness",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir=dist --entry-naming=harness.[ext] --format=iife --target=browser",
+    "dev": "bun build src/index.ts --outdir=dist --entry-naming=harness.[ext] --format=iife --target=browser --sourcemap=linked --watch --no-clear-screen"
+  }
+}

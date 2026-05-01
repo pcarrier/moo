@@ -1,0 +1,52 @@
+version: "0.5"
+
+# process-compose -f process-compose.yaml
+#
+# Three processes glue the moo dev loop together:
+#
+#   harness  — bun build --watch on harness/src/*.ts → harness/dist/harness.js
+#   backend  — Rust agent server in --watch mode (rereads bundle per request).
+#              cargo-watch only restarts on src/*.rs changes.
+#   frontend — Vite dev server on :5173, proxying /api → backend on :7777
+#
+# Live-reload paths:
+#   * .ts in harness  → bun rebuilds bundle (~15ms) → next /api/run sees it
+#   * .rs in src      → cargo-watch rebuilds + restarts backend
+#   * .ts in web      → Vite HMR
+
+processes:
+  install:
+    description: "Install JS dependencies (harness + web)"
+    command: "(cd harness && bun install) && (cd web && bun install)"
+    availability:
+      restart: on_failure
+
+  harness:
+    description: "TypeScript harness watcher (bun build --watch)"
+    working_dir: harness
+    command: bun run dev
+    availability:
+      restart: on_failure
+      backoff_seconds: 1
+    depends_on:
+      install:
+        condition: process_completed_successfully
+
+  backend:
+    description: "Rust agent server (cargo-watch + --watch live bundle)"
+    working_dir: .
+    command: "cargo watch -w src -x 'run --profile profiling -- serve --port 7777 --host 127.0.0.1 --bind-cdp [::1]:9222 --watch --bundle harness/dist/harness.js'"
+    availability:
+      restart: on_failure
+      backoff_seconds: 1
+    depends_on:
+      install:
+        condition: process_completed_successfully
+
+  frontend:
+    description: "Vite dev server (port + proxy in vite.config.ts)"
+    working_dir: web
+    command: bun run dev
+    availability:
+      restart: on_failure
+      backoff_seconds: 1
