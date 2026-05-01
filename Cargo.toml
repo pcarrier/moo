@@ -1,0 +1,29 @@
+[package]
+name = "moo"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "moo"
+path = "src/main.rs"
+
+[dependencies]
+rusty_v8 = { package = "v8", version = "147.1.0" }
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde_json = "1"
+spargebra = "0.4.6"
+sha2 = "0.11"
+clap = { version = "4", features = ["derive"] }
+ureq = "3"
+sha1 = "0.11"
+base64 = "0.22"
+glob = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
+futures-util = "0.3"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+split-debuginfo = "packed"

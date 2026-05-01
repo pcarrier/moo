@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moo</title>
+    <link
+      rel="icon"
+      href='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐮</text></svg>'
+    />
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #fafafa; color: #1a1a1a; }
+      .boot-loading { position: fixed; inset: 0; display: grid; place-items: center; padding: 2rem; background: #fafafa; }
+      .boot-loading-card { width: min(28rem, 100%); border: 1px solid rgba(0, 0, 0, 0.22); padding: 1.6rem 1.6rem 1.45rem; text-align: center; }
+      .boot-loading-cow { display: inline-grid; place-items: center; width: 8rem; height: 8rem; margin: 0 auto 0.65rem; font-size: 6.5rem; line-height: 1; transform-origin: center; animation: boot-cow-spin 1.35s linear infinite; filter: drop-shadow(0 0.75rem 1rem rgba(0, 0, 0, 0.2)); }
+      .boot-loading-brand { font-size: 2.25rem; font-weight: 850; letter-spacing: -0.04em; }
+      .boot-loading-message { margin-top: 0.35rem; color: rgba(0, 0, 0, 0.55); }
+      @keyframes boot-cow-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .boot-loading-cow { animation-duration: 4s; } }
+      @media (prefers-color-scheme: dark) {
+        body, .boot-loading { background: #141414; color: #e8e8e8; }
+        .boot-loading-card { border-color: rgba(255, 255, 255, 0.22); }
+        .boot-loading-message { color: rgba(255, 255, 255, 0.55); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="boot-loading" role="status" aria-live="polite" aria-busy="true">
+      <div class="boot-loading-card">
+        <div class="boot-loading-cow" aria-hidden="true">🐮</div>
+        <div class="boot-loading-brand">Moo</div>
+        <div class="boot-loading-message">Loading chat…</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
