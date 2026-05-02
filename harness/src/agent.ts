@@ -1106,14 +1106,20 @@ function formatHjson(value: any, indent: string, wrap: number): string {
   if (typeof value === "object") {
     const keys = Object.keys(value);
     if (keys.length === 0) return "{}";
+    const renderInline = (k: string) => {
+      const fk = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : JSON.stringify(k);
+      return `${fk}: ${formatHjson(value[k], inner, wrap)}`;
+    };
+    const inlineItems = keys.map(renderInline);
+    const single = `{ ${inlineItems.join(", ")} }`;
+    if (single.length <= wrap && !single.includes("\n") && !inlineItems.some((s) => s.includes("'''"))) {
+      return single;
+    }
     const items = keys.map((k) => {
       const fk = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : JSON.stringify(k);
       const formatted = formatHjson(value[k], inner, wrap);
-      const sep = formatted.startsWith("'''") ? `:\n${inner}` : ": ";
-      return `${fk}${sep}${formatted}`;
+      return `${fk}: ${formatted}`;
     });
-    const single = `{ ${items.join(", ")} }`;
-    if (single.length <= wrap && !single.includes("\n")) return single;
     return `{\n${inner}${items.join(`,\n${inner}`)}\n${indent}}`;
   }
   return String(value);
@@ -1121,9 +1127,11 @@ function formatHjson(value: any, indent: string, wrap: number): string {
 
 function formatHjsonString(value: string, indent: string): string {
   if (!/[\r\n]/.test(value) || value.includes("'''")) return JSON.stringify(value);
-  const inner = indent + "  ";
-  const lines = value.split(/\r\n|\r|\n/);
-  return `'''\n${lines.map((l) => inner + l).join("\n")}\n${inner}'''`;
+  let normalized = value.replace(/\r\n?/g, "\n");
+  // Drop a single trailing newline so we don't render a blank line before the closing '''.
+  if (normalized.endsWith("\n")) normalized = normalized.slice(0, -1);
+  const lines = normalized.split("\n");
+  return `'''\n${lines.map((l) => indent + l).join("\n")}\n${indent}'''`;
 }
 
 async function toolRunJS(
