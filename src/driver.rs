@@ -25,6 +25,8 @@ use crate::util::now_ms;
 struct RunningChat {
     handle: JoinHandle<()>,
     started_at: u64,
+    end_event: Option<Value>,
+    ended: Arc<AtomicBool>,
 }
 
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningChat>>> =
@@ -44,8 +46,15 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
         return;
     }
     let cid = chat_id.clone();
+    let end_event = state
+        .get("lifecycleEvents")
+        .and_then(|v| v.get("end"))
+        .filter(|v| v.is_object())
+        .cloned();
+    let ended = Arc::new(AtomicBool::new(false));
+    let task_ended = ended.clone();
     let handle = runtime().spawn(async move {
-        if let Err(e) = drive(pool, bundle, chat_id.clone(), state).await {
+        if let Err(e) = drive(pool, bundle, chat_id.clone(), state, task_ended).await {
             eprintln!("chat driver [{chat_id}]: {e}");
         }
         RUNNING.lock().unwrap().remove(&chat_id);
@@ -55,6 +64,8 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
         RunningChat {
             handle,
             started_at: now_ms() as u64,
+            end_event,
+            ended,
         },
     ) {
         prev.handle.abort();
@@ -66,6 +77,7 @@ async fn drive(
     bundle: Arc<String>,
     chat_id: String,
     state: Value,
+    ended: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let lock_arc = pool.chat_lock(&format!("chat:{chat_id}"));
     let _guard = lock_arc.lock().await;
@@ -74,7 +86,7 @@ async fn drive(
     if let Some(running) = RUNNING.lock().unwrap().get_mut(&chat_id) {
         running.started_at = started_at;
     }
-    let _step_guard = StepLifecycle::start(state.get("lifecycleEvents"), started_at);
+    let _step_guard = StepLifecycle::start(state.get("lifecycleEvents"), started_at, ended);
     drive_loop(&pool, &bundle, state).await
 }
 
@@ -141,6 +153,15 @@ pub fn interrupt(chat_id: &str) -> bool {
         return false;
     };
     running.handle.abort();
+    // Publish step-end synchronously rather than waiting for the aborted
+    // task's StepLifecycle::Drop, which may be parked inside spawn_blocking
+    // (V8 calls) and not run for a while. Clients rely on step-end to drain
+    // queued messages.
+    if !running.ended.swap(true, Ordering::SeqCst)
+        && let Some(end_event) = &running.end_event
+    {
+        publish_event_payload(end_event);
+    }
     true
 }
 
@@ -159,10 +180,11 @@ pub fn running_started_at() -> HashMap<String, u64> {
 
 struct StepLifecycle {
     end_event: Option<Value>,
+    ended: Arc<AtomicBool>,
 }
 
 impl StepLifecycle {
-    fn start(events: Option<&Value>, started_at: u64) -> Self {
+    fn start(events: Option<&Value>, started_at: u64, ended: Arc<AtomicBool>) -> Self {
         let events = events.filter(|v| v.is_object());
         if let Some(start) = events
             .and_then(|v| v.get("start"))
@@ -175,12 +197,16 @@ impl StepLifecycle {
                 .and_then(|v| v.get("end"))
                 .filter(|v| v.is_object())
                 .cloned(),
+            ended,
         }
     }
 }
 
 impl Drop for StepLifecycle {
     fn drop(&mut self) {
+        if self.ended.swap(true, Ordering::SeqCst) {
+            return;
+        }
         if let Some(end_event) = &self.end_event {
             publish_event_payload(end_event);
         }
@@ -453,7 +479,7 @@ async fn drive_limited(
     let lock_arc = pool.chat_lock(&format!("chat:{lock_chat_id}"));
     let _guard = lock_arc.lock().await;
     let started_at = now_ms() as u64;
-    let _step_guard = StepLifecycle::start(state.get("lifecycleEvents"), started_at);
+    let _step_guard = StepLifecycle::start(state.get("lifecycleEvents"), started_at, Arc::new(AtomicBool::new(false)));
     let mut next_input = json!({ "command": "step-next", "state": state });
     let mut llm_turns = 0_u64;
     loop {

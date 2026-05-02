@@ -1866,6 +1866,11 @@ ${r.value.url}`);
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
     setDraftReply(null);
+    // Kick the queue drainer optimistically: server-side step-end may be
+    // delayed if the aborted task is parked in a blocking V8 call, but the
+    // chat is no longer busy from the UI's perspective so any queued
+    // messages should be sent now.
+    if (pending().length > 0) queueMicrotask(drain);
     const r = await api.interrupt(id);
     if (!r.ok) reportError(`interrupt ${id}`, r.error);
   }
