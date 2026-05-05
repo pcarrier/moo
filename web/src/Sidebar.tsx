@@ -232,9 +232,8 @@ export function RightSidebarToggle(props: { bag: Bag }) {
   );
 }
 
-export function RepoFilePreview(props: { file: OpenRepoFile; onClose: () => void; onOpenFile?: (path: string) => void; assetRootPath?: string | null }) {
+export function RepoFilePreview(props: { file: OpenRepoFile; onOpenFile?: (path: string) => void; assetRootPath?: string | null }) {
   const previewPath = () => props.file.path || props.file.requestedPath;
-  const title = () => fileName(previewPath());
   const previewKind = () => previewKindForPath(previewPath());
   const [mode, setMode] = createSignal<FileContentMode>(previewKind() ? "preview" : "source");
   const renderedSource = createMemo(() => highlightByPath(props.file.content || "", previewPath()));
@@ -246,10 +245,8 @@ export function RepoFilePreview(props: { file: OpenRepoFile; onClose: () => void
     <section class="repo-file-preview" aria-label="opened repository file">
       <header class="repo-file-header">
         <div>
-          <strong>{title()}</strong>
-          <span title={displayFilePath(previewPath(), props.assetRootPath ?? null)}>{displayFilePath(previewPath(), props.assetRootPath ?? null)}</span>
+          <strong title={displayFilePath(previewPath(), props.assetRootPath ?? null)}>{displayFilePath(previewPath(), props.assetRootPath ?? null)}</strong>
         </div>
-        <button class="icon-btn" title="close file" onClick={props.onClose}>×</button>
       </header>
       <Show when={!props.file.loading} fallback={<div class="repo-file-status">Loading…</div>}>
         <Show when={!props.file.error} fallback={<div class="repo-file-error"><PrettyError message={props.file.error || "Unable to read this file"} /></div>}>
@@ -431,7 +428,6 @@ export function RightSidebar(props: { bag: Bag }) {
               <RepoFilePreview
                 file={(tab() as Extract<RightSidebarTab, { kind: "file" }>).file}
                 assetRootPath={props.bag.currentChatWorktreePath()}
-                onClose={() => void props.bag.closeRightSidebarTab(tab().id)}
                 onOpenFile={(path) => void props.bag.openFileInSidebar(path)}
               />
             </Show>
