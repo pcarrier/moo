@@ -721,8 +721,8 @@ function memoryTrailItem(item: MemoryDiffItem): AgentTrailItem {
   return {
     id: item.id,
     at: item.at,
-    title: item.graph || item.store,
-    detail: item.store,
+    title: memoryGraphTitle(item),
+    detail: memoryGraphSubtitle(item),
     timelineKey: `memory-diff:${item.id}`,
     kind: "memory-diff",
     tone: "memory",
@@ -770,18 +770,36 @@ function diffStatLabel(item: { stats?: { added?: number; removed?: number }; dif
 }
 
 
-function memoryGraphTitle(item: MemoryGraphDiffSummary | MemoryDiffItem): string {
+function memoryGraphTitle(item: Pick<MemoryGraphDiffSummary | MemoryDiffItem, "graph" | "store">): string {
   return item.graph || item.store || "memory";
 }
 
-function memoryGraphSubtitle(item: MemoryGraphDiffSummary | MemoryDiffItem): string {
-  const store = item.store || "memory/facts";
-  const graph = item.graph || "(default)";
-  return graph === store ? "" : graph + " · " + store;
+function memoryGraphSubtitle(item: Pick<MemoryGraphDiffSummary | MemoryDiffItem, "graph" | "store">): string {
+  const store = item.store || "";
+  const graph = item.graph || "";
+  if (!store || memoryStoreMatchesGraph(store, graph)) return "";
+  return store;
 }
 
-function memoryGraphTooltip(item: MemoryGraphDiffSummary | MemoryDiffItem): string {
-  return memoryGraphSubtitle(item) || memoryGraphTitle(item);
+function memoryGraphTooltip(item: Pick<MemoryGraphDiffSummary | MemoryDiffItem, "graph" | "store">): string {
+  const title = memoryGraphTitle(item);
+  const subtitle = memoryGraphSubtitle(item);
+  return subtitle ? title + " · " + subtitle : title;
+}
+
+function memoryStoreMatchesGraph(store: string, graph: string): boolean {
+  const normalizedStore = normalizeMemoryLabel(store);
+  const normalizedGraph = normalizeMemoryLabel(graph);
+  return !!normalizedStore && !!normalizedGraph && normalizedStore === normalizedGraph;
+}
+
+function normalizeMemoryLabel(value: string): string {
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  const colon = trimmed.indexOf(":");
+  if (colon > 0 && trimmed.slice(colon, colon + 3) !== "://") {
+    return trimmed.slice(0, colon) + "/" + trimmed.slice(colon + 1);
+  }
+  return trimmed;
 }
 
 function memoryDiffFactStats(item: MemoryGraphDiffSummary | MemoryDiffItem): { added: number; removed: number } {
@@ -940,6 +958,7 @@ function MemoryDiffDetailTab(props: { bag: Bag; tab: Extract<RightSidebarTab, { 
   const store = () => item()?.store || props.tab.store;
   const path = () => item()?.path || props.tab.path;
   const stats = () => item() ? memoryDiffFactStats(item()!) : { added: 0, removed: 0 };
+  const storeSubtitle = () => memoryGraphSubtitle({ graph: graph(), store: store() });
   return (
     <section class="repo-file-preview right-diff-detail" aria-label={scopeLabel() + " for " + graph()}>
       <header class="repo-file-header">
@@ -950,7 +969,9 @@ function MemoryDiffDetailTab(props: { bag: Bag; tab: Extract<RightSidebarTab, { 
       <Show when={item()} fallback={<div class="repo-file-status">Memory diff no longer appears in the loaded timeline.</div>}>
         <div class="repo-file-meta right-diff-meta repo-file-toolbar">
           <span>{scopeLabel()}</span>
-          <span>{store()}</span>
+          <Show when={storeSubtitle()}>
+            {(subtitle) => <span>{subtitle()}</span>}
+          </Show>
           <span class="right-diff-stats" aria-label={factStatLabel(stats())}>
             <span class="right-diff-added">+{stats().added} facts</span>
             <span class="right-diff-removed">−{stats().removed} facts</span>
