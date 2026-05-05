@@ -367,7 +367,7 @@ function chatWorktreePath(chatId: string, root: string | null): string {
   return base + "/.moo/" + String(chatId).replace(/^\/+/, "");
 }
 
-export async function normalizeDir(path: string): Promise<string> {
+async function expandHomeDir(path: string): Promise<string> {
   let raw = String(path || ".").trim() || ".";
   // Allow callers to pass shell-style "~" / "~/foo" — the backend resolves
   // them against $HOME so the UI can show tilde paths and round-trip them.
@@ -375,9 +375,38 @@ export async function normalizeDir(path: string): Promise<string> {
     const home = (await moo.env.get("HOME")) || "";
     if (home) raw = home + raw.slice(1);
   }
+  return raw;
+}
+
+export async function normalizeDir(path: string): Promise<string> {
+  const raw = await expandHomeDir(path);
   const result = await moo.proc.run({ cmd: "pwd", args: ["-P"], ...{ cwd: raw, timeoutMs: 5_000 } });
   if (result.code !== 0) throw new Error((result.stderr || result.stdout || `not a directory: ${raw}`).trim());
   return result.stdout.trim() || raw;
+}
+
+function lazyWorktreePathParts(path: string): { chatId: string; rest: string } | null {
+  const normalized = String(path || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const match = /(?:^|\/)\.moo\/([^/]+)(?:\/(.*))?$/.exec(normalized);
+  if (!match?.[1]) return null;
+  return { chatId: match[1], rest: match[2] || "" };
+}
+
+async function normalizeDirMaterializingChatWorktree(path: string): Promise<string> {
+  const raw = await expandHomeDir(path);
+  try {
+    return await normalizeDir(raw);
+  } catch (originalError: any) {
+    const lazy = lazyWorktreePathParts(raw);
+    if (!lazy || !(await moo.pointers.get(`chat/${lazy.chatId}/created-at`))) throw originalError;
+    try {
+      const worktree = await moo.chat.scratch(lazy.chatId);
+      const materialized = lazy.rest ? worktree.replace(/\/+$/, "") + "/" + lazy.rest.replace(/^\/+/, "") : worktree;
+      return await normalizeDir(materialized);
+    } catch {
+      throw originalError;
+    }
+  }
 }
 
 export async function loadRecentChatPaths(): Promise<string[]> {
@@ -406,7 +435,7 @@ export async function recentChatPathsCommand() {
 export async function fsListCommand(input: Input) {
   let path: string;
   try {
-    path = await normalizeDir(typeof input.path === "string" ? input.path : ".");
+    path = await normalizeDirMaterializingChatWorktree(typeof input.path === "string" ? input.path : ".");
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }
@@ -605,7 +634,7 @@ async function cachedFsSearchCandidates(base: string): Promise<Map<string, { rel
 export async function fsSearchCommand(input: Input) {
   let base: string;
   try {
-    base = await normalizeDir(typeof input.path === "string" ? input.path : ".");
+    base = await normalizeDirMaterializingChatWorktree(typeof input.path === "string" ? input.path : ".");
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }
@@ -655,7 +684,7 @@ export async function fsReadCommand(input: Input) {
   const basePath = typeof input.basePath === "string" ? input.basePath.trim() : "";
   if (basePath && !path.startsWith("/")) {
     try {
-      const base = await normalizeDir(basePath);
+      const base = await normalizeDirMaterializingChatWorktree(basePath);
       path = base.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
     } catch (e: any) {
       return { ok: false, error: { message: e?.message || String(e) } };
