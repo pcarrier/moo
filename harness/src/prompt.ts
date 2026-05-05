@@ -79,6 +79,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "agent=moo. tool=runJS({label,description,code,args?}) → async IIFE; `moo`, `chatId`, `scratch` & optional `args` in scope.",
     "label+description: Markdown for the tool-call row. label ≤6 words, imperative, sentence case. description: one concrete sentence (paths/predicates/why); use links/code when useful.",
     "code: JS body; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
+    "args: pass complex strings/data (patches, scripts, JSON blobs) via `args` instead of embedding/escaping them in `code`.",
     "runtime: harness JS only; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "searches: run silently; don't expose chat-history/background-search progress text unless asking for input or reporting results.",
