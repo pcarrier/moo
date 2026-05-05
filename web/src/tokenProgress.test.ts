@@ -14,11 +14,15 @@ describe("mergeTokenProgress", () => {
     expect(mergeTokenProgress(live, tokens(40_000), true)).toBe(live);
   });
 
-  test("accepts lower counts when the chat is inactive so resets apply", () => {
+  test("accepts lower counts when the chat is inactive so persisted final usage applies", () => {
     expect(mergeTokenProgress(tokens(70_000), tokens(40_000), false)).toEqual(tokens(40_000));
   });
 
   test("accepts higher counts while active", () => {
     expect(mergeTokenProgress(tokens(40_000), tokens(70_000), true)).toEqual(tokens(70_000));
+  });
+
+  test("accepts explicit resets while active", () => {
+    expect(mergeTokenProgress(tokens(70_000), tokens(40_000), true, { reset: true })).toEqual(tokens(40_000));
   });
 });

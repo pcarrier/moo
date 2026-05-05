@@ -2872,7 +2872,7 @@ ${r.value.url}`);
               ? Number(ev.threshold)
               : Number(cur?.threshold ?? 0);
             const explicitFraction = Number(ev.fraction);
-            return {
+            const next = {
               used,
               budget,
               threshold,
@@ -2880,6 +2880,7 @@ ${r.value.url}`);
                 ? explicitFraction
                 : budget > 0 ? used / budget : 0,
             };
+            return mergeTokenProgress(cur, next, activeChats().has(cid), { reset: ev.reset === true });
           });
         }
       }

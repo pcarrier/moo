@@ -791,6 +791,7 @@ export async function stepHandleLlmCommand(input: Input) {
       threshold,
       fraction: budget > 0 ? postTokens / budget : 0,
       estimated: true,
+      reset: true,
     });
     return { ok: true, value: { kind: "iterate", messages: null } };
   }
