@@ -122,6 +122,10 @@ a:hover {
   gap: 2rem;
 }
 
+.hero__grid {
+  gap: 3rem;
+}
+
 .hero__copy,
 .section__intro,
 .split > div {
@@ -224,11 +228,10 @@ h3 {
 
 .hero__screenshot {
   margin: 0;
-  align-self: center;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow: 0 1.5rem 3rem rgb(15 23 42 / 0.08);
+  width: min(100%, 1156px);
   overflow: hidden;
+  border-radius: 0.45rem;
+  box-shadow: 0 1rem 2rem rgb(30 30 28 / 0.10);
 }
 
 .hero__screenshot img {
@@ -353,12 +356,31 @@ code {
     font-weight: 400;
   }
 
-  .hero__grid {
-    grid-template-columns: minmax(0, 0.9fr) minmax(20rem, 1.1fr);
-    align-items: center;
+  .hero__copy {
+    display: grid;
+    grid-template-columns: minmax(18rem, 0.9fr) minmax(18rem, 1fr);
+    align-items: end;
+    gap: 1.5rem 2rem;
+    max-width: none;
   }
 
-  .hero__copy,
+  .hero__copy .eyebrow,
+  .hero__copy h1 {
+    grid-column: 1;
+  }
+
+  .hero__copy .lede,
+  .hero__actions,
+  .hero-stats {
+    grid-column: 2;
+  }
+
+  .hero__copy .lede {
+    grid-row: 1 / span 2;
+    align-self: end;
+    margin-bottom: 0;
+  }
+
   .section__intro,
   .split > div {
     max-width: 760px;
@@ -405,6 +427,16 @@ code {
   .quickstart,
   .limits {
     padding: 3rem 0;
+  }
+
+  .hero__screenshot {
+    justify-self: stretch;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .hero__copy {
+    max-width: 760px;
   }
 
   .button {
