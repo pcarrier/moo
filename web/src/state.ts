@@ -2764,6 +2764,7 @@ ${r.value.url}`);
   const refreshVocabularySoon = debounce(refreshVocabulary, 1500);
   const refreshUisSoon = debounce(refreshUis);
   const refreshChatUisSoon = debounce(refreshChatUis);
+  const refreshPointersSoon = debounce(refreshPointers);
   const refreshV8StatsSoon = debounce(refreshV8Stats, 250);
   const pendingRepoFileRefreshPaths = new Set<string>();
   const refreshPendingRepoFilesSoon = debounce(() => {
@@ -2804,6 +2805,7 @@ ${r.value.url}`);
       refreshVocabulary();
       refreshUis();
       refreshChatUis();
+      refreshPointers();
       refreshMcpServers();
       return;
     }
@@ -2981,7 +2983,7 @@ ${r.value.url}`);
       refreshTriplesSoon();
       refreshVocabularySoon();
     }
-    if (ev.kind === "pointer" && view() === "pointers") refreshPointers();
+    if (ev.kind === "pointer") refreshPointersSoon();
     if (ref.startsWith("ui/") || ref.startsWith("uiinst/")) {
       refreshUisSoon();
       refreshChatUisSoon();
@@ -3068,6 +3070,7 @@ ${r.value.url}`);
     refreshVocabularySoon.cancel();
     refreshUisSoon.cancel();
     refreshChatUisSoon.cancel();
+    refreshPointersSoon.cancel();
     refreshV8StatsSoon.cancel();
     if (chatMemoryRefreshTimer !== null) window.clearTimeout(chatMemoryRefreshTimer);
   });
@@ -3118,10 +3121,11 @@ ${r.value.url}`);
     setStartupLoading(true);
     try {
       const initialView = parseLocation().view;
-    // If the user lands directly on /facts or /pointers, start loading the data that backs
-    // the memory stats immediately. Do not wait for the chat list first: that
-    // request can be slow or blocked behind other work, leaving the page stuck
-    // showing the initial 0 graphs / 0 facts even though facts exist.
+      refreshPointers();
+      // If the user lands directly on /facts, start loading the data that backs
+      // the memory stats immediately. Do not wait for the chat list first: that
+      // request can be slow or blocked behind other work, leaving the page stuck
+      // showing the initial 0 graphs / 0 facts even though facts exist.
       if (initialView === "facts") {
         refreshGraphSummaries();
         if (initialLoc.graph) refreshTriples(triplesRemovedMode(), initialLoc.graph);
@@ -3129,9 +3133,9 @@ ${r.value.url}`);
       } else if (initialView === "v8") {
         refreshV8Stats();
       }
-    // Refresh chats so the sidebar populates. Graph summaries/triples/vocabulary
-    // do full scans across fact stores and can take seconds, so they load in the
-    // background instead of holding the UI on "no chats yet".
+      // Refresh chats so the sidebar populates. Graph summaries/triples/vocabulary
+      // do full scans across fact stores and can take seconds, so they load in the
+      // background instead of holding the UI on "no chats yet".
       const startupLoc = parseLocation();
       const directChatId =
         startupLoc.view === "chat" || !startupLoc.view ? startupLoc.chatId ?? null : null;
@@ -3157,7 +3161,7 @@ ${r.value.url}`);
       refreshMcpServers();
       const loc = parseLocation();
       const list = chats();
-    if (loc.view === "new" || loc.view === "facts" || loc.view === "pointers" || loc.view === "apps" || loc.view === "mcp" || loc.view === "v8" || loc.view === "settings") {
+      if (loc.view === "new" || loc.view === "facts" || loc.view === "pointers" || loc.view === "apps" || loc.view === "mcp" || loc.view === "v8" || loc.view === "settings") {
       if (loc.view === "apps" && loc.instanceId) {
         setView("apps");
         await openUiFromRoute(loc.instanceId, "replace");
@@ -3178,13 +3182,13 @@ ${r.value.url}`);
       if (pending().length > 0) drain();
       return;
     }
-    const desired = loc.chatId;
-    let target: string | null = null;
-    // Respect an explicit /chat/<id> even if the chat summary list is stale
-    // or from an older store that lacks chat metadata; describe can still load
-    // the chat-scoped refs/facts directly.
-    if (desired) target = desired;
-    else if (list.length > 0) target = list[0]!.chatId;
+      const desired = loc.chatId;
+      let target: string | null = null;
+      // Respect an explicit /chat/<id> even if the chat summary list is stale
+      // or from an older store that lacks chat metadata; describe can still load
+      // the chat-scoped refs/facts directly.
+      if (desired) target = desired;
+      else if (list.length > 0) target = list[0]!.chatId;
       if (target) {
         if (directChatLoad && directChatId === target) await directChatLoad;
         else await selectChat(target, true);

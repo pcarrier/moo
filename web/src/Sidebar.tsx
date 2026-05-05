@@ -1412,6 +1412,12 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
   const factsCount = createMemo(() =>
     bag.graphSummaries().reduce((sum, [, count]) => sum + count, 0),
   );
+  const pointerCount = createMemo(() => bag.pointers().length);
+  const pointerCountLabel = createMemo(() => {
+    if (!bag.pointersLoaded()) return "loading";
+    const count = pointerCount();
+    return `${count} pointer${count === 1 ? "" : "s"}`;
+  });
 
   async function loadExplorer(path = explorerPath()) {
     setExplorerBusy(true);
@@ -1760,7 +1766,7 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       >
         <span class="sidebar-tab-label">pointers</span>
         <span class="sidebar-tab-count">
-          {bag.pointers().length} pointer{bag.pointers().length === 1 ? "" : "s"}
+          {pointerCountLabel()}
         </span>
       </button>
       <button
