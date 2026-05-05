@@ -221,7 +221,7 @@ export function App(props: { bag: Bag }) {
                           </Show>
                         }
                       >
-                        <V8View bag={bag} onToggleSidebar={openSidebar} />
+                        <V8View bag={bag} onToggleSidebar={toggleSidebar} />
                       </Show>
                     }
                   >

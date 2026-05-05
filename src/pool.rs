@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Instant;
 
 use rusty_v8 as v8;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -25,11 +25,64 @@ use crate::runtime::AgentRunHandler;
 use crate::snapshots;
 use crate::util::{now_ms, sha256_object_hash};
 
-const DEFAULT_RECYCLE_USED_HEAP_BYTES: usize = 512 * 1024 * 1024;
+pub const DEFAULT_MAX_WORKERS: usize = 16;
+pub const DEFAULT_MAX_OLD_GENERATION_BYTES: usize = 128 * 1024 * 1024;
+pub const DEFAULT_MAX_YOUNG_GENERATION_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_RECYCLE_USED_HEAP_BYTES: usize = 96 * 1024 * 1024;
+const MIN_HEAP_LIMIT_BYTES: usize = 1024 * 1024;
 const V8_EVENTS_MAX: usize = 300;
+
+static V8_CONFIG_OVERRIDES: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static V8_OBSERVABILITY: LazyLock<Arc<V8Observability>> =
     LazyLock::new(|| Arc::new(V8Observability::new()));
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct V8RuntimeSettings {
+    pub max_workers: Option<usize>,
+    pub max_old_generation_bytes: Option<usize>,
+    pub max_young_generation_bytes: Option<usize>,
+    pub recycle_used_heap_bytes: Option<usize>,
+    pub startup_snapshots_enabled: Option<bool>,
+}
+
+pub fn default_v8_runtime_settings() -> V8RuntimeSettings {
+    V8RuntimeSettings {
+        max_workers: Some(DEFAULT_MAX_WORKERS),
+        max_old_generation_bytes: Some(DEFAULT_MAX_OLD_GENERATION_BYTES),
+        max_young_generation_bytes: Some(DEFAULT_MAX_YOUNG_GENERATION_BYTES),
+        recycle_used_heap_bytes: Some(DEFAULT_RECYCLE_USED_HEAP_BYTES),
+        startup_snapshots_enabled: Some(true),
+    }
+}
+
+pub fn effective_v8_runtime_settings() -> V8RuntimeSettings {
+    V8RuntimeSettings {
+        max_workers: Some(configured_max_workers()),
+        max_old_generation_bytes: Some(max_old_generation_bytes()),
+        max_young_generation_bytes: Some(max_young_generation_bytes()),
+        recycle_used_heap_bytes: Some(recycle_used_heap_bytes()),
+        startup_snapshots_enabled: Some(startup_snapshots_enabled()),
+    }
+}
+
+pub fn normalize_v8_runtime_settings(mut settings: V8RuntimeSettings) -> V8RuntimeSettings {
+    if let Some(value) = settings.max_workers.as_mut() {
+        *value = (*value).max(1);
+    }
+    if let Some(value) = settings.max_old_generation_bytes.as_mut() {
+        *value = (*value).max(MIN_HEAP_LIMIT_BYTES);
+    }
+    if let Some(value) = settings.max_young_generation_bytes.as_mut() {
+        *value = (*value).max(MIN_HEAP_LIMIT_BYTES);
+    }
+    if let Some(value) = settings.recycle_used_heap_bytes.as_mut() {
+        *value = (*value).max(MIN_HEAP_LIMIT_BYTES);
+    }
+    settings
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,8 +98,11 @@ pub struct V8StatsSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct V8ConfigSnapshot {
     pub recycle_used_heap_bytes: usize,
+    pub max_old_generation_bytes: usize,
+    pub max_young_generation_bytes: usize,
     pub cache_entries: usize,
     pub startup_snapshots_enabled: bool,
+    pub max_workers: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -458,21 +514,25 @@ impl V8Observability {
             events,
             config: V8ConfigSnapshot {
                 recycle_used_heap_bytes: recycle_used_heap_bytes(),
+                max_old_generation_bytes: max_old_generation_bytes(),
+                max_young_generation_bytes: max_young_generation_bytes(),
                 cache_entries,
                 startup_snapshots_enabled: startup_snapshots_enabled(),
+                max_workers: configured_max_workers(),
             },
             totals,
         }
     }
 
     fn push_event(&self, event: V8Event) {
-        if let Ok(payload) = serde_json::to_string(&json!({ "kind": "v8", "event": &event })) {
-            crate::broadcast::publish(payload);
-        }
         let mut events = self.events.lock().unwrap();
-        events.push_back(event);
+        events.push_back(event.clone());
         while events.len() > V8_EVENTS_MAX {
             events.pop_front();
+        }
+        drop(events);
+        if let Ok(payload) = serde_json::to_string(&json!({ "kind": "v8", "event": &event })) {
+            crate::broadcast::publish(payload);
         }
     }
 }
@@ -503,21 +563,114 @@ fn worker_key(lane: &str, id: usize) -> String {
     format!("{lane}-{id}")
 }
 
+fn config_value(name: &str) -> Option<String> {
+    V8_CONFIG_OVERRIDES
+        .lock()
+        .unwrap()
+        .get(name)
+        .cloned()
+        .or_else(|| std::env::var(name).ok())
+}
+
 fn read_usize_env(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    config_value(name)
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(default)
 }
 
 fn read_bool_env(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
+    config_value(name)
         .map(|value| {
             let value = value.trim().to_ascii_lowercase();
             matches!(value.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(default)
+}
+
+pub fn apply_v8_env_text(text: &str) {
+    let mut overrides = V8_CONFIG_OVERRIDES.lock().unwrap();
+    overrides.clear();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if !key.starts_with("MOO_V8_") {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        overrides.insert(key.to_string(), value.to_string());
+    }
+}
+
+pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
+    let settings = normalize_v8_runtime_settings(settings.clone());
+    let mut overrides = V8_CONFIG_OVERRIDES.lock().unwrap();
+    overrides.clear();
+    if let Some(value) = settings.max_workers {
+        overrides.insert("MOO_V8_WORKERS".to_string(), value.to_string());
+    }
+    if let Some(value) = settings.max_old_generation_bytes {
+        overrides.insert(
+            "MOO_V8_MAX_OLD_GENERATION_BYTES".to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = settings.max_young_generation_bytes {
+        overrides.insert(
+            "MOO_V8_MAX_YOUNG_GENERATION_BYTES".to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = settings.recycle_used_heap_bytes {
+        overrides.insert(
+            "MOO_V8_RECYCLE_USED_HEAP_BYTES".to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = settings.startup_snapshots_enabled {
+        overrides.insert(
+            "MOO_V8_STARTUP_SNAPSHOTS".to_string(),
+            if value { "1" } else { "0" }.to_string(),
+        );
+    }
+}
+
+pub fn configured_max_workers() -> usize {
+    read_usize_env("MOO_V8_WORKERS", DEFAULT_MAX_WORKERS).max(1)
+}
+
+fn max_old_generation_bytes() -> usize {
+    read_usize_env(
+        "MOO_V8_MAX_OLD_GENERATION_BYTES",
+        DEFAULT_MAX_OLD_GENERATION_BYTES,
+    )
+    .max(MIN_HEAP_LIMIT_BYTES)
+}
+
+fn max_young_generation_bytes() -> usize {
+    read_usize_env(
+        "MOO_V8_MAX_YOUNG_GENERATION_BYTES",
+        DEFAULT_MAX_YOUNG_GENERATION_BYTES,
+    )
+    .max(MIN_HEAP_LIMIT_BYTES)
+}
+
+fn v8_create_params() -> v8::CreateParams {
+    v8::CreateParams::default()
+        .set_max_old_generation_size_in_bytes(max_old_generation_bytes())
+        .set_max_young_generation_size_in_bytes(max_young_generation_bytes())
+}
+
+fn v8_startup_snapshot_create_params(startup: v8::StartupData) -> v8::CreateParams {
+    runtime::startup_snapshot_create_params(startup)
+        .set_max_old_generation_size_in_bytes(max_old_generation_bytes())
+        .set_max_young_generation_size_in_bytes(max_young_generation_bytes())
 }
 
 fn recycle_used_heap_bytes() -> usize {
@@ -797,7 +950,7 @@ impl WorkerRuntime {
     fn new(lane: &str, id: usize, previous_generation: Option<u64>) -> Self {
         let generation = previous_generation.unwrap_or(0).saturating_add(1);
         let near_heap_limit = Box::new(AtomicBool::new(false));
-        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+        let mut isolate = v8::Isolate::new(v8_create_params());
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
         snapshots::install_failure_hooks(&mut isolate, near_heap_limit.as_ref());
         let rt = Self {
@@ -856,7 +1009,7 @@ impl WorkerRuntime {
     fn install_default_isolate(&mut self) {
         debug_assert!(self.isolate.is_none());
         let near_heap_limit = Box::new(AtomicBool::new(false));
-        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+        let mut isolate = v8::Isolate::new(v8_create_params());
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
         snapshots::install_failure_hooks(&mut isolate, near_heap_limit.as_ref());
         self.near_heap_limit = near_heap_limit;
@@ -874,7 +1027,7 @@ impl WorkerRuntime {
 
         let result = (|| {
             let near_heap_limit = Box::new(AtomicBool::new(false));
-            let mut isolate = v8::Isolate::new(runtime::startup_snapshot_create_params(startup));
+            let mut isolate = v8::Isolate::new(v8_startup_snapshot_create_params(startup));
             isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
             snapshots::install_failure_hooks(&mut isolate, near_heap_limit.as_ref());
             let (context, main) = runtime::load_snapshot_context_in(&mut isolate)?;

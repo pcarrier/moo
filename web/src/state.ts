@@ -2782,9 +2782,31 @@ ${r.value.url}`);
   const offEvents = events.on((ev: any) => {
     if (ev.kind === "ping") return;
     if (ev.kind === "v8") {
+      if (ev.event && typeof ev.event === "object") {
+        setV8Stats((current) => {
+          if (!current) return current;
+          const incoming = ev.event as V8StatsValue["events"][number];
+          const events = [...(current.events ?? [])];
+          const duplicate = events.some((item) =>
+            item.at === incoming.at &&
+            item.worker === incoming.worker &&
+            item.generation === incoming.generation &&
+            item.kind === incoming.kind &&
+            item.command === incoming.command &&
+            item.reason === incoming.reason
+          );
+          if (!duplicate) events.push(incoming);
+          return {
+            ...current,
+            events: events.slice(-300),
+          };
+        });
+      }
       // Keep the sidebar's V8 busy badge live after the user has visited the
       // V8 page once. Before that first load, leave it hidden instead of
-      // implicitly subscribing the whole app to V8 stats.
+      // implicitly subscribing the whole app to V8 stats. The snapshot refresh
+      // fills in derived counters/heap data; the live event above prevents the
+      // lifecycle list from looking empty while the debounce is pending.
       if (view() === "v8" || v8StatsLoaded()) refreshV8StatsSoon();
       return;
     }

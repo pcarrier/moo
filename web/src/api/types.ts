@@ -358,14 +358,31 @@ export type V8Event = {
   detail?: string | null;
 };
 
+export type V8RuntimeSettings = {
+  maxWorkers: number | null;
+  maxOldGenerationBytes: number | null;
+  maxYoungGenerationBytes: number | null;
+  recycleUsedHeapBytes: number | null;
+  startupSnapshotsEnabled: boolean | null;
+};
+
+export type V8SettingsValue = {
+  settings: V8RuntimeSettings;
+  defaults: V8RuntimeSettings;
+  effective: V8RuntimeSettings;
+};
+
 export type V8StatsValue = {
   generatedAt: number;
   workers: V8WorkerSnapshot[];
   events: V8Event[];
   config: {
     recycleUsedHeapBytes: number;
+    maxOldGenerationBytes: number;
+    maxYoungGenerationBytes: number;
     cacheEntries: number;
     startupSnapshotsEnabled: boolean;
+    maxWorkers: number;
   };
   totals: {
     workers: number;

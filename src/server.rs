@@ -23,9 +23,19 @@ pub fn serve(
     // Pool size needs headroom for read-only commands (describe/triples/etc)
     // to overlap with long-running `step` calls that hold an isolate for the
     // duration of LLM streaming.
+    let conn = host::open_db(db)?;
+    if let Some(raw) = settings::get(&conn, settings::V8_CONFIG_KEY)? {
+        let parsed: crate::pool::V8RuntimeSettings =
+            serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        crate::pool::apply_v8_runtime_settings(&parsed);
+    } else if let Some(env) = settings::get(&conn, settings::V8_ENV_KEY)? {
+        crate::pool::apply_v8_env_text(&env);
+    }
+    drop(conn);
     let workers = std::thread::available_parallelism()
         .map(|n| (n.get() * 2).max(8))
-        .unwrap_or(12);
+        .unwrap_or(crate::pool::DEFAULT_MAX_WORKERS)
+        .min(crate::pool::configured_max_workers());
     let pool = Arc::new(Pool::new(workers, db));
     driver::restart_ongoing(pool.clone(), bundle());
     let db = Arc::new(db.to_string());
@@ -110,7 +120,7 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
-        return ws::handle(stream, &key, pool, bundle.clone());
+        return ws::handle(stream, &key, pool, bundle.clone(), db.to_string());
     }
 
     if method == "GET"

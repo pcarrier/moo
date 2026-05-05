@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Bag } from "./state";
-import type { V8Event, V8HeapSnapshot, V8WorkerSnapshot } from "./api";
+import { PageHeader } from "./PageChrome";
+import type { V8HeapSnapshot, V8WorkerSnapshot } from "./api";
 
 function formatBytes(bytes: number | null | undefined): string {
   const n = Number(bytes ?? 0);
@@ -22,7 +23,7 @@ function formatMs(ms: number | null | undefined): string {
 function formatTime(at: number | null | undefined): string {
   const n = Number(at ?? 0);
   if (!Number.isFinite(n) || n <= 0) return "—";
-  return new Date(n).toLocaleTimeString();
+  return new Date(n).toISOString();
 }
 
 function pct(part: number | null | undefined, total: number | null | undefined): number {
@@ -78,71 +79,173 @@ function Bar(props: { value: number; label?: string; tone?: "ok" | "warn" | "err
   );
 }
 
-function WorkerCard(props: { worker: V8WorkerSnapshot }) {
-  const w = () => props.worker;
-  const heapPct = () => heapUsedPct(w().heap);
-  const heapTone = () => heapPct() > 85 ? "error" : heapPct() > 65 ? "warn" : "ok";
+type PoolSummary = {
+  lane: string;
+  workers: number;
+  busy: number;
+  idle: number;
+  recycling: number;
+  stopped: number;
+  jobs: number;
+  errors: number;
+  recycles: number;
+  nearHeapLimit: number;
+  cacheHits: number;
+  cacheMisses: number;
+  snapshotHits: number;
+  snapshotMisses: number;
+  usedHeapSize: number;
+  heapSizeLimit: number;
+  cacheEntries: number;
+  contexts: number;
+};
+
+function summarizePools(workers: V8WorkerSnapshot[]): PoolSummary[] {
+  const byLane = new Map<string, PoolSummary>();
+  for (const worker of workers) {
+    let pool = byLane.get(worker.lane);
+    if (!pool) {
+      pool = {
+        lane: worker.lane,
+        workers: 0,
+        busy: 0,
+        idle: 0,
+        recycling: 0,
+        stopped: 0,
+        jobs: 0,
+        errors: 0,
+        recycles: 0,
+        nearHeapLimit: 0,
+        cacheHits: 0,
+        cacheMisses: 0,
+        snapshotHits: 0,
+        snapshotMisses: 0,
+        usedHeapSize: 0,
+        heapSizeLimit: 0,
+        cacheEntries: 0,
+        contexts: 0,
+      };
+      byLane.set(worker.lane, pool);
+    }
+    pool.workers += 1;
+    if (worker.status === "busy") pool.busy += 1;
+    else if (worker.status === "recycling") pool.recycling += 1;
+    else if (worker.status === "stopped") pool.stopped += 1;
+    else pool.idle += 1;
+    pool.jobs += worker.jobs;
+    pool.errors += worker.errors;
+    pool.recycles += worker.recycles;
+    pool.nearHeapLimit += worker.nearHeapLimit;
+    pool.cacheHits += worker.cacheHits;
+    pool.cacheMisses += worker.cacheMisses;
+    pool.snapshotHits += worker.snapshotHits;
+    pool.snapshotMisses += worker.snapshotMisses;
+    pool.usedHeapSize += worker.heap?.usedHeapSize ?? 0;
+    pool.heapSizeLimit += worker.heap?.heapSizeLimit ?? 0;
+    pool.cacheEntries += worker.cacheEntries;
+    pool.contexts += worker.heap?.numberOfNativeContexts ?? 0;
+  }
+  return [...byLane.values()].sort((a, b) => a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0);
+}
+
+function WorkerCountBar(props: { pool: PoolSummary; max: number }) {
+  const width = (value: number) => pct(value, props.max);
+  const display = () => props.pool.busy + "/" + props.pool.workers;
   return (
-    <article class="v8-worker-card">
-      <header class="v8-worker-header">
-        <div>
-          <div class="v8-worker-title">{laneLabel(w().lane)} #{w().workerId}</div>
-          <div class="v8-worker-sub">generation {w().generation} · {w().generationJobs} jobs in generation</div>
-        </div>
-        <div class={"v8-pill " + statusClass(w().status)}>{w().status}</div>
-      </header>
-
-      <div class="v8-worker-current">
-        <span>{w().status === "busy" ? (w().currentCommand || "running") : (w().lastCommand || "idle")}</span>
-        <span>{w().status === "busy" ? formatMs(w().currentJobElapsedMs) : formatMs(w().lastDurationMs)}</span>
+    <div class="v8-chart-row">
+      <div class="v8-chart-label" title={laneLabel(props.pool.lane)}>{laneLabel(props.pool.lane)}</div>
+      <div class="v8-stacked-bar" title={props.pool.busy + " busy / " + props.pool.workers + " workers"}>
+        <div class="busy" style={{ width: width(props.pool.busy).toFixed(1) + "%" }} />
+        <div class="idle" style={{ width: width(props.pool.idle).toFixed(1) + "%" }} />
+        <div class="warn" style={{ width: width(props.pool.recycling).toFixed(1) + "%" }} />
+        <div class="error" style={{ width: width(props.pool.stopped).toFixed(1) + "%" }} />
       </div>
-
-      <div class="v8-worker-meter-row">
-        <div class="v8-meter-label">
-          <span>heap</span>
-          <span>{formatBytes(w().heap?.usedHeapSize)} / {formatBytes(w().heap?.heapSizeLimit)}</span>
-        </div>
-        <Bar value={heapPct()} tone={heapTone()} />
-      </div>
-
-      <div class="v8-worker-grid">
-        <div><span>contexts</span><strong>{w().heap?.numberOfNativeContexts ?? "—"}</strong></div>
-        <div><span>cached contexts</span><strong>{w().cacheEntries}</strong></div>
-        <div><span>cache hit</span><strong>{hitRate(w().cacheHits, w().cacheMisses)}</strong></div>
-        <div><span>snapshot</span><strong>{hitRate(w().snapshotHits, w().snapshotMisses)}</strong></div>
-        <div><span>errors</span><strong>{w().errors}</strong></div>
-        <div><span>recycles</span><strong>{w().recycles}</strong></div>
-        <div><span>queue</span><strong>{formatMs(w().lastQueueWaitMs)}</strong></div>
-      </div>
-
-      <div class="v8-worker-tags">
-        <span class={w().snapshotLoaded ? "on" : "off"}>startup snapshot {w().snapshotLoaded ? "on" : "off"}</span>
-        <span>hash {shortHash(w().snapshotHash)}</span>
-        <span>{w().lastContextKind || "—"} context</span>
-      </div>
-
-      <Show when={w().lastRecycleReason || w().lastError}>
-        <div class="v8-worker-note">
-          <Show when={w().lastRecycleReason}><div>recycled: {w().lastRecycleReason} at {formatTime(w().lastRecycleAt)}</div></Show>
-          <Show when={w().lastError}><div class="error">last error: {w().lastError}</div></Show>
-        </div>
-      </Show>
-    </article>
+      <div class="v8-chart-value" title={display()}>{display()}</div>
+    </div>
   );
 }
 
-function EventRow(props: { event: V8Event }) {
-  const ev = () => props.event;
+function MetricBar(props: { label: string; value: number; max: number; display: string; tone?: "ok" | "warn" | "error" }) {
   return (
-    <tr class={"v8-event-" + ev().kind}>
-      <td>{formatTime(ev().at)}</td>
-      <td>{laneLabel(ev().lane)} #{ev().workerId}</td>
-      <td>{ev().generation}</td>
-      <td><span class="v8-event-kind">{ev().kind}</span></td>
-      <td>{ev().command || "—"}</td>
-      <td>{ev().reason || "—"}</td>
-      <td class="v8-event-detail">{ev().detail || ""}</td>
-    </tr>
+    <div class="v8-chart-row">
+      <div class="v8-chart-label" title={props.label}>{props.label}</div>
+      <Bar value={pct(props.value, props.max)} tone={props.tone || "ok"} />
+      <div class="v8-chart-value" title={props.display}>{props.display}</div>
+    </div>
+  );
+}
+
+function PoolCharts(props: { pools: PoolSummary[] }) {
+  const maxWorkers = () => Math.max(1, ...props.pools.map((pool) => pool.workers));
+  const maxHeap = () => Math.max(1, ...props.pools.map((pool) => pool.usedHeapSize));
+  const maxJobs = () => Math.max(1, ...props.pools.map((pool) => pool.jobs));
+  return (
+    <section class="v8-charts">
+      <article class="v8-chart-panel">
+        <header><h2>workers per pool</h2><span>busy / total</span></header>
+        <div class="v8-chart-legend"><span class="busy">busy</span><span class="idle">idle</span><span class="warn">recycling</span><span class="error">stopped</span></div>
+        <For each={props.pools} fallback={<div class="memory-loading">No pools.</div>}>
+          {(pool) => <WorkerCountBar pool={pool} max={maxWorkers()} />}
+        </For>
+      </article>
+
+      <article class="v8-chart-panel">
+        <header><h2>heap by pool</h2><span>used heap</span></header>
+        <For each={props.pools} fallback={<div class="memory-loading">No pools.</div>}>
+          {(pool) => {
+            const heapPct = () => pct(pool.usedHeapSize, pool.heapSizeLimit);
+            const tone = () => heapPct() > 85 ? "error" : heapPct() > 65 ? "warn" : "ok";
+            return <MetricBar label={laneLabel(pool.lane)} value={pool.usedHeapSize} max={maxHeap()} display={formatBytes(pool.usedHeapSize)} tone={tone()} />;
+          }}
+        </For>
+      </article>
+
+      <article class="v8-chart-panel">
+        <header><h2>jobs by pool</h2><span>errors / recycles</span></header>
+        <For each={props.pools} fallback={<div class="memory-loading">No pools.</div>}>
+          {(pool) => <MetricBar label={laneLabel(pool.lane)} value={pool.jobs} max={maxJobs()} display={pool.jobs + " jobs · " + pool.errors + " err · " + pool.recycles + " rec"} tone={pool.errors ? "warn" : "ok"} />}
+        </For>
+      </article>
+    </section>
+  );
+}
+
+function WorkerTable(props: { workers: V8WorkerSnapshot[] }) {
+  return (
+    <section class="v8-workers-panel">
+      <h2>workers <span>{props.workers.length}</span></h2>
+      <div class="v8-workers-wrap">
+        <table class="v8-workers-table">
+          <thead>
+            <tr><th>pool</th><th>id</th><th>status</th><th>heap</th><th title="total jobs; worker generation and jobs in this generation">jobs / generation</th><th>cache</th><th>snapshot</th><th>current / last</th><th>note</th></tr>
+          </thead>
+          <tbody>
+            <For each={props.workers} fallback={<tr><td colSpan={9}>No workers in this lane.</td></tr>}>
+              {(worker) => {
+                const heapPct = () => heapUsedPct(worker.heap);
+                const heapTone = () => heapPct() > 85 ? "error" : heapPct() > 65 ? "warn" : "ok";
+                const command = () => worker.status === "busy" ? (worker.currentCommand || "running") : (worker.lastCommand || "idle");
+                const elapsed = () => worker.status === "busy" ? worker.currentJobElapsedMs : worker.lastDurationMs;
+                const note = () => worker.lastError || worker.lastRecycleReason || shortHash(worker.snapshotHash);
+                return (
+                  <tr class={"v8-worker-row " + statusClass(worker.status)}>
+                    <td>{laneLabel(worker.lane)}</td>
+                    <td>#{worker.workerId}</td>
+                    <td><span class={"v8-pill " + statusClass(worker.status)}>{worker.status}</span></td>
+                    <td><div class="v8-table-meter"><Bar value={heapPct()} tone={heapTone()} /><span>{formatBytes(worker.heap?.usedHeapSize)}</span></div></td>
+                    <td>{worker.jobs} <span class="muted" title="worker generation; jobs completed in this generation">gen {worker.generation} · {worker.generationJobs}</span></td>
+                    <td>{hitRate(worker.cacheHits, worker.cacheMisses)} <span class="muted">{worker.cacheEntries}</span></td>
+                    <td>{hitRate(worker.snapshotHits, worker.snapshotMisses)} <span class={worker.snapshotLoaded ? "ok" : "warn"}>{worker.snapshotLoaded ? "on" : "off"}</span></td>
+                    <td class="v8-command-cell"><span>{command()}</span><span>{formatMs(elapsed())}</span></td>
+                    <td class="v8-note-cell" title={note()}>{note()}</td>
+                  </tr>
+                );
+              }}
+            </For>
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -150,7 +253,6 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
   const { bag } = props;
   const [laneFilter, setLaneFilter] = createSignal("all");
   const [autoRefresh, setAutoRefresh] = createSignal(true);
-  const [dense, setDense] = createSignal(false);
 
   onMount(() => {
     void bag.refreshV8Stats();
@@ -169,29 +271,29 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
     const set = new Set(stats()?.workers.map((w) => w.lane) ?? []);
     return ["all", ...[...set].sort()];
   });
+  const allWorkers = createMemo(() => stats()?.workers ?? []);
   const workers = createMemo(() => {
     const lane = laneFilter();
-    const rows = stats()?.workers ?? [];
+    const rows = allWorkers();
     return lane === "all" ? rows : rows.filter((w) => w.lane === lane);
   });
-  const events = createMemo(() => (stats()?.events ?? []).slice().reverse().slice(0, dense() ? 80 : 30));
+  const poolRows = createMemo(() => summarizePools(workers()));
   const totals = () => stats()?.totals;
   const config = () => stats()?.config;
   const heapPctTotal = () => pct(totals()?.usedHeapSize, totals()?.totalHeapSize);
 
   return (
     <main class="timeline v8-view">
-      <header class="view-header v8-header">
-        <button type="button" class="mobile-nav-button" onClick={props.onToggleSidebar} aria-label="open navigation">☰</button>
-        <div>
-          <h1>V8 observability</h1>
-          <p>Isolate generations, startup snapshot reuse, context caches, heap pressure, and recycle reasons.</p>
-        </div>
-        <div class="v8-header-actions">
+      <PageHeader
+        bag={bag}
+        class="v8-header"
+        title="V8 observability"
+        onToggleSidebar={props.onToggleSidebar}
+        actions={<>
           <label class="v8-toggle"><input type="checkbox" checked={autoRefresh()} onChange={(e) => setAutoRefresh(e.currentTarget.checked)} /> live</label>
           <button type="button" class="secondary" onClick={() => bag.refreshV8Stats()}>refresh</button>
-        </div>
-      </header>
+        </>}
+      />
 
       <Show when={stats()} fallback={<div class="memory-loading">{bag.v8StatsLoaded() ? "No V8 stats yet." : "Loading V8 stats…"}</div>}>
         <section class="v8-stats-grid">
@@ -216,30 +318,11 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
               <For each={lanes()}>{(lane) => <option value={lane}>{lane === "all" ? "all lanes" : laneLabel(lane)}</option>}</For>
             </select>
           </label>
-          <label class="v8-toggle"><input type="checkbox" checked={dense()} onChange={(e) => setDense(e.currentTarget.checked)} /> more events</label>
         </section>
 
-        <section class="v8-workers" classList={{ dense: dense() }}>
-          <For each={workers()} fallback={<div class="memory-loading">No workers in this lane.</div>}>
-            {(worker) => <WorkerCard worker={worker} />}
-          </For>
-        </section>
+        <PoolCharts pools={poolRows()} />
 
-        <section class="v8-events-panel">
-          <h2>recent lifecycle events</h2>
-          <div class="v8-events-wrap">
-            <table class="v8-events-table">
-              <thead>
-                <tr><th>time</th><th>worker</th><th>gen</th><th>event</th><th>command</th><th>reason</th><th>detail</th></tr>
-              </thead>
-              <tbody>
-                <For each={events()} fallback={<tr><td colSpan={7}>No events yet.</td></tr>}>
-                  {(event) => <EventRow event={event} />}
-                </For>
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <WorkerTable workers={workers()} />
       </Show>
     </main>
   );

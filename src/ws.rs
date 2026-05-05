@@ -17,9 +17,9 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
 use crate::broadcast::{self, Filter};
-use crate::driver;
 use crate::pool::Pool;
 use crate::server::BundleProvider;
+use crate::{driver, host, settings};
 
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -28,6 +28,7 @@ pub fn handle(
     sec_key: &str,
     pool: Arc<Pool>,
     bundle: BundleProvider,
+    db: String,
 ) -> std::io::Result<()> {
     let accept = compute_accept(sec_key);
     let response = format!(
@@ -118,8 +119,9 @@ pub fn handle(
                             let pool = pool.clone();
                             let bundle = bundle.clone();
                             let payload = payload.clone();
+                            let db = db.clone();
                             thread::spawn(move || {
-                                run_command(payload, id, pool, bundle, writer_tx);
+                                run_command(payload, id, pool, bundle, writer_tx, db);
                             });
                         }
                     }
@@ -153,15 +155,29 @@ fn run_command(
     pool: Arc<Pool>,
     bundle: BundleProvider,
     writer_tx: mpsc::Sender<String>,
+    db: String,
 ) {
-    if command_from_payload(&payload) == "v8-stats" {
-        let frame = json!({
-            "kind": "run-result",
-            "id": id,
-            "result": crate::pool::v8_stats_json(),
-        });
-        let _ = writer_tx.send(frame.to_string());
-        return;
+    match command_from_payload(&payload) {
+        "v8-stats" => {
+            let frame = json!({
+                "kind": "run-result",
+                "id": id,
+                "result": crate::pool::v8_stats_json(),
+            });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "v8-settings-get" => {
+            let frame = json!({ "kind": "run-result", "id": id, "result": v8_settings_get(&db) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "v8-settings-save" => {
+            let frame = json!({ "kind": "run-result", "id": id, "result": v8_settings_save(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        _ => {}
     }
     let source = bundle();
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
@@ -173,6 +189,59 @@ fn run_command(
         "result": result_value,
     });
     let _ = writer_tx.send(frame.to_string());
+}
+
+fn v8_settings_payload(stored: crate::pool::V8RuntimeSettings) -> Value {
+    json!({
+        "settings": stored,
+        "defaults": crate::pool::default_v8_runtime_settings(),
+        "effective": crate::pool::effective_v8_runtime_settings(),
+    })
+}
+
+fn v8_settings_get(db: &str) -> Value {
+    let result = host::open_db(db).and_then(|conn| {
+        if let Some(raw) = settings::get(&conn, settings::V8_CONFIG_KEY)? {
+            let parsed = serde_json::from_str::<crate::pool::V8RuntimeSettings>(&raw)
+                .map_err(|e| e.to_string())?;
+            Ok(crate::pool::normalize_v8_runtime_settings(parsed))
+        } else if let Some(env) = settings::get(&conn, settings::V8_ENV_KEY)? {
+            crate::pool::apply_v8_env_text(&env);
+            Ok(crate::pool::effective_v8_runtime_settings())
+        } else {
+            Ok(crate::pool::default_v8_runtime_settings())
+        }
+    });
+    match result {
+        Ok(stored) => json!({ "ok": true, "value": v8_settings_payload(stored) }),
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn v8_settings_save(db: &str, payload: &Value) -> Value {
+    let Some(value) = payload.get("settings") else {
+        return json!({ "ok": false, "error": { "message": "missing V8 settings" } });
+    };
+    let parsed = match serde_json::from_value::<crate::pool::V8RuntimeSettings>(value.clone()) {
+        Ok(settings) => crate::pool::normalize_v8_runtime_settings(settings),
+        Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
+    };
+    let serialized = match serde_json::to_string(&parsed) {
+        Ok(serialized) => serialized,
+        Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
+    };
+    let result = host::open_db(db).and_then(|conn| {
+        settings::set(&conn, settings::V8_CONFIG_KEY, &serialized)?;
+        let _ = settings::clear(&conn, settings::V8_ENV_KEY);
+        Ok(())
+    });
+    match result {
+        Ok(()) => {
+            crate::pool::apply_v8_runtime_settings(&parsed);
+            json!({ "ok": true, "value": v8_settings_payload(parsed) })
+        }
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
 }
 
 fn command_from_payload(payload: &Value) -> &str {

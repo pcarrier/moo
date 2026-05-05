@@ -1,6 +1,6 @@
 import { For, Show, createSignal, onMount } from "solid-js";
 
-import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId } from "./api";
+import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type V8RuntimeSettings, type V8SettingsValue } from "./api";
 import { RightSidebarToggle } from "./Sidebar";
 import type { Bag } from "./state";
 
@@ -33,8 +33,24 @@ function blankDraft(): ProviderDraft {
   return { authMode: "env", apiKey: "", baseUrl: "" };
 }
 
+function mib(bytes: number | null | undefined): string {
+  if (bytes == null) return "";
+  return String(Math.round(bytes / 1024 / 1024));
+}
+
+function mibToBytes(value: string): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1024 * 1024) : null;
+}
+
+function intOrNull(value: string): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [settings, setSettings] = createSignal<LlmAuthSettings | null>(null);
+  const [v8Settings, setV8Settings] = createSignal<V8SettingsValue | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -78,16 +94,26 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   async function load() {
     setLoading(true);
     setError(null);
-    const r = await api.llmAuth.get();
+    const [r, v8] = await Promise.all([api.llmAuth.get(), api.v8.settings()]);
     setLoading(false);
     if (r.ok) hydrate(r.value.settings);
     else setError(r.error.message);
+    if (v8.ok) setV8Settings(v8.value);
+    else setError(v8.error.message);
   }
 
   async function save() {
     setSaving(true);
     setError(null);
     const d = drafts();
+    const currentV8 = v8Settings();
+    const v8 = currentV8 ? await api.v8.saveSettings(currentV8.settings) : await api.v8.settings();
+    if (!v8.ok) {
+      setSaving(false);
+      setError(v8.error.message);
+      return;
+    }
+    setV8Settings(v8.value);
     const r = await api.llmAuth.save({
       openai: {
         authMode: d.openai.authMode,
@@ -161,6 +187,38 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     else setError(r.error.message);
   }
 
+  function patchV8(patch: Partial<V8RuntimeSettings>) {
+    setV8Settings((prev) => prev ? { ...prev, settings: { ...prev.settings, ...patch } } : prev);
+  }
+
+
+  function useV8Preset(name: "tiny" | "balanced" | "roomy") {
+    const presets: Record<typeof name, V8RuntimeSettings> = {
+      tiny: {
+        maxWorkers: 4,
+        maxOldGenerationBytes: 64 * 1024 * 1024,
+        maxYoungGenerationBytes: 8 * 1024 * 1024,
+        recycleUsedHeapBytes: 48 * 1024 * 1024,
+        startupSnapshotsEnabled: true,
+      },
+      balanced: {
+        maxWorkers: 16,
+        maxOldGenerationBytes: 128 * 1024 * 1024,
+        maxYoungGenerationBytes: 16 * 1024 * 1024,
+        recycleUsedHeapBytes: 96 * 1024 * 1024,
+        startupSnapshotsEnabled: true,
+      },
+      roomy: {
+        maxWorkers: 16,
+        maxOldGenerationBytes: 256 * 1024 * 1024,
+        maxYoungGenerationBytes: 32 * 1024 * 1024,
+        recycleUsedHeapBytes: 192 * 1024 * 1024,
+        startupSnapshotsEnabled: true,
+      },
+    };
+    setV8Settings((prev) => prev ? { ...prev, settings: presets[name] } : prev);
+  }
+
   onMount(load);
 
   function providerCard(meta: ProviderMeta) {
@@ -218,7 +276,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         <main class="timeline settings-view">
           <div class="settings-hero">
             <h1>Settings</h1>
-            <p>Configure LLM provider credentials, base URLs, and retry behavior. Model choice stays in the chat model picker.</p>
+            <p>Configure LLM provider credentials, base URLs, retry behavior, and V8 runtime defaults. Model choice stays in the chat model picker.</p>
           </div>
           <Show when={error()}><div class="settings-error">{error()}</div></Show>
           <Show when={loading()}><div class="settings-card">Loading…</div></Show>
@@ -234,6 +292,45 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   </label>
                 </div>
                 <p class="settings-help">Automatically compact when the estimated next prompt reaches this percentage of the model context window.</p>
+              </div>
+              <div class="settings-card v8-settings-card">
+                <h2>V8 runtime</h2>
+                <Show when={v8Settings()}>
+                  {(v8) => <>
+                    <div class="v8-preset-row" aria-label="V8 presets">
+                      <button type="button" class="secondary" onClick={() => useV8Preset("tiny")}>Tiny</button>
+                      <button type="button" class="secondary" onClick={() => useV8Preset("balanced")}>Balanced</button>
+                      <button type="button" class="secondary" onClick={() => useV8Preset("roomy")}>Roomy</button>
+                    </div>
+                    <div class="settings-row two">
+                      <label>
+                        <span>Worker cap</span>
+                        <input type="number" min="1" max="128" value={v8().settings.maxWorkers ?? ""} onInput={(e) => patchV8({ maxWorkers: intOrNull(e.currentTarget.value) })} />
+                      </label>
+                      <label>
+                        <span>Old generation cap (MiB)</span>
+                        <input type="number" min="1" value={mib(v8().settings.maxOldGenerationBytes)} onInput={(e) => patchV8({ maxOldGenerationBytes: mibToBytes(e.currentTarget.value) })} />
+                      </label>
+                      <label>
+                        <span>Young generation cap (MiB)</span>
+                        <input type="number" min="1" value={mib(v8().settings.maxYoungGenerationBytes)} onInput={(e) => patchV8({ maxYoungGenerationBytes: mibToBytes(e.currentTarget.value) })} />
+                      </label>
+                      <label>
+                        <span>Recycle after used heap (MiB)</span>
+                        <input type="number" min="1" value={mib(v8().settings.recycleUsedHeapBytes)} onInput={(e) => patchV8({ recycleUsedHeapBytes: mibToBytes(e.currentTarget.value) })} />
+                      </label>
+                    </div>
+                    <label class="toggle-row">
+                      <input type="checkbox" checked={!!v8().settings.startupSnapshotsEnabled} onChange={(e) => patchV8({ startupSnapshotsEnabled: e.currentTarget.checked })} />
+                      <span>Reuse startup snapshots</span>
+                    </label>
+                    <div class="v8-effective-box">
+                      <strong>Effective now</strong>
+                      <span>{v8().effective.maxWorkers} workers · old {mib(v8().effective.maxOldGenerationBytes)} MiB · young {mib(v8().effective.maxYoungGenerationBytes)} MiB · recycle {mib(v8().effective.recycleUsedHeapBytes)} MiB</span>
+                    </div>
+                    <p class="settings-help">Heap and snapshot changes apply to new isolates immediately. Worker cap changes on restart.</p>
+                  </>}
+                </Show>
               </div>
               <div class="settings-card">
                 <h2>Retries</h2>

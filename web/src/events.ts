@@ -5,6 +5,7 @@
 // flush on connect.
 
 import { getPsk } from "./auth";
+import type { V8Event } from "./api/types";
 
 type DiffStats = { added: number; removed: number; lines: number };
 
@@ -14,6 +15,7 @@ export type Event =
   | { kind: "file-diff"; chatId: string; path: string; diff: string; stats?: DiffStats; before?: string | null; after?: string | null; hash?: string; stepId?: string; at: number }
   | { kind: "memory-diff"; chatId: string; store: string; graph: string; action?: "assert" | "retract"; path: string; diff: string; stats?: DiffStats; before?: string; after?: string; hash?: string; stepId?: string; at: number; count?: number }
   | { kind: "tokens"; chatId: string; used: number; budget?: number; threshold?: number; fraction?: number; usage?: unknown; estimated?: boolean; reset?: boolean }
+  | { kind: "v8"; event: V8Event }
   | { kind: "ping" };
 
 export type EventHandler = (event: Event) => void;

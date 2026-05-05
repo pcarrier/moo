@@ -30,3 +30,5 @@ pub fn clear(conn: &Connection, key: &str) -> Result<bool, String> {
 }
 
 pub const PSK_KEY: &str = "auth.psk";
+pub const V8_ENV_KEY: &str = "v8.env";
+pub const V8_CONFIG_KEY: &str = "v8.config";
