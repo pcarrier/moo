@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { UiPanel } from "./ChatApps";
 import { anchorFromEventTarget, renderMarkdown, renderMarkdownInline, repoFilePathFromHref, resolveRepoFileHref } from "./markdown";
-import { escapeHtml, formatJsonTextForView, highlightAuto, highlightByPath, highlightJson } from "./syntax";
+import { formatJsonTextForView, highlightAuto, highlightByPath, highlightJson } from "./syntax";
 import { DiffView, MemoryDiffView } from "./DiffView";
 
 import { api, type FileDiffItem, type FsEntry, type StepItem, type StoreObject, type TimelineItem, type TrailItem, type MemoryDiffItem } from "./api";
@@ -9,6 +9,7 @@ import { mergedFileDiffs, mergedMemoryDiffs, sameDiffPath, type MemoryGraphDiffS
 import { displayChatId, type Bag, type DiffContentMode, type OpenRepoFile, type RightSidebarTab, relativeTime } from "./state";
 import { collapseHome, expandHome } from "./paths";
 import { applyAndPersistThemeMode, storedThemeMode, type ThemeMode } from "./theme";
+import { getPsk } from "./auth";
 
 type Chat = ReturnType<Bag["chats"]>[number];
 
@@ -19,6 +20,16 @@ const RENDERED_CHATS_PAGE = 120;
 function fileName(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   return trimmed.split("/").pop() || trimmed || "file";
+}
+
+function displayFilePath(path: string, root?: string | null): string {
+  const normalized = normalizePathSegments(path);
+  const normalizedRoot = normalizedOptionalPath(root);
+  if (normalizedRoot && pathWithinRoot(normalized, normalizedRoot)) {
+    const rel = relativeRepoPath(normalizedRoot, normalized);
+    return rel || ".";
+  }
+  return collapseHome(path);
 }
 
 function formatBytes(bytes: number): string {
@@ -236,7 +247,7 @@ export function RepoFilePreview(props: { file: OpenRepoFile; onClose: () => void
       <header class="repo-file-header">
         <div>
           <strong>{title()}</strong>
-          <span title={collapseHome(previewPath())}>{collapseHome(previewPath())}</span>
+          <span title={displayFilePath(previewPath(), props.assetRootPath ?? null)}>{displayFilePath(previewPath(), props.assetRootPath ?? null)}</span>
         </div>
         <button class="icon-btn" title="close file" onClick={props.onClose}>×</button>
       </header>
@@ -366,7 +377,7 @@ export function RightSidebar(props: { bag: Bag }) {
               class="right-tab"
               classList={{ active: props.bag.activeRightSidebarTabId() === tab.id, closable: tab.id !== "trail" && tab.id !== "diffs" }}
               aria-selected={props.bag.activeRightSidebarTabId() === tab.id}
-              title={tabTitle(tab)}
+              title={tabTitle(tab, props.bag.currentChatWorktreePath())}
               onClick={() => props.bag.setActiveRightSidebarTab(tab.id)}
               onKeyDown={(ev) => {
                 if (ev.key === "Enter" || ev.key === " ") {
@@ -376,13 +387,13 @@ export function RightSidebar(props: { bag: Bag }) {
               }}
             >
               <span class="right-tab-kind">{tab.kind === "trail" ? "≡" : tab.kind === "diffs" ? "Σ" : tab.kind === "diff" ? "Δ" : tab.kind === "store" ? "◈" : tab.kind === "app" ? tab.icon || "▣" : "□"}</span>
-              <span class="right-tab-title">{tabTitle(tab)}</span>
+              <span class="right-tab-title">{tabTitle(tab, props.bag.currentChatWorktreePath())}</span>
               <Show when={tab.id !== "trail" && tab.id !== "diffs"}>
                 <button
                   type="button"
                   class="right-tab-close"
                   title="close tab"
-                  aria-label={`close ${tabTitle(tab)}`}
+                  aria-label={`close ${tabTitle(tab, props.bag.currentChatWorktreePath())}`}
                   onClick={(ev) => {
                     ev.stopPropagation();
                     void props.bag.closeRightSidebarTab(tab.id);
@@ -482,8 +493,8 @@ function StorePreviewTab(props: { store: Extract<RightSidebarTab, { kind: "store
   );
 }
 
-function tabTitle(tab: RightSidebarTab): string {
-  if (tab.kind === "file") return collapseHome(tab.file.path || tab.file.requestedPath);
+function tabTitle(tab: RightSidebarTab, root?: string | null): string {
+  if (tab.kind === "file") return displayFilePath(tab.file.path || tab.file.requestedPath, root);
   if (tab.kind === "store") return tab.title;
   if (tab.kind === "diff") return collapseHome(tab.path);
   if (tab.kind === "memory-diff") return tab.graph || tab.store;
@@ -1097,34 +1108,7 @@ function RenderedFilePreview(props: {
   onOpenFile?: (path: string) => void;
 }) {
   const markdownHtml = createMemo(() => renderMarkdown(props.content || ""));
-  const htmlPreviewInputs = createMemo(
-    (): HtmlPreviewInputs | null => props.kind === "html"
-      ? {
-        content: props.content || "",
-        path: props.path,
-        assetRootPath: props.assetRootPath ?? null,
-      }
-      : null,
-    null,
-    { equals: sameHtmlPreviewInputs },
-  );
-  const [htmlSrcDoc, setHtmlSrcDoc] = createSignal(htmlPreviewBaseSrcDoc(props.content || "", props.path));
-  createEffect(on(htmlPreviewInputs, (inputs) => {
-    if (!inputs) return;
-    let cancelled = false;
-    // For documents with relative stylesheets, keep the previous rendered iframe
-    // until stylesheet inlining completes. Replacing srcdoc with the raw HTML
-    // first makes previews appear to randomly lose CSS while refreshes race.
-    if (!htmlPreviewHasRelativeStylesheet(inputs.content)) {
-      setHtmlSrcDoc(htmlPreviewBaseSrcDoc(inputs.content, inputs.path));
-    }
-    void htmlPreviewSrcDoc(inputs.content, inputs.path, inputs.assetRootPath).then((nextSrcDoc) => {
-      if (!cancelled) setHtmlSrcDoc(nextSrcDoc);
-    });
-    onCleanup(() => {
-      cancelled = true;
-    });
-  }));
+  const htmlPreviewSrc = createMemo(() => props.kind === "html" ? htmlPreviewRawUrlForPath(htmlPreviewResolvedFilePath(props.path, props.assetRootPath ?? null)) : null);
   const onMarkdownClick = (ev: MouseEvent) => handleRenderedMarkdownClick(ev, props.path, props.onOpenFile);
   return (
     <Show when={props.kind === "html"} fallback={
@@ -1139,137 +1123,11 @@ function RenderedFilePreview(props: {
           class="repo-file-html-frame"
           title={`HTML preview of ${collapseHome(props.path)}`}
           allow="fullscreen; clipboard-read; clipboard-write; web-share; autoplay; encrypted-media; picture-in-picture"
-          srcdoc={htmlSrcDoc()}
+          src={htmlPreviewSrc() || "about:blank"}
         />
       </div>
     </Show>
   );
-}
-
-type HtmlPreviewInputs = {
-  content: string;
-  path: string;
-  assetRootPath: string | null;
-};
-
-function sameHtmlPreviewInputs(a: HtmlPreviewInputs | null, b: HtmlPreviewInputs | null): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return a.content === b.content && a.path === b.path && a.assetRootPath === b.assetRootPath;
-}
-
-function htmlPreviewBaseSrcDoc(content: string, path: string): string {
-  const wrapped = /<html(?:\s|>|$)/i.test(content) || /<!doctype\s+html/i.test(content)
-    ? content
-    : `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(fileName(path))}</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin: 1rem; font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  img, svg, video, canvas, iframe { max-width: 100%; }
-  table { border-collapse: collapse; }
-</style>
-</head>
-<body>${content}</body>
-</html>`;
-  return injectHashLinkHandler(wrapped);
-}
-
-// In srcdoc iframes the document URL is `about:srcdoc`, so a click on
-// `<a href="#foo">` causes a same-document navigation that some engines
-// service by reloading the srcdoc — a flicker that destroys scroll
-// position. Intercept those clicks and scroll to the target instead.
-const HASH_LINK_HANDLER = `<script>(function(){
-  document.addEventListener("click", function(ev) {
-    if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-    var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
-    if (!a) return;
-    var href = a.getAttribute("href");
-    if (!href || href.charAt(0) !== "#") return;
-    var id = decodeURIComponent(href.slice(1));
-    var target = id ? (document.getElementById(id) || document.querySelector('a[name="' + CSS.escape(id) + '"]')) : document.documentElement;
-    if (!target) return;
-    ev.preventDefault();
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, true);
-})();</script>`;
-
-function injectHashLinkHandler(srcDoc: string): string {
-  if (srcDoc.includes(HASH_LINK_HANDLER)) return srcDoc;
-  const bodyClose = srcDoc.search(/<\/body\s*>/i);
-  if (bodyClose >= 0) return srcDoc.slice(0, bodyClose) + HASH_LINK_HANDLER + srcDoc.slice(bodyClose);
-  const htmlClose = srcDoc.search(/<\/html\s*>/i);
-  if (htmlClose >= 0) return srcDoc.slice(0, htmlClose) + HASH_LINK_HANDLER + srcDoc.slice(htmlClose);
-  return srcDoc + HASH_LINK_HANDLER;
-}
-
-async function htmlPreviewSrcDoc(content: string, path: string, assetRootPath?: string | null): Promise<string> {
-  const srcDoc = htmlPreviewBaseSrcDoc(content, path);
-  return await inlineRelativeHtmlStylesheets(srcDoc, path, assetRootPath);
-}
-
-function htmlPreviewHasRelativeStylesheet(content: string): boolean {
-  if (!/<link\s[^>]*rel=[^>]*stylesheet/i.test(content)) return false;
-  let doc: Document;
-  try {
-    doc = new DOMParser().parseFromString(htmlPreviewBaseSrcDoc(content, "preview.html"), "text/html");
-  } catch (_) {
-    return false;
-  }
-  return Array.from(doc.querySelectorAll("link[href]"))
-    .some((link) => relIncludesStylesheet(link.getAttribute("rel")) && Boolean(resolveHtmlAssetHref(link.getAttribute("href") || "", "preview.html", null)));
-}
-
-async function inlineRelativeHtmlStylesheets(srcDoc: string, path: string, assetRootPath?: string | null): Promise<string> {
-  if (!/<link\s[^>]*rel=[^>]*stylesheet/i.test(srcDoc)) return srcDoc;
-  let doc: Document;
-  try {
-    doc = new DOMParser().parseFromString(srcDoc, "text/html");
-  } catch (_) {
-    return srcDoc;
-  }
-  const links = Array.from(doc.querySelectorAll("link[href]"))
-    .filter((link): link is HTMLLinkElement => link instanceof HTMLLinkElement && relIncludesStylesheet(link.getAttribute("rel")));
-  if (!links.length) return srcDoc;
-
-  await Promise.all(links.map((link) => inlineStylesheetLink(link, path, assetRootPath)));
-  return "<!doctype html>\n" + doc.documentElement.outerHTML;
-}
-
-function relIncludesStylesheet(rel: string | null): boolean {
-  return (rel || "").toLowerCase().split(/\s+/).includes("stylesheet");
-}
-
-async function inlineStylesheetLink(link: HTMLLinkElement, path: string, assetRootPath?: string | null): Promise<void> {
-  const href = link.getAttribute("href") || "";
-  const stylesheetPath = resolveHtmlAssetHref(href, path, assetRootPath);
-  if (!stylesheetPath) return;
-
-  let result: Awaited<ReturnType<typeof api.fs.read>>;
-  try {
-    result = await api.fs.read(stylesheetPath, assetRootPath ?? null);
-  } catch (_) {
-    return;
-  }
-  if (!result.ok) return;
-
-  const doc = link.ownerDocument;
-  const style = doc.createElement("style");
-  style.setAttribute("data-moo-preview-href", href);
-  const media = link.getAttribute("media");
-  if (media) style.setAttribute("media", media);
-  const title = link.getAttribute("title");
-  if (title) style.setAttribute("title", title);
-  style.appendChild(doc.createTextNode(safeStyleTextForSrcDoc(result.value.content)));
-  link.replaceWith(style);
-}
-
-function safeStyleTextForSrcDoc(css: string): string {
-  return css.replace(/<\/style/gi, "<\\/style");
 }
 
 function resolveHtmlAssetHref(href: string, path: string, assetRootPath?: string | null): string | null {
@@ -1294,6 +1152,59 @@ function resolveHtmlAssetHref(href: string, path: string, assetRootPath?: string
 
   const basePath = htmlPreviewAssetBasePath(path, root);
   return normalizePathSegments(basePath ? joinRepoPath(basePath, decoded) : decoded);
+}
+
+function htmlPreviewResolvedFilePath(path: string, assetRootPath?: string | null): string | null {
+  const normalizedPath = normalizeRepoPath(path).replace(/\/+$/, "");
+  if (isFilesystemAbsolutePath(normalizedPath)) return normalizedPath;
+  return resolveHtmlAssetHref(normalizedPath, "index.html", assetRootPath);
+}
+
+function htmlPreviewRawUrlForPath(path: string | null): string | null {
+  if (!path) return null;
+  const normalized = normalizePathSegments(path);
+  if (!isFilesystemAbsolutePath(normalized)) return null;
+  if (normalized.startsWith("/")) {
+    const dir = repoFileBasePath(normalized) || "/";
+    const name = normalized.slice(dir === "/" ? 1 : dir.length + 1);
+    return htmlPreviewRawUrl(dir, name, false);
+  }
+  return null;
+}
+
+function htmlPreviewRawUrl(root: string, rest: string | null | undefined, directory: boolean): string {
+  const psk = getPsk();
+  const encodedRoot = base64UrlEncode(root || "/");
+  const prefix = psk
+    ? `/api/fs/raw64/psk/${base64UrlEncode(psk)}/`
+    : "/api/fs/raw64/";
+  const encodedRest = encodeRawPathSegments(rest || "");
+  return prefix + encodedRoot + (encodedRest ? "/" + encodedRest : "") + (directory && encodedRest ? "/" : "");
+}
+
+function base64UrlEncode(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function encodeRawPathSegments(path: string): string {
+  const clean = normalizeRepoPath(path || "").replace(/^\/+|\/+$/g, "");
+  return clean ? clean.split("/").filter(Boolean).map((part) => encodeURIComponent(part)).join("/") : "";
+}
+
+function pathWithinRoot(path: string, root: string): boolean {
+  const normalizedRoot = normalizePathSegments(root).replace(/\/+$/, "") || "/";
+  const normalizedPath = normalizePathSegments(path).replace(/\/+$/, "") || "/";
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot.replace(/\/+$/, "") + "/");
+}
+
+function relativeRepoPath(root: string, path: string): string {
+  const normalizedRoot = normalizePathSegments(root).replace(/\/+$/, "") || "/";
+  const normalizedPath = normalizePathSegments(path);
+  if (normalizedRoot === "/") return normalizedPath.replace(/^\/+/, "");
+  return normalizedPath.slice(normalizedRoot.length).replace(/^\/+/, "");
 }
 
 function htmlPreviewAssetBasePath(path: string, assetRootPath?: string | null): string | null {
