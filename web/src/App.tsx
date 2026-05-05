@@ -132,8 +132,7 @@ export function App(props: { bag: Bag }) {
     let viewportW = 0;
     const onMove = (e: MouseEvent) => {
       if (!dragging || viewportW <= 0) return;
-      const next = Math.max(0, Math.min(45, ((startW + (e.clientX - startX)) / viewportW) * 100));
-      bag.setSidebarW(next);
+      bag.setSidebarW(((startW + (e.clientX - startX)) / viewportW) * 100);
     };
     const onUp = () => {
       if (!dragging) return;

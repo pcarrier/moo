@@ -222,6 +222,21 @@ h3 {
   color: var(--muted);
 }
 
+.hero__screenshot {
+  margin: 0;
+  align-self: center;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 1.5rem 3rem rgb(15 23 42 / 0.08);
+  overflow: hidden;
+}
+
+.hero__screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .feature-matrix,
 .limits-grid {
   display: grid;
@@ -336,6 +351,17 @@ code {
     margin-left: 0.45rem;
     color: var(--muted);
     font-weight: 400;
+  }
+
+  .hero__grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(20rem, 1.1fr);
+    align-items: center;
+  }
+
+  .hero__copy,
+  .section__intro,
+  .split > div {
+    max-width: 760px;
   }
 
   .hero-stats,

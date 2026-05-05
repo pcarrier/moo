@@ -37,7 +37,7 @@ const SIDEBAR_KEY = "moo.sidebar.w";
 const COLLAPSED_KEY = "moo.sidebar.collapsed";
 const ARCHIVED_COLLAPSED_KEY = "moo.sidebar.archivedCollapsed";
 const SIDEBAR_DEFAULT_W = "16rem";
-const SIDEBAR_MAX_PERCENT = 45;
+const SIDEBAR_MIN_EM = 8;
 
 const INITIAL_TIMELINE_LIMIT = 160;
 const TIMELINE_PAGE_SIZE = 160;
@@ -55,7 +55,7 @@ const MODEL_MRU_MAX = 20;
 const RIGHT_SIDEBAR_LAYOUT_KEY = "moo.rightSidebar.layout.v1";
 const RIGHT_SIDEBAR_DEFAULT_LAYOUT_ID = "__default";
 const RIGHT_SIDEBAR_DEFAULT_W = "25%";
-const RIGHT_SIDEBAR_MAX_PERCENT = 60;
+const RIGHT_SIDEBAR_MIN_EM = 8;
 const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 function decodeSimpleTurtleString(value: string): string {
@@ -79,20 +79,36 @@ function normalizeEffort(value: unknown): string | null {
   return EFFORT_LEVELS.includes(effort) ? effort : null;
 }
 
-function clampSidebarPercent(percent: number): number {
-  return Math.max(0, Math.min(SIDEBAR_MAX_PERCENT, percent));
+function rootEmPx(): number {
+  const fontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize || "16");
+  return Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 16;
 }
 
-function sidebarPercentFromPx(px: number): number | undefined {
+function sidebarMinPx(): number {
+  return SIDEBAR_MIN_EM * rootEmPx();
+}
+
+function minSidebarPercent(): number {
+  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  if (viewportW <= 0) return 0;
+  return (sidebarMinPx() / viewportW) * 100;
+}
+
+function clampSidebarPercent(percent: number, enforceMin = false): number {
+  const min = enforceMin ? minSidebarPercent() : 0;
+  return Math.max(min, percent);
+}
+
+function sidebarPercentFromPx(px: number, enforceMin = false): number | undefined {
   if (!Number.isFinite(px)) return undefined;
   const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return undefined;
-  return clampSidebarPercent((px / viewportW) * 100);
+  return clampSidebarPercent((px / viewportW) * 100, enforceMin);
 }
 
-function parseSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px"): string | undefined {
+function parseSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string | undefined {
   if (typeof width === "number") {
-    const percent = numberUnit === "percent" ? clampSidebarPercent(width) : sidebarPercentFromPx(width);
+    const percent = numberUnit === "percent" ? clampSidebarPercent(width, enforceMin) : sidebarPercentFromPx(width, enforceMin);
     return percent === undefined ? undefined : `${percent}%`;
   }
   const raw = String(width ?? "").trim();
@@ -100,36 +116,58 @@ function parseSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px"):
   if (raw.endsWith("%")) {
     const percent = Number.parseFloat(raw.slice(0, -1));
     if (!Number.isFinite(percent)) return undefined;
-    return `${clampSidebarPercent(percent)}%`;
+    if (percent <= 0 && !enforceMin) return undefined;
+    return `${clampSidebarPercent(percent, enforceMin)}%`;
   }
   if (raw.endsWith("px")) {
-    const percent = sidebarPercentFromPx(Number.parseFloat(raw.slice(0, -2)));
-    return percent === undefined ? undefined : `${percent}%`;
+    const px = Number.parseFloat(raw.slice(0, -2));
+    if (!Number.isFinite(px)) return undefined;
+    if (px <= 0 && !enforceMin) return undefined;
+    const nextPx = enforceMin ? Math.max(sidebarMinPx(), px) : px;
+    return `${nextPx}px`;
   }
-  if (raw.endsWith("rem") || raw.endsWith("em")) return raw;
+  if (raw.endsWith("rem") || raw.endsWith("em")) {
+    const n = Number.parseFloat(raw);
+    if (!Number.isFinite(n)) return undefined;
+    if (n <= 0 && !enforceMin) return undefined;
+    const unit = raw.endsWith("rem") ? "rem" : "em";
+    return enforceMin ? `${Math.max(SIDEBAR_MIN_EM, n)}${unit}` : raw;
+  }
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) return undefined;
-  const percent = numberUnit === "percent" ? clampSidebarPercent(n) : sidebarPercentFromPx(n);
+  if (n <= 0 && !enforceMin) return undefined;
+  const percent = numberUnit === "percent" ? clampSidebarPercent(n, enforceMin) : sidebarPercentFromPx(n, enforceMin);
   return percent === undefined ? undefined : `${percent}%`;
 }
 
-function clampSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px"): string {
-  return parseSidebarWidth(width, numberUnit) ?? SIDEBAR_DEFAULT_W;
+function clampSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string {
+  return parseSidebarWidth(width, numberUnit, enforceMin) ?? SIDEBAR_DEFAULT_W;
 }
-function clampRightSidebarPercent(percent: number): number {
-  return Math.max(0, Math.min(RIGHT_SIDEBAR_MAX_PERCENT, percent));
+function rightSidebarMinPx(): number {
+  return RIGHT_SIDEBAR_MIN_EM * rootEmPx();
 }
 
-function rightSidebarPercentFromPx(px: number): number | undefined {
+function minRightSidebarPercent(): number {
+  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  if (viewportW <= 0) return 0;
+  return (rightSidebarMinPx() / viewportW) * 100;
+}
+
+function clampRightSidebarPercent(percent: number, enforceMin = false): number {
+  const min = enforceMin ? minRightSidebarPercent() : 0;
+  return Math.max(min, percent);
+}
+
+function rightSidebarPercentFromPx(px: number, enforceMin = false): number | undefined {
   if (!Number.isFinite(px)) return undefined;
   const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return undefined;
-  return clampRightSidebarPercent((px / viewportW) * 100);
+  return clampRightSidebarPercent((px / viewportW) * 100, enforceMin);
 }
 
-function parseRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px"): string | undefined {
+function parseRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string | undefined {
   if (typeof width === "number") {
-    const percent = numberUnit === "percent" ? clampRightSidebarPercent(width) : rightSidebarPercentFromPx(width);
+    const percent = numberUnit === "percent" ? clampRightSidebarPercent(width, enforceMin) : rightSidebarPercentFromPx(width, enforceMin);
     return percent === undefined ? undefined : `${percent}%`;
   }
   const raw = String(width ?? "").trim();
@@ -137,20 +175,32 @@ function parseRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "
   if (raw.endsWith("%")) {
     const percent = Number.parseFloat(raw.slice(0, -1));
     if (!Number.isFinite(percent)) return undefined;
-    return `${clampRightSidebarPercent(percent)}%`;
+    if (percent <= 0 && !enforceMin) return undefined;
+    return `${clampRightSidebarPercent(percent, enforceMin)}%`;
   }
   if (raw.endsWith("px")) {
-    const percent = rightSidebarPercentFromPx(Number.parseFloat(raw.slice(0, -2)));
-    return percent === undefined ? undefined : `${percent}%`;
+    const px = Number.parseFloat(raw.slice(0, -2));
+    if (!Number.isFinite(px)) return undefined;
+    if (px <= 0 && !enforceMin) return undefined;
+    const nextPx = enforceMin ? Math.max(rightSidebarMinPx(), px) : px;
+    return `${nextPx}px`;
+  }
+  if (raw.endsWith("rem") || raw.endsWith("em")) {
+    const n = Number.parseFloat(raw);
+    if (!Number.isFinite(n)) return undefined;
+    if (n <= 0 && !enforceMin) return undefined;
+    const unit = raw.endsWith("rem") ? "rem" : "em";
+    return enforceMin ? `${Math.max(RIGHT_SIDEBAR_MIN_EM, n)}${unit}` : raw;
   }
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) return undefined;
-  const percent = numberUnit === "percent" ? clampRightSidebarPercent(n) : rightSidebarPercentFromPx(n);
+  if (n <= 0 && !enforceMin) return undefined;
+  const percent = numberUnit === "percent" ? clampRightSidebarPercent(n, enforceMin) : rightSidebarPercentFromPx(n, enforceMin);
   return percent === undefined ? undefined : `${percent}%`;
 }
 
-function clampRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px"): string {
-  return parseRightSidebarWidth(width, numberUnit) ?? RIGHT_SIDEBAR_DEFAULT_W;
+function clampRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string {
+  return parseRightSidebarWidth(width, numberUnit, enforceMin) ?? RIGHT_SIDEBAR_DEFAULT_W;
 }
 
 function readRightSidebarLayout(): Record<string, RightSidebarLayoutState> {
@@ -1308,7 +1358,7 @@ export function createState() {
   }
 
   function setRightSidebarW(width: number | string) {
-    const next = clampRightSidebarWidth(width, "percent");
+    const next = clampRightSidebarWidth(width, "percent", true);
     const id = chatId();
     if (!id) return;
     updateCurrentRightSidebarState((state) => ({ ...state, width: next, maximized: false }));
@@ -1357,7 +1407,7 @@ export function createState() {
   const stored = localStorage.getItem(SIDEBAR_KEY);
   const [sidebarW, setSidebarW_] = createSignal(clampSidebarWidth(stored));
   function setSidebarW(width: number | string) {
-    setSidebarW_(clampSidebarWidth(width, "percent"));
+    setSidebarW_(clampSidebarWidth(width, "percent", true));
   }
   const [collapsed, setCollapsed] = createSignal(
     localStorage.getItem(COLLAPSED_KEY) === "1",

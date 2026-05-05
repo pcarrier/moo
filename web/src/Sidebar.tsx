@@ -295,10 +295,10 @@ export function RightSidebar(props: { bag: Bag }) {
     let dragging = false;
     let startX = 0;
     let startW = 0;
-    let containerW = 1;
+    let viewportW = 0;
     const onMove = (e: MouseEvent) => {
-      if (!dragging) return;
-      props.bag.setRightSidebarW(((startW + (startX - e.clientX)) / containerW) * 100);
+      if (!dragging || viewportW <= 0) return;
+      props.bag.setRightSidebarW(((startW + (startX - e.clientX)) / viewportW) * 100);
     };
     const onUp = () => {
       if (!dragging) return;
@@ -308,11 +308,12 @@ export function RightSidebar(props: { bag: Bag }) {
     };
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
+      const sidebarEl = handle.closest(".right-sidebar") as HTMLElement | null;
+      const rect = sidebarEl?.getBoundingClientRect();
       dragging = true;
       startX = e.clientX;
-      const root = document.getElementById("app");
-      containerW = Math.max(1, root?.getBoundingClientRect().width || window.innerWidth || 1);
-      startW = sidebarRef?.getBoundingClientRect().width || (containerW * Number.parseFloat(props.bag.rightSidebarW())) / 100;
+      startW = rect?.width ?? 0;
+      viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
       props.bag.setRightSidebarCollapsed(false);
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
