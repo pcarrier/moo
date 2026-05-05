@@ -36,7 +36,7 @@
           <div class="hero__copy reveal">
             <p class="eyebrow">Rust host · V8 runtime · Chrome DevTools Protocol · SQLite memory · MCP</p>
             <h1 id="title">The local agent workbench.</h1>
-            <p class="lede">Moo is a local agent harness you can inspect while it works: a Rust/V8 host, a TypeScript tool runtime, Chrome DevTools Protocol debugging, a Solid web shell, and a SQLite store for chats, memory, diffs, and MCP state.</p>
+            <p class="lede">Moo is a local agent harness you drive from a browser web UI and inspect while it works: a Rust/V8 host, a TypeScript tool runtime, Chrome DevTools Protocol debugging, attachment-aware chat, a Solid web shell, and a SQLite store for chats, memory, diffs, and MCP state.</p>
             <div class="hero__actions" aria-label="Primary calls to action">
               <a class="button button--primary" href="#quickstart">Install Moo</a>
               <a class="button" href="https://github.com/pcarrier/moo" rel="noopener noreferrer">Read the source</a>
@@ -44,7 +44,7 @@
             </div>
             <dl class="hero-stats" aria-label="Project highlights">
               <div><dt>Local-first</dt><dd>No hosted backend required</dd></div>
-              <div><dt>Tool-rich</dt><dd>Files, procs, HTTP, RDF, UI, MCP</dd></div>
+              <div><dt>Tool-rich</dt><dd>Files, procs, HTTP, RDF, attachments, MCP</dd></div>
               <div><dt>Auditable</dt><dd>Chats, pointers, objects, facts, diffs</dd></div>
             </dl>
           </div>
@@ -138,8 +138,8 @@
 
           <article class="feature-card reveal">
             <h3>Rich prompts</h3>
-            <p>Use slash-command help, chat and path autocomplete, image attachments, queued messages, token meters, model selection, and stop/resume controls.</p>
-            <ul class="chip-list"><li>/help</li><li>@paths</li><li>chat search</li><li>images</li><li>token bar</li><li>stop button</li></ul>
+            <p>Use the browser chat UI with slash-command help, chat and path autocomplete, image/file attachments, queued messages, token meters, model selection, and stop/resume controls.</p>
+            <ul class="chip-list"><li>browser UI</li><li>/help</li><li>@paths</li><li>chat search</li><li>attachments</li><li>token bar</li><li>stop button</li></ul>
           </article>
         </div>
       </section>
@@ -157,7 +157,7 @@
             <li><span>01</span><div><b>Rust host</b><p>CLI, HTTP server, Chrome DevTools Protocol, V8 ops, SQLite persistence, websocket events.</p></div></li>
             <li><span>02</span><div><b>TypeScript harness</b><p>Agent loop, commands, prompts, tool wrappers, and MCP proxy.</p></div></li>
             <li><span>03</span><div><b>SQLite store</b><p>Chats, pointers, objects, quads, fact history, summaries, and local memory.</p></div></li>
-            <li><span>04</span><div><b>Solid web shell</b><p>Timeline, markdown, diffs, memory browser, MCP setup, responsive sidebars.</p></div></li>
+            <li><span>04</span><div><b>Solid web shell</b><p>Browser chat, attachments, timeline, markdown, diffs, memory browser, MCP setup, responsive sidebars.</p></div></li>
           </ol>
         </div>
       </section>
