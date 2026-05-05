@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
+use crate::blit;
 use crate::driver;
 use crate::host;
 use crate::pool::Pool;
@@ -12,9 +13,24 @@ use crate::ws;
 
 pub type BundleProvider = Arc<dyn Fn() -> Arc<String> + Send + Sync>;
 
+pub fn normalize_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("--base-url must not be empty".to_string());
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("--base-url must start with http:// or https://".to_string());
+    }
+    if trimmed.contains(|ch: char| ch.is_ascii_whitespace()) {
+        return Err("--base-url must not contain whitespace".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 pub fn serve(
     host_addr: &str,
     port: u16,
+    base_url: Option<String>,
     bundle: BundleProvider,
     ui_html: &'static str,
     db: &str,
@@ -45,11 +61,12 @@ pub fn serve(
             Ok(s) => {
                 let bundle = bundle.clone();
                 let db = db.clone();
+                let base_url = base_url.clone();
                 let pool = pool.clone();
                 thread::spawn(move || {
                     // The /api/ws handler carries both broadcast events and
                     // request/response RPC over a single WebSocket.
-                    let _ = handle_request(s, &bundle, ui_html, pool, &db);
+                    let _ = handle_request(s, &bundle, ui_html, pool, &db, base_url.as_deref());
                 });
             }
             Err(_) => continue,
@@ -64,6 +81,7 @@ fn handle_request(
     ui_html: &'static str,
     pool: Arc<Pool>,
     db: &str,
+    base_url: Option<&str>,
 ) -> std::io::Result<()> {
     let read_clone = stream.try_clone()?;
     let mut reader = BufReader::new(read_clone);
@@ -120,7 +138,27 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
-        return ws::handle(stream, &key, pool, bundle.clone(), db.to_string());
+        return ws::handle(
+            stream,
+            &key,
+            pool,
+            bundle.clone(),
+            db.to_string(),
+            base_url.map(str::to_string),
+        );
+    }
+
+    if is_ws_upgrade && method == "GET" && path_only == "/api/blit/ws" {
+        if !psk_ok(db, query) {
+            return write_response(
+                &mut stream,
+                "401 Unauthorized",
+                "text/plain; charset=utf-8",
+                b"invalid psk",
+            );
+        }
+        let key = ws_key.unwrap_or_default();
+        return blit::handle_ws(stream, &key);
     }
 
     if method == "GET"
@@ -494,6 +532,12 @@ fn serves_ui_route(path: &str) -> bool {
         || path.starts_with("/apps/")
         || path == "/mcp"
         || path.starts_with("/mcp/")
+        || path == "/v8"
+        || path.starts_with("/v8/")
+        || path == "/traces"
+        || path.starts_with("/traces/")
+        || path == "/settings"
+        || path.starts_with("/settings/")
         || path.starts_with("/chat/")
 }
 
@@ -573,5 +617,20 @@ mod tests {
         assert_eq!(raw.psk, None);
         assert_eq!(raw.root, "/tmp/site");
         assert_eq!(raw.rest, "docs/index.html");
+    }
+
+    #[test]
+    fn normalize_base_url_trims_trailing_slash() {
+        assert_eq!(
+            normalize_base_url(" http://100.126.83.89:5173/ ").unwrap(),
+            "http://100.126.83.89:5173"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_requires_http_url() {
+        assert!(normalize_base_url("100.126.83.89:5173").is_err());
+        assert!(normalize_base_url("file:///tmp/moo").is_err());
+        assert!(normalize_base_url("http://bad host:5173").is_err());
     }
 }

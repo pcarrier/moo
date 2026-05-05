@@ -1,4 +1,5 @@
 mod async_runtime;
+mod blit;
 mod broadcast;
 mod cdp;
 mod driver;
@@ -43,6 +44,9 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Public base URL for this server; used for externally-visible callbacks such as MCP OAuth redirects.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
         /// Bind a local Chrome DevTools Protocol endpoint for V8 debugging.
         #[arg(long, value_name = "ADDR")]
         bind_cdp: Option<String>,
@@ -107,6 +111,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
     if let Cmd::Serve {
         port,
         host,
+        base_url,
         bind_cdp,
         watch,
     } = &cli.command
@@ -159,7 +164,11 @@ fn real_main(cli: Cli) -> Result<(), String> {
                 });
             cdp::spawn(addr, provider.clone(), source_map_path, db_path.clone())?;
         }
-        return server::serve(host, *port, provider, DEFAULT_UI, &db_path);
+        let base_url = base_url
+            .as_deref()
+            .map(server::normalize_base_url)
+            .transpose()?;
+        return server::serve(host, *port, base_url, provider, DEFAULT_UI, &db_path);
     }
 
     if let Cmd::Psk { action } = &cli.command {

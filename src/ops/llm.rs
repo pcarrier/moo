@@ -6,6 +6,7 @@
 use crate::broadcast;
 use crate::pool::Pool;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -34,6 +35,7 @@ pub async fn stream_chat(
         }
     };
 
+    let request_started = Instant::now();
     let mut req = client
         .post(&url)
         .header("content-type", "application/json")
@@ -101,6 +103,17 @@ pub async fn stream_chat(
 
     let mut buffered: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
+    let mut network_chunks: u64 = 0;
+    let mut network_bytes: u64 = 0;
+    let mut sse_events: u64 = 0;
+    let mut done_events: u64 = 0;
+    let mut empty_data_events: u64 = 0;
+    let mut non_data_lines: u64 = 0;
+    let mut event_blocks: u64 = 0;
+    let mut accumulator_calls: u64 = 0;
+    let mut first_byte_ms: Option<u128> = None;
+    let mut first_event_ms: Option<u128> = None;
+    let mut first_accumulator_ms: Option<u128> = None;
 
     while let Some(chunk) = stream.next().await {
         let bytes = match chunk {
@@ -117,6 +130,12 @@ pub async fn stream_chat(
                 .await;
             }
         };
+        if first_byte_ms.is_none() {
+            first_byte_ms = Some(request_started.elapsed().as_millis());
+        }
+        network_chunks = network_chunks.saturating_add(1);
+        network_bytes =
+            network_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         buffered.extend_from_slice(&bytes);
 
         // SSE event boundary is a blank line. Only drain complete events so
@@ -126,18 +145,33 @@ pub async fn stream_chat(
         let mut events: Vec<String> = Vec::new();
         while let Some(idx) = find_double_newline(&buffered) {
             let event_bytes: Vec<u8> = buffered.drain(..idx + 2).collect();
+            event_blocks = event_blocks.saturating_add(1);
             let event = String::from_utf8_lossy(&event_bytes);
             for line in event.split('\n') {
-                let Some(data) = line.strip_prefix("data:") else {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let Some(data) = trimmed.strip_prefix("data:") else {
+                    non_data_lines = non_data_lines.saturating_add(1);
                     continue;
                 };
                 let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
+                if data.is_empty() {
+                    empty_data_events = empty_data_events.saturating_add(1);
                     continue;
+                }
+                if data == "[DONE]" {
+                    done_events = done_events.saturating_add(1);
+                    continue;
+                }
+                if first_event_ms.is_none() {
+                    first_event_ms = Some(request_started.elapsed().as_millis());
                 }
                 events.push(data.to_string());
             }
         }
+        sse_events = sse_events.saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX));
         if events.is_empty() {
             continue;
         }
@@ -156,6 +190,10 @@ pub async fn stream_chat(
         {
             Ok(v) => {
                 publish_returned_events(&v);
+                if first_accumulator_ms.is_none() {
+                    first_accumulator_ms = Some(request_started.elapsed().as_millis());
+                }
+                accumulator_calls = accumulator_calls.saturating_add(1);
                 accumulator = v.get("state").cloned().unwrap_or(Value::Null);
             }
             Err(e) => {
@@ -184,7 +222,27 @@ pub async fn stream_chat(
     )
     .await
     {
-        Ok(v) => v,
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "streamStats".to_string(),
+                    json!({
+                        "networkChunks": network_chunks,
+                        "networkBytes": network_bytes,
+                        "sseEvents": sse_events,
+                        "sseEventBlocks": event_blocks,
+                        "sseDoneEvents": done_events,
+                        "sseEmptyDataEvents": empty_data_events,
+                        "sseNonDataLines": non_data_lines,
+                        "accumulatorCalls": accumulator_calls,
+                        "timeToFirstByteMs": first_byte_ms,
+                        "timeToFirstEventMs": first_event_ms,
+                        "timeToFirstAccumulatorMs": first_accumulator_ms,
+                    }),
+                );
+            }
+            v
+        }
         Err(e) => {
             transport_error(
                 &pool,

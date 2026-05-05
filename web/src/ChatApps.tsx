@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 
 import { api } from "./api";
 import type { Bag } from "./state";
@@ -36,8 +36,17 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   const { bag } = props;
   const storedPanelWidth = Number(localStorage.getItem("moo.uiPanelWidth"));
   const defaultPanelWidth = Math.round(window.innerWidth * 0.42);
+  const activeAppTab = createMemo(() => {
+    const tab = bag.activeRightSidebarTab();
+    return tab?.kind === "app" ? tab : null;
+  });
+  const activeUiId = () => activeAppTab()?.uiId ?? bag.openUiId();
+  const activeInstanceId = () => activeAppTab()?.instanceId ?? bag.openUiInstanceId();
+  const activeAppKey = () => activeUiId() ? `${activeUiId()}::${activeInstanceId() ?? ""}` : null;
   const [srcdoc, setSrcdoc] = createSignal<string>("");
   const [title, setTitle] = createSignal<string>("app");
+  const [frameKey, setFrameKey] = createSignal(0);
+  const frameDoc = createMemo(() => srcdoc() ? { key: frameKey(), doc: srcdoc() } : null);
   const [panelWidth, setPanelWidth] = createSignal(
     Number.isFinite(storedPanelWidth) && storedPanelWidth > 0
       ? storedPanelWidth
@@ -93,18 +102,28 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     stopResize();
   });
 
-  createEffect(async () => {
-    const uiId = bag.openUiId();
-    if (!uiId) return;
-    const r = await api.ui.bundle(uiId);
-    if (!r.ok) { setSrcdoc(`<p>${r.error.message}</p>`); return; }
-    setTitle(r.value.manifest.title || uiId);
-    const b = r.value.bundle;
-    const html = b.html ?? b.files?.[r.value.manifest.entry || "index.html"] ?? "";
-    const css = b.css ?? b.files?.["style.css"] ?? "";
-    const js = b.js ?? b.files?.["client.js"] ?? "";
-    setSrcdoc(buildUiSrcdoc(html, css, js));
-  });
+  createEffect(on(
+    activeAppKey,
+    async (appKey) => {
+      const uiId = activeUiId();
+      if (!uiId) {
+        setSrcdoc("");
+        setTitle("app");
+        setFrameKey((key) => key + 1);
+        return;
+      }
+      const r = await api.ui.bundle(uiId);
+      if (activeAppKey() !== appKey) return;
+      if (!r.ok) { setSrcdoc(`<p>${r.error.message}</p>`); setFrameKey((key) => key + 1); return; }
+      setTitle(r.value.manifest.title || uiId);
+      const b = r.value.bundle;
+      const html = b.html ?? b.files?.[r.value.manifest.entry || "index.html"] ?? "";
+      const css = b.css ?? b.files?.["style.css"] ?? "";
+      const js = b.js ?? b.files?.["client.js"] ?? "";
+      setSrcdoc(buildUiSrcdoc(html, css, js));
+      setFrameKey((key) => key + 1);
+    },
+  ));
 
   const onMessage = async (ev: MessageEvent) => {
     if (ev.source !== frame?.contentWindow) return;
@@ -113,21 +132,21 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     const reply = (payload: Record<string, unknown>) => frame?.contentWindow?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
     try {
       if (msg.method === "state:get") {
-        const inst = bag.openUiInstanceId();
+        const inst = activeInstanceId();
         if (!inst) throw new Error("no UI instance is open");
         const r = await api.ui.state.get(inst);
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "state:set") {
-        const inst = bag.openUiInstanceId();
+        const inst = activeInstanceId();
         if (!inst) throw new Error("no UI instance is open");
         const r = await api.ui.state.set(inst, msg.state ?? {});
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "call") {
-        const uiId = bag.openUiId();
+        const uiId = activeUiId();
         if (!uiId) throw new Error("no UI is open");
-        const r = await api.ui.call({ uiId, instanceId: bag.openUiInstanceId(), chatId: bag.chatId(), name: String(msg.name || "default"), input: msg.input ?? {} });
+        const r = await api.ui.call({ uiId, instanceId: activeInstanceId(), chatId: bag.chatId(), name: String(msg.name || "default"), input: msg.input ?? {} });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:query") {
@@ -195,7 +214,9 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
         </Show>
         <button class="icon-btn" title="close app" onClick={() => bag.closeUi()}>×</button>
       </header>
-      <iframe ref={frame} class="ui-frame" srcdoc={srcdoc()} />
+      <Show when={frameDoc()} keyed>
+        {(doc) => <iframe ref={frame} class="ui-frame" data-ui-frame-key={doc.key} srcdoc={doc.doc} />}
+      </Show>
     </aside>
   );
 }

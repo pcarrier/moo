@@ -20,6 +20,7 @@ pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_chat_fact_summaries", op_chat_fact_summaries)?;
     install_fn(scope, "__op_facts_count", op_facts_count)?;
     install_fn(scope, "__op_facts_swap", op_facts_swap)?;
+    install_fn(scope, "__op_facts_snapshot_copy", op_facts_snapshot_copy)?;
     install_fn(scope, "__op_facts_clear", op_facts_clear)?;
     install_fn(scope, "__op_facts_purge", op_facts_purge)?;
     install_fn(scope, "__op_facts_purge_graph", op_facts_purge_graph)?;
@@ -898,6 +899,104 @@ fn op_facts_swap(
     match r {
         Err(e) => throw(scope, &e),
         Ok(()) => broadcast::facts_changed(&ref_name),
+    }
+}
+
+fn op_facts_snapshot_copy(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if args.length() < 5 {
+        throw(
+            scope,
+            "facts_snapshot_copy requires (sourceRef, targetRef, cutoffAt, fromGraph, toGraph)",
+        );
+        return;
+    }
+    let source_ref = args.get(0).to_rust_string_lossy(scope);
+    let target_ref = args.get(1).to_rust_string_lossy(scope);
+    let Some(cutoff_at) = args.get(2).to_integer(scope).map(|n| n.value()) else {
+        throw(scope, "facts_snapshot_copy cutoffAt must be a number");
+        return;
+    };
+    let from_graph = args.get(3).to_rust_string_lossy(scope);
+    let to_graph = args.get(4).to_rust_string_lossy(scope);
+
+    let r: Result<usize, String> = with_host(|h| {
+        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+        let now = now_ms();
+        let latest_at = tx
+            .query_row(
+                "select max(created_at) from fact_log where ref_name = ?1",
+                params![&source_ref],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let inserted = if latest_at.is_some_and(|latest_at| latest_at <= cutoff_at) {
+            tx.execute(
+                "insert or ignore into quads(ref_name, graph, subject, predicate, object)
+                 select ?1,
+                        case when graph = ?2 then ?3 else graph end,
+                        subject,
+                        predicate,
+                        object
+                 from quads
+                 where ref_name = ?4",
+                params![&target_ref, &from_graph, &to_graph, &source_ref],
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            tx.execute(
+                "insert or ignore into quads(ref_name, graph, subject, predicate, object)
+                 with latest_time as (
+                   select graph, subject, predicate, object, max(created_at) as created_at
+                   from fact_log
+                   where ref_name = ?4 and created_at <= ?5
+                   group by graph, subject, predicate, object
+                 ), latest_id as (
+                   select l.graph, l.subject, l.predicate, l.object, max(l.id) as id
+                   from fact_log l
+                   join latest_time t
+                     on t.graph = l.graph
+                    and t.subject = l.subject
+                    and t.predicate = l.predicate
+                    and t.object = l.object
+                    and t.created_at = l.created_at
+                   where l.ref_name = ?4
+                   group by l.graph, l.subject, l.predicate, l.object
+                 )
+                 select ?1,
+                        case when l.graph = ?2 then ?3 else l.graph end,
+                        l.subject,
+                        l.predicate,
+                        l.object
+                 from fact_log l
+                 join latest_id latest on latest.id = l.id
+                 where l.action in ('+', 'add', 'added')",
+                params![&target_ref, &from_graph, &to_graph, &source_ref, cutoff_at],
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if inserted > 0 {
+            tx.execute(
+                "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
+                 select ref_name, graph, subject, predicate, object, 'add', 'system', ?2
+                 from quads
+                 where ref_name = ?1",
+                params![&target_ref, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(inserted)
+    });
+    match r {
+        Err(e) => throw(scope, &e),
+        Ok(count) => {
+            broadcast::facts_changed(&target_ref);
+            rv.set(v8::Number::new(scope, count as f64).into());
+        }
     }
 }
 

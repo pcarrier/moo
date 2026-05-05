@@ -1,6 +1,6 @@
 import type { LLMProvider } from "./types";
 import { currentCompactionThresholdPercent, providerConfiguredCredential } from "./commands/llm_auth";
-import { moo, withMooChatContext, withMooRunJSContext } from "./moo";
+import { finishRunJSTraceRoot, moo, startRunJSTraceRoot, withMooChatContext, withMooRunJSContext } from "./moo";
 import { appendStep } from "./steps";
 import { chatRefs, parseArgv, truncate, maybeQuote } from "./lib";
 import { buildCompactionSummaryPromptMessages, buildSystemPrompt } from "./prompt";
@@ -13,7 +13,7 @@ export const TOOLS = [
     function: {
       name: "runJS",
       description:
-        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `scratch`, and optional `args` are in scope. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
+        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
       parameters: {
         type: "object",
         properties: {
@@ -134,17 +134,125 @@ function modelExtras(model: string | null | undefined, effort?: string | null): 
   return extras;
 }
 
+type TraceMetadata = Record<string, unknown>;
+
+function messageContentChars(content: any): number {
+  if (content == null) return 0;
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) return content.reduce((sum, part) => sum + messageContentChars(part?.text ?? part?.content ?? ""), 0);
+  try {
+    return JSON.stringify(content).length;
+  } catch {
+    return String(content).length;
+  }
+}
+
+export function summarizeMessagesForTrace(messages: any[] | null | undefined, tools?: any[] | null): TraceMetadata {
+  const list = Array.isArray(messages) ? messages : [];
+  const roles: Record<string, number> = {};
+  let contentChars = 0;
+  let toolCallCount = 0;
+  let toolResultCount = 0;
+  let imageParts = 0;
+  let fileParts = 0;
+  const roleSequence: string[] = [];
+  const toolNames: string[] = [];
+  for (const msg of list) {
+    const role = String(msg?.role ?? "unknown");
+    roles[role] = (roles[role] ?? 0) + 1;
+    if (roleSequence.length < 20) roleSequence.push(role);
+    contentChars += messageContentChars(msg?.content);
+    if (msg?.tool_call_id) toolResultCount++;
+    if (Array.isArray(msg?.tool_calls)) {
+      toolCallCount += msg.tool_calls.length;
+      for (const tc of msg.tool_calls) {
+        const name = tc?.function?.name;
+        if (typeof name === "string" && toolNames.length < 20) toolNames.push(name);
+      }
+    }
+    if (Array.isArray(msg?.content)) {
+      for (const part of msg.content) {
+        const type = String(part?.type ?? "");
+        if (type.includes("image")) imageParts++;
+        if (type.includes("file") || part?.file_id || part?.filename) fileParts++;
+      }
+    }
+  }
+  return {
+    messages: list.length,
+    roles,
+    roleSequence,
+    contentChars,
+    toolCallsInMessages: toolCallCount,
+    toolResultsInMessages: toolResultCount,
+    toolNamesInMessages: toolNames,
+    imageParts,
+    fileParts,
+    tools: Array.isArray(tools) ? tools.length : 0,
+    estimatedTokens: estimateTokens(list, tools),
+  };
+}
+
+export function summarizeLlmBodyForTrace(body: any): TraceMetadata {
+  const messages = Array.isArray(body?.messages) ? body.messages : null;
+  const input = Array.isArray(body?.input) ? body.input : null;
+  const tools = Array.isArray(body?.tools) ? body.tools : null;
+  return {
+    bodyKeys: body && typeof body === "object" ? Object.keys(body).sort() : [],
+    stream: body?.stream === true,
+    messageCount: messages?.length ?? null,
+    inputCount: input?.length ?? null,
+    toolCount: tools?.length ?? null,
+    toolNames: tools ? tools.slice(0, 20).map((tool: any) => tool?.function?.name ?? tool?.name ?? null) : [],
+    maxTokens: body?.max_tokens ?? null,
+    temperature: body?.temperature ?? null,
+    reasoningEffort: body?.reasoning?.effort ?? body?.reasoning_effort ?? null,
+    parallelToolCalls: body?.parallel_tool_calls ?? null,
+    hasSystem: typeof body?.system === "string" && body.system.length > 0,
+  };
+}
+
+export function summarizeToolCallForTrace(tc: any): TraceMetadata {
+  const rawArgs = String(tc?.function?.arguments ?? "");
+  let argumentKeys: string[] = [];
+  try {
+    const parsed = rawArgs ? JSON.parse(rawArgs) : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) argumentKeys = Object.keys(parsed).sort();
+  } catch {}
+  return {
+    toolCallId: tc?.id ?? null,
+    toolName: tc?.function?.name ?? null,
+    argumentChars: rawArgs.length,
+    argumentKeys,
+  };
+}
+
+export async function traceMark(message: string, data: TraceMetadata = {}): Promise<void> {
+  try {
+    await moo.traces.mark(message, data);
+  } catch {
+    // Trace writes are observational only.
+  }
+}
+
+export async function traceSpan<T>(name: string, data: TraceMetadata, fn: () => T | Promise<T>): Promise<Awaited<T>> {
+  return await moo.traces.span(name, data, fn);
+}
+
 export async function reply(
   chatId: string,
   text: string,
   model?: string | null,
   effort?: string | null,
   thoughtDurationMs?: number | null,
+  draftId?: string | null,
 ) {
   const payloadBody: any = { text, at: await moo.time.nowMs() };
   if (Number.isFinite(thoughtDurationMs) && thoughtDurationMs! >= 0) {
     payloadBody.thoughtDurationMs = Math.round(thoughtDurationMs!);
   }
+  if (typeof draftId === "string" && draftId) payloadBody.draftId = draftId;
+  await traceMark("timeline.reply", { chatId, chars: text.length, hasThoughtDuration: Number.isFinite(thoughtDurationMs), model: model ?? null, effort: normalizeEffort(effort) ?? null });
   const payload = await moo.objects.putJSON({ kind: "agent:Reply", value: payloadBody });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Reply",
@@ -162,6 +270,7 @@ export async function recordErrorStep(
   model?: string | null,
   effort?: string | null,
 ) {
+  await traceMark("timeline.error", { chatId, kind, model: model ?? null, effort: normalizeEffort(effort) ?? null, detailKeys: detail && typeof detail === "object" ? Object.keys(detail).sort() : [] });
   const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: { kind, detail, at: await moo.time.nowMs() } });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Error",
@@ -681,12 +790,22 @@ async function callChatCompletions(
       anthropicBody.tools = anthropicTools;
       anthropicBody.tool_choice = { type: "auto" };
     }
-    const resp = await moo.http.fetch({
+    const url = provider.baseUrl + "/messages";
+    const resp = await traceSpan("llm.fetch", {
+      provider: provider.name,
+      model: provider.model,
+      effort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+      url,
+      responsesApi: false,
+      ...summarizeMessagesForTrace(messages, tools),
+      request: summarizeLlmBodyForTrace(anthropicBody),
+    }, () => moo.http.fetch({
       method: "POST",
-      url: provider.baseUrl + "/messages",
+      url,
       headers: llmProviderHeaders(provider),
       body: anthropicBody,
-    });
+    }));
+    await traceMark("llm.fetch.result", { status: resp.status, responseChars: resp.body.length });
     if (resp.status >= 400) return resp;
     try {
       const body = JSON.parse(resp.body);
@@ -703,12 +822,22 @@ async function callChatCompletions(
     }
   }
 
-  const resp = await moo.http.fetch({
+  const url = provider.baseUrl + "/" + (responsesApi ? "responses" : "chat/completions");
+  const resp = await traceSpan("llm.fetch", {
+    provider: provider.name,
+    model: provider.model,
+    effort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+    url,
+    responsesApi,
+    ...summarizeMessagesForTrace(messages, tools),
+    request: summarizeLlmBodyForTrace(body),
+  }, () => moo.http.fetch({
     method: "POST",
-    url: provider.baseUrl + "/" + (responsesApi ? "responses" : "chat/completions"),
+    url,
     headers: llmProviderHeaders(provider),
     body,
-  });
+  }));
+  await traceMark("llm.fetch.result", { status: resp.status, responseChars: resp.body.length });
   if (!responsesApi || resp.status >= 400) return resp;
   try {
     const body = JSON.parse(resp.body);
@@ -820,6 +949,14 @@ export async function recordUsage(
   slot.output += output;
   current.models[model] = slot;
   const contextTotal = promptTotal + Math.max(0, output);
+  await traceMark("usage.record", {
+    chatId,
+    model,
+    input: Math.max(0, promptTotal - cached - cacheWrite),
+    cachedInput: Math.max(0, cached),
+    cacheWriteInput: Math.max(0, cacheWrite),
+    output,
+  });
   if (options.updateLastContextTokens !== false && contextTotal > 0) current.lastContextTokens = contextTotal;
   const next = await moo.objects.putJSON({ kind: "agent:Usage", value: current });
   await moo.pointers.set(ref, next);
@@ -1223,7 +1360,7 @@ export async function loadResultJSON(
 // -- tool execution --------------------------------------------------------
 //
 // One tool is exposed to the LLM: runJS. The model sends JS code; the harness
-// evaluates it as the body of an async IIFE with `moo`, `chatId`, `scratch`, and optional `args` in scope.
+// evaluates it as the body of an async IIFE with `moo`, `chatId`, `repo`, `scratch`, and optional `args` in scope.
 
 function serializeToolValue(v: any): string {
   if (v === undefined) return "undefined";
@@ -1235,7 +1372,7 @@ function serializeToolValue(v: any): string {
   }
 }
 
-// HJSON/JSON5-style formatter: unquoted keys when they're identifiers,
+// HJSON-style formatter: unquoted keys when they're identifiers,
 // braces on the same line as the first/last value, no whitespace padding for
 // short objects. Tries to fit each level on one line; spills onto multiple
 // indented lines when the single-line form would exceed `wrap`. Strings
@@ -1308,36 +1445,52 @@ async function toolRunJS(
   const runArgs = hasRunArgs ? toolArgs.args : undefined;
   const started = Date.now();
   const runJsStep = await startRunJSStep(chatId, code, label, description, runArgs, hasRunArgs, started, model, effort);
+  const trace = startRunJSTraceRoot(runJsStep.stepId, {
+    label: label || null,
+    description: description || null,
+    codeChars: code.length,
+    hasArgs: hasRunArgs,
+    model: model || null,
+    effort: effort || null,
+  });
   if (!code.trim()) {
-    await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code");
+    const resultHash = await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code");
+    finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error: "missing code", status: "error" });
     return { toolText: "error: runJS requires `code`" };
   }
   let result: any = undefined;
   let error: string | null = null;
+  let serialized: string | null = null;
   try {
-    const fn = new Function(
-      "moo",
-      "chatId",
-      "scratch",
-      "args",
-      `return (async () => { ${code}\n})();`,
+    const fn = await moo.traces.span(
+      "v8.compile",
+      { codeChars: code.length },
+      () => new Function(
+        "moo",
+        "chatId",
+        "repo",
+        "scratch",
+        "args",
+        `return (async () => { ${code}\n})();`,
+      ),
     );
+    const repo = (await moo.pointers.get(`chat/${chatId}/path`)) || ".";
     const scratch = await moo.chat.scratch(chatId);
     const depth = await subagentDepth(chatId);
     result = await withMooRunJSContext(chatId, runJsStep.stepId, depth, () =>
-      withMooChatContext(chatId, () => fn(moo, chatId, scratch, runArgs)),
+      withMooChatContext(chatId, () => moo.traces.span("runjs.user", () => fn(moo, chatId, repo, scratch, runArgs))),
     );
+    serialized = await moo.traces.span("runjs.stringify", { resultType: typeof result }, () => serializeToolValue(result));
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
-  const durationMs = Date.now() - started;
-  const serialized = error ? null : serializeToolValue(result);
-  await finishRunJSStep(
+  const resultHash = await finishRunJSStep(
     chatId,
     runJsStep.stepId,
-    error ? null : { value: serialized, durationMs },
+    error ? null : { value: serialized },
     error,
   );
+  finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error, status: error ? "error" : "ok" });
   if (error) return { toolText: `error: ${error}` };
   return { toolText: truncate(serialized ?? "undefined", 4000) };
 }
@@ -1377,9 +1530,9 @@ async function startRunJSStep(
 async function finishRunJSStep(
   chatId: string,
   stepId: string,
-  result: { value: string; durationMs: number } | null,
+  result: { value: string } | null,
   error: string | null,
-) {
+): Promise<string | null> {
   const c = chatRefs(chatId);
   const resultHash = result
     ? await moo.objects.putJSON({ kind: "agent:ToolResult", value: result })
@@ -1393,6 +1546,7 @@ async function finishRunJSStep(
     if (resultHash) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:result", object: resultHash });
     if (error) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: error });
   } });
+  return resultHash;
 }
 
 export async function hasPendingInput(chatId: string): Promise<boolean> {
@@ -1417,7 +1571,18 @@ export async function executeToolCall(
   } catch {
     args = {};
   }
-  if (name === "runJS") return toolRunJS(chatId, args, model, effort);
+  if (name === "runJS") {
+    return await traceSpan("tool.runJS", {
+      chatId,
+      model: model ?? null,
+      effort: normalizeEffort(effort) ?? null,
+      ...summarizeToolCallForTrace(tc),
+      label: args?.label ?? null,
+      description: args?.description ?? null,
+      codeChars: typeof args?.code === "string" ? args.code.length : 0,
+      hasArgs: Object.prototype.hasOwnProperty.call(args ?? {}, "args"),
+    }, () => toolRunJS(chatId, args, model, effort));
+  }
   const started = Date.now();
   const unknown = await startRunJSStep(
     chatId,
@@ -1525,6 +1690,14 @@ export async function runShellAndRecord(
 
 // -- timeline formatting (used by describe) --------------------------------
 
+function firstString(...values: any[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+  }
+  return "";
+}
+
 function formatErrorPayload(body: any): string {
   if (body == null || body === "") return "";
   if (typeof body === "string") return body.trim();
@@ -1555,7 +1728,10 @@ export function formatStep(item: any, payload: any, result: any): string {
         if (typeof result.value === "object" && result.value.error) {
           tail = `error: ${result.value.error}`;
         } else if (typeof result.value === "object" && "value" in result.value) {
-          tail = `→ ${result.value.value} (${result.value.durationMs}ms)`;
+          const legacyDuration = typeof result.value.durationMs === "number"
+            ? ` (${result.value.durationMs}ms)`
+            : "";
+          tail = `→ ${result.value.value}${legacyDuration}`;
         } else {
           tail = JSON.stringify(result.value);
         }
@@ -1607,14 +1783,37 @@ export function formatStep(item: any, payload: any, result: any): string {
     }
     case "agent:Error": {
       const v = payload?.value || {};
-      const detail = v.detail || {};
-      const status = detail.status ? `HTTP ${detail.status}` : null;
-      const source = detail.source || v.kind || "error";
-      const head = [source, detail.model, status].filter(Boolean).join(" · ");
-      const message = detail.message || "";
-      const payloadText = formatErrorPayload(detail.body);
+      const detail = v.detail && typeof v.detail === "object" ? v.detail : {};
+      const rawStatus = detail.status ?? v.status;
+      const status = rawStatus ? `HTTP ${rawStatus}` : null;
+      const source = firstString(detail.source, v.kind, v.phase, detail.type, detail.code, "error");
+      const model = firstString(detail.model, v.model);
+      const head = [source, model, status].filter(Boolean).join(" · ");
+      const message = firstString(
+        detail.message,
+        detail.error?.message,
+        detail.body?.error?.message,
+        detail.body?.message,
+        v.message,
+        v.reason,
+        v.error?.message,
+        v.error,
+      );
+      const payloadText = formatErrorPayload(
+        detail.body ??
+          detail.payload ??
+          (Object.keys(detail).length ? detail : null) ??
+          (Object.keys(v).length ? v : null),
+      );
+      const detailBits = [
+        detail.type && `type: ${detail.type}`,
+        detail.code && `code: ${detail.code}`,
+        v.trigger && `trigger: ${v.trigger}`,
+        v.retryReason && `retry: ${v.retryReason}`,
+      ].filter(Boolean).join("\n");
       const body = [
         message,
+        detailBits,
         payloadText && payloadText !== String(message).trim() ? `payload:\n${payloadText}` : "",
       ].filter(Boolean).join("\n\n");
       return [head, body].filter(Boolean).join("\n");

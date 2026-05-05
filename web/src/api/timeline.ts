@@ -46,6 +46,8 @@ export type StepItem = {
     at?: number | string;
   };
   runjs?: RunJSDetails;
+  lazyRunjsResult?: boolean;
+  resultHash?: string | null;
   subagent?: SubagentDetails;
   attachments?: ImageAttachment[];
   // Provider-echoed model that produced the step (for LLM-driven kinds).
@@ -54,6 +56,8 @@ export type StepItem = {
   effort?: string;
   // Milliseconds spent waiting on model responses for the final reply.
   thoughtDurationMs?: number;
+  // Streaming draft id that produced this finalized reply, when available.
+  draftId?: string;
   // Present when a user message is hidden from future LLM prompts.
   deletedAt?: number | string;
 };
@@ -122,6 +126,19 @@ export type LogItem = {
   message: string;
 };
 
+export type BlobAddItem = {
+  type: "blob-add";
+  id: string;
+  step?: string;
+  chatId: ChatId;
+  objectKind: string;
+  hash: string;
+  size?: number;
+  chars?: number;
+  encoding?: "text" | "json" | string;
+  at: number;
+};
+
 export type TrailItem = {
   type: "trail";
   id: string;
@@ -133,5 +150,5 @@ export type TrailItem = {
   summary?: string | null;
 };
 
-export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | MemoryDiffItem | LogItem | TrailItem;
+export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | MemoryDiffItem | BlobAddItem | LogItem | TrailItem;
 

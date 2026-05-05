@@ -90,6 +90,8 @@ fn build_harness(out_dir: &Path) {
 fn build_ui(out_dir: &Path) {
     let dist: PathBuf = env::var_os("MOO_VITE_DIST").map_or_else(
         || {
+            ensure_web_deps();
+
             let output = Command::new("bun")
                 .current_dir("web")
                 .arg("run")
@@ -116,6 +118,33 @@ fn build_ui(out_dir: &Path) {
     let html = inline_vite_assets(&html, &dist);
     fs::write(out_dir.join("default_ui.html"), html)
         .unwrap_or_else(|err| panic!("failed to write embedded UI html: {err}"));
+}
+
+fn ensure_web_deps() {
+    if Path::new("web/node_modules/.bin/vite").exists() {
+        return;
+    }
+
+    let output = Command::new("bun")
+        .current_dir("web")
+        .arg("install")
+        .arg("--frozen-lockfile")
+        .arg("--no-progress")
+        .output()
+        .expect("failed to run bun; install Bun to install embedded Vite UI dependencies");
+
+    assert!(
+        output.status.success(),
+        "failed to install embedded Vite UI dependencies with bun install: status={}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        Path::new("web/node_modules/.bin/vite").exists(),
+        "bun install completed but web/node_modules/.bin/vite is still missing"
+    );
 }
 
 fn inline_vite_assets(html: &str, dist: &Path) -> String {

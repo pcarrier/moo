@@ -9,12 +9,21 @@
     "preview": "vite preview --host"
   },
   "devDependencies": {
+    "@types/prismjs": "^1.26.6",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
     "vite-plugin-solid": "^2.11.12"
   },
   "dependencies": {
+    "@blit-sh/browser": "0.32.2",
+    "@blit-sh/core": "0.32.2",
+    "@blit-sh/solid": "0.32.2",
+    "hjson": "^3.2.2",
     "marked": "^18.0.2",
-    "solid-js": "^1.9.12"
+    "mermaid": "^11.14.0",
+    "prettier": "^3.7.4",
+    "prismjs": "^1.30.0",
+    "solid-js": "^1.9.12",
+    "yaml": "^2.8.4"
   }
 }

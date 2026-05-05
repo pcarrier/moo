@@ -701,11 +701,13 @@ pub struct AsyncToolJob {
     pub bundle: Arc<String>,
     pub input: String,
     pub agent_run: AgentRunHandler,
+    pub parent_id: Option<String>,
     pub response: Sender<Result<String, String>>,
     pub enqueued_at: Instant,
 }
 
 pub struct Pool {
+    db_path: String,
     tx: Sender<Job>,
     read_tx: Sender<Job>,
     scan_tx: Sender<Job>,
@@ -740,12 +742,17 @@ impl Pool {
         spawn_async_tool_workers("moo-tool-worker", async_tool_workers, async_tool_rx, db);
 
         Pool {
+            db_path: db.to_string(),
             tx,
             read_tx,
             scan_tx,
             async_tool_tx,
             chat_locks: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn db_path(&self) -> &str {
+        &self.db_path
     }
 
     pub fn submit(&self, bundle: Arc<String>, input: String) -> Result<String, String> {
@@ -780,6 +787,7 @@ impl Pool {
         bundle: Arc<String>,
         input: String,
         agent_run: AgentRunHandler,
+        parent_id: Option<String>,
     ) -> Result<String, String> {
         let (resp_tx, resp_rx) = mpsc::channel();
         self.async_tool_tx
@@ -787,6 +795,7 @@ impl Pool {
                 bundle,
                 input,
                 agent_run,
+                parent_id,
                 response: resp_tx,
                 enqueued_at: Instant::now(),
             })
@@ -1313,9 +1322,21 @@ fn async_tool_worker_loop(
                 snapshot_hit: None,
             }
         } else if needs_fresh_context(&job.input) {
-            run_uncached_async_tool_job(&mut rt, &job.bundle, &job.input, job.agent_run)
+            run_uncached_async_tool_job(
+                &mut rt,
+                &job.bundle,
+                &job.input,
+                job.agent_run,
+                job.parent_id,
+            )
         } else {
-            run_async_tool_job(&mut rt, &job.bundle, &job.input, job.agent_run)
+            run_async_tool_job(
+                &mut rt,
+                &job.bundle,
+                &job.input,
+                job.agent_run,
+                job.parent_id,
+            )
         };
         let duration_ms = started.elapsed().as_millis() as u64;
         let result = outcome.result;
@@ -1363,13 +1384,14 @@ fn run_async_tool_job(
     bundle: &Arc<String>,
     input: &str,
     agent_run: AgentRunHandler,
+    parent_id: Option<String>,
 ) -> JobOutcome {
     rt.near_heap_limit.store(false, Ordering::SeqCst);
     let was_cached = rt.bundle_cache.len() > 0;
     let report = {
         let isolate = rt.isolate.as_mut().expect("worker isolate missing");
         rt.bundle_cache
-            .run_async_report_in(isolate, bundle, input, agent_run)
+            .run_async_report_in(isolate, bundle, input, agent_run, parent_id)
     };
     let near_heap_limit = rt.near_heap_limit.load(Ordering::SeqCst);
     snapshots::record_if_triggered(
@@ -1395,9 +1417,11 @@ fn run_uncached_async_tool_job(
     bundle: &Arc<String>,
     input: &str,
     agent_run: AgentRunHandler,
+    parent_id: Option<String>,
 ) -> JobOutcome {
     rt.near_heap_limit.store(false, Ordering::SeqCst);
-    let report = runtime::run_js_async_report_in(rt.isolate_mut(), bundle, input, agent_run);
+    let report =
+        runtime::run_js_async_report_in(rt.isolate_mut(), bundle, input, agent_run, parent_id);
     let near_heap_limit = rt.near_heap_limit.load(Ordering::SeqCst);
     snapshots::record_if_triggered(
         rt.isolate_mut(),

@@ -1,15 +1,81 @@
-import { marked } from "marked";
+import { Marked, Renderer } from "marked";
+import { displayCodeLanguage, highlightMarkdownCode } from "./syntax";
 
 // Shared marked setup. Keep these options in sync with the timeline/store
 // preview rendering instead of choosing per-call settings.
-marked.setOptions({ gfm: true, breaks: false });
+const renderer = new Renderer();
+
+renderer.code = renderCodeBlock;
+
+const userRenderer = new Renderer();
+userRenderer.code = renderCodeBlock;
+userRenderer.html = ({ text }) => escapeHtml(text);
+userRenderer.link = function ({ href, title, tokens }) {
+  const safeHref = safeLinkHref(href);
+  const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
+  return '<a href="' + escapeHtmlAttribute(safeHref) + '"' + titleAttribute + '>' + this.parser.parseInline(tokens) + '</a>';
+};
+userRenderer.image = ({ href, title, text }) => {
+  const safeHref = safeLinkHref(href);
+  const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
+  return '<img src="' + escapeHtmlAttribute(safeHref) + '" alt="' + escapeHtmlAttribute(text) + '"' + titleAttribute + '>';
+};
+
+const marked = new Marked({ gfm: true, breaks: false, renderer });
+const userMarked = new Marked({ gfm: true, breaks: true, renderer: userRenderer });
+
+const MARKDOWN_CACHE_MAX_ENTRIES = 512;
+const MARKDOWN_CACHE_MAX_CONTENT_LENGTH = 128 * 1024;
+
+const markdownCache = new Map<string, string>();
+const markdownInlineCache = new Map<string, string>();
+const userMessageCache = new Map<string, string>();
+
+function cachedRender(cache: Map<string, string>, content: string, render: () => string): string {
+  if (content.length > MARKDOWN_CACHE_MAX_CONTENT_LENGTH) return render();
+  const cached = cache.get(content);
+  if (cached !== undefined) {
+    cache.delete(content);
+    cache.set(content, cached);
+    return cached;
+  }
+  const html = render();
+  cache.set(content, html);
+  if (cache.size > MARKDOWN_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+  return html;
+}
+
+function renderCodeBlock({ text, lang, escaped }: { text: string; lang?: string; escaped?: boolean }): string {
+  const rawLanguage = typeof lang === "string" ? lang.trim() : "";
+  const language = rawLanguage.split(/\s+/)[0] || "";
+  const displayLanguage = displayCodeLanguage(language);
+  const className = displayLanguage ? ' class="language-' + escapeHtmlAttribute(displayLanguage) + '"' : "";
+  const code = escaped ? unescapeMarkedCode(text) : text;
+  if (displayLanguage === "mermaid") {
+    return '<div class="mermaid" data-mermaid-source="' +
+      escapeHtmlAttribute(code) +
+      '">' + escapeHtml(code) + '</div>\n';
+  }
+  return '<pre><code' + className + '>' + highlightMarkdownCode(code, language) + '</code></pre>\n';
+}
 
 export function renderMarkdown(content: string): string {
-  return marked.parse(content) as string;
+  return cachedRender(markdownCache, content, () => marked.parse(content) as string);
 }
 
 export function renderMarkdownInline(content: string): string {
-  return marked.parseInline(content) as string;
+  return cachedRender(markdownInlineCache, content, () => marked.parseInline(content) as string);
+}
+
+function unescapeMarkedCode(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#x2F;/gi, "/");
 }
 
 export function anchorFromEventTarget(target: EventTarget | null): HTMLAnchorElement | null {
@@ -43,7 +109,71 @@ export function resolveRepoFileHref(href: string, basePath: string | null | unde
 
 
 export function renderUserMessage(content: string): string {
-  return linkifyPlainText(content);
+  return cachedRender(userMessageCache, content, () => userMarked.parse(linkifyPathMentionsForMarkdown(content)) as string);
+}
+
+function linkifyPathMentionsForMarkdown(content: string): string {
+  return rewriteMarkdownOutsideCode(content, linkifyPathMentionsInPlainText);
+}
+
+function linkifyPathMentionsInPlainText(content: string): string {
+  let markdown = "";
+  let cursor = 0;
+  for (const match of pathMentionLinks(content)) {
+    markdown += content.slice(cursor, match.start);
+    const label = content.slice(match.start, match.end);
+    markdown += "[" + escapeMarkdownLinkText(label) + "](" + match.href.replace(/[()\s]/g, encodeURIComponent) + ")";
+    cursor = match.end;
+  }
+  markdown += content.slice(cursor);
+  return markdown;
+}
+
+function rewriteMarkdownOutsideCode(content: string, rewrite: (chunk: string) => string): string {
+  let out = "";
+  let cursor = 0;
+  const fenceRe = /(^|\n)( {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/g;
+  while (true) {
+    const start = fenceRe.exec(content);
+    if (!start) break;
+    const fenceStart = start.index + start[1].length;
+    out += rewriteMarkdownInlineOutsideCode(content.slice(cursor, fenceStart), rewrite);
+    const marker = start[3];
+    const fenceChar = marker[0];
+    const fenceLength = marker.length;
+    const closeRe = new RegExp("(^|\\n) {0,3}" + escapeRegExp(fenceChar.repeat(fenceLength)) + fenceChar + "* *($|\\n)", "g");
+    closeRe.lastIndex = fenceRe.lastIndex;
+    const close = closeRe.exec(content);
+    const fenceEnd = close ? close.index + close[0].length : content.length;
+    out += content.slice(fenceStart, fenceEnd);
+    cursor = fenceEnd;
+    fenceRe.lastIndex = cursor;
+  }
+  out += rewriteMarkdownInlineOutsideCode(content.slice(cursor), rewrite);
+  return out;
+}
+
+function rewriteMarkdownInlineOutsideCode(content: string, rewrite: (chunk: string) => string): string {
+  let out = "";
+  let cursor = 0;
+  const tickRe = /`+/g;
+  while (true) {
+    const start = tickRe.exec(content);
+    if (!start) break;
+    out += rewrite(content.slice(cursor, start.index));
+    const marker = start[0];
+    const closeIndex = content.indexOf(marker, tickRe.lastIndex);
+    if (closeIndex < 0) {
+      out += content.slice(start.index);
+      return out;
+    }
+    const codeEnd = closeIndex + marker.length;
+    out += content.slice(start.index, codeEnd);
+    cursor = codeEnd;
+    tickRe.lastIndex = cursor;
+  }
+  out += rewrite(content.slice(cursor));
+  return out;
 }
 
 function linkifyPlainText(content: string): string {
@@ -136,6 +266,22 @@ function countChar(value: string, char: string): number {
 
 function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
   return aStart < bEnd && bStart < aEnd;
+}
+
+function safeLinkHref(href: string): string {
+  const trimmed = (href || "").trim();
+  if (!trimmed) return "";
+  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return "";
+  return trimmed;
+}
+
+function escapeMarkdownLinkText(value: string): string {
+  return value.replace(/([\\\]\[])/g, "\\$1");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function escapeHtml(value: string): string {

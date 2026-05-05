@@ -1,3 +1,5 @@
+import { Effect, errorInfo } from "./core/effect";
+import { finishTraceRoot, moo, startTraceRoot, summarizeTraceValue } from "./moo";
 import {
   llmStreamAccumulateCommand,
   llmStreamErrorCommand,
@@ -84,7 +86,7 @@ import { schemaCommand } from "./commands/schema";
 import { llmAuthGetCommand, llmAuthOAuthCompleteCommand, llmAuthOAuthDevicePollCommand, llmAuthOAuthDeviceStartCommand, llmAuthOAuthLogoutCommand, llmAuthOAuthStartCommand, llmAuthSaveCommand } from "./commands/llm_auth";
 import { messageDeleteCommand, messageRestoreCommand } from "./commands/messages";
 
-type CommandHandler = (input: Input) => unknown | Promise<unknown>;
+type CommandHandler = (input: Input) => unknown | Promise<unknown> | Effect<unknown, unknown>;
 
 const COMMANDS: Record<string, CommandHandler> = {
   step: stepCommand,
@@ -168,10 +170,72 @@ const COMMANDS: Record<string, CommandHandler> = {
 };
 
 export async function dispatch(input: Input) {
+  return runDispatch(input);
+}
+
+async function runDispatch(input: Input) {
   const { command, payload } = commandPayload(input);
-  const handler = COMMANDS[command];
-  if (!handler) return { ok: false, error: { message: "unknown command: " + command } };
-  return await handler(payload);
+  const existingTrace = await moo.traces.current().catch(() => null);
+  const shouldRoot = !existingTrace && shouldTraceCommand(command);
+  const trace = shouldRoot ? startTraceRoot(commandStepId(command, payload), {
+    label: `command ${command}`,
+    description: "top-level harness command trace",
+    command,
+    chatId: payload.chatId ?? null,
+    input: summarizeTraceValue(payload),
+  }) : null;
+  try {
+    const result = await Effect.defer(() => {
+      const handler = COMMANDS[command];
+      if (!handler) return Effect.succeed({ ok: false, error: { message: "unknown command: " + command } });
+      return runHandler(handler, payload);
+    })
+    .match({
+      onSuccess: (value) => value,
+      onFailure: (error) => ({ ok: false, error: errorInfo(error) }),
+    })
+    .runScopedPromise();
+    if (trace) {
+      await moo.traces.mark("command.result", {
+        command,
+        ok: commandResultOk(result),
+        output: summarizeTraceValue(result),
+      });
+      finishTraceRoot({ traceId: trace.traceId, status: commandResultOk(result) ? "ok" : "error" });
+    }
+    return result;
+  } catch (e: any) {
+    if (trace) {
+      await moo.traces.mark("command.error", { command, error: e?.message ?? String(e), stack: e?.stack ?? null });
+      finishTraceRoot({ traceId: trace.traceId, status: "error", error: e?.message ?? String(e) });
+    }
+    throw e;
+  }
+}
+
+function shouldTraceCommand(_command: string): boolean {
+  return true;
+}
+
+function commandStepId(command: string, payload: Input): string | null {
+  const chatId = typeof payload.chatId === "string" && payload.chatId ? payload.chatId : null;
+  if (chatId) return `command:${command}:${chatId}`;
+  return `command:${command}`;
+}
+
+function commandResultOk(result: unknown): boolean {
+  if (result && typeof result === "object" && "ok" in (result as any)) return (result as any).ok !== false;
+  return true;
+}
+
+function runHandler(handler: CommandHandler, payload: Input): Effect<unknown, unknown> {
+  return Effect.defer(() => toCommandEffect(handler(payload)));
+}
+
+function toCommandEffect(value: unknown | Promise<unknown> | Effect<unknown, unknown>): Effect<unknown, unknown> {
+  if (value instanceof Effect) return value;
+  if (value && typeof (value as any).then === "function") return Effect.tryPromise(() => value as Promise<unknown>, "command failed");
+  return Effect.succeed(value);
 }
 
 function commandPayload(input: Input): { command: string; payload: Input } {

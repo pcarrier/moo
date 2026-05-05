@@ -69,7 +69,12 @@ export async function mcpOAuthStartCommand(input: Input) {
   const serverId = String(input.serverId ?? input.id ?? "").trim();
   if (!serverId) return { ok: false, error: { message: "mcp-oauth-start requires serverId" } };
   try {
-    return { ok: true, value: { login: await moo.mcp.login(serverId, { origin: input.origin, redirectUri: input.redirectUri, scope: input.scope }) } };
+    return { ok: true, value: { login: await moo.mcp.login(serverId, {
+      origin: input.origin ?? input.serverBaseUrl,
+      redirectUri: input.redirectUri,
+      scope: input.scope,
+      returnChatId: input.returnChatId,
+    }) } };
   } catch (err: any) {
     return { ok: false, error: { message: err?.message || String(err) } };
   }

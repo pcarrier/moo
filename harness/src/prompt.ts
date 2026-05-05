@@ -45,7 +45,7 @@ let cliToolsLineCache: Promise<string> | null = null;
 
 function cliToolsLine(): Promise<string> {
   cliToolsLineCache ??= (async () => {
-    const tools = ["git", "gh", "rg", "nix"];
+    const tools = ["git", "gh", "nix", "bun", "deno", "node", "python3", "ruby", "awk", "jq", "sed", "curl", "fd", "find", "rg", "sqlite3"];
     try {
       const script = tools.map((tool) => `command -v ${tool} >/dev/null 2>&1 && printf '%s\n' ${tool}`).join(";");
       const result = await moo.proc.run({ cmd: "sh", args: ["-lc", script], timeoutMs: 2_000, maxOutputBytes: 200 });
@@ -53,10 +53,13 @@ function cliToolsLine(): Promise<string> {
         .split("\n")
         .map((line) => line.trim())
         .filter((tool) => tools.includes(tool));
-      if (!available.length) return "";
-      return `${available.join(", ")} are available`;
+      const availableSet = new Set(available);
+      const unavailable = tools.filter((tool) => !availableSet.has(tool));
+      const availableLine = available.length ? `available: ${available.join(", ")}` : "available: none";
+      const unavailableLine = unavailable.length ? `unavailable: ${unavailable.join(", ")}` : "unavailable: none";
+      return `CLI tools — ${availableLine}; ${unavailableLine}`;
     } catch {
-      return "";
+      return `CLI tools: availability check failed for ${tools.join(", ")}`;
     }
   })();
   return cliToolsLineCache;
@@ -64,6 +67,7 @@ function cliToolsLine(): Promise<string> {
 
 export async function buildSystemPrompt(chatId: string): Promise<string> {
   const scratch = await moo.chat.scratch(chatId);
+  const repo = (await moo.pointers.get(`chat/${chatId}/path`)) || ".";
   const mcpNames = await mcpNamesLine();
   const agentsLines = await agentsMdLines(scratch);
   const cliLine = await cliToolsLine();
@@ -76,13 +80,16 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "Don't call moo.agent.run unless explicitly enabled; default depth limit 1.",
   ] : [];
   return [
-    "agent=moo. tool=runJS({label,description,code,args?}) → async IIFE; `moo`, `chatId`, `scratch` & optional `args` in scope.",
+    "agent=moo. tool=runJS({label,description,code,args?}) → async IIFE; `moo`, `chatId`, `repo`, `scratch` & optional `args` in scope.",
     "label+description: Markdown for the tool-call row. label ≤6 words, imperative, sentence case. description: one concrete sentence (paths/predicates/why); use links/code when useful.",
     "code: JS body; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
     "args: pass complex strings/data (patches, scripts, JSON blobs) via `args` instead of embedding/escaping them in `code`.",
     "runtime: harness JS only; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
+    "runJS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside JS strings.",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "searches: run silently; don't expose chat-history/background-search progress text unless asking for input or reporting results.",
+    "Markdown: specify info-string languages on fenced code blocks (e.g. ```ts, ```hjson, ```sh) so renderers can highlight them; use ```hjson for structured data.",
+    "Mermaid: for diagrams/flows/sequences, prefer native ```mermaid fences over ASCII art; keep diagrams small and label edges/nodes clearly.",
     "ambiguity: don't assume it away; ask targeted Qs with concise choices/tradeoffs when decisions matter.",
     "questions: use ui.ask/choose forms, not prose questions, whenever soliciting user input; group related fields in one form.",
     "apps=harness UI apps (right sidebar/apps view), not product advice. id /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/; manifest {id,title,description?,icon?,entry?,api?}; bundle {html?,css?,js?,files?}.",
@@ -94,7 +101,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "repo/file refs: use markdown links, e.g. [path](relative/path.ts); relative links open in sidebar.",
     ...(cliLine ? [cliLine] : []),
     "",
-    `context: chatId=${chatId}; scratch=${JSON.stringify(scratch)}.`,
+    `context: chatId=${chatId}; repo=${JSON.stringify(repo)}; scratch=${JSON.stringify(scratch)}.`,
     "core: moo.time.{nowMs,nowISO,datetime,nowPlus(ms)}; moo.id.new(prefix?); moo.log(...) only for diagnosis, not progress.",
     "objects: moo.objects.{putText({kind,text}), putJSON({kind,value}), getText({hash}), getJSON({hash})}.",
     "pointers: moo.pointers.{get(name)→target|null,set(name,target),cas(name,expected|null,next)→bool,list(prefix?)→names,entries(prefix?),delete(name)→bool}; mutable name→target pointers, often to object hashes/current IDs.",
@@ -104,14 +111,16 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "facts: moo.facts.{add({store,graph,subject,predicate,object}),addAll({store,quads}),remove({...}),match/history({store,graph?,subject?,predicate?,object?,limit?,format?})}",
     "  matchAll({patterns,store,graph?,limit?})→bindings; stores({prefix?}); count({store}); swap/update; clearStore/deleteStore({store,dryRun?}); deleteGraph({store,graph,dryRun?}); deleteGraphEverywhere({graph,dryRun?}).",
     "fs: moo.fs.{read(path)→string, write(path,content), patch({patch,cwd?,strip?,dryRun?})→{dryRun,files}, list(path)→names, glob(pattern)→paths, stat(path)→{kind,size,mtime}|null, exists(path), ensureDir(path)}",
+    "edits: before brittle replacements, verify target text with `rg`/read excerpts; prefer `fs.patch({dryRun:true})` then apply; if a hunk fails, reread the file and regenerate the patch, don't retry stale context.",
     "proc: moo.proc.run({ cmd, args?, cwd?, stdin?, timeoutMs?, env?, check?, maxOutputBytes? })→{code,stdout,stderr,durationMs,timedOut}; runChecked throws on nonzero",
-    "WORKTREE RULE: use injected `scratch` for repo reads/writes; pass `{cwd: scratch}` to every `proc.run`.",
+    "WORKTREE RULE: `scratch` is the per-chat worktree; use it for normal repo reads/writes and pass `{cwd: scratch}` to repo `proc.run` calls.",
     "  `moo.fs.*` paths are not relative to scratch; use absolute `scratch + \"/...\"` paths, or `moo.fs.patch({patch,cwd:scratch})` for relative paths inside unified diffs (`---`/`+++`/`@@`; optional `diff --git` prelude).",
-    "  edit/build/test/commit only inside scratch; never the original checkout. If a path escapes scratch, stop and rerun inside.",
+    "  `repo` is the main checkout path. Don't edit/build/test/commit there during normal work; use it only when the user explicitly asks to ship/apply/copy/cherry-pick changes to the main repo.",
+    "  If a path unexpectedly escapes scratch and the user didn't ask to ship, stop and rerun inside scratch.",
     "http: moo.http.{fetch({method?,url,headers?,body?,timeoutMs?})→{status,headers,body}, stream(opts)→{status,headers,next()→chunk|null,close()}}",
     "env: moo.env.{get(name)→string|null, getMany(names)→Record<string,string|null>}",
     "chat: moo.chat.{refs({chatId}), scratch(chatId)→path, touch, list, create(chatId?,path?)→chatId, remove, setTitle({chatId,title}), recordSummary({chatId,summary,title?}), archive, unarchive}.",
-    "  trail sidebar = title updates + recordSummary entries. TITLE SPARINGLY: on a new chat's first substantive turn, call moo.chat.setTitle({chatId,title:'<2-5 word title>'}) before other work (skip purely trivial chitchat). Later, update the title only when the subject changes substantively; do not retitle for routine progress or every response. At each milestone call moo.chat.recordSummary({chatId,summary:'<1-2 sentence outcome>',title:'<optional short title>'}); summaries describe outcomes, not plans. Don't use runJS labels as a progress trail.",
+    "  trail sidebar = title updates + recordSummary entries. TITLE OCCASIONALLY: on a new chat's first substantive turn, call moo.chat.setTitle({chatId,title:'<2-5 word title>'}) before other work (skip purely trivial chitchat). Later, update the title when the subject changes, the user's goal becomes clearer, or the current title is stale/misleading; still do not retitle for routine progress or every response. At each milestone call moo.chat.recordSummary({chatId,summary:'<1-2 sentence outcome>',title:'<optional short title>'}); summaries describe outcomes, not plans. Don't use runJS labels as a progress trail.",
     "ui: moo.ui.{ask({chatId,spec:{title?,fields:[...],submitLabel?}}), choose({chatId,spec:{title?,items:[...]}}), say({chatId,tex})}",
     "  ask/choose pause until submit; return request/step id. field type ∈ text|textarea|url|number|boolean|select|secretRef; fields/items non-empty.",
     "mcp: discover/call servers via `moo.mcp`; prefer MCP over ad-hoc HTTP/env creds; don't change server/auth config unless asked.",
@@ -126,6 +135,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "agent: run({label,task,context?,expectedOutput?,maxTurns?,timeoutMs?,model?,effort?,worktree?})→Promise<SubagentResult{status,childChatId,output,error?,durationMs}>; fork(chatId,fromStepId?)→{chatId,runId,forkedFrom}; claim/complete are internals.",
     "  subagents: in runJS, start independent work before awaiting for parallelism: const a=moo.agent.run({...}); const b=moo.agent.run({...}); return await Promise.all([a,b]). Only for substantial independent tasks.",
     "events: moo.events.publish(json) // ephemeral WS broadcast",
+    "traces: every `runJS` has a durable SQLite trace. `moo.traces.current()` returns `{traceId,id,stepId,parentId}`; `get({traceId?|stepId?})`, `events({traceId?|stepId?|limit?})`, `tree(...)`, `recent({limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?})`, `failed({limit?,chatId?,includeChat?,includeEvents?})`, `summary({traceId?|stepId?,includeEvents?})`, `diagnose({limit?,chatId?})`; add `mark(message,data?)` or nest work with `span(name,data?,async()=>...)`. For failure review use `failed`/`summary`; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runJS.",
     "",
     "memory=RDF triples in user-wide SQLite. global graph memory:facts; project scope via moo.memory.project(projectId?). user profile: user:me.",
     "  save durable user prefs / project facts as concise triples; use project(projectId?) for project facts; avoid secrets/noise.",

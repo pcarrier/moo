@@ -1,3 +1,5 @@
+import { Effect, Schedule, type ScheduleDecision } from "./effect";
+
 export type RetryDecision = {
   retry: boolean;
   reason: string;
@@ -12,7 +14,7 @@ export type RetryPolicy = {
   maxRetryAfterMs?: number;
 };
 
-type RetryableLlmResult = {
+export type RetryableLlmResult = {
   ok?: boolean;
   status?: number;
   errorBody?: unknown;
@@ -31,6 +33,48 @@ export const DEFAULT_LLM_RETRY_POLICY: RetryPolicy = {
 };
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+
+export type LlmRetryInput = {
+  readonly result: RetryableLlmResult | null | undefined;
+};
+
+export type LlmRetrySchedule = Schedule<unknown, LlmRetryInput>;
+
+function toRetryDecision(decision: ScheduleDecision): RetryDecision {
+  return { retry: decision.continue, reason: decision.reason, delayMs: decision.delayMs };
+}
+
+function fromRetryDecision(decision: RetryDecision): ScheduleDecision {
+  return { continue: decision.retry, reason: decision.reason, delayMs: decision.delayMs };
+}
+
+export function llmRetrySchedule(policy: RetryPolicy = DEFAULT_LLM_RETRY_POLICY): LlmRetrySchedule {
+  return Schedule.whileInput(({ attempt, error }) => fromRetryDecision(llmRetryDecision(error?.result, attempt, policy)));
+}
+
+export function llmRetryDecisionFromSchedule(
+  result: RetryableLlmResult | null | undefined,
+  attempt: number,
+  policy: RetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+): RetryDecision {
+  return toRetryDecision(llmRetrySchedule(policy)({ attempt, error: { result } }));
+}
+
+export async function withLlmRetry<T extends RetryableLlmResult>(
+  operation: (attempt: number) => Promise<T>,
+  policy: RetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+): Promise<T> {
+  return Effect.gen(function* () {
+    let attempt = 0;
+    const op = Effect.tryPromise(() => operation(++attempt), "llm operation failed");
+    return yield* op.retryWhile(
+      (result) => !result.ok && llmRetryDecision(result, attempt, policy).retry,
+      Schedule.whileInput(({ attempt: scheduleAttempt, value }) =>
+        fromRetryDecision(llmRetryDecision(value as RetryableLlmResult, scheduleAttempt, policy)),
+      ) as any,
+    );
+  }).runPromise();
+}
 
 export function retryDelayMs(attempt: number, policy: RetryPolicy = DEFAULT_LLM_RETRY_POLICY): number {
   const index = Math.max(0, attempt - 1);

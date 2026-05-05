@@ -1,48 +1,60 @@
 import { For, Show } from "solid-js";
 
-import { RightSidebarToggle } from "./Sidebar";
 import type { Bag } from "./state";
+import {
+  BackToChatButton,
+  EmptyState,
+  HeaderIconButton,
+  PageBody,
+  PageHeader,
+  PageShell,
+} from "./PageChrome";
 
 export function AppsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const { bag } = props;
+
   return (
-    <div class="chat-shell apps-dashboard-view">
-      <section class="main apps-view">
-        <header class="conv-header">
-          <button
-            class="header-icon-button"
-            title="toggle sidebar"
-            aria-label="toggle sidebar"
-            onClick={props.onToggleSidebar}
-          >
-            ☰
-          </button>
-          <button
-            class="header-icon-button"
-            title="back to chat"
-            onClick={() => bag.showChat()}
-          >
-            ←
-          </button>
-          <strong>apps</strong>
-          <small class="conv-stats">
-            {bag.uiApps().length} available app{bag.uiApps().length === 1 ? "" : "s"}
-          </small>
-          <button class="header-icon-button" title="refresh apps" onClick={() => bag.refreshUis()}>
-            ↻
-          </button>
-          <RightSidebarToggle bag={bag} />
-        </header>
-        <main class="timeline apps-list-view">
-          <Show when={bag.uiApps().length > 0} fallback={<Show when={bag.uiAppsLoaded()}><div class="empty">no apps yet</div></Show>}>
+    <PageShell class="apps-dashboard-view" mainClass="apps-view">
+      <PageHeader
+        bag={bag}
+        title="Apps"
+        onToggleSidebar={props.onToggleSidebar || (() => {})}
+        showRightSidebarToggle
+        actions={
+          <>
+            <BackToChatButton bag={bag} />
+            <HeaderIconButton
+              title="refresh apps"
+              aria-label="refresh apps"
+              onClick={() => void bag.refreshUis()}
+            >
+              ↻
+            </HeaderIconButton>
+          </>
+        }
+      />
+      <PageBody class="apps-list-view">
+        <Show
+          when={bag.uiApps().length > 0}
+          fallback={
+            <Show when={bag.uiAppsLoaded()}>
+              <EmptyState>no apps yet</EmptyState>
+            </Show>
+          }
+        >
+          <section class="apps-explorer-list" aria-label="apps">
             <ul class="app-list app-list-main">
               <For each={bag.uiApps()}>
                 {(app) => (
-                  <li class="app-row" classList={{ active: app.id === bag.openUiId() }}>
+                  <li
+                    class="app-row"
+                    classList={{ open: app.id === bag.openUiId() }}
+                  >
                     <button
+                      type="button"
                       class="app-select"
-                      title={app.description || "open app"}
-                      onClick={() => bag.openUi(app.id)}
+                      title={app.description || `open ${app.title || app.id}`}
+                      onClick={() => void bag.openUi(app.id)}
                     >
                       <span class="app-icon">{app.icon || "▣"}</span>
                       <span class="app-copy">
@@ -53,18 +65,32 @@ export function AppsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                         </Show>
                         <Show when={app.api?.length}>
                           <span class="app-api">
-                            {app.api!.length} action{app.api!.length === 1 ? "" : "s"}
+                            {app.api!.length} action
+                            {app.api!.length === 1 ? "" : "s"}
                           </span>
                         </Show>
                       </span>
                     </button>
                     <button
+                      type="button"
+                      class="app-code"
+                      title={`show code for ${app.title || app.id}`}
+                      aria-label={`show code for ${app.title || app.id}`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        bag.openAppCodeInSidebar(app.id);
+                      }}
+                    >
+                      code
+                    </button>
+                    <button
+                      type="button"
                       class="app-delete"
                       title={`delete ${app.title || app.id}`}
                       aria-label={`delete ${app.title || app.id}`}
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        bag.removeUi(app.id);
+                        void bag.removeUi(app.id);
                       }}
                     >
                       ×
@@ -73,9 +99,9 @@ export function AppsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 )}
               </For>
             </ul>
-          </Show>
-        </main>
-      </section>
-    </div>
+          </section>
+        </Show>
+      </PageBody>
+    </PageShell>
   );
 }

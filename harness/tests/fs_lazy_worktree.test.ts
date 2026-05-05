@@ -54,6 +54,7 @@ function addDir(path: string, names: string[] = []) {
 (globalThis as any).__op_object_get = () => null;
 (globalThis as any).__op_sha256_base64url = () => "hash";
 (globalThis as any).__op_facts_swap = () => {};
+(globalThis as any).__op_facts_snapshot_copy = () => 0;
 (globalThis as any).__op_facts_match = () => [];
 (globalThis as any).__op_facts_match_all = () => [];
 (globalThis as any).__op_facts_history = () => [];

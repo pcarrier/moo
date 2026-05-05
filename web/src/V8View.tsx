@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Bag } from "./state";
-import { PageHeader } from "./PageChrome";
+import { ControlField, EmptyState, HeaderIconButton, MetricCard, PageHeader } from "./PageChrome";
 import type { V8HeapSnapshot, V8WorkerSnapshot } from "./api";
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -58,16 +58,6 @@ function laneLabel(lane: string): string {
 function shortHash(hash: string | null | undefined): string {
   if (!hash) return "—";
   return hash.replace(/^sha256:/, "").slice(0, 12);
-}
-
-function StatCard(props: { label: string; value: string | number; sub?: string; tone?: "ok" | "warn" | "error" }) {
-  return (
-    <div class={"v8-stat-card " + (props.tone || "")}>
-      <div class="v8-stat-label">{props.label}</div>
-      <div class="v8-stat-value">{props.value}</div>
-      <Show when={props.sub}><div class="v8-stat-sub">{props.sub}</div></Show>
-    </div>
-  );
 }
 
 function Bar(props: { value: number; label?: string; tone?: "ok" | "warn" | "error" }) {
@@ -287,22 +277,29 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
       <PageHeader
         bag={bag}
         class="v8-header"
-        title="V8 observability"
+        title="V8"
         onToggleSidebar={props.onToggleSidebar}
+        showRightSidebarToggle
         actions={<>
           <label class="v8-toggle"><input type="checkbox" checked={autoRefresh()} onChange={(e) => setAutoRefresh(e.currentTarget.checked)} /> live</label>
-          <button type="button" class="secondary" onClick={() => bag.refreshV8Stats()}>refresh</button>
+          <HeaderIconButton
+            title="refresh V8 stats"
+            aria-label="refresh V8 stats"
+            onClick={() => void bag.refreshV8Stats()}
+          >
+            ↻
+          </HeaderIconButton>
         </>}
       />
 
-      <Show when={stats()} fallback={<div class="memory-loading">{bag.v8StatsLoaded() ? "No V8 stats yet." : "Loading V8 stats…"}</div>}>
+      <Show when={stats()} fallback={<EmptyState class="memory-loading">{bag.v8StatsLoaded() ? "No V8 stats yet." : "Loading V8 stats…"}</EmptyState>}>
         <section class="v8-stats-grid">
-          <StatCard label="workers" value={(totals()?.busy ?? 0) + "/" + (totals()?.workers ?? 0)} sub="busy / total" />
-          <StatCard label="jobs" value={totals()?.totalJobs ?? 0} sub={(totals()?.totalErrors ?? 0) + " errors"} tone={(totals()?.totalErrors ?? 0) ? "warn" : "ok"} />
-          <StatCard label="recycles" value={totals()?.totalRecycles ?? 0} sub={(totals()?.totalNearHeapLimit ?? 0) + " near heap · " + (totals()?.totalTerminations ?? 0) + " terminated"} tone={(totals()?.totalTerminations ?? 0) ? "error" : (totals()?.totalNearHeapLimit ?? 0) ? "warn" : (totals()?.totalRecycles ?? 0) ? "warn" : "ok"} />
-          <StatCard label="heap" value={formatBytes(totals()?.usedHeapSize)} sub={heapPctTotal().toFixed(0) + "% of committed heap"} />
-          <StatCard label="cache hit" value={hitRate(totals()?.totalCacheHits ?? 0, totals()?.totalCacheMisses ?? 0)} sub={(totals()?.totalCacheHits ?? 0) + " hits / " + (totals()?.totalCacheMisses ?? 0) + " misses"} />
-          <StatCard label="snapshot hit" value={hitRate(totals()?.totalSnapshotHits ?? 0, totals()?.totalSnapshotMisses ?? 0)} sub={config()?.startupSnapshotsEnabled ? "enabled" : "disabled"} tone={config()?.startupSnapshotsEnabled ? "ok" : "warn"} />
+          <MetricCard class="v8-stat-card" label="workers" value={(totals()?.busy ?? 0) + "/" + (totals()?.workers ?? 0)} sub="busy / total" />
+          <MetricCard class="v8-stat-card" label="jobs" value={totals()?.totalJobs ?? 0} sub={(totals()?.totalErrors ?? 0) + " errors"} tone={(totals()?.totalErrors ?? 0) ? "warn" : "ok"} />
+          <MetricCard class="v8-stat-card" label="recycles" value={totals()?.totalRecycles ?? 0} sub={(totals()?.totalNearHeapLimit ?? 0) + " near heap · " + (totals()?.totalTerminations ?? 0) + " terminated"} tone={(totals()?.totalTerminations ?? 0) ? "error" : (totals()?.totalNearHeapLimit ?? 0) ? "warn" : (totals()?.totalRecycles ?? 0) ? "warn" : "ok"} />
+          <MetricCard class="v8-stat-card" label="heap" value={formatBytes(totals()?.usedHeapSize)} sub={heapPctTotal().toFixed(0) + "% of committed heap"} />
+          <MetricCard class="v8-stat-card" label="cache hit" value={hitRate(totals()?.totalCacheHits ?? 0, totals()?.totalCacheMisses ?? 0)} sub={(totals()?.totalCacheHits ?? 0) + " hits / " + (totals()?.totalCacheMisses ?? 0) + " misses"} />
+          <MetricCard class="v8-stat-card" label="snapshot hit" value={hitRate(totals()?.totalSnapshotHits ?? 0, totals()?.totalSnapshotMisses ?? 0)} sub={config()?.startupSnapshotsEnabled ? "enabled" : "disabled"} tone={config()?.startupSnapshotsEnabled ? "ok" : "warn"} />
         </section>
 
         <section class="v8-config-row">
@@ -312,12 +309,11 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
         </section>
 
         <section class="v8-toolbar">
-          <label>
-            lane
+          <ControlField class="v8-lane-control" label="lane">
             <select value={laneFilter()} onChange={(e) => setLaneFilter(e.currentTarget.value)}>
               <For each={lanes()}>{(lane) => <option value={lane}>{lane === "all" ? "all lanes" : laneLabel(lane)}</option>}</For>
             </select>
-          </label>
+          </ControlField>
         </section>
 
         <PoolCharts pools={poolRows()} />

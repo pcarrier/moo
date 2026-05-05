@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -10,9 +10,12 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use rusty_v8 as v8;
+use serde_json::{Map, Value, json};
 
+use crate::host;
 use crate::ops;
 use crate::snapshots;
+use crate::util::{now_ms, random_id};
 
 static INIT_V8: Once = Once::new();
 
@@ -39,6 +42,7 @@ pub type AgentRunHandler =
 struct PendingAsyncOp {
     resolver: v8::Global<v8::PromiseResolver>,
     cancel: Arc<dyn Fn() + Send + Sync>,
+    trace_event_id: Option<String>,
 }
 
 struct AsyncHostState {
@@ -50,6 +54,33 @@ struct AsyncHostState {
 
 thread_local! {
     static ASYNC_HOST_STATE: RefCell<Option<AsyncHostState>> = const { RefCell::new(None) };
+    static TRACE_STATE: RefCell<Option<TraceState>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug)]
+struct TraceState {
+    root_id: String,
+    current_parent_id: String,
+    opened: HashSet<String>,
+}
+
+struct TraceStateRunGuard;
+
+impl TraceStateRunGuard {
+    fn enter() -> Self {
+        TRACE_STATE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+        Self
+    }
+}
+
+impl Drop for TraceStateRunGuard {
+    fn drop(&mut self) {
+        TRACE_STATE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
 }
 
 pub struct LoadedBundleCache {
@@ -88,8 +119,9 @@ impl LoadedBundleCache {
         source: &Arc<String>,
         input_json: &str,
         agent_run: AgentRunHandler,
+        parent_id: Option<String>,
     ) -> RunReport {
-        self.run_inner(isolate, source, input_json, Some(agent_run))
+        self.run_inner(isolate, source, input_json, Some((agent_run, parent_id)))
     }
 
     fn run_inner(
@@ -97,8 +129,9 @@ impl LoadedBundleCache {
         isolate: &mut v8::Isolate,
         source: &Arc<String>,
         input_json: &str,
-        agent_run: Option<AgentRunHandler>,
+        agent_run: Option<(AgentRunHandler, Option<String>)>,
     ) -> RunReport {
+        let _trace_guard = TraceStateRunGuard::enter();
         v8::scope!(let handle_scope, isolate);
 
         if let Some(i) = self.entries.iter().position(|entry| {
@@ -228,6 +261,7 @@ pub fn run_snapshot(path: &str, input_json: &str) -> Result<String, String> {
 // itself is reused, which avoids the multi-millisecond V8 startup cost on
 // every HTTP request.
 pub fn run_js_report_in(isolate: &mut v8::Isolate, source: &str, input_json: &str) -> RunReport {
+    let _trace_guard = TraceStateRunGuard::enter();
     v8::scope!(let handle_scope, isolate);
     let context = v8::Context::new(handle_scope, Default::default());
     let mut scope = v8::ContextScope::new(handle_scope, context);
@@ -247,13 +281,15 @@ pub fn run_js_async_report_in(
     source: &str,
     input_json: &str,
     agent_run: AgentRunHandler,
+    parent_id: Option<String>,
 ) -> RunReport {
+    let _trace_guard = TraceStateRunGuard::enter();
     v8::scope!(let handle_scope, isolate);
     let context = v8::Context::new(handle_scope, Default::default());
     let mut scope = v8::ContextScope::new(handle_scope, context);
 
     match install_globals(&mut scope) {
-        Ok(()) => run_main_async_in_scope(&mut scope, source, input_json, agent_run),
+        Ok(()) => run_main_async_in_scope(&mut scope, source, input_json, agent_run, parent_id),
         Err(err) => RunReport {
             result: Err(err),
             unhandled_exception: true,
@@ -298,6 +334,7 @@ pub fn load_snapshot_context_in(
 }
 
 pub(crate) fn run_loaded_main_in_scope(scope: &mut v8::PinScope, input_json: &str) -> RunReport {
+    let _trace_guard = TraceStateRunGuard::enter();
     run_main_in_scope(scope, None, input_json)
 }
 
@@ -306,6 +343,7 @@ pub(crate) fn run_loaded_main_in_scope_with_main(
     main: v8::Local<v8::Function>,
     input_json: &str,
 ) -> RunReport {
+    let _trace_guard = TraceStateRunGuard::enter();
     run_cached_main_in_scope(scope, main, input_json)
 }
 
@@ -314,6 +352,7 @@ pub(crate) fn run_loaded_main_async_in_scope(
     input_json: &str,
     agent_run: AgentRunHandler,
 ) -> RunReport {
+    let _trace_guard = TraceStateRunGuard::enter();
     run_main_async_loaded_in_scope(scope, input_json, agent_run)
 }
 
@@ -321,10 +360,12 @@ fn run_cached_main_maybe_async(
     scope: &mut v8::PinScope,
     main: v8::Local<v8::Function>,
     input_json: &str,
-    agent_run: Option<AgentRunHandler>,
+    agent_run: Option<(AgentRunHandler, Option<String>)>,
 ) -> RunReport {
     match agent_run {
-        Some(agent_run) => run_cached_main_async_in_scope(scope, main, input_json, agent_run),
+        Some((agent_run, parent_id)) => {
+            run_cached_main_async_in_scope(scope, main, input_json, agent_run, parent_id)
+        }
         None => run_cached_main_in_scope(scope, main, input_json),
     }
 }
@@ -342,9 +383,21 @@ fn run_cached_main_async_in_scope(
     main: v8::Local<v8::Function>,
     input_json: &str,
     agent_run: AgentRunHandler,
+    parent_id: Option<String>,
 ) -> RunReport {
     let (completion_tx, completion_rx) = mpsc::channel();
     let _guard = AsyncHostStateGuard::install(completion_tx, agent_run);
+    if let Some(parent_id) = parent_id {
+        let mut opened = HashSet::new();
+        opened.insert(parent_id.clone());
+        TRACE_STATE.with(|cell| {
+            *cell.borrow_mut() = Some(TraceState {
+                root_id: parent_id.clone(),
+                current_parent_id: parent_id,
+                opened,
+            });
+        });
+    }
     let out = call_cached_main_json_async(scope, main, input_json, completion_rx);
     report_from_main_result(out)
 }
@@ -385,6 +438,7 @@ fn run_main_async_in_scope(
     source: &str,
     input_json: &str,
     agent_run: AgentRunHandler,
+    parent_id: Option<String>,
 ) -> RunReport {
     if let Err(err) = eval_no_output(scope, source) {
         return RunReport {
@@ -395,6 +449,17 @@ fn run_main_async_in_scope(
 
     let (completion_tx, completion_rx) = mpsc::channel();
     let _guard = AsyncHostStateGuard::install(completion_tx, agent_run);
+    if let Some(parent_id) = parent_id {
+        let mut opened = HashSet::new();
+        opened.insert(parent_id.clone());
+        TRACE_STATE.with(|cell| {
+            *cell.borrow_mut() = Some(TraceState {
+                root_id: parent_id.clone(),
+                current_parent_id: parent_id,
+                opened,
+            });
+        });
+    }
     let out = call_main_json_async(scope, input_json, completion_rx);
     report_from_main_result(out)
 }
@@ -684,12 +749,19 @@ fn settle_async_op(scope: &mut v8::PinScope, completion: AsyncOpCompletion) -> R
     let resolver = v8::Local::new(scope, &pending.resolver);
     match completion.result {
         Ok(value) => {
+            if let Some(trace_event_id) = pending.trace_event_id.as_deref() {
+                let _ =
+                    trace_finish_event(trace_event_id, "ok", json!({ "resultChars": value.len() }));
+            }
             let Some(v) = v8::String::new(scope, &value) else {
                 return Err("could not allocate async op result".to_string());
             };
             let _ = resolver.resolve(scope, v.into());
         }
         Err(error) => {
+            if let Some(trace_event_id) = pending.trace_event_id.as_deref() {
+                let _ = trace_finish_event(trace_event_id, "error", json!({ "error": error }));
+            }
             let msg = v8::String::new(scope, &error)
                 .ok_or_else(|| "could not allocate async op error".to_string())?;
             let err = v8::Exception::error(scope, msg);
@@ -706,12 +778,15 @@ fn cancel_pending_async_ops() {
             Some(state) => state
                 .pending
                 .drain()
-                .map(|(_, pending)| pending.cancel)
+                .map(|(_, pending)| (pending.cancel, pending.trace_event_id))
                 .collect(),
             None => Vec::new(),
         }
     });
-    for cancel in pending {
+    for (cancel, trace_event_id) in pending {
+        if let Some(trace_event_id) = trace_event_id.as_deref() {
+            let _ = trace_finish_event(trace_event_id, "cancelled", json!({}));
+        }
         cancel();
     }
 }
@@ -719,6 +794,15 @@ fn cancel_pending_async_ops() {
 pub(crate) fn install_globals(scope: &mut v8::PinScope) -> Result<(), String> {
     install_console(scope)?;
     install_fn(scope, "__op_agent_run", op_agent_run)?;
+    install_fn(scope, "__op_trace_start_root", op_trace_start_root)?;
+    install_fn(scope, "__op_trace_current", op_trace_current)?;
+    install_fn(scope, "__op_trace_get", op_trace_get)?;
+    install_fn(scope, "__op_trace_events", op_trace_events)?;
+    install_fn(scope, "__op_trace_recent", op_trace_recent)?;
+    install_fn(scope, "__op_trace_insert", op_trace_insert)?;
+    install_fn(scope, "__op_trace_finish", op_trace_finish)?;
+    install_fn(scope, "__op_trace_set_parent", op_trace_set_parent)?;
+    install_fn(scope, "__op_trace_leave", op_trace_leave)?;
     install_web_base64(scope)?;
     ops::install_all(scope)?;
     Ok(())
@@ -907,6 +991,368 @@ fn install_fn_raw(
     Ok(())
 }
 
+fn op_trace_start_root(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parent_id = if args.length() > 0 && !args.get(0).is_null_or_undefined() {
+        let s = args.get(0).to_rust_string_lossy(scope);
+        if s.trim().is_empty() { None } else { Some(s) }
+    } else {
+        None
+    };
+    let Some(parent_id) = parent_id else {
+        throw(scope, "trace_start_root requires parent_id");
+        return;
+    };
+    let data = if args.length() > 1 && !args.get(1).is_null_or_undefined() {
+        parse_json_or_object(&args.get(1).to_rust_string_lossy(scope))
+    } else {
+        json!({})
+    };
+    let id = random_id("trace");
+    let data_json = object_value(data).to_string();
+    if let Err(e) = host::trace_open(
+        &id,
+        Some(&parent_id),
+        None,
+        None,
+        "runjs",
+        "runjs.execute",
+        now_ms(),
+        None,
+        None,
+        Some(&data_json),
+    ) {
+        throw(scope, &format!("trace_start_root: {e}"));
+        return;
+    }
+    let mut opened = HashSet::new();
+    opened.insert(id.clone());
+    TRACE_STATE.with(|cell| {
+        *cell.borrow_mut() = Some(TraceState {
+            root_id: id.clone(),
+            current_parent_id: id.clone(),
+            opened,
+        });
+    });
+    set_string_return(scope, &mut rv, &trace_current_json().to_string());
+}
+
+fn op_trace_current(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if TRACE_STATE.with(|cell| cell.borrow().is_none()) {
+        rv.set(v8::null(scope).into());
+        return;
+    }
+    set_string_return(scope, &mut rv, &trace_current_json().to_string());
+}
+
+fn op_trace_get(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parsed = json_arg(scope, &args, 0);
+    let id = parsed
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            parsed
+                .get("traceId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| TRACE_STATE.with(|cell| cell.borrow().as_ref().map(|s| s.root_id.clone())));
+    let Some(id) = id else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    match host::trace_get(&id) {
+        Ok(Some(row)) => set_string_return(scope, &mut rv, &trace_row_json(&row).to_string()),
+        Ok(None) => rv.set(v8::null(scope).into()),
+        Err(e) => throw(scope, &format!("trace_get: {e}")),
+    }
+}
+
+fn op_trace_events(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parsed = json_arg(scope, &args, 0);
+    let parent_id = parsed
+        .get("parentId")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            parsed
+                .get("traceId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            parsed
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| TRACE_STATE.with(|cell| cell.borrow().as_ref().map(|s| s.root_id.clone())));
+    let limit = parsed
+        .get("limit")
+        .and_then(Value::as_i64)
+        .filter(|n| *n > 0);
+    match host::trace_children(parent_id.as_deref(), limit) {
+        Ok(rows) => {
+            let arr: Vec<Value> = rows.iter().map(trace_row_json).collect();
+            set_string_return(scope, &mut rv, &Value::Array(arr).to_string());
+        }
+        Err(e) => throw(scope, &format!("trace_events: {e}")),
+    }
+}
+
+fn op_trace_recent(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let limit = if args.length() > 0 && args.get(0).is_number() {
+        args.get(0)
+            .to_integer(scope)
+            .map(|n| n.value())
+            .unwrap_or(50)
+    } else {
+        50
+    }
+    .clamp(1, 1000);
+    match host::trace_children(None, Some(limit)) {
+        Ok(rows) => {
+            let arr: Vec<Value> = rows.iter().map(trace_row_json).collect();
+            set_string_return(scope, &mut rv, &Value::Array(arr).to_string());
+        }
+        Err(e) => throw(scope, &format!("trace_recent: {e}")),
+    }
+}
+
+fn op_trace_insert(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parsed = json_arg(scope, &args, 0);
+    let kind = parsed.get("kind").and_then(Value::as_str).unwrap_or("user");
+    let name = parsed
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("user.span");
+    let status = parsed
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("running");
+    let data = parsed.get("data").cloned().unwrap_or_else(|| json!({}));
+    match trace_insert_child(kind, name, status, data) {
+        Ok(Some(id)) => set_string_return(scope, &mut rv, &id),
+        Ok(None) => rv.set(v8::null(scope).into()),
+        Err(e) => throw(scope, &format!("trace_insert: {e}")),
+    }
+}
+
+fn op_trace_finish(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if args.length() < 1 {
+        throw(scope, "trace_finish requires (id, status?, data?)");
+        return;
+    }
+    let id = args.get(0).to_rust_string_lossy(scope);
+    let status = if args.length() > 1 && !args.get(1).is_null_or_undefined() {
+        args.get(1).to_rust_string_lossy(scope)
+    } else {
+        "ok".to_string()
+    };
+    let data = if args.length() > 2 && !args.get(2).is_null_or_undefined() {
+        parse_json_or_object(&args.get(2).to_rust_string_lossy(scope))
+    } else {
+        json!({})
+    };
+    match trace_finish_event(&id, &status, data) {
+        Ok(changed) => rv.set(v8::Boolean::new(scope, changed).into()),
+        Err(e) => throw(scope, &format!("trace_finish: {e}")),
+    }
+}
+
+fn op_trace_set_parent(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let next = if args.length() > 0 && !args.get(0).is_null_or_undefined() {
+        Some(args.get(0).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    let previous = TRACE_STATE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let state = borrow.as_mut()?;
+        let previous = state.current_parent_id.clone();
+        state.current_parent_id = next.unwrap_or_else(|| state.root_id.clone());
+        Some(previous)
+    });
+    match previous {
+        Some(previous) => set_string_return(scope, &mut rv, &previous),
+        None => rv.set(v8::null(scope).into()),
+    }
+}
+
+fn op_trace_leave(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    TRACE_STATE.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn trace_insert_child(
+    kind: &str,
+    name: &str,
+    status: &str,
+    data: Value,
+) -> Result<Option<String>, String> {
+    TRACE_STATE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let Some(state) = borrow.as_mut() else {
+            return Ok(None);
+        };
+        let id = random_id("traceevt");
+        let data_json = object_value(data).to_string();
+        host::trace_open(
+            &id,
+            Some(&state.current_parent_id),
+            None,
+            None,
+            kind,
+            name,
+            now_ms(),
+            None,
+            None,
+            Some(&data_json),
+        )?;
+        if status != "running" {
+            host::trace_finish(&id, now_ms(), status, None, None, Some(&data_json))?;
+        }
+        state.opened.insert(id.clone());
+        Ok(Some(id))
+    })
+}
+
+fn trace_finish_event(id: &str, status: &str, data: Value) -> Result<bool, String> {
+    let Some(existing) = host::trace_get(id)? else {
+        return Ok(false);
+    };
+    let now_ms = now_ms();
+    let mut merged = match existing
+        .data_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}))
+    {
+        Value::Object(map) => map,
+        other => {
+            let mut map = Map::new();
+            map.insert("previous".to_string(), other);
+            map
+        }
+    };
+    if let Value::Object(new_map) = object_value(data) {
+        for (k, v) in new_map {
+            merged.insert(k, v);
+        }
+    }
+    merged.insert(
+        "durationMs".to_string(),
+        Value::Number(serde_json::Number::from(
+            now_ms.saturating_sub(existing.started_ms),
+        )),
+    );
+    host::trace_finish(
+        id,
+        now_ms,
+        status,
+        None,
+        None,
+        Some(&Value::Object(merged).to_string()),
+    )
+}
+
+fn trace_current_json() -> Value {
+    TRACE_STATE.with(|cell| {
+        let borrow = cell.borrow();
+        let Some(state) = borrow.as_ref() else {
+            return Value::Null;
+        };
+        json!({
+            "id": state.root_id,
+            "rootId": state.root_id,
+            "parentId": state.current_parent_id,
+        })
+    })
+}
+
+fn trace_row_json(row: &host::TraceRow) -> Value {
+    json!({
+        "id": row.id,
+        "parentId": row.parent_id,
+        "chatId": row.chat_id,
+        "runId": row.run_id,
+        "kind": row.kind,
+        "name": row.name,
+        "depth": row.depth,
+        "seq": row.seq,
+        "status": row.status,
+        "startedMs": row.started_ms,
+        "endedMs": row.ended_ms,
+        "inputHash": row.input_hash,
+        "outputHash": row.output_hash,
+        "errorHash": row.error_hash,
+        "invokedFromStepId": row.invoked_from_step_id,
+        "data": row.data_json.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null),
+    })
+}
+
+fn json_arg(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, i: i32) -> Value {
+    if args.length() <= i || args.get(i).is_null_or_undefined() {
+        return json!({});
+    }
+    parse_json_or_object(&args.get(i).to_rust_string_lossy(scope))
+}
+
+fn parse_json_or_object(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({ "value": raw }))
+}
+
+fn object_value(value: Value) -> Value {
+    match value {
+        Value::Object(_) => value,
+        Value::Null => json!({}),
+        other => json!({ "value": other }),
+    }
+}
+
+fn set_string_return(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, value: &str) {
+    if let Some(s) = v8::String::new(scope, value) {
+        rv.set(s.into());
+    }
+}
+
 fn op_agent_run(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -938,12 +1384,19 @@ fn op_agent_run(
         state.next_id = state.next_id.saturating_add(1);
         let completion_tx = state.completion_tx.clone();
         let handler = state.agent_run.clone();
+        let trace_event_id = trace_insert_child(
+            "span",
+            "__op_agent_run",
+            "running",
+            agent_run_trace_data(id, &request),
+        )?;
         let handle = handler(id, request, completion_tx);
         state.pending.insert(
             id,
             PendingAsyncOp {
                 resolver: resolver_global,
                 cancel: handle.cancel,
+                trace_event_id,
             },
         );
         Ok(())
@@ -957,6 +1410,49 @@ fn op_agent_run(
         let err = v8::Exception::error(scope, msg);
         let _ = resolver.reject(scope, err);
     }
+}
+
+fn agent_run_trace_data(id: u64, request: &str) -> Value {
+    let parsed = serde_json::from_str::<Value>(request).unwrap_or(Value::Null);
+    let mut data = Map::new();
+    data.insert(
+        "asyncId".to_string(),
+        Value::Number(serde_json::Number::from(id)),
+    );
+    if let Some(request_id) = parsed.get("requestId").and_then(Value::as_str) {
+        data.insert(
+            "requestId".to_string(),
+            Value::String(request_id.to_string()),
+        );
+    }
+    if let Some(child_chat_id) = parsed.get("childChatId").and_then(Value::as_str) {
+        data.insert(
+            "childChatId".to_string(),
+            Value::String(child_chat_id.to_string()),
+        );
+    }
+    if let Some(spec) = parsed.get("spec") {
+        if let Some(label) = spec.get("label").and_then(Value::as_str) {
+            data.insert("label".to_string(), Value::String(label.to_string()));
+        }
+        if let Some(model) = spec.get("model").and_then(Value::as_str) {
+            data.insert("model".to_string(), Value::String(model.to_string()));
+        }
+        if let Some(effort) = spec.get("effort").and_then(Value::as_str) {
+            data.insert("effort".to_string(), Value::String(effort.to_string()));
+        }
+    }
+    if let Some(limits) = parsed.get("limits") {
+        for key in ["maxTurns", "timeoutMs", "depth"] {
+            if let Some(value) = limits.get(key).and_then(Value::as_i64) {
+                data.insert(
+                    key.to_string(),
+                    Value::Number(serde_json::Number::from(value)),
+                );
+            }
+        }
+    }
+    Value::Object(data)
 }
 
 fn install_console(scope: &mut v8::PinScope) -> Result<(), String> {
@@ -1029,4 +1525,71 @@ fn serialize_error(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Str
         payload.insert("stack".into(), serde_json::Value::String(s));
     }
     serde_json::Value::Object(payload).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_ops_create_tree_and_reset_between_runs() {
+        let dir = std::env::temp_dir().join(format!(
+            "moo-runtime-traces-{}-{}",
+            std::process::id(),
+            crate::util::now_ms(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("store.sqlite");
+        crate::host::install(db_path.to_str().unwrap()).unwrap();
+
+        init_v8();
+        let mut isolate = v8::Isolate::new(Default::default());
+        isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
+        let source = r#"
+globalThis.main = () => {
+  const root = JSON.parse(__op_trace_start_root('system:test-parent', JSON.stringify({ label: 'Trace test' })));
+  const span = __op_trace_insert(JSON.stringify({ kind: 'span', name: 'work', status: 'running', data: { phase: 1 } }));
+  const previous = __op_trace_set_parent(span);
+  const mark = __op_trace_insert(JSON.stringify({ kind: 'mark', name: 'checkpoint', status: 'ok', data: { message: 'inside' } }));
+  __op_trace_set_parent(previous);
+  __op_trace_finish(span, 'ok', JSON.stringify({ done: true }));
+  __op_trace_finish(root.traceId, 'ok', JSON.stringify({ resultHash: 'sha256:test' }));
+  return { root, span, mark, rows: JSON.parse(__op_trace_events(JSON.stringify({}))) };
+};
+"#;
+        let report = run_js_report_in(&mut isolate, source, "{}");
+        assert_eq!(
+            report.result.as_deref().map(|s| s.starts_with('{')),
+            Ok(true)
+        );
+        let out: Value = serde_json::from_str(&report.result.unwrap()).unwrap();
+        let rows = out.get("rows").and_then(Value::as_array).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].get("kind").and_then(Value::as_str), Some("trace"));
+        assert_eq!(rows[0].get("status").and_then(Value::as_str), Some("ok"));
+        let root_data = rows[0].get("data").and_then(Value::as_object).unwrap();
+        assert!(root_data.contains_key("durationNs"));
+        assert!(!root_data.contains_key("durationMs"));
+        let span_data = rows[1].get("data").and_then(Value::as_object).unwrap();
+        assert!(span_data.contains_key("durationNs"));
+        assert!(!span_data.contains_key("durationMs"));
+        assert_eq!(rows[1].get("name").and_then(Value::as_str), Some("work"));
+        assert_eq!(
+            rows[2]
+                .get("data")
+                .and_then(|v| v.get("parentId"))
+                .and_then(Value::as_str),
+            out.get("span").and_then(Value::as_str),
+        );
+
+        let report = run_js_report_in(
+            &mut isolate,
+            "globalThis.main = () => __op_trace_current();",
+            "{}",
+        );
+        assert_eq!(report.result.as_deref(), Ok("null"));
+
+        crate::host::drop_host();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

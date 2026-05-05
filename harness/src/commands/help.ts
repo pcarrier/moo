@@ -1,7 +1,8 @@
+import { Effect, ok } from "../core/effect";
+
 export function helpCommand() {
-  return {
-    ok: true,
-    value: {
+  return Effect.succeed(
+    ok({
       commands: [
         "step",
         "resume",
@@ -62,7 +63,7 @@ export function helpCommand() {
         "moo mcp-call <serverId> <tool> [jsonArgs]",
         "moo serve",
       ],
-    },
-  };
+    }),
+  );
 }
 

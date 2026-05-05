@@ -4,7 +4,7 @@
 // from two sources: explicit user actions (createSignal setters) and the
 // backend WS event stream (which schedules refresh fetches).
 
-import { createSignal, createEffect, on, onCleanup } from "solid-js";
+import { createSignal, createEffect, on, onCleanup, untrack } from "solid-js";
 
 import {
   api,
@@ -13,6 +13,7 @@ import {
   type ChatSummary,
   type CompactionsValue,
   type ImageAttachment,
+  type FsEntry,
   type Predicate,
   type ChatModelInfo,
   type DescribeValue,
@@ -22,6 +23,7 @@ import {
   type StoreObject,
   type PointerEntry,
   type Triple,
+  type TraceRow,
   type TriplesValue,
   type UiApp,
   type UiInstance,
@@ -30,7 +32,12 @@ import {
 } from "./api";
 import { collapseHome, setHomeDir_ } from "./paths";
 import { EventStream, type Event } from "./events";
-import { mergedFileDiffs, mergedMemoryDiffs, sameDiffPath, type MemoryGraphDiffSummary } from "./diffs";
+import {
+  mergedFileDiffs,
+  mergedMemoryDiffs,
+  sameDiffPath,
+  type MemoryGraphDiffSummary,
+} from "./diffs";
 import { mergeTokenProgress } from "./tokenProgress";
 
 const SIDEBAR_KEY = "moo.sidebar.w";
@@ -43,7 +50,15 @@ const INITIAL_TIMELINE_LIMIT = 160;
 const TIMELINE_PAGE_SIZE = 160;
 const LIVE_TIMELINE_SLACK = 80;
 const MAX_REMEMBERED_TIMELINE_KEYS = 1200;
+const MAX_DISMISSED_REPLIES = 24;
 const RIGHT_SIDEBAR_CHAT_MAX = 24;
+const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
+  "view:apps",
+  "view:facts",
+  "view:pointers",
+  "view:v8",
+  "view:traces",
+];
 const RIGHT_SIDEBAR_TABS_MAX = 8;
 const CHAT_LOAD_RETRY_DELAYS_MS = [200, 600, 1200];
 const CHAT_CACHE_MAX = 12;
@@ -60,27 +75,40 @@ const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 function decodeSimpleTurtleString(value: string): string {
   const trimmed = value.trim();
-  const m = /^"((?:[^"\\\r\n]|\\["\\nrtbf])*)"(?:@[A-Za-z]+(?:-[A-Za-z0-9]+)*|\^\^\S+)?$/.exec(trimmed);
+  const m =
+    /^"((?:[^"\\\r\n]|\\["\\nrtbf])*)"(?:@[A-Za-z]+(?:-[A-Za-z0-9]+)*|\^\^\S+)?$/.exec(
+      trimmed,
+    );
   if (!m) return trimmed;
   return m[1].replace(/\\(["\\nrtbf])/g, (_all, ch: string) => {
     switch (ch) {
-      case "n": return "\n";
-      case "r": return "\r";
-      case "t": return "\t";
-      case "b": return "\b";
-      case "f": return "\f";
-      default: return ch;
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "\t";
+      case "b":
+        return "\b";
+      case "f":
+        return "\f";
+      default:
+        return ch;
     }
   });
 }
 
 function normalizeEffort(value: unknown): string | null {
-  const effort = decodeSimpleTurtleString(String(value ?? "")).trim().toLowerCase();
+  const effort = decodeSimpleTurtleString(String(value ?? ""))
+    .trim()
+    .toLowerCase();
   return EFFORT_LEVELS.includes(effort) ? effort : null;
 }
 
 function rootEmPx(): number {
-  const fontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize || "16");
+  const fontSize = Number.parseFloat(
+    getComputedStyle(document.documentElement).fontSize || "16",
+  );
   return Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 16;
 }
 
@@ -89,7 +117,8 @@ function sidebarMinPx(): number {
 }
 
 function minSidebarPercent(): number {
-  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  const viewportW =
+    document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return 0;
   return (sidebarMinPx() / viewportW) * 100;
 }
@@ -99,16 +128,27 @@ function clampSidebarPercent(percent: number, enforceMin = false): number {
   return Math.max(min, percent);
 }
 
-function sidebarPercentFromPx(px: number, enforceMin = false): number | undefined {
+function sidebarPercentFromPx(
+  px: number,
+  enforceMin = false,
+): number | undefined {
   if (!Number.isFinite(px)) return undefined;
-  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  const viewportW =
+    document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return undefined;
   return clampSidebarPercent((px / viewportW) * 100, enforceMin);
 }
 
-function parseSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string | undefined {
+function parseSidebarWidth(
+  width: unknown,
+  numberUnit: "percent" | "px" = "px",
+  enforceMin = false,
+): string | undefined {
   if (typeof width === "number") {
-    const percent = numberUnit === "percent" ? clampSidebarPercent(width, enforceMin) : sidebarPercentFromPx(width, enforceMin);
+    const percent =
+      numberUnit === "percent"
+        ? clampSidebarPercent(width, enforceMin)
+        : sidebarPercentFromPx(width, enforceMin);
     return percent === undefined ? undefined : `${percent}%`;
   }
   const raw = String(width ?? "").trim();
@@ -136,11 +176,18 @@ function parseSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", 
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) return undefined;
   if (n <= 0 && !enforceMin) return undefined;
-  const percent = numberUnit === "percent" ? clampSidebarPercent(n, enforceMin) : sidebarPercentFromPx(n, enforceMin);
+  const percent =
+    numberUnit === "percent"
+      ? clampSidebarPercent(n, enforceMin)
+      : sidebarPercentFromPx(n, enforceMin);
   return percent === undefined ? undefined : `${percent}%`;
 }
 
-function clampSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string {
+function clampSidebarWidth(
+  width: unknown,
+  numberUnit: "percent" | "px" = "px",
+  enforceMin = false,
+): string {
   return parseSidebarWidth(width, numberUnit, enforceMin) ?? SIDEBAR_DEFAULT_W;
 }
 function rightSidebarMinPx(): number {
@@ -148,7 +195,8 @@ function rightSidebarMinPx(): number {
 }
 
 function minRightSidebarPercent(): number {
-  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  const viewportW =
+    document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return 0;
   return (rightSidebarMinPx() / viewportW) * 100;
 }
@@ -158,16 +206,27 @@ function clampRightSidebarPercent(percent: number, enforceMin = false): number {
   return Math.max(min, percent);
 }
 
-function rightSidebarPercentFromPx(px: number, enforceMin = false): number | undefined {
+function rightSidebarPercentFromPx(
+  px: number,
+  enforceMin = false,
+): number | undefined {
   if (!Number.isFinite(px)) return undefined;
-  const viewportW = document.documentElement?.clientWidth || window.innerWidth || 0;
+  const viewportW =
+    document.documentElement?.clientWidth || window.innerWidth || 0;
   if (viewportW <= 0) return undefined;
   return clampRightSidebarPercent((px / viewportW) * 100, enforceMin);
 }
 
-function parseRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string | undefined {
+function parseRightSidebarWidth(
+  width: unknown,
+  numberUnit: "percent" | "px" = "px",
+  enforceMin = false,
+): string | undefined {
   if (typeof width === "number") {
-    const percent = numberUnit === "percent" ? clampRightSidebarPercent(width, enforceMin) : rightSidebarPercentFromPx(width, enforceMin);
+    const percent =
+      numberUnit === "percent"
+        ? clampRightSidebarPercent(width, enforceMin)
+        : rightSidebarPercentFromPx(width, enforceMin);
     return percent === undefined ? undefined : `${percent}%`;
   }
   const raw = String(width ?? "").trim();
@@ -195,12 +254,22 @@ function parseRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) return undefined;
   if (n <= 0 && !enforceMin) return undefined;
-  const percent = numberUnit === "percent" ? clampRightSidebarPercent(n, enforceMin) : rightSidebarPercentFromPx(n, enforceMin);
+  const percent =
+    numberUnit === "percent"
+      ? clampRightSidebarPercent(n, enforceMin)
+      : rightSidebarPercentFromPx(n, enforceMin);
   return percent === undefined ? undefined : `${percent}%`;
 }
 
-function clampRightSidebarWidth(width: unknown, numberUnit: "percent" | "px" = "px", enforceMin = false): string {
-  return parseRightSidebarWidth(width, numberUnit, enforceMin) ?? RIGHT_SIDEBAR_DEFAULT_W;
+function clampRightSidebarWidth(
+  width: unknown,
+  numberUnit: "percent" | "px" = "px",
+  enforceMin = false,
+): string {
+  return (
+    parseRightSidebarWidth(width, numberUnit, enforceMin) ??
+    RIGHT_SIDEBAR_DEFAULT_W
+  );
 }
 
 function readRightSidebarLayout(): Record<string, RightSidebarLayoutState> {
@@ -208,7 +277,8 @@ function readRightSidebarLayout(): Record<string, RightSidebarLayoutState> {
     const raw = localStorage.getItem(RIGHT_SIDEBAR_LAYOUT_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
     const out: Record<string, RightSidebarLayoutState> = {};
     for (const [id, value] of Object.entries(parsed)) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
@@ -225,20 +295,27 @@ function readRightSidebarLayout(): Record<string, RightSidebarLayoutState> {
   }
 }
 
-function persistRightSidebarLayout(layout: Record<string, RightSidebarLayoutState>) {
+function persistRightSidebarLayout(
+  layout: Record<string, RightSidebarLayoutState>,
+) {
   try {
     const entries = Object.entries(layout).filter(([id]) => id);
     if (entries.length === 0) {
       localStorage.removeItem(RIGHT_SIDEBAR_LAYOUT_KEY);
       return;
     }
-    localStorage.setItem(RIGHT_SIDEBAR_LAYOUT_KEY, JSON.stringify(Object.fromEntries(entries)));
+    localStorage.setItem(
+      RIGHT_SIDEBAR_LAYOUT_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
   } catch {
     /* ignore storage failures */
   }
 }
 
-function expectedChatWorktreePath(chat: Pick<ChatSummary, "chatId" | "path"> | null | undefined): string | null {
+function expectedChatWorktreePath(
+  chat: Pick<ChatSummary, "chatId" | "path"> | null | undefined,
+): string | null {
   const id = String(chat?.chatId || "").trim();
   if (!id) return null;
   const root = String(chat?.path ?? ".").trim() || ".";
@@ -261,6 +338,11 @@ export type OpenRepoFile = {
   content: string;
   size: number;
   mtime: number;
+  kind: string;
+  entries?: FsEntry[];
+  changed?: boolean;
+  additions?: number;
+  deletions?: number;
   loading: boolean;
   error: string | null;
 };
@@ -274,14 +356,55 @@ export type StorePreviewFile = {
 
 export type DiffContentMode = "diff" | "preview" | "source";
 
+export type BrowserNavState = {
+  path: string | null;
+  history: string[];
+  index: number;
+};
+
 export type RightSidebarTab =
   | { id: "trail"; kind: "trail"; title: string }
   | { id: "diffs"; kind: "diffs"; title: string }
+  | { id: "browser"; kind: "browser"; title: string; nav?: BrowserNavState }
   | { id: string; kind: "file"; title: string; file: OpenRepoFile }
   | { id: string; kind: "store"; title: string; store: StorePreviewFile }
-  | { id: string; kind: "diff"; title: string; diffId: string; path: string; item?: FileDiffItem; scope: "history" | "timeline"; mode?: DiffContentMode }
-  | { id: string; kind: "memory-diff"; title: string; diffId: string; store: string; graph: string; path: string; item?: MemoryDiffItem | MemoryGraphDiffSummary; scope: "history" | "timeline" }
-  | { id: string; kind: "app"; title: string; uiId: string; instanceId: string | null; icon?: string | null };
+  | {
+      id: string;
+      kind: "diff";
+      title: string;
+      diffId: string;
+      path: string;
+      item?: FileDiffItem;
+      scope: "history" | "timeline";
+      mode?: DiffContentMode;
+    }
+  | { id: string; kind: "trace"; title: string; trace: TraceRow }
+  | {
+      id: string;
+      kind: "memory-diff";
+      title: string;
+      diffId: string;
+      store: string;
+      graph: string;
+      path: string;
+      item?: MemoryDiffItem | MemoryGraphDiffSummary;
+      scope: "history" | "timeline";
+    }
+  | {
+      id: string;
+      kind: "app";
+      title: string;
+      uiId: string;
+      instanceId: string | null;
+      icon?: string | null;
+    }
+  | {
+      id: string;
+      kind: "app-code";
+      title: string;
+      uiId: string;
+      icon?: string | null;
+    };
 
 type RightSidebarLayoutState = {
   width?: string;
@@ -322,7 +445,9 @@ async function retryChatLoad<T>(
   return result;
 }
 
-type SingleFlight<TArgs extends unknown[], TValue> = ((...args: TArgs) => Promise<ApiResult<TValue>>) & {
+type SingleFlight<TArgs extends unknown[], TValue> = ((
+  ...args: TArgs
+) => Promise<ApiResult<TValue>>) & {
   forget: (...args: TArgs) => void;
   clear: () => void;
 };
@@ -351,6 +476,14 @@ function createSingleFlight<TArgs extends unknown[], TValue>(
 
 export type Bag = ReturnType<typeof createState>;
 
+export type DismissedReply = {
+  id: string;
+  chatId: string;
+  draftId: string;
+  content: string;
+  at: number;
+};
+
 export function displayChatId(chatId: string | null | undefined): string {
   const id = String(chatId ?? "").trim();
   if (!id) return "";
@@ -373,7 +506,9 @@ function normalizeModelMru(value: unknown): string[] {
 
 function readModelMru(): string[] {
   try {
-    return normalizeModelMru(JSON.parse(localStorage.getItem(MODEL_MRU_KEY) || "[]"));
+    return normalizeModelMru(
+      JSON.parse(localStorage.getItem(MODEL_MRU_KEY) || "[]"),
+    );
   } catch {
     return [];
   }
@@ -381,14 +516,20 @@ function readModelMru(): string[] {
 
 function persistModelMru(models: string[]) {
   try {
-    localStorage.setItem(MODEL_MRU_KEY, JSON.stringify(normalizeModelMru(models)));
+    localStorage.setItem(
+      MODEL_MRU_KEY,
+      JSON.stringify(normalizeModelMru(models)),
+    );
   } catch {
     /* ignore storage failures */
   }
 }
 
 export function createState() {
-  const chatModelsSingle = createSingleFlight(api.chat.models, (id: string) => id);
+  const chatModelsSingle = createSingleFlight(
+    api.chat.models,
+    (id: string) => id,
+  );
   const uiListSingle = createSingleFlight(api.ui.list, () => "ui-list");
   const uiChatSingle = createSingleFlight(api.ui.chat, (id: string) => id);
   const mcpListSingle = createSingleFlight(api.mcp.list, () => "mcp-list");
@@ -399,7 +540,8 @@ export function createState() {
     localStorage.getItem(ARCHIVED_COLLAPSED_KEY) !== "0",
   );
   const [chatId, setChatId] = createSignal<string | null>(null);
-  const currentChat = () => chats().find((chat) => chat.chatId === chatId()) ?? null;
+  const currentChat = () =>
+    chats().find((chat) => chat.chatId === chatId()) ?? null;
   const currentChatTitle = () => {
     const chat = currentChat();
     if (chat) return chat.title?.trim() || displayChatId(chat.chatId);
@@ -409,13 +551,23 @@ export function createState() {
   const [chatFocusRequest, setChatFocusRequest] = createSignal(0);
   const [resumeOfferRequest, setResumeOfferRequest] = createSignal(0);
   const [timeline, setTimeline] = createSignal<TimelineItem[]>([]);
-  const [timelineJumpRequest, setTimelineJumpRequest] = createSignal<{ id: number; target: { key?: string; at?: number; id?: string } } | null>(null);
+  const [timelineJumpRequest, setTimelineJumpRequest] = createSignal<{
+    id: number;
+    target: { key?: string; at?: number; id?: string };
+  } | null>(null);
   let timelineJumpSeq = 0;
-  const jumpToTimeline = (target: { key?: string; at?: number; id?: string }) => {
+  const jumpToTimeline = (target: {
+    key?: string;
+    at?: number;
+    id?: string;
+  }) => {
     setTimelineJumpRequest({ id: ++timelineJumpSeq, target });
   };
-  const [timelineLimit, setTimelineLimit] = createSignal(INITIAL_TIMELINE_LIMIT);
-  const [timelineExpansionVersion, setTimelineExpansionVersion] = createSignal(0);
+  const [timelineLimit, setTimelineLimit] = createSignal(
+    INITIAL_TIMELINE_LIMIT,
+  );
+  const [timelineExpansionVersion, setTimelineExpansionVersion] =
+    createSignal(0);
   const timelineOpen = new Set<string>();
   const timelineShown = new Map<string, number>();
   const expansionStore = {
@@ -443,7 +595,9 @@ export function createState() {
   };
   const [hiddenTimelineItems, setHiddenTimelineItems] = createSignal(0);
   const [trail, setTrail] = createSignal<TimelineItem[]>([]);
-  const [compactions, setCompactions] = createSignal<CompactionsValue | null>(null);
+  const [compactions, setCompactions] = createSignal<CompactionsValue | null>(
+    null,
+  );
   const [compactionsLoading, setCompactionsLoading] = createSignal(false);
   // chatId whose timeline has been loaded at least once. Used to gate the
   // "nothing yet" empty state so it doesn't flash during chat switches /
@@ -463,31 +617,52 @@ export function createState() {
     fraction: number;
   } | null>(null);
   const [triples, setTriples] = createSignal<Triple[]>([]);
-  const [graphSummaries, setGraphSummaries] = createSignal<import("./api").GraphSummary[]>([]);
+  const [graphSummaries, setGraphSummaries] = createSignal<
+    import("./api").GraphSummary[]
+  >([]);
   const [graphSummariesLoaded, setGraphSummariesLoaded] = createSignal(false);
   const [pointers, setPointers] = createSignal<PointerEntry[]>([]);
   const [pointersLoaded, setPointersLoaded] = createSignal(false);
   const [triplesLoaded, setTriplesLoaded] = createSignal(false);
-  const [triplesRemovedMode, setTriplesRemovedMode] = createSignal<"exclude" | "include" | "only">("exclude");
+  const [triplesRemovedMode, setTriplesRemovedMode] = createSignal<
+    "exclude" | "include" | "only"
+  >("exclude");
   const [triplesTruncated, setTriplesTruncated] = createSignal(false);
   const [triplesLimit, setTriplesLimit] = createSignal<number | null>(null);
   const [triplesTotal, setTriplesTotal] = createSignal<number | null>(null);
   const [vocabulary, setVocabulary] = createSignal<Predicate[]>([]);
   const [vocabularyLoaded, setVocabularyLoaded] = createSignal(false);
-  const [chatMemory, setChatMemory] = createSignal<Record<string, { effort: string | null }>>({});
+  const [chatMemory, setChatMemory] = createSignal<
+    Record<string, { effort: string | null }>
+  >({});
   let chatMemoryRequestSeq = 0;
   let chatModelRequestSeq = 0;
   const chatModelWriteSeqByChat = new Map<string, number>();
   const chatEffortWriteSeqByChat = new Map<string, number>();
-  const pendingModelWritesByChat = new Map<string, { seq: number; model: string | null }>();
-  const pendingEffortWritesByChat = new Map<string, { seq: number; effort: string | null }>();
+  const pendingModelWritesByChat = new Map<
+    string,
+    { seq: number; model: string | null }
+  >();
+  const pendingEffortWritesByChat = new Map<
+    string,
+    { seq: number; effort: string | null }
+  >();
 
-  function modelWithPendingSelection(model: ChatModelInfo, selectedModel: string | null): ChatModelInfo {
+  function modelWithPendingSelection(
+    model: ChatModelInfo,
+    selectedModel: string | null,
+  ): ChatModelInfo {
     if (!selectedModel) return model;
-    const option = model.modelOptions?.find((m) => m.id === selectedModel || m.model === selectedModel);
+    const option = model.modelOptions?.find(
+      (m) => m.id === selectedModel || m.model === selectedModel,
+    );
     const colon = selectedModel.indexOf(":");
-    const provider = option?.provider ?? (colon > 0 ? selectedModel.slice(0, colon) : model.provider);
-    const modelName = option?.model ?? (colon > 0 ? selectedModel.slice(colon + 1) : selectedModel);
+    const provider =
+      option?.provider ??
+      (colon > 0 ? selectedModel.slice(0, colon) : model.provider);
+    const modelName =
+      option?.model ??
+      (colon > 0 ? selectedModel.slice(colon + 1) : selectedModel);
     const modelId = option?.id ?? selectedModel;
     return {
       ...model,
@@ -500,18 +675,26 @@ export function createState() {
     };
   }
 
-  function modelWithPendingWrites(id: string, model: ChatModelInfo): ChatModelInfo {
+  function modelWithPendingWrites(
+    id: string,
+    model: ChatModelInfo,
+  ): ChatModelInfo {
     let next = modelWithFactBackedEffort(id, model);
     const pendingModel = pendingModelWritesByChat.get(id);
-    if (pendingModel) next = modelWithPendingSelection(next, pendingModel.model);
+    if (pendingModel)
+      next = modelWithPendingSelection(next, pendingModel.model);
     return next;
   }
 
-  function modelWithFactBackedEffort(id: string, model: ChatModelInfo): ChatModelInfo {
+  function modelWithFactBackedEffort(
+    id: string,
+    model: ChatModelInfo,
+  ): ChatModelInfo {
     const memory = chatMemory();
     if (!Object.prototype.hasOwnProperty.call(memory, id)) return model;
     const effort = normalizeEffort(memory[id]?.effort);
-    const supportedEffort = effort && (model.efforts ?? []).includes(effort) ? effort : null;
+    const supportedEffort =
+      effort && (model.efforts ?? []).includes(effort) ? effort : null;
     return {
       ...model,
       selectedEffort: supportedEffort,
@@ -529,7 +712,10 @@ export function createState() {
   const chatCache = new Map<string, ChatCacheEntry>();
   let persistChatCacheSoonHandle: number | null = null;
 
-  function isDescribeFreshForSummary(value: DescribeValue | undefined, summary: ChatSummary | undefined): boolean {
+  function isDescribeFreshForSummary(
+    value: DescribeValue | undefined,
+    summary: ChatSummary | undefined,
+  ): boolean {
     if (!value || !summary) return !!value;
     return (
       value.head === summary.head &&
@@ -554,7 +740,9 @@ export function createState() {
     try {
       const raw = localStorage.getItem(CHAT_CACHE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { entries?: Array<[string, ChatCacheEntry]> };
+      const parsed = JSON.parse(raw) as {
+        entries?: Array<[string, ChatCacheEntry]>;
+      };
       for (const [id, entry] of parsed.entries ?? []) {
         if (!id || !entry || typeof entry.updatedAt !== "number") continue;
         chatCache.set(id, entry);
@@ -568,7 +756,10 @@ export function createState() {
   function persistChatCache() {
     pruneExpiredChatCache();
     try {
-      localStorage.setItem(CHAT_CACHE_KEY, JSON.stringify({ entries: [...chatCache.entries()] }));
+      localStorage.setItem(
+        CHAT_CACHE_KEY,
+        JSON.stringify({ entries: [...chatCache.entries()] }),
+      );
     } catch {
       // If the bounded timeline payloads hit quota, keep the freshest half and
       // try once more. The in-memory cache remains valid for this tab either way.
@@ -593,7 +784,11 @@ export function createState() {
   }
 
   function touchChatCache(id: string, patch: Partial<ChatCacheEntry>) {
-    const next = { ...(chatCache.get(id) ?? { updatedAt: 0 }), ...patch, updatedAt: Date.now() };
+    const next = {
+      ...(chatCache.get(id) ?? { updatedAt: 0 }),
+      ...patch,
+      updatedAt: Date.now(),
+    };
     chatCache.delete(id);
     chatCache.set(id, next);
     while (chatCache.size > CHAT_CACHE_MAX) {
@@ -645,19 +840,24 @@ export function createState() {
     };
     if (value.title !== undefined) patch.title = value.title;
     if (value.path !== undefined) patch.path = value.path;
-    if (value.worktreePath !== undefined) patch.worktreePath = value.worktreePath;
+    if (value.worktreePath !== undefined)
+      patch.worktreePath = value.worktreePath;
     if (value.hidden !== undefined) patch.hidden = value.hidden;
-    if (value.parentChatId !== undefined) patch.parentChatId = value.parentChatId;
+    if (value.parentChatId !== undefined)
+      patch.parentChatId = value.parentChatId;
 
     setChats((current) => {
       const existing = current.findIndex((chat) => chat.chatId === id);
       if (existing >= 0) {
-        return current.map((chat, i) => i === existing ? { ...chat, ...patch } : chat);
+        return current.map((chat, i) =>
+          i === existing ? { ...chat, ...patch } : chat,
+        );
       }
       const now = Date.now();
       const createdAt = Number(value.createdAt ?? 0);
       const lastAt = Number(value.lastAt ?? 0);
-      const created = Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now;
+      const created =
+        Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now;
       const summary: ChatSummary = {
         chatId: id,
         createdAt: created,
@@ -665,7 +865,9 @@ export function createState() {
         head: value.head,
         title: value.title ?? null,
         path: value.path ?? null,
-        worktreePath: value.worktreePath ?? expectedChatWorktreePath({ chatId: id, path: value.path ?? null }),
+        worktreePath:
+          value.worktreePath ??
+          expectedChatWorktreePath({ chatId: id, path: value.path ?? null }),
         status: "agent:Done",
         totalFacts: value.totalFacts,
         totalTurns: value.totalTurns,
@@ -684,22 +886,61 @@ export function createState() {
     });
   }
 
-  function applyDescribeValue(id: string, value: DescribeValue, current: TimelineItem[] = timeline()) {
-    setTimeline(mergeTimelineRows(value.timeline, current));
-    setTrail(sortTimelineItems(value.trail ?? value.timeline.filter((item) => item.type === "trail")));
+  function applyDescribeValue(
+    id: string,
+    value: DescribeValue,
+    current: TimelineItem[] = timeline(),
+  ) {
+    const mergedTimeline = mergeTimelineRows(value.timeline, current);
+    setTimeline(mergedTimeline);
+    pruneDismissedReplies(id, mergedTimeline);
+    const currentDraft = untrack(draftReply);
+    if (currentDraft?.chatId === id) {
+      const matchingReplyLanded = mergedTimeline.some(
+        (item) =>
+          item.type === "step" &&
+          item.kind === "agent:Reply" &&
+          item.draftId === currentDraft.draftId,
+      );
+      const endedAt = endedDraftReplyIds.get(currentDraft.draftId);
+      const terminalNonReplyLanded =
+        endedAt != null &&
+        mergedTimeline.some(
+          (item) =>
+            item.type === "step" &&
+            item.kind !== "agent:Reply" &&
+            Number(item.at) >= endedAt &&
+            (item.status === "agent:Done" ||
+              item.status === "agent:Failed" ||
+              item.status === "agent:Cancelled"),
+        );
+      if (matchingReplyLanded || terminalNonReplyLanded) {
+        endedDraftReplyIds.delete(currentDraft.draftId);
+        setDraftReply(null);
+      }
+    }
+    setTrail(
+      sortTimelineItems(
+        value.trail ?? value.timeline.filter((item) => item.type === "trail"),
+      ),
+    );
     applyDescribeToChatSummary(id, value);
     setTotalFacts(value.totalFacts);
     setTotalTurns(value.totalTurns);
     setTotalSteps(value.totalSteps);
     setTotalCodeCalls(
       value.totalCodeCalls ??
-        value.timeline.filter((it) => it.type === "step" && it.kind === "agent:RunJS").length,
+        value.timeline.filter(
+          (it) => it.type === "step" && it.kind === "agent:RunJS",
+        ).length,
     );
-    setTokens((cur) => mergeTokenProgress(
-      cur,
-      value.tokens,
-      id === chatId() && activeChats().has(id),
-    ));
+    setTokens((cur) =>
+      mergeTokenProgress(
+        cur,
+        value.tokens,
+        id === chatId() && activeChats().has(id),
+      ),
+    );
     setHiddenTimelineItems(value.hiddenTimelineItems ?? 0);
     setLoadedChatId(id);
   }
@@ -707,8 +948,15 @@ export function createState() {
   function restoreCachedChat(id: string, summary?: ChatSummary): boolean {
     const cached = chatCache.get(id);
     if (!cached) return false;
-    if (cached.describe && isDescribeFreshForSummary(cached.describe, summary)) {
-      setTimelineLimit(cached.describeLimit ?? cached.describe.timelineLimit ?? INITIAL_TIMELINE_LIMIT);
+    if (
+      cached.describe &&
+      isDescribeFreshForSummary(cached.describe, summary)
+    ) {
+      setTimelineLimit(
+        cached.describeLimit ??
+          cached.describe.timelineLimit ??
+          INITIAL_TIMELINE_LIMIT,
+      );
       applyDescribeValue(id, cached.describe, []);
     }
     if (cached.model) setChatModel(modelWithPendingWrites(id, cached.model));
@@ -718,7 +966,9 @@ export function createState() {
       restorePrimaryUi(cached.ui.primaryUiId ?? null, cached.ui.instances);
     }
     touchChatCache(id, {});
-    return !!cached.describe && isDescribeFreshForSummary(cached.describe, summary);
+    return (
+      !!cached.describe && isDescribeFreshForSummary(cached.describe, summary)
+    );
   }
 
   function forgetChatCache(id: string) {
@@ -726,7 +976,10 @@ export function createState() {
     persistChatCacheSoon();
   }
 
-  function invalidateChatCache(id: string, parts: { describe?: boolean; model?: boolean; ui?: boolean }) {
+  function invalidateChatCache(
+    id: string,
+    parts: { describe?: boolean; model?: boolean; ui?: boolean },
+  ) {
     const current = chatCache.get(id);
     if (!current) return;
     const next: ChatCacheEntry = { ...current };
@@ -753,20 +1006,33 @@ export function createState() {
   // Server-confirmed start time for each active chat. This lives in global
   // state instead of Timeline so the elapsed Thinking timer does not restart
   // when the user switches chats/tabs and Timeline remounts.
-  const [activeChatStartedAt, setActiveChatStartedAt] = createSignal<Map<string, number>>(new Map());
+  const [activeChatStartedAt, setActiveChatStartedAt] = createSignal<
+    Map<string, number>
+  >(new Map());
   // Local dispatch locks prevent sending another queued message for the same
   // chat while /api/run is being accepted and before the corresponding
   // step-start event arrives. These locks must not make the UI look like the
   // agent is thinking.
-  const [dispatchingChats, setDispatchingChats] = createSignal<Set<string>>(new Set());
+  const [dispatchingChats, setDispatchingChats] = createSignal<Set<string>>(
+    new Set(),
+  );
   const setHas = (set: Set<string>, id: string) => set.has(id);
-  const chatBusy = (id: string) => setHas(activeChats(), id) || setHas(dispatchingChats(), id);
-  function addToSet(setter: (value: Set<string>) => void, current: () => Set<string>, id: string) {
+  const chatBusy = (id: string) =>
+    setHas(activeChats(), id) || setHas(dispatchingChats(), id);
+  function addToSet(
+    setter: (value: Set<string>) => void,
+    current: () => Set<string>,
+    id: string,
+  ) {
     const next = new Set(current());
     next.add(id);
     setter(next);
   }
-  function deleteFromSet(setter: (value: Set<string>) => void, current: () => Set<string>, id: string) {
+  function deleteFromSet(
+    setter: (value: Set<string>) => void,
+    current: () => Set<string>,
+    id: string,
+  ) {
     const next = new Set(current());
     next.delete(id);
     setter(next);
@@ -777,7 +1043,7 @@ export function createState() {
   };
   const thinkingStartedAt = () => {
     const id = chatId();
-    return id ? activeChatStartedAt().get(id) ?? null : null;
+    return id ? (activeChatStartedAt().get(id) ?? null) : null;
   };
   function setChatStartedAt(id: string, at: unknown) {
     const ms = Number(at);
@@ -800,7 +1066,13 @@ export function createState() {
 
   // Toast queue for surfacing API/WS failures to the user. Each entry
   // self-dismisses after a few seconds; the UI can also dismiss by id.
-  type Toast = { id: number; source: string; message: string; details?: string; at: number };
+  type Toast = {
+    id: number;
+    source: string;
+    message: string;
+    details?: string;
+    at: number;
+  };
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   let toastSeq = 0;
   function notify(source: string, message: string, details?: string) {
@@ -830,7 +1102,8 @@ export function createState() {
     return parts.length > 0 ? parts.join("\n\n") : undefined;
   }
   function formatErrorData(data: unknown): string {
-    if (typeof data === "string") return data.length > 4000 ? data.slice(0, 4000) + "…" : data;
+    if (typeof data === "string")
+      return data.length > 4000 ? data.slice(0, 4000) + "…" : data;
     try {
       const text = JSON.stringify(data, null, 2);
       return text.length > 4000 ? text.slice(0, 4000) + "…" : text;
@@ -840,7 +1113,9 @@ export function createState() {
     }
   }
   function isTransientWsError(err: unknown): boolean {
-    return /^ws (disconnected|closed|not bound|request timed out)/i.test(wsErrorMessage(err));
+    return /^ws (disconnected|closed|not bound|request timed out)/i.test(
+      wsErrorMessage(err),
+    );
   }
   function reportError(source: string, err: unknown) {
     const message = wsErrorMessage(err);
@@ -850,21 +1125,102 @@ export function createState() {
     // the backend catches up. Without this filter, transient stalls flood the
     // screen with one toast per pending call (models/apps/describe/etc.).
     if (isTransientWsError(err)) return;
-    notify(source, message, wsErrorDetails(err) ?? "No additional details were provided.");
+    notify(
+      source,
+      message,
+      wsErrorDetails(err) ?? "No additional details were provided.",
+    );
   }
   // Streaming reply buffer keyed by the current chat. Cleared by:
   // - draft-end events from the agent
   // - new chat selection
+  // - stop/interrupt, after the partial content is moved to dismissedReplies
   // - the real Reply step landing (caller can clear via setDraftReply)
   const [draftReply, setDraftReply] = createSignal<{
     chatId: string;
     draftId: string;
     content: string;
+    at: number;
   } | null>(null);
+  const endedDraftReplyIds = new Map<string, number>();
+  const [dismissedReplies, setDismissedReplies] = createSignal<
+    DismissedReply[]
+  >([]);
 
-  const [rightSidebarByChat, setRightSidebarByChat] = createSignal<Record<string, RightSidebarState>>({});
-  const [rightSidebarLayoutByChat, setRightSidebarLayoutByChat] = createSignal<Record<string, RightSidebarLayoutState>>(readRightSidebarLayout());
+  function dismissedReplyId(chatId: string, draftId: string): string {
+    return `dismissed-${chatId}-${draftId}`;
+  }
+
+  function rememberDismissedReply(
+    chatId: string,
+    draftId: string,
+    content: string,
+    at = Date.now(),
+  ) {
+    if (!content.trim()) return;
+    setDismissedReplies((items) => {
+      const id = dismissedReplyId(chatId, draftId);
+      const without = items.filter((item) => item.id !== id);
+      const previous = items.find((item) => item.id === id);
+      const next = [
+        ...without,
+        {
+          id,
+          chatId,
+          draftId,
+          content,
+          at: previous?.at ?? at,
+        },
+      ];
+      return next.slice(-MAX_DISMISSED_REPLIES);
+    });
+  }
+
+  function dismissCurrentDraftReply(chatId: string) {
+    const cur = untrack(draftReply);
+    if (!cur || cur.chatId !== chatId) return;
+    rememberDismissedReply(chatId, cur.draftId, cur.content);
+  }
+
+  function pruneDismissedReplies(chatId: string, rows: TimelineItem[]) {
+    const replyTexts = rows
+      .filter((item) => item.type === "step" && item.kind === "agent:Reply")
+      .map((item) => String((item as any).text ?? "").trim())
+      .filter(Boolean);
+    if (replyTexts.length === 0) return;
+    setDismissedReplies((items) =>
+      items.filter((item) => {
+        if (item.chatId !== chatId) return true;
+        const content = item.content.trim();
+        return (
+          !content ||
+          !replyTexts.some(
+            (replyText) =>
+              replyText === content || replyText.startsWith(content),
+          )
+        );
+      }),
+    );
+  }
+
+  const [rightSidebarByChat, setRightSidebarByChat] = createSignal<
+    Record<string, RightSidebarState>
+  >({});
+  const [rightSidebarLayoutByChat, setRightSidebarLayoutByChat] = createSignal<
+    Record<string, RightSidebarLayoutState>
+  >(readRightSidebarLayout());
   const currentChatSummary = () => currentChat();
+  const canResumeAgent = () => {
+    const id = chatId();
+    if (!id) return false;
+    if (activeChats().has(id) || dispatchingChats().has(id)) return false;
+    const status = currentChat()?.status;
+    return (
+      status === "agent:Failed" ||
+      status === "agent:Cancelled" ||
+      (status === "agent:Done" && hasUnansweredUserInput(timeline()))
+    );
+  };
   const currentChatPath = () => currentChat()?.path ?? null;
   const currentChatWorktreePath = () => {
     const chat = currentChat();
@@ -899,7 +1255,9 @@ export function createState() {
 
   function storePreviewTitle(hash: string): string {
     const normalized = normalizeSha256(hash);
-    return "object " + normalized.slice("sha256:".length, "sha256:".length + 12);
+    return (
+      "object " + normalized.slice("sha256:".length, "sha256:".length + 12)
+    );
   }
 
   function diffHistoryTabId(path: string): string {
@@ -923,16 +1281,57 @@ export function createState() {
     return `app:${uiId}:${instanceId || "new"}`;
   }
 
+  function appCodeTabId(uiId: string): string {
+    return `app-code:${uiId}`;
+  }
+
   function appTitle(uiId: string): string {
     const app = uiApps().find((candidate) => candidate.id === uiId);
     return app?.title || uiId;
   }
 
-  function defaultRightSidebarState(layout?: RightSidebarLayoutState): RightSidebarState {
+  function normalizeBrowserNavState(
+    nav: BrowserNavState | undefined,
+  ): BrowserNavState | undefined {
+    if (!nav || typeof nav !== "object") return undefined;
+    const history = Array.isArray(nav.history)
+      ? nav.history
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(-80)
+      : [];
+    const path =
+      typeof nav.path === "string" && nav.path.trim()
+        ? nav.path.trim()
+        : (history[history.length - 1] ?? null);
+    const fallbackIndex = path
+      ? history.findIndex((item) => item === path)
+      : -1;
+    const rawIndex = Number.isFinite(nav.index)
+      ? Math.trunc(nav.index)
+      : fallbackIndex;
+    const index =
+      history.length > 0
+        ? Math.max(
+            0,
+            Math.min(
+              history.length - 1,
+              rawIndex >= 0 ? rawIndex : history.length - 1,
+            ),
+          )
+        : 0;
+    const nextPath = history[index] ?? path;
+    return { path: nextPath ?? null, history, index };
+  }
+
+  function defaultRightSidebarState(
+    layout?: RightSidebarLayoutState,
+  ): RightSidebarState {
     return {
       tabs: [
         { id: "trail", kind: "trail", title: "Trails" },
         { id: "diffs", kind: "diffs", title: "Diff" },
+        { id: "browser", kind: "browser", title: "Browser" },
       ],
       activeTabId: "trail",
       width: clampRightSidebarWidth(layout?.width),
@@ -941,10 +1340,14 @@ export function createState() {
     };
   }
 
-  function normalizeRightSidebarState(state: RightSidebarState | undefined, layout?: RightSidebarLayoutState): RightSidebarState {
+  function normalizeRightSidebarState(
+    state: RightSidebarState | undefined,
+    layout?: RightSidebarLayoutState,
+  ): RightSidebarState {
     const fallback = defaultRightSidebarState(layout);
-    const tabs = (state?.tabs ? [...state.tabs] : fallback.tabs)
-      .filter((tab) => tab.id !== "agent-trail");
+    const tabs = (state?.tabs ? [...state.tabs] : fallback.tabs).filter(
+      (tab) => tab.id !== "agent-trail",
+    );
     if (!tabs.some((tab) => tab.id === "trail")) {
       tabs.unshift({ id: "trail", kind: "trail", title: "Trails" });
     }
@@ -956,9 +1359,23 @@ export function createState() {
     }
     const diffsTab = tabs.find((tab) => tab.id === "diffs");
     if (diffsTab) diffsTab.title = "Diff";
-    const activeTabId = state?.activeTabId && tabs.some((tab) => tab.id === state.activeTabId)
-      ? state.activeTabId
-      : tabs[0]!.id;
+    if (!tabs.some((tab) => tab.id === "browser")) {
+      const insertAt = Math.min(2, tabs.length);
+      tabs.splice(insertAt, 0, {
+        id: "browser",
+        kind: "browser",
+        title: "Browser",
+      });
+    }
+    const browserTab = tabs.find((tab) => tab.id === "browser");
+    if (browserTab && browserTab.kind === "browser") {
+      browserTab.title = "Browser";
+      browserTab.nav = normalizeBrowserNavState(browserTab.nav);
+    }
+    const activeTabId =
+      state?.activeTabId && tabs.some((tab) => tab.id === state.activeTabId)
+        ? state.activeTabId
+        : tabs[0]!.id;
     return {
       tabs,
       activeTabId,
@@ -968,25 +1385,48 @@ export function createState() {
     };
   }
 
-  function trimRightSidebarTabs(tabs: RightSidebarTab[], activeTabId: string): RightSidebarTab[] {
+  function trimRightSidebarTabs(
+    tabs: RightSidebarTab[],
+    activeTabId: string,
+  ): RightSidebarTab[] {
     if (tabs.length <= RIGHT_SIDEBAR_TABS_MAX) return tabs;
-    const keep = new Set(["trail", "diffs", activeTabId]);
+    const keep = new Set(["trail", "diffs", "browser", activeTabId]);
     const newest = [...tabs].reverse();
     const out: RightSidebarTab[] = [];
     for (const tab of newest) {
-      if (keep.has(tab.id) || out.length < RIGHT_SIDEBAR_TABS_MAX) out.push(tab);
-      if (out.length >= RIGHT_SIDEBAR_TABS_MAX && [...keep].every((id) => out.some((tab) => tab.id === id))) break;
+      if (keep.has(tab.id) || out.length < RIGHT_SIDEBAR_TABS_MAX)
+        out.push(tab);
+      if (
+        out.length >= RIGHT_SIDEBAR_TABS_MAX &&
+        [...keep].every((id) => out.some((tab) => tab.id === id))
+      )
+        break;
     }
     return out.reverse();
   }
 
-  function pruneRightSidebarChats(next: Record<string, RightSidebarState>, activeChatId: string): Record<string, RightSidebarState> {
+  function pruneRightSidebarScopes(
+    next: Record<string, RightSidebarState>,
+    activeScopeId: string,
+  ): Record<string, RightSidebarState> {
     const ids = Object.keys(next);
-    if (ids.length <= RIGHT_SIDEBAR_CHAT_MAX) return next;
-    const keep = new Set([activeChatId, ...chats().slice(0, RIGHT_SIDEBAR_CHAT_MAX - 1).map((chat) => chat.chatId)]);
+    const keep = new Set([
+      activeScopeId,
+      ...RIGHT_SIDEBAR_VIEW_SCOPE_IDS,
+      ...chats()
+        .slice(0, RIGHT_SIDEBAR_CHAT_MAX)
+        .map((chat) => chat.chatId),
+    ]);
+    if (
+      ids.every((id) => keep.has(id)) &&
+      ids.filter((id) => !id.startsWith("view:")).length <=
+        RIGHT_SIDEBAR_CHAT_MAX
+    )
+      return next;
     const pruned: Record<string, RightSidebarState> = {};
     for (const id of ids) if (keep.has(id)) pruned[id] = next[id]!;
-    if (!pruned[activeChatId] && next[activeChatId]) pruned[activeChatId] = next[activeChatId]!;
+    if (!pruned[activeScopeId] && next[activeScopeId])
+      pruned[activeScopeId] = next[activeScopeId]!;
     return pruned;
   }
 
@@ -1006,54 +1446,115 @@ export function createState() {
     });
   }
 
-  function rightSidebarLayoutForChat(id: string): RightSidebarLayoutState {
+  function rightSidebarLayoutForScope(id: string): RightSidebarLayoutState {
     const layouts = rightSidebarLayoutByChat();
     const defaults = layouts[RIGHT_SIDEBAR_DEFAULT_LAYOUT_ID];
-    const chatLayout = layouts[id];
+    const scopeLayout = layouts[id];
     return {
-      width: chatLayout?.width ?? defaults?.width,
-      collapsed: chatLayout?.collapsed,
+      width: scopeLayout?.width ?? defaults?.width,
+      collapsed: scopeLayout?.collapsed,
     };
   }
 
-  function currentRightSidebarState(): RightSidebarState | null {
-    const id = chatId();
-    if (!id) return null;
-    return normalizeRightSidebarState(rightSidebarByChat()[id], rightSidebarLayoutForChat(id));
+  function currentRightSidebarScopeId(): string | null {
+    switch (view()) {
+      case "chat":
+        return chatId();
+      case "apps":
+      case "facts":
+      case "pointers":
+      case "v8":
+      case "traces":
+        return `view:${view()}`;
+      default:
+        return null;
+    }
   }
 
-  const rightSidebarTabs = () => currentRightSidebarState()?.tabs ?? [];
-  const activeRightSidebarTabId = () => currentRightSidebarState()?.activeTabId ?? null;
+  function currentRightSidebarState(): RightSidebarState | null {
+    const id = currentRightSidebarScopeId();
+    if (!id) return null;
+    return normalizeRightSidebarState(
+      rightSidebarByChat()[id],
+      rightSidebarLayoutForScope(id),
+    );
+  }
+
+  function rightSidebarTabVisibleForView(tab: RightSidebarTab): boolean {
+    switch (view()) {
+      case "chat":
+        return true;
+      case "apps":
+        return tab.kind === "app" || tab.kind === "app-code";
+      case "facts":
+      case "pointers":
+      case "v8":
+        return tab.kind === "store";
+      case "traces":
+        return tab.kind === "store" || tab.kind === "trace";
+      default:
+        return false;
+    }
+  }
+
+  const rightSidebarTabs = () =>
+    (currentRightSidebarState()?.tabs ?? []).filter(
+      rightSidebarTabVisibleForView,
+    );
+  const activeRightSidebarTabId = () => activeRightSidebarTab()?.id ?? null;
   const activeRightSidebarTab = () => {
     const state = currentRightSidebarState();
-    return state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
+    const tabs = rightSidebarTabs();
+    return tabs.find((tab) => tab.id === state?.activeTabId) ?? tabs[0] ?? null;
   };
-  const rightSidebarW = () => currentRightSidebarState()?.width ?? RIGHT_SIDEBAR_DEFAULT_W;
-  const rightSidebarCollapsed = () => currentRightSidebarState()?.collapsed ?? false;
-  const rightSidebarMaximized = () => currentRightSidebarState()?.maximized ?? false;
+  const rightSidebarW = () =>
+    currentRightSidebarState()?.width ?? RIGHT_SIDEBAR_DEFAULT_W;
+  const rightSidebarCollapsed = () =>
+    currentRightSidebarState()?.collapsed ?? false;
+  const rightSidebarMaximized = () =>
+    currentRightSidebarState()?.maximized ?? false;
   const openRepoFile = () => {
     const tab = activeRightSidebarTab();
     return tab?.kind === "file" ? tab.file : null;
   };
 
-  function updateCurrentRightSidebarState(fn: (state: RightSidebarState) => RightSidebarState) {
-    const id = chatId();
+  function updateCurrentRightSidebarState(
+    fn: (state: RightSidebarState) => RightSidebarState,
+  ) {
+    const id = currentRightSidebarScopeId();
     if (!id) return;
-    const layout = rightSidebarLayoutForChat(id);
+    const layout = rightSidebarLayoutForScope(id);
     setRightSidebarByChat((prev) => {
-      const normalized = normalizeRightSidebarState(fn(normalizeRightSidebarState(prev[id], layout)), layout);
-      const tabs = trimRightSidebarTabs(normalized.tabs, normalized.activeTabId);
-      const activeTabId = tabs.some((tab) => tab.id === normalized.activeTabId) ? normalized.activeTabId : tabs[0]!.id;
-      return pruneRightSidebarChats({
-        ...prev,
-        [id]: { ...normalized, tabs, activeTabId },
-      }, id);
+      const normalized = normalizeRightSidebarState(
+        fn(normalizeRightSidebarState(prev[id], layout)),
+        layout,
+      );
+      const tabs = trimRightSidebarTabs(
+        normalized.tabs,
+        normalized.activeTabId,
+      );
+      const activeTabId = tabs.some((tab) => tab.id === normalized.activeTabId)
+        ? normalized.activeTabId
+        : tabs[0]!.id;
+      return pruneRightSidebarScopes(
+        {
+          ...prev,
+          [id]: { ...normalized, tabs, activeTabId },
+        },
+        id,
+      );
     });
   }
 
-  function activateExistingRightSidebarTab<T extends RightSidebarTab>(predicate: (tab: RightSidebarTab) => tab is T): T | null;
-  function activateExistingRightSidebarTab(predicate: (tab: RightSidebarTab) => boolean): RightSidebarTab | null;
-  function activateExistingRightSidebarTab(predicate: (tab: RightSidebarTab) => boolean): RightSidebarTab | null {
+  function activateExistingRightSidebarTab<T extends RightSidebarTab>(
+    predicate: (tab: RightSidebarTab) => tab is T,
+  ): T | null;
+  function activateExistingRightSidebarTab(
+    predicate: (tab: RightSidebarTab) => boolean,
+  ): RightSidebarTab | null;
+  function activateExistingRightSidebarTab(
+    predicate: (tab: RightSidebarTab) => boolean,
+  ): RightSidebarTab | null {
     const existing = rightSidebarTabs().find(predicate) ?? null;
     if (!existing) return null;
     setActiveRightSidebarTab(existing.id);
@@ -1061,51 +1562,85 @@ export function createState() {
     return existing;
   }
 
-  function sameRightSidebarTabTarget(a: RightSidebarTab, b: RightSidebarTab): boolean {
+  function sameRightSidebarTabTarget(
+    a: RightSidebarTab,
+    b: RightSidebarTab,
+  ): boolean {
     if (a.id === b.id) return true;
     if (a.kind !== b.kind) return false;
     switch (a.kind) {
       case "file": {
         const file = b as Extract<RightSidebarTab, { kind: "file" }>;
-        return sameRepoFilePath(a.file.requestedPath, file.file.requestedPath)
-          || sameRepoFilePath(a.file.path, file.file.path)
-          || sameRepoFilePath(a.file.requestedPath, file.file.path)
-          || sameRepoFilePath(a.file.path, file.file.requestedPath);
+        return (
+          sameRepoFilePath(a.file.requestedPath, file.file.requestedPath) ||
+          sameRepoFilePath(a.file.path, file.file.path) ||
+          sameRepoFilePath(a.file.requestedPath, file.file.path) ||
+          sameRepoFilePath(a.file.path, file.file.requestedPath)
+        );
       }
       case "store":
-        return a.store.hash === (b as Extract<RightSidebarTab, { kind: "store" }>).store.hash;
+        return (
+          a.store.hash ===
+          (b as Extract<RightSidebarTab, { kind: "store" }>).store.hash
+        );
+      case "trace":
+        return (
+          a.trace.id ===
+          (b as Extract<RightSidebarTab, { kind: "trace" }>).trace.id
+        );
       case "diff": {
         const diff = b as Extract<RightSidebarTab, { kind: "diff" }>;
         return a.scope === diff.scope && sameDiffPath(a.path, diff.path);
       }
       case "memory-diff": {
         const diff = b as Extract<RightSidebarTab, { kind: "memory-diff" }>;
-        return a.scope === diff.scope && a.store === diff.store && a.graph === diff.graph;
+        return (
+          a.scope === diff.scope &&
+          a.store === diff.store &&
+          a.graph === diff.graph
+        );
       }
       case "app": {
         const app = b as Extract<RightSidebarTab, { kind: "app" }>;
         return a.uiId === app.uiId && a.instanceId === app.instanceId;
       }
+      case "app-code": {
+        const appCode = b as Extract<RightSidebarTab, { kind: "app-code" }>;
+        return a.uiId === appCode.uiId;
+      }
       case "trail":
       case "diffs":
+      case "browser":
         return true;
     }
   }
 
   function upsertRightSidebarTab(tab: RightSidebarTab, activate = true) {
-    const id = chatId();
+    const id = currentRightSidebarScopeId();
     updateCurrentRightSidebarState((state) => {
-      const existing = state.tabs.find((candidate) => sameRightSidebarTabTarget(candidate, tab));
-      const activeTabId = activate ? (existing?.id ?? tab.id) : state.activeTabId;
-      const nextTab: RightSidebarTab = existing?.kind === "diff" && tab.kind === "diff"
-        ? { ...tab, id: existing.id, mode: existing.mode }
-        : existing
-          ? ({ ...tab, id: existing.id } as RightSidebarTab)
-          : tab;
+      const existing = state.tabs.find((candidate) =>
+        sameRightSidebarTabTarget(candidate, tab),
+      );
+      const activeTabId = activate
+        ? (existing?.id ?? tab.id)
+        : state.activeTabId;
+      const nextTab: RightSidebarTab =
+        existing?.kind === "diff" && tab.kind === "diff"
+          ? { ...tab, id: existing.id, mode: existing.mode }
+          : existing
+            ? ({ ...tab, id: existing.id } as RightSidebarTab)
+            : tab;
       const tabs = existing
-        ? state.tabs.map((candidate) => candidate.id === existing.id ? nextTab : candidate)
+        ? state.tabs.map((candidate) =>
+            candidate.id === existing.id ? nextTab : candidate,
+          )
         : [...state.tabs, nextTab];
-      return { ...state, tabs, activeTabId, collapsed: activate ? false : state.collapsed };
+      return {
+        ...state,
+        tabs,
+        activeTabId,
+        collapsed: activate ? false : state.collapsed,
+      };
     });
     if (activate && id) {
       setRightSidebarLayoutByChat((prev) => ({
@@ -1115,10 +1650,30 @@ export function createState() {
     }
   }
 
+  function setBrowserTabNav(nav: BrowserNavState) {
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.kind === "browser"
+          ? {
+              ...tab,
+              nav: normalizeBrowserNavState(nav) ?? {
+                path: null,
+                history: [],
+                index: 0,
+              },
+            }
+          : tab,
+      ),
+    }));
+  }
+
   function setDiffTabMode(tabId: string, mode: DiffContentMode) {
     updateCurrentRightSidebarState((state) => ({
       ...state,
-      tabs: state.tabs.map((tab) => tab.id === tabId && tab.kind === "diff" ? { ...tab, mode } : tab),
+      tabs: state.tabs.map((tab) =>
+        tab.id === tabId && tab.kind === "diff" ? { ...tab, mode } : tab,
+      ),
     }));
   }
 
@@ -1133,28 +1688,45 @@ export function createState() {
     }
     updateCurrentRightSidebarState((state) => ({
       ...state,
-      activeTabId: state.tabs.some((candidate) => candidate.id === tabId) ? tabId : state.activeTabId,
+      activeTabId: state.tabs.some((candidate) => candidate.id === tabId)
+        ? tabId
+        : state.activeTabId,
     }));
   }
 
   async function closeRightSidebarTab(tabId: string) {
-    if (tabId === "trail" || tabId === "diffs") return;
+    if (tabId === "trail" || tabId === "diffs" || tabId === "browser") return;
     repoFileReadSeq.delete(tabId);
     storePreviewReadSeq.delete(tabId);
     const closing = rightSidebarTabs().find((tab) => tab.id === tabId);
     updateCurrentRightSidebarState((state) => {
       const idx = state.tabs.findIndex((tab) => tab.id === tabId);
       const tabs = state.tabs.filter((tab) => tab.id !== tabId);
-      const fallback = tabs[Math.max(0, Math.min(idx, tabs.length - 1))] ?? tabs[0] ?? null;
-      return { ...state, tabs, activeTabId: state.activeTabId === tabId ? fallback?.id ?? "diffs" : state.activeTabId };
+      const fallback =
+        tabs[Math.max(0, Math.min(idx, tabs.length - 1))] ?? tabs[0] ?? null;
+      return {
+        ...state,
+        tabs,
+        activeTabId:
+          state.activeTabId === tabId
+            ? (fallback?.id ?? "diffs")
+            : state.activeTabId,
+      };
     });
-    if (closing?.kind === "app" && openUiId() === closing.uiId && openUiInstanceId() === closing.instanceId) {
+    if (
+      closing?.kind === "app" &&
+      openUiId() === closing.uiId &&
+      openUiInstanceId() === closing.instanceId
+    ) {
       setOpenUiId(null);
       setOpenUiInstanceId(null);
     }
     const activeTabId = currentRightSidebarState()?.activeTabId;
     const activeAppTab = activeTabId
-      ? rightSidebarTabs().find((tab): tab is Extract<RightSidebarTab, { kind: "app" }> => (tab.id === activeTabId && tab.kind === "app"))
+      ? rightSidebarTabs().find(
+          (tab): tab is Extract<RightSidebarTab, { kind: "app" }> =>
+            tab.id === activeTabId && tab.kind === "app",
+        )
       : null;
     if (activeAppTab) {
       setOpenUiId(activeAppTab.uiId);
@@ -1168,23 +1740,48 @@ export function createState() {
     }
   }
 
-  function updateFileTab(tabId: string, update: (file: OpenRepoFile | null) => OpenRepoFile) {
+  function updateFileTab(
+    tabId: string,
+    update: (file: OpenRepoFile | null) => OpenRepoFile,
+  ) {
     updateCurrentRightSidebarState((state) => {
-      const existing = state.tabs.find((tab) => tab.id === tabId && tab.kind === "file") as Extract<RightSidebarTab, { kind: "file" }> | undefined;
+      const existing = state.tabs.find(
+        (tab) => tab.id === tabId && tab.kind === "file",
+      ) as Extract<RightSidebarTab, { kind: "file" }> | undefined;
       const file = update(existing?.file ?? null);
-      const tab: RightSidebarTab = { id: tabId, kind: "file", title: fileName(file.path || file.requestedPath), file };
+      const tab: RightSidebarTab = {
+        id: tabId,
+        kind: "file",
+        title: fileName(file.path || file.requestedPath),
+        file,
+      };
       const tabs = existing
-        ? state.tabs.map((candidate) => candidate.id === tabId ? tab : candidate)
+        ? state.tabs.map((candidate) =>
+            candidate.id === tabId ? tab : candidate,
+          )
         : [...state.tabs, tab];
-      return { ...state, tabs, activeTabId: state.activeTabId === tabId || !existing ? tabId : state.activeTabId, collapsed: !existing ? false : state.collapsed };
+      return {
+        ...state,
+        tabs,
+        activeTabId:
+          state.activeTabId === tabId || !existing ? tabId : state.activeTabId,
+        collapsed: !existing ? false : state.collapsed,
+      };
     });
   }
 
-  function sameRepoFilePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  function sameRepoFilePath(
+    a: string | null | undefined,
+    b: string | null | undefined,
+  ): boolean {
     return sameDiffPath(a, b);
   }
 
-  async function readRepoFileIntoSidebar(requestedPath: string, basePath: string | null, showLoading: boolean) {
+  async function readRepoFileIntoSidebar(
+    requestedPath: string,
+    basePath: string | null,
+    showLoading: boolean,
+  ) {
     const tabId = repoFileTabId(requestedPath);
     const seq = (repoFileReadSeq.get(tabId) ?? 0) + 1;
     repoFileReadSeq.set(tabId, seq);
@@ -1193,7 +1790,16 @@ export function createState() {
         id: tabId,
         kind: "file",
         title: fileName(requestedPath),
-        file: { requestedPath, path: null, content: "", size: 0, mtime: 0, loading: true, error: null },
+        file: {
+          requestedPath,
+          path: null,
+          content: "",
+          size: 0,
+          mtime: 0,
+          kind: "file",
+          loading: true,
+          error: null,
+        },
       });
     }
     const r = await api.fs.read(requestedPath, basePath);
@@ -1205,6 +1811,8 @@ export function createState() {
         content: "",
         size: 0,
         mtime: 0,
+        kind: prev?.kind ?? "file",
+        entries: prev?.entries,
         loading: false,
         error: r.error.message,
       }));
@@ -1216,6 +1824,11 @@ export function createState() {
       content: r.value.content,
       size: r.value.size,
       mtime: r.value.mtime,
+      kind: r.value.kind,
+      entries: r.value.entries,
+      changed: r.value.changed,
+      additions: r.value.additions,
+      deletions: r.value.deletions,
       loading: false,
       error: null,
     }));
@@ -1224,25 +1837,50 @@ export function createState() {
   async function refreshOpenRepoFile() {
     const file = openRepoFile();
     if (!file) return;
-    await readRepoFileIntoSidebar(file.requestedPath, currentChatWorktreePath(), false);
+    await readRepoFileIntoSidebar(
+      file.requestedPath,
+      currentChatWorktreePath(),
+      false,
+    );
   }
 
   async function refreshMatchingRepoFiles(path: string) {
     const files = rightSidebarTabs()
-      .filter((tab): tab is Extract<RightSidebarTab, { kind: "file" }> => tab.kind === "file")
-      .filter((tab) => sameRepoFilePath(tab.file.path, path) || sameRepoFilePath(tab.file.requestedPath, path));
-    await Promise.all(files.map((tab) => readRepoFileIntoSidebar(tab.file.requestedPath, currentChatWorktreePath(), false)));
+      .filter(
+        (tab): tab is Extract<RightSidebarTab, { kind: "file" }> =>
+          tab.kind === "file",
+      )
+      .filter(
+        (tab) =>
+          sameRepoFilePath(tab.file.path, path) ||
+          sameRepoFilePath(tab.file.requestedPath, path),
+      );
+    await Promise.all(
+      files.map((tab) =>
+        readRepoFileIntoSidebar(
+          tab.file.requestedPath,
+          currentChatWorktreePath(),
+          false,
+        ),
+      ),
+    );
   }
 
   async function openFileInSidebar(path: string) {
     const requestedPath = path.trim();
     if (!requestedPath) return;
-    const existing = activateExistingRightSidebarTab((tab) => (
-      tab.kind === "file"
-      && (sameRepoFilePath(tab.file.requestedPath, requestedPath) || sameRepoFilePath(tab.file.path, requestedPath))
-    ));
+    const existing = activateExistingRightSidebarTab(
+      (tab) =>
+        tab.kind === "file" &&
+        (sameRepoFilePath(tab.file.requestedPath, requestedPath) ||
+          sameRepoFilePath(tab.file.path, requestedPath)),
+    );
     if (existing) return;
-    await readRepoFileIntoSidebar(requestedPath, currentChatWorktreePath(), true);
+    await readRepoFileIntoSidebar(
+      requestedPath,
+      currentChatWorktreePath(),
+      true,
+    );
   }
 
   function closeRepoFile() {
@@ -1250,19 +1888,40 @@ export function createState() {
     if (tab?.kind === "file") void closeRightSidebarTab(tab.id);
   }
 
-  function updateStorePreviewTab(tabId: string, update: (store: StorePreviewFile | null) => StorePreviewFile) {
+  function updateStorePreviewTab(
+    tabId: string,
+    update: (store: StorePreviewFile | null) => StorePreviewFile,
+  ) {
     updateCurrentRightSidebarState((state) => {
-      const existing = state.tabs.find((tab) => tab.id === tabId && tab.kind === "store") as Extract<RightSidebarTab, { kind: "store" }> | undefined;
+      const existing = state.tabs.find(
+        (tab) => tab.id === tabId && tab.kind === "store",
+      ) as Extract<RightSidebarTab, { kind: "store" }> | undefined;
       const store = update(existing?.store ?? null);
-      const tab: RightSidebarTab = { id: tabId, kind: "store", title: storePreviewTitle(store.hash), store };
+      const tab: RightSidebarTab = {
+        id: tabId,
+        kind: "store",
+        title: storePreviewTitle(store.hash),
+        store,
+      };
       const tabs = existing
-        ? state.tabs.map((candidate) => candidate.id === tabId ? tab : candidate)
+        ? state.tabs.map((candidate) =>
+            candidate.id === tabId ? tab : candidate,
+          )
         : [...state.tabs, tab];
-      return { ...state, tabs, activeTabId: state.activeTabId === tabId || !existing ? tabId : state.activeTabId, collapsed: !existing ? false : state.collapsed };
+      return {
+        ...state,
+        tabs,
+        activeTabId:
+          state.activeTabId === tabId || !existing ? tabId : state.activeTabId,
+        collapsed: !existing ? false : state.collapsed,
+      };
     });
   }
 
-  async function readStorePreviewIntoSidebar(hash: string, showLoading: boolean) {
+  async function readStorePreviewIntoSidebar(
+    hash: string,
+    showLoading: boolean,
+  ) {
     const normalized = normalizeSha256(hash);
     const tabId = storePreviewTabId(normalized);
     const seq = (storePreviewReadSeq.get(tabId) ?? 0) + 1;
@@ -1296,9 +1955,10 @@ export function createState() {
 
   async function openStorePreviewInSidebar(hash: string) {
     const normalized = normalizeSha256(hash);
-    const existing = activateExistingRightSidebarTab((tab): tab is Extract<RightSidebarTab, { kind: "store" }> => (
-      tab.kind === "store" && tab.store.hash === normalized
-    ));
+    const existing = activateExistingRightSidebarTab(
+      (tab): tab is Extract<RightSidebarTab, { kind: "store" }> =>
+        tab.kind === "store" && tab.store.hash === normalized,
+    );
     if (existing) return;
     // Open an active tab synchronously so pointer clicks visibly open the right
     // sidebar even while the object read is still in flight.
@@ -1311,15 +1971,47 @@ export function createState() {
     await readStorePreviewIntoSidebar(normalized, false);
   }
 
-  function openDiffInSidebar(item: FileDiffItem, scope: "history" | "timeline" = "timeline") {
-    const diff = scope === "history"
-      ? mergedFileDiffs(trail()).find((candidate) => sameDiffPath(candidate.path, item.path)) ?? item
-      : item;
-    const tabId = scope === "history" ? diffHistoryTabId(diff.path) : diffTimelineTabId(diff);
-    const existing = activateExistingRightSidebarTab((tab) => (
-      tab.kind === "diff"
-      && (tab.id === tabId || (tab.scope === scope && sameDiffPath(tab.path, diff.path)))
-    ));
+  function openTraceEventInSidebar(trace: TraceRow, title?: string) {
+    const tab = {
+      id: "trace:" + encodeURIComponent(trace.id),
+      kind: "trace" as const,
+      title:
+        title?.trim() ||
+        String(trace.name || trace.kind || trace.id || "trace"),
+      trace,
+    };
+    if (view() === "traces") {
+      updateCurrentRightSidebarState((state) => ({
+        ...state,
+        tabs: [tab],
+        activeTabId: tab.id,
+        collapsed: false,
+      }));
+      return;
+    }
+    upsertRightSidebarTab(tab);
+  }
+
+  function openDiffInSidebar(
+    item: FileDiffItem,
+    scope: "history" | "timeline" = "timeline",
+  ) {
+    const diff =
+      scope === "history"
+        ? (mergedFileDiffs(trail()).find((candidate) =>
+            sameDiffPath(candidate.path, item.path),
+          ) ?? item)
+        : item;
+    const tabId =
+      scope === "history"
+        ? diffHistoryTabId(diff.path)
+        : diffTimelineTabId(diff);
+    const existing = activateExistingRightSidebarTab(
+      (tab) =>
+        tab.kind === "diff" &&
+        (tab.id === tabId ||
+          (tab.scope === scope && sameDiffPath(tab.path, diff.path))),
+    );
     if (existing) return;
     upsertRightSidebarTab({
       id: tabId,
@@ -1332,17 +2024,31 @@ export function createState() {
     });
   }
 
-  function openMemoryDiffInSidebar(item: MemoryDiffItem | MemoryGraphDiffSummary, scope: "history" | "timeline" = "timeline") {
-    const diff = scope === "history"
-      ? mergedMemoryDiffs(trail()).find((candidate) => candidate.store === item.store && candidate.graph === item.graph) ?? item
-      : item;
-    const tabId = scope === "history"
-      ? memoryDiffHistoryTabId(diff.store, diff.graph)
-      : diff.type === "memory-diff" ? memoryDiffTimelineTabId(diff) : memoryDiffHistoryTabId(diff.store, diff.graph);
-    const existing = activateExistingRightSidebarTab((tab) => (
-      tab.kind === "memory-diff"
-      && (tab.id === tabId || (tab.scope === scope && tab.store === diff.store && tab.graph === diff.graph))
-    ));
+  function openMemoryDiffInSidebar(
+    item: MemoryDiffItem | MemoryGraphDiffSummary,
+    scope: "history" | "timeline" = "timeline",
+  ) {
+    const diff =
+      scope === "history"
+        ? (mergedMemoryDiffs(trail()).find(
+            (candidate) =>
+              candidate.store === item.store && candidate.graph === item.graph,
+          ) ?? item)
+        : item;
+    const tabId =
+      scope === "history"
+        ? memoryDiffHistoryTabId(diff.store, diff.graph)
+        : diff.type === "memory-diff"
+          ? memoryDiffTimelineTabId(diff)
+          : memoryDiffHistoryTabId(diff.store, diff.graph);
+    const existing = activateExistingRightSidebarTab(
+      (tab) =>
+        tab.kind === "memory-diff" &&
+        (tab.id === tabId ||
+          (tab.scope === scope &&
+            tab.store === diff.store &&
+            tab.graph === diff.graph)),
+    );
     if (existing) return;
     upsertRightSidebarTab({
       id: tabId,
@@ -1359,9 +2065,13 @@ export function createState() {
 
   function setRightSidebarW(width: number | string) {
     const next = clampRightSidebarWidth(width, "percent", true);
-    const id = chatId();
+    const id = currentRightSidebarScopeId();
     if (!id) return;
-    updateCurrentRightSidebarState((state) => ({ ...state, width: next, maximized: false }));
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      width: next,
+      maximized: false,
+    }));
     setRightSidebarLayoutByChat((prev) => {
       const defaults = prev[RIGHT_SIDEBAR_DEFAULT_LAYOUT_ID];
       return {
@@ -1372,10 +2082,17 @@ export function createState() {
     });
   }
 
-  function setRightSidebarCollapsed(collapsed: boolean, opts?: { persist?: boolean }) {
-    const id = chatId();
+  function setRightSidebarCollapsed(
+    collapsed: boolean,
+    opts?: { persist?: boolean },
+  ) {
+    const id = currentRightSidebarScopeId();
     if (!id) return;
-    updateCurrentRightSidebarState((state) => ({ ...state, collapsed, maximized: collapsed ? false : state.maximized }));
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      collapsed,
+      maximized: collapsed ? false : state.maximized,
+    }));
     if (opts?.persist !== false) {
       setRightSidebarLayoutByChat((prev) => ({
         ...prev,
@@ -1389,9 +2106,13 @@ export function createState() {
   }
 
   function setRightSidebarMaximized(maximized: boolean) {
-    const id = chatId();
+    const id = currentRightSidebarScopeId();
     if (!id) return;
-    updateCurrentRightSidebarState((state) => ({ ...state, maximized, collapsed: maximized ? false : state.collapsed }));
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      maximized,
+      collapsed: maximized ? false : state.collapsed,
+    }));
     if (maximized) {
       setRightSidebarLayoutByChat((prev) => ({
         ...prev,
@@ -1413,7 +2134,7 @@ export function createState() {
     localStorage.getItem(COLLAPSED_KEY) === "1",
   );
 
-  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/apps`.
+  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/apps`, `/traces[/<chatId>]`.
   type Loc =
     | { view: "chat"; chatId: string | null }
     | { view: "new" }
@@ -1422,22 +2143,30 @@ export function createState() {
     | { view: "apps"; instanceId: string | null }
     | { view: "mcp" }
     | { view: "v8" }
+    | { view: "traces"; chatId: string | null }
     | { view: "settings" };
 
   function parseLocation(): Loc {
     const path = location.pathname.replace(/\/$/, "") || "/";
     if (path === "/new" || path.startsWith("/new/")) return { view: "new" };
     if (path.startsWith("/chat/")) {
-      const parts = path.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+      const parts = path
+        .split("/")
+        .filter(Boolean)
+        .map((part) => decodeURIComponent(part));
       return { view: "chat", chatId: parts[1] || null };
     }
     if (path === "/apps" || path.startsWith("/apps/")) {
-      const parts = path.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+      const parts = path
+        .split("/")
+        .filter(Boolean)
+        .map((part) => decodeURIComponent(part));
       return { view: "apps", instanceId: parts[1] || null };
     }
     if (path === "/facts" || path.startsWith("/facts/")) {
       const parts = path.split("/").filter(Boolean);
-      const graph = parts.length > 1 ? decodeURIComponent(parts.slice(1).join("/")) : null;
+      const graph =
+        parts.length > 1 ? decodeURIComponent(parts.slice(1).join("/")) : null;
       const hash = location.hash;
       return {
         view: "facts",
@@ -1445,14 +2174,38 @@ export function createState() {
         subject: hash ? decodeURIComponent(hash.slice(1)) : null,
       };
     }
-    if (path === "/pointers" || path.startsWith("/pointers/")) return { view: "pointers" };
+    if (path === "/pointers" || path.startsWith("/pointers/"))
+      return { view: "pointers" };
     if (path === "/mcp" || path.startsWith("/mcp/")) return { view: "mcp" };
     if (path === "/v8" || path.startsWith("/v8/")) return { view: "v8" };
-    if (path === "/settings" || path.startsWith("/settings/")) return { view: "settings" };
+    if (path === "/traces" || path.startsWith("/traces/")) {
+      const parts = path
+        .split("/")
+        .filter(Boolean)
+        .map((part) => decodeURIComponent(part));
+      return { view: "traces", chatId: parts[1] || null };
+    }
+    if (path === "/settings" || path.startsWith("/settings/"))
+      return { view: "settings" };
     return { view: "chat", chatId: null };
   }
 
-  function buildPath(v: "chat" | "new" | "facts" | "pointers" | "apps" | "mcp" | "v8" | "settings", id: string | null, subject: string | null, graph: string | null = null): string {
+  function buildPath(
+    v:
+      | "chat"
+      | "new"
+      | "facts"
+      | "pointers"
+      | "apps"
+      | "mcp"
+      | "v8"
+      | "traces"
+      | "settings",
+    id: string | null,
+    subject: string | null,
+    graph: string | null = null,
+    traceChat: string | null = null,
+  ): string {
     if (v === "new") return "/new";
     if (v === "apps") {
       const uiId = openUiId();
@@ -1465,6 +2218,8 @@ export function createState() {
     if (v === "pointers") return "/pointers";
     if (v === "mcp") return "/mcp";
     if (v === "v8") return "/v8";
+    if (v === "traces")
+      return traceChat ? `/traces/${encodeURIComponent(traceChat)}` : "/traces";
     if (v === "settings") return "/settings";
     if (!id) return "/";
     return `/chat/${encodeURIComponent(id)}`;
@@ -1473,20 +2228,47 @@ export function createState() {
   const initialLoc = parseLocation();
   const initialOAuthCallback = (() => {
     const callbackPath = location.pathname.replace(/\/$/, "");
-    if (callbackPath !== "/mcp/oauth/callback" && callbackPath !== "/settings/oauth/callback") return null;
+    if (
+      callbackPath !== "/mcp/oauth/callback" &&
+      callbackPath !== "/settings/oauth/callback"
+    )
+      return null;
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
     const oauthState = params.get("state");
     const error = params.get("error");
-    if (code && oauthState) return { code, state: oauthState, kind: callbackPath === "/settings/oauth/callback" ? "llmAuth" : "mcp" };
+    if (code && oauthState)
+      return {
+        code,
+        state: oauthState,
+        kind: callbackPath === "/settings/oauth/callback" ? "llmAuth" : "mcp",
+      };
     if (error) {
-      return { error: params.get("error_description") || error || "OAuth login failed", kind: callbackPath === "/settings/oauth/callback" ? "llmAuth" : "mcp" };
+      return {
+        error: params.get("error_description") || error || "OAuth login failed",
+        kind: callbackPath === "/settings/oauth/callback" ? "llmAuth" : "mcp",
+      };
     }
     return null;
   })();
   const [openUiId, setOpenUiId] = createSignal<string | null>(null);
-  const [openUiInstanceId, setOpenUiInstanceId] = createSignal<string | null>(initialLoc.view === "apps" ? initialLoc.instanceId : null);
-  const [view, setView] = createSignal<"chat" | "new" | "facts" | "pointers" | "apps" | "mcp" | "v8" | "settings">(initialLoc.view);
+  const [openUiInstanceId, setOpenUiInstanceId] = createSignal<string | null>(
+    initialLoc.view === "apps" ? initialLoc.instanceId : null,
+  );
+  const [view, setView] = createSignal<
+    | "chat"
+    | "new"
+    | "facts"
+    | "pointers"
+    | "apps"
+    | "mcp"
+    | "v8"
+    | "traces"
+    | "settings"
+  >(initialLoc.view);
+  const [traceChatId, setTraceChatId] = createSignal<string | null>(
+    initialLoc.view === "traces" ? initialLoc.chatId : null,
+  );
   const [focusedSubject, setFocusedSubject] = createSignal<string | null>(
     initialLoc.view === "facts" ? initialLoc.subject : null,
   );
@@ -1495,13 +2277,25 @@ export function createState() {
   );
 
   function pushUrl() {
-    const path = buildPath(view(), chatId(), focusedSubject(), focusedGraph());
+    const path = buildPath(
+      view(),
+      chatId(),
+      focusedSubject(),
+      focusedGraph(),
+      traceChatId(),
+    );
     if (location.pathname + location.search + location.hash !== path) {
       history.pushState(null, "", path);
     }
   }
   function replaceUrl() {
-    const path = buildPath(view(), chatId(), focusedSubject(), focusedGraph());
+    const path = buildPath(
+      view(),
+      chatId(),
+      focusedSubject(),
+      focusedGraph(),
+      traceChatId(),
+    );
     history.replaceState(null, "", path);
   }
 
@@ -1541,7 +2335,8 @@ export function createState() {
     const id = chatId();
     if (id && !openUiId()) {
       const cached = chatCache.get(id)?.ui;
-      if (cached) restorePrimaryUi(cached.primaryUiId ?? null, cached.instances);
+      if (cached)
+        restorePrimaryUi(cached.primaryUiId ?? null, cached.instances);
       else void refreshChatUis();
     }
     pushUrl();
@@ -1574,6 +2369,16 @@ export function createState() {
     setFocusedSubject(null);
     setFocusedGraph(null);
     void refreshV8Stats();
+    pushUrl();
+  }
+
+  function showTraces(chatId?: string | null) {
+    setOpenUiId(null);
+    setOpenUiInstanceId(null);
+    setView("traces");
+    setTraceChatId(chatId ?? null);
+    setFocusedSubject(null);
+    setFocusedGraph(null);
     pushUrl();
   }
 
@@ -1621,6 +2426,19 @@ export function createState() {
       setOpenUiId(null);
       setOpenUiInstanceId(null);
       void refreshV8Stats();
+    } else if (loc.view === "traces") {
+      setView("traces");
+      setTraceChatId(loc.chatId);
+      setFocusedSubject(null);
+      setFocusedGraph(null);
+      setOpenUiId(null);
+      setOpenUiInstanceId(null);
+    } else if (loc.view === "settings") {
+      setView(loc.view);
+      setFocusedSubject(null);
+      setFocusedGraph(null);
+      setOpenUiId(null);
+      setOpenUiInstanceId(null);
     } else {
       setView("chat");
       setFocusedSubject(null);
@@ -1649,7 +2467,8 @@ export function createState() {
         replaceUrl();
       } else {
         const cached = target ? chatCache.get(target)?.ui : null;
-        if (cached) restorePrimaryUi(cached.primaryUiId ?? null, cached.instances);
+        if (cached)
+          restorePrimaryUi(cached.primaryUiId ?? null, cached.instances);
         else if (target) void refreshChatUis();
         replaceUrl();
       }
@@ -1665,7 +2484,10 @@ export function createState() {
     localStorage.setItem(COLLAPSED_KEY, collapsed() ? "1" : "0"),
   );
   createEffect(() =>
-    localStorage.setItem(ARCHIVED_COLLAPSED_KEY, archivedCollapsed() ? "1" : "0"),
+    localStorage.setItem(
+      ARCHIVED_COLLAPSED_KEY,
+      archivedCollapsed() ? "1" : "0",
+    ),
   );
 
   // -- fetchers ----------------------------------------------------------
@@ -1675,13 +2497,19 @@ export function createState() {
     const existingHidden = keepHiddenChatId
       ? chats().find((chat) => chat.chatId === keepHiddenChatId && chat.hidden)
       : null;
-    const normalizedExistingHidden = existingHidden ? withExpectedChatWorktreePath(existingHidden) : null;
+    const normalizedExistingHidden = existingHidden
+      ? withExpectedChatWorktreePath(existingHidden)
+      : null;
     const r = await api.chat.list();
     if (r.ok) {
       const listedChats = withExpectedChatWorktreePaths(r.value.chats);
-      const nextChats = normalizedExistingHidden && !listedChats.some((chat) => chat.chatId === normalizedExistingHidden.chatId)
-        ? sortChatsByRecency([normalizedExistingHidden, ...listedChats])
-        : listedChats;
+      const nextChats =
+        normalizedExistingHidden &&
+        !listedChats.some(
+          (chat) => chat.chatId === normalizedExistingHidden.chatId,
+        )
+          ? sortChatsByRecency([normalizedExistingHidden, ...listedChats])
+          : listedChats;
       setChats(nextChats);
       setHomeDir_(r.value.homeDir ?? null);
       setChatsLoaded(true);
@@ -1693,18 +2521,26 @@ export function createState() {
       // actively running; mirror that into the client-side set so
       // thinking() and the stop button work on cold load without relying on
       // local dispatch locks.
-      const runningChats = r.value.chats.filter((c) => c.status === "agent:Running");
+      const runningChats = r.value.chats.filter(
+        (c) => c.status === "agent:Running",
+      );
       const live = new Set(runningChats.map((c) => c.chatId));
       setActiveChats(live);
       setActiveChatStartedAt((current) => {
         const next = new Map<string, number>();
         for (const c of runningChats) {
           const hinted = Number(c.runningStartedAt);
-          next.set(c.chatId, Number.isFinite(hinted) && hinted > 0 ? hinted : current.get(c.chatId) ?? Date.now());
+          next.set(
+            c.chatId,
+            Number.isFinite(hinted) && hinted > 0
+              ? hinted
+              : (current.get(c.chatId) ?? Date.now()),
+          );
         }
         return next;
       });
-      if (chatId() && pending().some((p) => !live.has(p.chatId))) queueMicrotask(drain);
+      if (chatId() && pending().some((p) => !live.has(p.chatId)))
+        queueMicrotask(drain);
     } else {
       setChatsLoaded(true);
       reportError("chats", r.error);
@@ -1731,7 +2567,9 @@ export function createState() {
       const merged: Record<string, { effort: string | null }> = { ...current };
       for (const id of ids) {
         const pending = pendingEffortWritesByChat.get(id);
-        merged[id] = { effort: pending ? pending.effort : next[id]?.effort ?? null };
+        merged[id] = {
+          effort: pending ? pending.effort : (next[id]?.effort ?? null),
+        };
       }
       return merged;
     });
@@ -1757,7 +2595,9 @@ export function createState() {
     if (!id) return;
     const requestSeq = ++chatModelRequestSeq;
     const bypassSingleFlight = Boolean(
-      opts?.force || pendingModelWritesByChat.has(id) || pendingEffortWritesByChat.has(id),
+      opts?.force ||
+      pendingModelWritesByChat.has(id) ||
+      pendingEffortWritesByChat.has(id),
     );
     if (bypassSingleFlight) chatModelsSingle.forget(id);
     const r = await retryChatLoad(
@@ -1769,8 +2609,7 @@ export function createState() {
       const model = modelWithPendingWrites(id, r.value);
       setChatModel(model);
       touchChatCache(id, { model });
-    }
-    else reportError(`models ${id}`, r.error);
+    } else reportError(`models ${id}`, r.error);
   }
 
   // Single-flight describe per chat. Multiple in-flight describes can race:
@@ -1778,6 +2617,7 @@ export function createState() {
   // Coalesce into one in-flight + at most one queued re-fetch.
   let describeInFlight: string | null = null;
   let describeRequeued = false;
+  let timelineMutationSeq = 0;
   async function refreshTimeline() {
     const id = chatId();
     if (!id) return;
@@ -1786,11 +2626,19 @@ export function createState() {
       return;
     }
     describeInFlight = id;
+    const describeSeq = timelineMutationSeq;
     try {
       const limit = timelineLimit();
-      const r = await retryChatLoad(() => api.chat.describe(id, limit), () => chatId() === id);
+      const r = await retryChatLoad(
+        () => api.chat.describe(id, limit),
+        () => chatId() === id,
+      );
       if (chatId() !== id) return;
       if (r.ok) {
+        if (describeSeq !== timelineMutationSeq) {
+          describeRequeued = true;
+          return;
+        }
         applyDescribeValue(id, r.value);
         touchChatCache(id, { describe: r.value, describeLimit: limit });
       } else {
@@ -1812,24 +2660,230 @@ export function createState() {
   // hasn't yet shown up in the server's UserInput list (FIFO match for
   // back-to-back duplicates).
   function timelineItemKey(item: TimelineItem): string {
-    if (item.type === "step") return `step:${item.step}`;
+    if (item.type === "step") {
+      return item.kind === "agent:Reply" && item.draftId
+        ? `step:draft:${item.draftId}`
+        : `step:${item.step}`;
+    }
     if (item.type === "input") return `input:${item.requestId}`;
-    if (item.type === "input-response") return `input-response:${item.responseId}`;
+    if (item.type === "input-response")
+      return `input-response:${item.responseId}`;
     if (item.type === "log") return `log:${item.id}`;
     if (item.type === "trail") return `trail:${item.id}`;
     if (item.type === "memory-diff") return `memory-diff:${item.id}`;
+    if (item.type === "blob-add") return `blob-add:${item.id}`;
     return `file-diff:${item.id}`;
   }
 
-  function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean {
-    // Timeline payloads are plain JSON-compatible data from /api/describe.
-    // Reusing unchanged objects lets Solid's keyed <For> keep DOM nodes stable
-    // across refreshes instead of remounting the whole scrollback.
-    return JSON.stringify(a) === JSON.stringify(b);
+  function jsonEqual(a: unknown, b: unknown): boolean {
+    return a === b || JSON.stringify(a) === JSON.stringify(b);
   }
 
-  function preserveTimelineItems(server: TimelineItem[], current: TimelineItem[]): TimelineItem[] {
-    const currentByKey = new Map(current.map((item) => [timelineItemKey(item), item]));
+  function imageAttachmentsEqual(
+    a: ImageAttachment[] | undefined,
+    b: ImageAttachment[] | undefined,
+  ): boolean {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      const left = a[i] as any;
+      const right = b[i] as any;
+      if (
+        left?.name !== right?.name ||
+        left?.type !== right?.type ||
+        left?.mimeType !== right?.mimeType ||
+        left?.dataUrl !== right?.dataUrl ||
+        left?.size !== right?.size
+      )
+        return false;
+    }
+    return true;
+  }
+
+  function diffStatsEqual(
+    a: FileDiffItem["stats"] | MemoryDiffItem["stats"] | undefined,
+    b: FileDiffItem["stats"] | MemoryDiffItem["stats"] | undefined,
+  ): boolean {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    return (
+      (a as any).added === (b as any).added &&
+      (a as any).removed === (b as any).removed &&
+      (a as any).lines === (b as any).lines
+    );
+  }
+
+  function stepErrorEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    const left = a as any;
+    const right = b as any;
+    return (
+      left.kind === right.kind &&
+      left.at === right.at &&
+      jsonEqual(left.detail, right.detail)
+    );
+  }
+
+  function runJsDetailsEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    const left = a as any;
+    const right = b as any;
+    return (
+      left.label === right.label &&
+      left.description === right.description &&
+      left.code === right.code &&
+      left.result === right.result &&
+      left.error === right.error &&
+      left.durationMs === right.durationMs &&
+      jsonEqual(left.args, right.args)
+    );
+  }
+
+  function subagentDetailsEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    const left = a as any;
+    const right = b as any;
+    const leftResult = left.result;
+    const rightResult = right.result;
+    const resultEqual =
+      leftResult === rightResult ||
+      (!leftResult || !rightResult
+        ? !leftResult && !rightResult
+        : leftResult.status === rightResult.status &&
+          leftResult.childChatId === rightResult.childChatId &&
+          leftResult.text === rightResult.text &&
+          leftResult.error === rightResult.error &&
+          leftResult.durationMs === rightResult.durationMs &&
+          jsonEqual(leftResult.usage, rightResult.usage));
+    return (
+      left.label === right.label &&
+      left.task === right.task &&
+      left.childChatId === right.childChatId &&
+      left.parentRunJsStepId === right.parentRunJsStepId &&
+      resultEqual
+    );
+  }
+
+  function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean {
+    // Avoid serializing every row on each describe refresh. Large RunJS results
+    // and diffs dominate timeline cost; compare hot fields directly so unchanged
+    // objects can still be reused without allocating a full JSON copy per row.
+    if (a === b) return true;
+    if (a.type !== b.type || a.at !== b.at) return false;
+    switch (a.type) {
+      case "step": {
+        const right = b;
+        return (
+          a.step === right.step &&
+          a.kind === right.kind &&
+          a.status === right.status &&
+          a.text === right.text &&
+          a.model === right.model &&
+          a.effort === right.effort &&
+          a.thoughtDurationMs === right.thoughtDurationMs &&
+          a.draftId === right.draftId &&
+          a.deletedAt === right.deletedAt &&
+          imageAttachmentsEqual(a.attachments, right.attachments) &&
+          stepErrorEqual(a.error, right.error) &&
+          runJsDetailsEqual(a.runjs, right.runjs) &&
+          subagentDetailsEqual(a.subagent, right.subagent)
+        );
+      }
+      case "input": {
+        const right = b;
+        return (
+          a.requestId === right.requestId &&
+          a.kind === right.kind &&
+          a.status === right.status &&
+          jsonEqual(a.spec, right.spec) &&
+          jsonEqual(a.response, right.response)
+        );
+      }
+      case "input-response": {
+        const right = b;
+        return (
+          a.responseId === right.responseId &&
+          a.requestId === right.requestId &&
+          a.kind === right.kind &&
+          jsonEqual(a.spec, right.spec) &&
+          jsonEqual(a.response, right.response)
+        );
+      }
+      case "file-diff": {
+        const right = b;
+        return (
+          a.id === right.id &&
+          a.step === right.step &&
+          a.chatId === right.chatId &&
+          a.path === right.path &&
+          a.hash === right.hash &&
+          a.diff === right.diff &&
+          a.before === right.before &&
+          a.after === right.after &&
+          diffStatsEqual(a.stats, right.stats)
+        );
+      }
+      case "memory-diff": {
+        const right = b;
+        return (
+          a.id === right.id &&
+          a.step === right.step &&
+          a.chatId === right.chatId &&
+          a.store === right.store &&
+          a.graph === right.graph &&
+          a.action === right.action &&
+          a.count === right.count &&
+          a.path === right.path &&
+          a.hash === right.hash &&
+          a.diff === right.diff &&
+          a.before === right.before &&
+          a.after === right.after &&
+          diffStatsEqual(a.stats, right.stats) &&
+          jsonEqual(a.changes, right.changes)
+        );
+      }
+      case "blob-add": {
+        const right = b;
+        return (
+          a.id === right.id &&
+          a.step === right.step &&
+          a.chatId === right.chatId &&
+          a.objectKind === right.objectKind &&
+          a.hash === right.hash &&
+          a.size === right.size &&
+          a.chars === right.chars &&
+          a.encoding === right.encoding
+        );
+      }
+      case "log": {
+        const right = b;
+        return a.id === right.id && a.message === right.message;
+      }
+      case "trail": {
+        const right = b;
+        return (
+          a.id === right.id &&
+          a.kind === right.kind &&
+          a.title === right.title &&
+          a.previousTitle === right.previousTitle &&
+          a.body === right.body &&
+          a.summary === right.summary
+        );
+      }
+    }
+  }
+
+  function preserveTimelineItems(
+    server: TimelineItem[],
+    current: TimelineItem[],
+  ): TimelineItem[] {
+    const currentByKey = new Map(
+      current.map((item) => [timelineItemKey(item), item]),
+    );
     return server.map((item) => {
       const previous = currentByKey.get(timelineItemKey(item));
       return previous && timelineItemEqual(previous, item) ? previous : item;
@@ -1840,14 +2894,39 @@ export function createState() {
     return [...items].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   }
 
+  function isConversationStepKind(kind: string): boolean {
+    return (
+      kind === "agent:UserInput" ||
+      kind === "agent:Reply" ||
+      kind === "agent:Final" ||
+      kind === "agent:Error"
+    );
+  }
+
+  function hasUnansweredUserInput(items: TimelineItem[]): boolean {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
+      if (item?.type !== "step") continue;
+      if (!isConversationStepKind(item.kind)) continue;
+      return (
+        item.kind === "agent:UserInput" &&
+        item.status === "agent:Done" &&
+        item.deletedAt == null
+      );
+    }
+    return false;
+  }
+
   function trimTimelineRows(items: TimelineItem[]): TimelineItem[] {
-    const max = Math.max(timelineLimit(), INITIAL_TIMELINE_LIMIT) + LIVE_TIMELINE_SLACK;
+    const max =
+      Math.max(timelineLimit(), INITIAL_TIMELINE_LIMIT) + LIVE_TIMELINE_SLACK;
     if (items.length <= max) return items;
     return sortTimelineItems(items).slice(-max);
   }
 
   function rememberTimelineKeys(items: TimelineItem[]) {
-    for (const item of items) timelineShown.set(timelineItemKey(item), item.at ?? Date.now());
+    for (const item of items)
+      timelineShown.set(timelineItemKey(item), item.at ?? Date.now());
     if (timelineShown.size <= MAX_REMEMBERED_TIMELINE_KEYS) return;
     const keep = [...timelineShown.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -1862,7 +2941,10 @@ export function createState() {
     return trimmed;
   }
 
-  function mergeTimelineRows(server: TimelineItem[], current: TimelineItem[]): TimelineItem[] {
+  function mergeTimelineRows(
+    server: TimelineItem[],
+    current: TimelineItem[],
+  ): TimelineItem[] {
     const stableServer = preserveTimelineItems(server, current);
     const opts = current.filter(
       (it): it is TimelineItem & { type: "step"; step: string; text: string } =>
@@ -1887,7 +2969,9 @@ export function createState() {
       }
     }
     if (survivors.length === 0) return compactTimelineRows(stableServer);
-    return compactTimelineRows(sortTimelineItems([...stableServer, ...survivors]));
+    return compactTimelineRows(
+      sortTimelineItems([...stableServer, ...survivors]),
+    );
   }
 
   function applyTriplesValue(value: TriplesValue) {
@@ -1897,7 +2981,9 @@ export function createState() {
     setTriplesTotal(typeof value.total === "number" ? value.total : null);
   }
 
-  async function refreshGraphSummaries(removed: "exclude" | "include" | "only" = triplesRemovedMode()) {
+  async function refreshGraphSummaries(
+    removed: "exclude" | "include" | "only" = triplesRemovedMode(),
+  ) {
     const r = await api.memory.graphs.summaries({ removed });
     setGraphSummariesLoaded(true);
     if (r.ok) setGraphSummaries(r.value.graphs);
@@ -1912,23 +2998,44 @@ export function createState() {
   }
 
   async function removePointer(name: string, recursive = false) {
-    const r = await api.memory.pointers.remove(name, recursive ? { recursive: true } : undefined);
+    const r = await api.memory.pointers.remove(
+      name,
+      recursive ? { recursive: true } : undefined,
+    );
     if (!r.ok) {
-      reportError(recursive ? "delete pointer hierarchy" : "delete pointer", r.error);
+      reportError(
+        recursive ? "delete pointer hierarchy" : "delete pointer",
+        r.error,
+      );
       return;
     }
     if (!r.value.removed) {
-      notify("pointers", recursive ? "No pointers matched" : "Pointer was already gone");
+      notify(
+        "pointers",
+        recursive ? "No pointers matched" : "Pointer was already gone",
+      );
     } else if (recursive) {
       const removedCount = r.value.removedCount ?? 0;
-      notify("pointers", "Deleted " + removedCount + " pointer" + (removedCount === 1 ? "" : "s"));
+      notify(
+        "pointers",
+        "Deleted " +
+          removedCount +
+          " pointer" +
+          (removedCount === 1 ? "" : "s"),
+      );
     }
     await refreshPointers();
   }
 
-  async function refreshTriples(removed: "exclude" | "include" | "only" = triplesRemovedMode(), graph?: string | null) {
+  async function refreshTriples(
+    removed: "exclude" | "include" | "only" = triplesRemovedMode(),
+    graph?: string | null,
+  ) {
     setTriplesRemovedMode(removed);
-    const r = await api.memory.triples({ removed, ...(graph ? { graph } : {}) });
+    const r = await api.memory.triples({
+      removed,
+      ...(graph ? { graph } : {}),
+    });
     setTriplesLoaded(true);
     if (r.ok) applyTriplesValue(r.value);
     else reportError("triples", r.error);
@@ -1936,7 +3043,9 @@ export function createState() {
     refreshGraphSummaries(removed);
   }
 
-  async function refreshFactsView(removed: "exclude" | "include" | "only" = triplesRemovedMode()) {
+  async function refreshFactsView(
+    removed: "exclude" | "include" | "only" = triplesRemovedMode(),
+  ) {
     const graph = focusedGraph();
     if (graph) await refreshTriples(removed, graph);
     else await refreshGraphSummaries(removed);
@@ -1963,7 +3072,6 @@ export function createState() {
     else reportError("mcp", r.error);
   }
 
-
   async function refreshV8Stats() {
     const r = await api.v8.stats();
     setV8StatsLoaded(true);
@@ -1974,13 +3082,22 @@ export function createState() {
   async function refreshChatUis() {
     const id = chatId();
     if (!id) return;
-    const r = await retryChatLoad(() => uiChatSingle(id), () => chatId() === id);
+    const r = await retryChatLoad(
+      () => uiChatSingle(id),
+      () => chatId() === id,
+    );
     if (chatId() !== id) return;
     if (r.ok) {
       setChatUiApps(r.value.apps);
       setUiInstances(r.value.instances);
       restorePrimaryUi(r.value.primaryUiId ?? null, r.value.instances);
-      touchChatCache(id, { ui: { apps: r.value.apps, instances: r.value.instances, primaryUiId: r.value.primaryUiId ?? null } });
+      touchChatCache(id, {
+        ui: {
+          apps: r.value.apps,
+          instances: r.value.instances,
+          primaryUiId: r.value.primaryUiId ?? null,
+        },
+      });
     } else reportError("chat apps", r.error);
   }
 
@@ -1992,16 +3109,22 @@ export function createState() {
     return value.startsWith(prefix) ? value.slice(prefix.length) : value;
   }
 
-  function restorePrimaryUi(primaryUiId: string | null, instances: UiInstance[]) {
+  function restorePrimaryUi(
+    primaryUiId: string | null,
+    instances: UiInstance[],
+  ) {
     if (!primaryUiId || view() !== "chat") return;
     const current = openUiId();
     if (current && current !== primaryUiId) return;
-    const instanceId = instances.find((inst) => inst.uiId === primaryUiId)?.instanceId ?? null;
+    const instanceId =
+      instances.find((inst) => inst.uiId === primaryUiId)?.instanceId ?? null;
     setOpenUiId(primaryUiId);
     setOpenUiInstanceId(instanceId);
   }
 
-  async function resolveUiInstance(instanceId: string): Promise<{ uiId: string | null; chatId: string | null } | null> {
+  async function resolveUiInstance(
+    instanceId: string,
+  ): Promise<{ uiId: string | null; chatId: string | null } | null> {
     const subject = "uiinst:" + normalizeUiInstanceId(instanceId);
     const r = await api.memory.triples({ subject });
     if (!r.ok) {
@@ -2017,7 +3140,10 @@ export function createState() {
     };
   }
 
-  async function openUiFromRoute(routeId: string, urlMode: "replace" | "none" = "none") {
+  async function openUiFromRoute(
+    routeId: string,
+    urlMode: "replace" | "none" = "none",
+  ) {
     const appId = routeId;
     if (!uiApps().some((app) => app.id === appId)) await refreshUis();
     if (uiApps().some((app) => app.id === appId)) {
@@ -2034,9 +3160,15 @@ export function createState() {
   async function openUiInstanceFromRoute(instanceId: string) {
     setOpenUiInstanceId(normalizeUiInstanceId(instanceId));
     const resolved = await resolveUiInstance(instanceId);
-    if (openUiInstanceId() !== normalizeUiInstanceId(instanceId) || view() !== "apps") return;
+    if (
+      openUiInstanceId() !== normalizeUiInstanceId(instanceId) ||
+      view() !== "apps"
+    )
+      return;
     if (!resolved?.uiId) {
-      reportError("open app instance", { message: "app instance not found: " + instanceId });
+      reportError("open app instance", {
+        message: "app instance not found: " + instanceId,
+      });
       return;
     }
     setOpenUiId(resolved.uiId);
@@ -2052,9 +3184,15 @@ export function createState() {
         setHiddenTimelineItems(0);
         setLoadedChatId(null);
       }
-      setTotalFacts((restored ? totalFacts() : undefined) ?? summary?.totalFacts ?? 0);
-      setTotalTurns((restored ? totalTurns() : undefined) ?? summary?.totalTurns ?? 0);
-      setTotalSteps((restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0);
+      setTotalFacts(
+        (restored ? totalFacts() : undefined) ?? summary?.totalFacts ?? 0,
+      );
+      setTotalTurns(
+        (restored ? totalTurns() : undefined) ?? summary?.totalTurns ?? 0,
+      );
+      setTotalSteps(
+        (restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0,
+      );
       setTotalCodeCalls(restored ? totalCodeCalls() : 0);
       if (!restored) setTokens(null);
       if (!chatCache.get(resolved.chatId)?.model) setChatModel(null);
@@ -2063,7 +3201,11 @@ export function createState() {
         setUiInstances([]);
       }
       loadWipText(resolved.chatId);
-      await Promise.all([refreshTimeline(), refreshChatModel(), refreshChatUis()]);
+      await Promise.all([
+        refreshTimeline(),
+        refreshChatModel(),
+        refreshChatUis(),
+      ]);
     } else if (resolved.chatId) {
       await refreshChatUis();
     }
@@ -2071,7 +3213,11 @@ export function createState() {
 
   // -- chat lifecycle ----------------------------------------------------
 
-  async function selectChat(id: string, replace = false, opts?: { hydrate?: boolean }) {
+  async function selectChat(
+    id: string,
+    replace = false,
+    opts?: { hydrate?: boolean },
+  ) {
     setChatId(id);
     setDraftReply(null);
     // A sidebar chat click should always return to the chat itself, not carry
@@ -2097,9 +3243,15 @@ export function createState() {
       setTotalCodeCalls(0);
       setLoadedChatId(null);
     }
-    setTotalFacts((restored ? totalFacts() : undefined) ?? summary?.totalFacts ?? 0);
-    setTotalTurns((restored ? totalTurns() : undefined) ?? summary?.totalTurns ?? 0);
-    setTotalSteps((restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0);
+    setTotalFacts(
+      (restored ? totalFacts() : undefined) ?? summary?.totalFacts ?? 0,
+    );
+    setTotalTurns(
+      (restored ? totalTurns() : undefined) ?? summary?.totalTurns ?? 0,
+    );
+    setTotalSteps(
+      (restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0,
+    );
     setTotalCodeCalls(restored ? totalCodeCalls() : 0);
     if (!restored) setTokens(null);
     if (!chatCache.get(id)?.model) setChatModel(null);
@@ -2113,10 +3265,23 @@ export function createState() {
     else pushUrl();
     // Load the heavy conversation payload immediately unless the caller has
     // just created an empty chat and only needs navigation to complete.
-    if (opts?.hydrate === false) return;
-    // Chat-scoped UI app metadata is independent and must not serialize the
-    // first timeline paint.
-    await Promise.all([refreshTimeline(), refreshChatModel(), refreshChatUis()]);
+    if (opts?.hydrate === false) {
+      setLoadedChatId(id);
+      return;
+    }
+    // The timeline is the only payload needed to make the chat readable. Model
+    // settings and chat-scoped UI app metadata can be slower (env/provider
+    // probing, app fact scans) and should not keep the startup overlay or route
+    // navigation waiting on an otherwise ready conversation. Start them after
+    // the first describe settles so they also do not contend with the initial
+    // timeline request in small worker pools.
+    await refreshTimeline();
+    if (chatId() !== id) return;
+    queueMicrotask(() => {
+      if (chatId() !== id) return;
+      void refreshChatModel();
+      void refreshChatUis();
+    });
   }
 
   function olderTimelineLoadCount() {
@@ -2149,7 +3314,10 @@ export function createState() {
     else reportError("compactions " + id, r.error);
   }
 
-  async function createChat(path?: string): Promise<string | null> {
+  async function createChat(
+    path?: string,
+    opts?: { select?: boolean },
+  ): Promise<string | null> {
     const r = await api.chat.new({ path });
     if (!r.ok) {
       reportError("new chat", r.error);
@@ -2167,7 +3335,12 @@ export function createState() {
       head: null,
       title: null,
       path: r.value.path ?? path ?? null,
-      worktreePath: r.value.worktreePath ?? expectedChatWorktreePath({ chatId: r.value.chatId, path: r.value.path ?? path ?? null }),
+      worktreePath:
+        r.value.worktreePath ??
+        expectedChatWorktreePath({
+          chatId: r.value.chatId,
+          path: r.value.path ?? path ?? null,
+        }),
       status: "agent:Done",
       totalFacts: 0,
       totalTurns: 0,
@@ -2180,13 +3353,22 @@ export function createState() {
       archived: false,
       archivedAt: null,
     };
-    setChats((current) => [summary, ...current.filter((c) => c.chatId !== summary.chatId)]);
+    setChats((current) => [
+      summary,
+      ...current.filter((c) => c.chatId !== summary.chatId),
+    ]);
     setChatsLoaded(true);
-    await selectChat(r.value.chatId, false, { hydrate: false });
-    queueMicrotask(() => {
-      refreshChatModel();
-      refreshChatUis();
-    });
+    if (opts?.select === false) {
+      setChatId(r.value.chatId);
+      setDraftReply(null);
+      loadWipText(r.value.chatId);
+    } else {
+      await selectChat(r.value.chatId, false, { hydrate: false });
+      queueMicrotask(() => {
+        refreshChatModel();
+        refreshChatUis();
+      });
+    }
     return r.value.chatId;
   }
 
@@ -2240,24 +3422,47 @@ export function createState() {
     // chat's metadata refs — remove the row locally instead of refreshing the
     // full sidebar list.
     if (r.value.chatId) {
-      setChats((current) => current.filter((chat) => chat.chatId !== r.value.chatId));
+      setChats((current) =>
+        current.filter((chat) => chat.chatId !== r.value.chatId),
+      );
       forgetChatCache(r.value.chatId);
     }
     await Promise.all([refreshFactsView(), refreshVocabulary()]);
   }
 
-  async function openUi(uiId: string, instanceId?: string, urlMode: "push" | "replace" | "none" = "push") {
+  function openAppCodeInSidebar(uiId: string) {
+    const trimmed = uiId.trim();
+    if (!trimmed) return;
+    const app = uiApps().find((candidate) => candidate.id === trimmed);
+    upsertRightSidebarTab({
+      id: appCodeTabId(trimmed),
+      kind: "app-code",
+      title: app?.title || trimmed,
+      uiId: trimmed,
+      icon: app?.icon,
+    });
+    setOpenUiId(null);
+    setOpenUiInstanceId(null);
+    setFocusedSubject(null);
+  }
+
+  async function openUi(
+    uiId: string,
+    instanceId?: string,
+    urlMode: "push" | "replace" | "none" = "push",
+  ) {
     let chat = chatId();
-    if (!chat) chat = await createChat();
+    if (!chat) chat = await createChat(undefined, { select: false });
     if (!chat) return;
 
     // Open apps in the shared right sidebar, preserving the current main view.
     const targetInstanceId = instanceId ?? null;
-    const existing = activateExistingRightSidebarTab((tab): tab is Extract<RightSidebarTab, { kind: "app" }> => (
-      tab.kind === "app"
-      && tab.uiId === uiId
-      && tab.instanceId === targetInstanceId
-    ));
+    const existing = activateExistingRightSidebarTab(
+      (tab): tab is Extract<RightSidebarTab, { kind: "app" }> =>
+        tab.kind === "app" &&
+        tab.uiId === uiId &&
+        tab.instanceId === targetInstanceId,
+    );
     if (existing) {
       setOpenUiId(existing.uiId);
       setOpenUiInstanceId(existing.instanceId);
@@ -2306,8 +3511,16 @@ export function createState() {
         instanceId: r.value.instanceId,
         icon: uiApps().find((candidate) => candidate.id === r.value.uiId)?.icon,
       };
-      const withoutPending = state.tabs.filter((candidate) => candidate.id !== pendingTabId && candidate.id !== resolvedTabId);
-      return { ...state, tabs: [...withoutPending, tab], activeTabId: resolvedTabId, collapsed: false };
+      const withoutPending = state.tabs.filter(
+        (candidate) =>
+          candidate.id !== pendingTabId && candidate.id !== resolvedTabId,
+      );
+      return {
+        ...state,
+        tabs: [...withoutPending, tab],
+        activeTabId: resolvedTabId,
+        collapsed: false,
+      };
     });
     if (urlMode === "push" || urlMode === "replace") replaceUrl();
     refreshChatUis();
@@ -2324,7 +3537,12 @@ export function createState() {
     if (openUiId() === uiId) {
       setOpenUiId(null);
       setOpenUiInstanceId(null);
-      for (const tab of rightSidebarTabs()) if (tab.kind === "app" && tab.uiId === uiId) void closeRightSidebarTab(tab.id);
+      for (const tab of rightSidebarTabs())
+        if (
+          (tab.kind === "app" || tab.kind === "app-code") &&
+          tab.uiId === uiId
+        )
+          void closeRightSidebarTab(tab.id);
       replaceUrl();
     }
     await Promise.all([refreshUis(), refreshChatUis()]);
@@ -2358,7 +3576,12 @@ export function createState() {
   // Chats explicitly interrupted with queue pausing stay paused even after the
   // server publishes step-end. Normal cancellation paths (Esc and Stop) resume
   // already-queued follow-up messages after the current run is interrupted.
-  const [interruptedChats, setInterruptedChats] = createSignal<Set<string>>(new Set());
+  const [interruptedChats, setInterruptedChats] = createSignal<Set<string>>(
+    new Set(),
+  );
+  const [editingPendingIds, setEditingPendingIds] = createSignal<Set<string>>(
+    new Set(),
+  );
   let draining = false;
 
   const wipKey = (id: string) => `moo.wip.${id}`;
@@ -2403,23 +3626,54 @@ export function createState() {
 
   function addPendingAttachments(id: string, attachments: ImageAttachment[]) {
     if (attachments.length === 0) return;
-    setPending(pending().map((p) => (
-      p.id === id
-        ? { ...p, attachments: [...(p.attachments || []), ...attachments] }
-        : p
-    )));
+    setPending(
+      pending().map((p) =>
+        p.id === id
+          ? { ...p, attachments: [...(p.attachments || []), ...attachments] }
+          : p,
+      ),
+    );
   }
 
   function removePendingAttachment(id: string, index: number) {
-    setPending(pending().map((p) => {
-      if (p.id !== id) return p;
-      const next = (p.attachments || []).filter((_, i) => i !== index);
-      return next.length ? { ...p, attachments: next } : (({ attachments: _attachments, ...rest }) => rest)(p);
-    }));
+    setPending(
+      pending().map((p) => {
+        if (p.id !== id) return p;
+        const next = (p.attachments || []).filter((_, i) => i !== index);
+        return next.length
+          ? { ...p, attachments: next }
+          : (({ attachments: _attachments, ...rest }) => rest)(p);
+      }),
+    );
   }
 
   function removePending(id: string) {
     setPending(pending().filter((p) => p.id !== id));
+    setEditingPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  function beginPendingEdit(id: string) {
+    setEditingPendingIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }
+
+  function endPendingEdit(id: string) {
+    setEditingPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+    queueMicrotask(drain);
   }
 
   async function drain() {
@@ -2429,7 +3683,14 @@ export function createState() {
       while (true) {
         const pen = pending();
         const paused = interruptedChats();
-        const idx = pen.findIndex((p) => !paused.has(p.chatId) && !chatBusy(p.chatId));
+        const editing = editingPendingIds();
+        const idx = pen.findIndex(
+          (p, i) =>
+            !editing.has(p.id) &&
+            !paused.has(p.chatId) &&
+            !chatBusy(p.chatId) &&
+            !pen.slice(0, i).some((earlier) => earlier.chatId === p.chatId),
+        );
         if (idx < 0) break;
         const head = pen[idx]!;
         setPending([...pen.slice(0, idx), ...pen.slice(idx + 1)]);
@@ -2461,7 +3722,11 @@ export function createState() {
         // loop in the background. Keep the local dispatch lock until
         // step-start/step-end (or an error) so follow-up messages remain
         // queued/editable without showing the thinking indicator early.
-        const r = await api.chat.step(head.chatId, head.text, head.attachments || []);
+        const r = await api.chat.step(
+          head.chatId,
+          head.text,
+          head.attachments || [],
+        );
         if (!r.ok) {
           reportError(`step ${head.chatId}`, r.error);
           deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
@@ -2476,31 +3741,83 @@ export function createState() {
     const normalized = String(model ?? "").trim();
     if (!normalized) return;
     setModelMru((current) => {
-      const next = normalizeModelMru([normalized, ...current.filter((m) => m !== normalized)]);
+      const next = normalizeModelMru([
+        normalized,
+        ...current.filter((m) => m !== normalized),
+      ]);
       persistModelMru(next);
       return next;
     });
   }
 
+  function patchMessageVisibility(
+    id: string,
+    step: string,
+    deletedAt: number | string | null,
+  ) {
+    const patchRows = (rows: TimelineItem[]): TimelineItem[] => {
+      let changed = false;
+      const next = rows.map((item) => {
+        if (
+          item.type !== "step" ||
+          item.step !== step ||
+          item.kind !== "agent:UserInput"
+        ) {
+          return item;
+        }
+        const currentDeletedAt = item.deletedAt ?? null;
+        if (currentDeletedAt === deletedAt) return item;
+        changed = true;
+        if (deletedAt == null) {
+          const { deletedAt: _deletedAt, ...rest } = item;
+          return rest as TimelineItem;
+        }
+        return { ...item, deletedAt };
+      });
+      return changed ? next : rows;
+    };
+
+    setTimeline((current) => patchRows(current));
+
+    const cached = chatCache.get(id);
+    if (cached?.describe) {
+      touchChatCache(id, {
+        describe: {
+          ...cached.describe,
+          timeline: patchRows(cached.describe.timeline),
+          trail: cached.describe.trail
+            ? patchRows(cached.describe.trail)
+            : cached.describe.trail,
+        },
+      });
+    }
+  }
+
   async function deleteMessage(step: string) {
     const id = chatId();
     if (!id) return;
+    const mutationSeq = ++timelineMutationSeq;
     const r = await api.chat.deleteMessage(id, step);
     if (!r.ok) {
       reportError("hide message", r.error);
       return;
     }
+    if (chatId() !== id || mutationSeq !== timelineMutationSeq) return;
+    patchMessageVisibility(id, step, r.value.deletedAt);
     await refreshTimeline();
   }
 
   async function restoreMessage(step: string) {
     const id = chatId();
     if (!id) return;
+    const mutationSeq = ++timelineMutationSeq;
     const r = await api.chat.restoreMessage(id, step);
     if (!r.ok) {
       reportError("restore message", r.error);
       return;
     }
+    if (chatId() !== id || mutationSeq !== timelineMutationSeq) return;
+    patchMessageVisibility(id, step, null);
     await refreshTimeline();
   }
 
@@ -2538,14 +3855,18 @@ export function createState() {
     const r = await api.chat.setModel(id, model);
     chatModelsSingle.forget(id);
     if (writeSeq !== chatModelWriteSeqByChat.get(id)) {
-      if (pendingModelWritesByChat.get(id)?.seq === writeSeq) pendingModelWritesByChat.delete(id);
+      if (pendingModelWritesByChat.get(id)?.seq === writeSeq)
+        pendingModelWritesByChat.delete(id);
       return;
     }
-    if (pendingModelWritesByChat.get(id)?.seq === writeSeq) pendingModelWritesByChat.delete(id);
+    if (pendingModelWritesByChat.get(id)?.seq === writeSeq)
+      pendingModelWritesByChat.delete(id);
     if (r.ok) {
       const modelInfo = modelWithPendingWrites(id, r.value);
       touchChatCache(id, { model: modelInfo });
-      touchModelMru(r.value.effectiveModelId || r.value.effectiveModel || model);
+      touchModelMru(
+        r.value.effectiveModelId || r.value.effectiveModel || model,
+      );
       applyChatModelToSummary(r.value);
       if (chatId() === id) {
         ++chatModelRequestSeq;
@@ -2570,8 +3891,14 @@ export function createState() {
     // effort/default choice while the write is in flight.
     ++chatMemoryRequestSeq;
     if (isDefaultEffort || normalizedEffort) {
-      pendingEffortWritesByChat.set(id, { seq: writeSeq, effort: optimisticEffort });
-      setChatMemory((current) => ({ ...current, [id]: { effort: optimisticEffort } }));
+      pendingEffortWritesByChat.set(id, {
+        seq: writeSeq,
+        effort: optimisticEffort,
+      });
+      setChatMemory((current) => ({
+        ...current,
+        [id]: { effort: optimisticEffort },
+      }));
       const currentModel = chatModel();
       if (currentModel?.chatId === id) {
         const optimisticModel = modelWithPendingWrites(id, currentModel);
@@ -2587,15 +3914,20 @@ export function createState() {
     const r = await api.chat.setEffort(id, effort);
     chatModelsSingle.forget(id);
     if (writeSeq !== chatEffortWriteSeqByChat.get(id)) {
-      if (pendingEffortWritesByChat.get(id)?.seq === writeSeq) pendingEffortWritesByChat.delete(id);
+      if (pendingEffortWritesByChat.get(id)?.seq === writeSeq)
+        pendingEffortWritesByChat.delete(id);
       ++chatMemoryRequestSeq;
       refreshChatMemory([id]);
       return;
     }
-    if (pendingEffortWritesByChat.get(id)?.seq === writeSeq) pendingEffortWritesByChat.delete(id);
+    if (pendingEffortWritesByChat.get(id)?.seq === writeSeq)
+      pendingEffortWritesByChat.delete(id);
     ++chatMemoryRequestSeq;
     if (r.ok) {
-      setChatMemory((current) => ({ ...current, [id]: { effort: normalizeEffort(r.value.selectedEffort) } }));
+      setChatMemory((current) => ({
+        ...current,
+        [id]: { effort: normalizeEffort(r.value.selectedEffort) },
+      }));
       const modelInfo = modelWithPendingWrites(id, r.value);
       touchChatCache(id, { model: modelInfo });
       refreshChatMemory([id]);
@@ -2646,7 +3978,11 @@ export function createState() {
     setChats((current) =>
       current.map((chat) =>
         chat.chatId === r.value.chatId
-          ? { ...chat, archived: r.value.archived, archivedAt: r.value.archivedAt }
+          ? {
+              ...chat,
+              archived: r.value.archived,
+              archivedAt: r.value.archivedAt,
+            }
           : chat,
       ),
     );
@@ -2674,9 +4010,12 @@ export function createState() {
 
     const r = await api.chat.export(id);
     if (!r.ok) {
-      writeTab("Chat export failed", `Chat export failed:
+      writeTab(
+        "Chat export failed",
+        `Chat export failed:
 
-${r.error.message}`);
+${r.error.message}`,
+      );
       reportError(`export ${id}`, r.error);
       return;
     }
@@ -2686,9 +4025,12 @@ ${r.error.message}`);
       try {
         tab.location.assign(r.value.url);
       } catch {
-        writeTab("Chat export uploaded", `Chat export uploaded:
+        writeTab(
+          "Chat export uploaded",
+          `Chat export uploaded:
 
-${r.value.url}`);
+${r.value.url}`,
+        );
       }
     } else {
       window.open(r.value.url, "_blank", "noopener,noreferrer");
@@ -2708,7 +4050,9 @@ ${r.value.url}`);
     }
   }
 
-  async function interruptAgent(options: { resumeQueued?: boolean; offerResume?: boolean } = {}) {
+  async function interruptAgent(
+    options: { resumeQueued?: boolean; offerResume?: boolean } = {},
+  ) {
     const id = chatId();
     if (!id) return;
     if (!activeChats().has(id)) return;
@@ -2717,9 +4061,11 @@ ${r.value.url}`);
     // and idempotently keep it removed.
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
-    if (options.resumeQueued) deleteFromSet(setInterruptedChats, interruptedChats, id);
+    if (options.resumeQueued)
+      deleteFromSet(setInterruptedChats, interruptedChats, id);
     else addToSet(setInterruptedChats, interruptedChats, id);
     updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
+    dismissCurrentDraftReply(id);
     setDraftReply(null);
     if (options.offerResume) setResumeOfferRequest((n) => n + 1);
     // Resume queued follow-ups immediately after the local stop state changes;
@@ -2787,13 +4133,14 @@ ${r.value.url}`);
           if (!current) return current;
           const incoming = ev.event as V8StatsValue["events"][number];
           const events = [...(current.events ?? [])];
-          const duplicate = events.some((item) =>
-            item.at === incoming.at &&
-            item.worker === incoming.worker &&
-            item.generation === incoming.generation &&
-            item.kind === incoming.kind &&
-            item.command === incoming.command &&
-            item.reason === incoming.reason
+          const duplicate = events.some(
+            (item) =>
+              item.at === incoming.at &&
+              item.worker === incoming.worker &&
+              item.generation === incoming.generation &&
+              item.kind === incoming.kind &&
+              item.command === incoming.command &&
+              item.reason === incoming.reason,
           );
           if (!duplicate) events.push(incoming);
           return {
@@ -2835,22 +4182,26 @@ ${r.value.url}`);
       const cid = chatId();
       if (cid && ev.chatId === cid) {
         const id = ev.stepId || ev.hash || `file-diff-${ev.path}-${ev.at}`;
-        setTimeline((items) => compactTimelineRows([
-          ...items.filter((item: any) => !(item.type === "file-diff" && item.id === id)),
-          {
-            type: "file-diff",
-            id,
-            step: ev.stepId,
-            chatId: ev.chatId,
-            path: ev.path,
-            diff: ev.diff,
-            stats: ev.stats,
-            before: ev.before,
-            after: ev.after,
-            hash: ev.hash,
-            at: ev.at || Date.now(),
-          } as TimelineItem,
-        ]));
+        setTimeline((items) =>
+          compactTimelineRows([
+            ...items.filter(
+              (item: any) => !(item.type === "file-diff" && item.id === id),
+            ),
+            {
+              type: "file-diff",
+              id,
+              step: ev.stepId,
+              chatId: ev.chatId,
+              path: ev.path,
+              diff: ev.diff,
+              stats: ev.stats,
+              before: ev.before,
+              after: ev.after,
+              hash: ev.hash,
+              at: ev.at || Date.now(),
+            } as TimelineItem,
+          ]),
+        );
         refreshMatchingRepoFilesSoon(ev.path);
       }
       return;
@@ -2859,27 +4210,57 @@ ${r.value.url}`);
       const cid = chatId();
       if (cid && ev.chatId === cid) {
         const id = ev.stepId || ev.hash || `memory-diff-${ev.store}-${ev.at}`;
-        setTimeline((items) => compactTimelineRows([
-          ...items.filter((item: any) => !(item.type === "memory-diff" && item.id === id)),
-          {
-            type: "memory-diff",
-            id,
-            step: ev.stepId,
-            chatId: ev.chatId,
-            store: ev.store,
-            graph: ev.graph,
-            action: ev.action,
-            count: ev.count,
-            changes: ev.changes,
-            path: ev.path,
-            diff: ev.diff,
-            stats: ev.stats,
-            before: ev.before,
-            after: ev.after,
-            hash: ev.hash,
-            at: ev.at || Date.now(),
-          } as TimelineItem,
-        ]));
+        setTimeline((items) =>
+          compactTimelineRows([
+            ...items.filter(
+              (item: any) => !(item.type === "memory-diff" && item.id === id),
+            ),
+            {
+              type: "memory-diff",
+              id,
+              step: ev.stepId,
+              chatId: ev.chatId,
+              store: ev.store,
+              graph: ev.graph,
+              action: ev.action,
+              count: ev.count,
+              changes: ev.changes,
+              path: ev.path,
+              diff: ev.diff,
+              stats: ev.stats,
+              before: ev.before,
+              after: ev.after,
+              hash: ev.hash,
+              at: ev.at || Date.now(),
+            } as TimelineItem,
+          ]),
+        );
+      }
+      return;
+    }
+    if (ev.kind === "blob-add") {
+      const cid = chatId();
+      if (cid && ev.chatId === cid) {
+        const id = ev.stepId || ev.hash || `blob-add-${ev.at}`;
+        setTimeline((items) =>
+          compactTimelineRows([
+            ...items.filter(
+              (item: any) => !(item.type === "blob-add" && item.id === id),
+            ),
+            {
+              type: "blob-add",
+              id,
+              step: ev.stepId,
+              chatId: ev.chatId,
+              objectKind: ev.objectKind,
+              hash: ev.hash,
+              size: ev.size,
+              chars: ev.chars,
+              encoding: ev.encoding,
+              at: ev.at || Date.now(),
+            } as TimelineItem,
+          ]),
+        );
       }
       return;
     }
@@ -2902,9 +4283,13 @@ ${r.value.url}`);
               threshold,
               fraction: Number.isFinite(explicitFraction)
                 ? explicitFraction
-                : budget > 0 ? used / budget : 0,
+                : budget > 0
+                  ? used / budget
+                  : 0,
             };
-            return mergeTokenProgress(cur, next, activeChats().has(cid), { reset: ev.reset === true });
+            return mergeTokenProgress(cur, next, activeChats().has(cid), {
+              reset: ev.reset === true,
+            });
           });
         }
       }
@@ -2913,27 +4298,71 @@ ${r.value.url}`);
     if (ev.kind === "draft") {
       const cid = chatId();
       if (cid && ev.chatId === cid) {
-        setDraftReply({ chatId: cid, draftId: ev.draftId, content: ev.content });
+        if (
+          dismissedReplies().some(
+            (item) => item.chatId === cid && item.draftId === ev.draftId,
+          )
+        ) {
+          rememberDismissedReply(cid, ev.draftId, ev.content);
+          const cur = draftReply();
+          if (cur?.draftId === ev.draftId) setDraftReply(null);
+          return;
+        }
+        endedDraftReplyIds.delete(ev.draftId);
+        const previous = draftReply();
+        setDraftReply({
+          chatId: cid,
+          draftId: ev.draftId,
+          content: ev.content,
+          at:
+            previous?.draftId === ev.draftId
+              ? previous.at
+              : Number(ev.at) || Date.now(),
+        });
       }
       return;
     }
     if (ev.kind === "draft-end") {
       const cur = draftReply();
-      if (cur && cur.draftId === ev.draftId) setDraftReply(null);
+      if (cur && cur.draftId === ev.draftId) {
+        endedDraftReplyIds.set(ev.draftId, Date.now());
+        window.setTimeout(() => {
+          const latest = draftReply();
+          if (
+            latest?.draftId === ev.draftId &&
+            endedDraftReplyIds.has(ev.draftId)
+          ) {
+            endedDraftReplyIds.delete(ev.draftId);
+            setDraftReply(null);
+          }
+        }, 15000);
+      }
+      return;
+    }
+    if (ev.kind === "llm-auth-required") {
+      if (!ev.chatId || ev.chatId === chatId()) {
+        showSettings();
+      }
       return;
     }
     if (ev.kind === "step-start") {
       addToSet(setActiveChats, activeChats, ev.chatId);
       setChatStartedAt(ev.chatId, ev.at);
       deleteFromSet(setDispatchingChats, dispatchingChats, ev.chatId);
-      updateChatSummary(ev.chatId, { status: "agent:Running", runningStartedAt: Number(ev.at) || Date.now() });
+      updateChatSummary(ev.chatId, {
+        status: "agent:Running",
+        runningStartedAt: Number(ev.at) || Date.now(),
+      });
       return;
     }
     if (ev.kind === "step-end") {
       deleteFromSet(setActiveChats, activeChats, ev.chatId);
       deleteChatStartedAt(ev.chatId);
       deleteFromSet(setDispatchingChats, dispatchingChats, ev.chatId);
-      updateChatSummary(ev.chatId, { status: "agent:Done", runningStartedAt: null });
+      updateChatSummary(ev.chatId, {
+        status: "agent:Done",
+        runningStartedAt: null,
+      });
       queueMicrotask(drain);
       return;
     }
@@ -2941,43 +4370,50 @@ ${r.value.url}`);
     // for the changed name (`pointer` vs. `store`), but routing is identical:
     // both flow through this single switch on prefix/suffix patterns.
     const ref =
-      (ev.kind === "pointer" ? ev.pointer
-        : ev.kind === "facts" ? ev.store
-        : "") || "";
+      (ev.kind === "pointer"
+        ? ev.pointer
+        : ev.kind === "facts"
+          ? ev.store
+          : "") || "";
     const cid = chatId();
-    if (event.kind === "ref" && view() === "facts" && !focusedGraph()) scheduleFactsRefresh(250);
+    if (ev.kind === "pointer" && view() === "facts" && !focusedGraph())
+      scheduleFactsRefresh(250);
     if (
       ref.startsWith("chat/") &&
-      (ref.endsWith("/facts") || ref.endsWith("/head") || ref.endsWith("/compaction"))
+      (ref.endsWith("/facts") ||
+        ref.endsWith("/head") ||
+        ref.endsWith("/compaction"))
     ) {
       const changedChatId = ref.split("/")[1] ?? "";
       // Conversation facts/head invalidate the cached timeline, but keep the
       // cached model picker state. The picker has its own refresh path, and
       // dropping it here makes model/effort choices appear to roll back when
       // the user switches chats while a write or running step is in flight.
-      invalidateChatCache(changedChatId, { describe: true, ui: ref.endsWith("/facts") });
+      invalidateChatCache(changedChatId, {
+        describe: true,
+        ui: ref.endsWith("/facts"),
+      });
     }
     if (
       cid &&
-      (ref === `chat/${cid}/facts` || ref === `chat/${cid}/head` || ref === `chat/${cid}/compaction`)
+      (ref === `chat/${cid}/facts` ||
+        ref === `chat/${cid}/head` ||
+        ref === `chat/${cid}/compaction`)
     ) {
       refreshTimelineSoon();
-      // The Reply step that follows clears the draft for us.
-      if (ref === `chat/${cid}/head`) setDraftReply(null);
     }
     if (ref.startsWith("chat/") && ref.endsWith("/last-at")) {
       const changedChatId = ref.split("/")[1];
-      if (changedChatId) updateChatSummary(changedChatId, { lastAt: Date.now() });
+      if (changedChatId)
+        updateChatSummary(changedChatId, { lastAt: Date.now() });
     } else if (
       ref.startsWith("chat/") &&
-      (
-        ref.endsWith("/created-at") ||
+      (ref.endsWith("/created-at") ||
         ref.endsWith("/title") ||
         ref.endsWith("/archived-at") ||
         // Cost is derived from chat/{id}/usage; refresh summaries when a
         // completion records new usage so the sidebar price updates live.
-        ref.endsWith("/usage")
-      )
+        ref.endsWith("/usage"))
     ) {
       refreshChatsSoon();
     }
@@ -2996,8 +4432,7 @@ ${r.value.url}`);
       ref === "memory/facts" ||
       ref === "vocab/facts" ||
       (ref.startsWith("memory/project/") && ref.endsWith("/facts"));
-    const isChatFactRef =
-      ref.startsWith("chat/") && ref.endsWith("/facts");
+    const isChatFactRef = ref.startsWith("chat/") && ref.endsWith("/facts");
     const factsViewOpen = view() === "facts";
     if (isChatFactRef) refreshChatMemory([ref.split("/")[1] ?? ""]);
     if (isMemoryRef || isChatFactRef) refreshGraphSummariesSoon();
@@ -3020,7 +4455,10 @@ ${r.value.url}`);
     const kind = initialOAuthCallback.kind;
     const target = kind === "llmAuth" ? "/settings" : "/mcp";
     if ("error" in initialOAuthCallback) {
-      console.error(kind === "llmAuth" ? "llm-auth-oauth" : "mcp-oauth", initialOAuthCallback.error);
+      console.error(
+        kind === "llmAuth" ? "llm-auth-oauth" : "mcp-oauth",
+        initialOAuthCallback.error,
+      );
       alert(initialOAuthCallback.error);
       history.replaceState({}, "", target);
       setView(kind === "llmAuth" ? "settings" : "mcp");
@@ -3031,7 +4469,10 @@ ${r.value.url}`);
       return;
     }
     if (kind === "llmAuth") {
-      const r = await api.llmAuth.oauthComplete(initialOAuthCallback.state, initialOAuthCallback.code);
+      const r = await api.llmAuth.oauthComplete(
+        initialOAuthCallback.state,
+        initialOAuthCallback.code,
+      );
       if (!r.ok) {
         console.error("llm-auth-oauth", r.error);
         alert(r.error.message);
@@ -3044,7 +4485,10 @@ ${r.value.url}`);
       setOpenUiInstanceId(null);
       return;
     }
-    const r = await api.mcp.oauth.complete(initialOAuthCallback.state, initialOAuthCallback.code);
+    const r = await api.mcp.oauth.complete(
+      initialOAuthCallback.state,
+      initialOAuthCallback.code,
+    );
     let returnChatId: string | null = null;
     if (!r.ok) {
       console.error("mcp-oauth", r.error);
@@ -3053,7 +4497,9 @@ ${r.value.url}`);
       returnChatId = r.value.status.returnChatId || null;
       void mcpListSingle();
     }
-    const mcpTarget = returnChatId ? "/chat/" + encodeURIComponent(returnChatId) : "/mcp";
+    const mcpTarget = returnChatId
+      ? "/chat/" + encodeURIComponent(returnChatId)
+      : "/mcp";
     history.replaceState({}, "", mcpTarget);
     if (returnChatId) {
       setView("chat");
@@ -3094,10 +4540,12 @@ ${r.value.url}`);
     refreshChatUisSoon.cancel();
     refreshPointersSoon.cancel();
     refreshV8StatsSoon.cancel();
-    if (chatMemoryRefreshTimer !== null) window.clearTimeout(chatMemoryRefreshTimer);
+    if (chatMemoryRefreshTimer !== null)
+      window.clearTimeout(chatMemoryRefreshTimer);
   });
   onCleanup(() => {
-    if (persistChatCacheSoonHandle !== null) window.clearTimeout(persistChatCacheSoonHandle);
+    if (persistChatCacheSoonHandle !== null)
+      window.clearTimeout(persistChatCacheSoonHandle);
     persistChatCache();
   });
 
@@ -3150,7 +4598,8 @@ ${r.value.url}`);
       // showing the initial 0 graphs / 0 facts even though facts exist.
       if (initialView === "facts") {
         refreshGraphSummaries();
-        if (initialLoc.graph) refreshTriples(triplesRemovedMode(), initialLoc.graph);
+        if (initialLoc.graph)
+          refreshTriples(triplesRemovedMode(), initialLoc.graph);
         refreshVocabulary();
       } else if (initialView === "v8") {
         refreshV8Stats();
@@ -3160,7 +4609,9 @@ ${r.value.url}`);
       // background instead of holding the UI on "no chats yet".
       const startupLoc = parseLocation();
       const directChatId =
-        startupLoc.view === "chat" || !startupLoc.view ? startupLoc.chatId ?? null : null;
+        startupLoc.view === "chat" || !startupLoc.view
+          ? (startupLoc.chatId ?? null)
+          : null;
       let directChatLoad: Promise<void> | null = null;
       if (directChatId) {
         // A direct /chat/<id> route can hydrate from chat-scoped refs/facts without
@@ -3183,27 +4634,41 @@ ${r.value.url}`);
       refreshMcpServers();
       const loc = parseLocation();
       const list = chats();
-      if (loc.view === "new" || loc.view === "facts" || loc.view === "pointers" || loc.view === "apps" || loc.view === "mcp" || loc.view === "v8" || loc.view === "settings") {
-      if (loc.view === "apps" && loc.instanceId) {
-        setView("apps");
-        await openUiFromRoute(loc.instanceId, "replace");
+      if (
+        loc.view === "new" ||
+        loc.view === "facts" ||
+        loc.view === "pointers" ||
+        loc.view === "apps" ||
+        loc.view === "mcp" ||
+        loc.view === "v8" ||
+        loc.view === "traces" ||
+        loc.view === "settings"
+      ) {
+        if (loc.view === "apps" && loc.instanceId) {
+          setView("apps");
+          await openUiFromRoute(loc.instanceId, "replace");
+          if (pending().length > 0) drain();
+          return;
+        }
+        if (list.length > 0) {
+          setChatId(list[0]!.chatId);
+          loadWipText(list[0]!.chatId);
+          await Promise.all([refreshTimeline(), refreshChatModel()]);
+        }
+        if (loc.view === "new") setView("new");
+        else if (loc.view === "apps") setView("apps");
+        else if (loc.view === "mcp") setView("mcp");
+        else if (loc.view === "v8") {
+          setView("v8");
+          void refreshV8Stats();
+        } else if (loc.view === "traces") {
+          setView("traces");
+          setTraceChatId(loc.chatId);
+        } else if (loc.view === "settings") setView("settings");
+        replaceUrl();
         if (pending().length > 0) drain();
         return;
       }
-      if (list.length > 0) {
-        setChatId(list[0]!.chatId);
-        loadWipText(list[0]!.chatId);
-        await Promise.all([refreshTimeline(), refreshChatModel()]);
-      }
-      if (loc.view === "new") setView("new");
-      else if (loc.view === "apps") setView("apps");
-      else if (loc.view === "mcp") setView("mcp");
-      else if (loc.view === "v8") { setView("v8"); void refreshV8Stats(); }
-      else if (loc.view === "settings") setView("settings");
-      replaceUrl();
-      if (pending().length > 0) drain();
-      return;
-    }
       const desired = loc.chatId;
       let target: string | null = null;
       // Respect an explicit /chat/<id> even if the chat summary list is stale
@@ -3215,10 +4680,10 @@ ${r.value.url}`);
         if (directChatLoad && directChatId === target) await directChatLoad;
         else await selectChat(target, true);
       }
-    // Drain after selectChat so chatId is set and the optimistic UserInput
-    // row gets added to the timeline (otherwise the user posts a message,
-    // hits reload, and sees only "agent thinking…" until the server's
-    // UserInput fact catches up).
+      // Drain after selectChat so chatId is set and the optimistic UserInput
+      // row gets added to the timeline (otherwise the user posts a message,
+      // hits reload, and sees only "agent thinking…" until the server's
+      // UserInput fact catches up).
       if (pending().length > 0) drain();
     } finally {
       setStartupLoading(false);
@@ -3285,10 +4750,12 @@ ${r.value.url}`);
     openUiId,
     openUiInstanceId,
     thinking,
+    canResumeAgent,
     thinkingStartedAt,
     isChatActive: (id: string) => activeChats().has(id),
     connected,
     draftReply,
+    dismissedReplies,
     pending,
     wipText,
     setWipText,
@@ -3308,6 +4775,7 @@ ${r.value.url}`);
     activeRightSidebarTabId,
     activeRightSidebarTab,
     setActiveRightSidebarTab,
+    setBrowserTabNav,
     setDiffTabMode,
     closeRightSidebarTab,
     openDiffInSidebar,
@@ -3316,10 +4784,13 @@ ${r.value.url}`);
     openFileInSidebar,
     closeRepoFile,
     openStorePreviewInSidebar,
+    openAppCodeInSidebar,
+    openTraceEventInSidebar,
     archivedCollapsed,
     setArchivedCollapsed,
     tick,
     view,
+    traceChatId,
     focusedSubject,
     focusedGraph,
     showNewChat,
@@ -3328,6 +4799,7 @@ ${r.value.url}`);
     showApps,
     showMcp,
     showV8,
+    showTraces,
     showSettings,
     showChat,
     openUi,
@@ -3352,6 +4824,8 @@ ${r.value.url}`);
     resumeAgent,
     stopAgent,
     editPending,
+    beginPendingEdit,
+    endPendingEdit,
     addPendingAttachments,
     removePendingAttachment,
     removePending,
@@ -3369,7 +4843,11 @@ ${r.value.url}`);
     refreshV8Stats,
     refreshChatUis,
     retract: async (s: string, p: string, o: string) => {
-      const r = await api.memory.retract({ subject: s, predicate: p, object: o });
+      const r = await api.memory.retract({
+        subject: s,
+        predicate: p,
+        object: o,
+      });
       if (!r.ok) reportError("retract", r.error);
       await refreshFactsView();
       await refreshVocabulary();
@@ -3392,10 +4870,7 @@ ${r.value.url}`);
       await refreshFactsView();
       await refreshVocabulary();
     },
-    submitForm: async (
-      requestId: string,
-      values: Record<string, unknown>,
-    ) => {
+    submitForm: async (requestId: string, values: Record<string, unknown>) => {
       const r = await api.chat.submit(chatId()!, requestId, values);
       if (!r.ok) reportError("submit form", r.error);
       await refreshTimeline();
@@ -3417,7 +4892,8 @@ export function relativeTime(ms: number, _tick: number): string {
   const diff = Date.now() - ms;
   if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
   if (diff < 60 * 60_000) return `${Math.round(diff / 60_000)}m ago`;
-  if (diff < 24 * 60 * 60_000) return `${Math.round(diff / (60 * 60_000))}h ago`;
+  if (diff < 24 * 60 * 60_000)
+    return `${Math.round(diff / (60 * 60_000))}h ago`;
   return `${Math.round(diff / (24 * 60 * 60_000))}d ago`;
 }
 

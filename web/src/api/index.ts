@@ -2,6 +2,7 @@ export * from "./transport";
 export * from "./types";
 export * from "./contract";
 export type { LlmAuthMode, LlmAuthSettings, LlmCompactionSettings, LlmProviderId, LlmRetrySettings } from "./llmAuth";
+export type { TraceCommands } from "./traces";
 
 import { chatApi } from "./chat";
 import { fsApi } from "./fs";
@@ -11,6 +12,7 @@ import { uiApi } from "./ui";
 import { mcpApi } from "./mcp";
 import { v8Api } from "./v8";
 import { llmAuthApi } from "./llmAuth";
+import { tracesApi } from "./traces";
 
 export const api = {
   chat: chatApi,
@@ -21,4 +23,5 @@ export const api = {
   mcp: mcpApi,
   v8: v8Api,
   llmAuth: llmAuthApi,
+  traces: tracesApi,
 };

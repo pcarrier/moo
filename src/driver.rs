@@ -9,15 +9,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use serde_json::{Value, json};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Map, Value, json};
 use tokio::task::JoinHandle;
 
 use crate::async_runtime::runtime;
 use crate::broadcast;
+use crate::host;
 use crate::ops::llm;
 use crate::pool::Pool;
 use crate::runtime::{AgentRunHandler, AsyncOpCompletion, AsyncOpHandle};
-use crate::util::now_ms;
+use crate::util::{now_ms, random_id};
 
 // Tracks the in-flight tokio task for each chat so /api/run interrupt can
 // abort it. Accepted turns publish step-start before the command response is
@@ -36,6 +38,169 @@ static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn dispatch_drive(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
     dispatch_state(pool, bundle, state);
+}
+
+const CHAT_TRACE_PREFIX: &str = "chattrace:";
+
+fn chat_trace_id(chat_id: &str) -> String {
+    format!("{CHAT_TRACE_PREFIX}{chat_id}")
+}
+
+fn object_value(value: Value) -> Value {
+    match value {
+        Value::Object(_) => value,
+        Value::Null => json!({}),
+        other => json!({ "value": other }),
+    }
+}
+
+fn chat_title_conn(conn: &rusqlite::Connection, chat_id: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "select target from refs where name = ?1",
+        params![format!("chat/{chat_id}/title")],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+fn ensure_chat_trace_root(db: &str, chat_id: &str) -> Result<String, String> {
+    let id = chat_trace_id(chat_id);
+    let conn = host::open_db(db)?;
+    let title = chat_title_conn(&conn, chat_id)?.unwrap_or_default();
+    let data = object_value(json!({
+        "chatId": chat_id,
+        "label": if title.is_empty() { format!("chat {chat_id}") } else { title.clone() },
+        "description": "single chat trace",
+    }))
+    .to_string();
+    if host::trace_get_conn(&conn, &id)?.is_none() {
+        host::trace_open_conn(
+            &conn,
+            &id,
+            None,
+            Some(chat_id),
+            None,
+            "chat",
+            "chat.timeline",
+            now_ms(),
+            None,
+            None,
+            Some(&data),
+        )?;
+    } else {
+        conn.execute(
+            "update traces set data_json = ?2 where id = ?1 and kind = 'chat'",
+            params![id, data],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(id)
+}
+
+fn chat_trace_open(
+    db: &str,
+    parent_id: Option<&str>,
+    chat_id: &str,
+    run_id: Option<u64>,
+    kind: &str,
+    name: &str,
+    data: Value,
+) -> Option<String> {
+    let root_id = match ensure_chat_trace_root(db, chat_id) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("chat trace root [{chat_id}]: {e}");
+            return None;
+        }
+    };
+    let parent = parent_id.unwrap_or(&root_id);
+    let conn = match host::open_db(db) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("chat trace open [{chat_id}]: {e}");
+            return None;
+        }
+    };
+    let id = random_id("traceevt");
+    let run_id_str = run_id.map(|id| id.to_string());
+    let data_json = object_value(data).to_string();
+    if let Err(e) = host::trace_open_conn(
+        &conn,
+        &id,
+        Some(parent),
+        Some(chat_id),
+        run_id_str.as_deref(),
+        kind,
+        name,
+        now_ms(),
+        None,
+        None,
+        Some(&data_json),
+    ) {
+        eprintln!("chat trace insert [{chat_id}]: {e}");
+        return None;
+    }
+    Some(id)
+}
+
+fn chat_trace_finish(db: &str, event_id: Option<String>, status: &str, data: Value) {
+    let Some(event_id) = event_id else {
+        return;
+    };
+    let conn = match host::open_db(db) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("chat trace finish open: {e}");
+            return;
+        }
+    };
+    let row = match host::trace_get_conn(&conn, &event_id) {
+        Ok(row) => row,
+        Err(e) => {
+            eprintln!("chat trace finish read: {e}");
+            return;
+        }
+    };
+    let Some(row) = row else {
+        return;
+    };
+    let ended_ms = now_ms();
+    let mut merged = match row
+        .data_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}))
+    {
+        Value::Object(map) => map,
+        other => {
+            let mut map = Map::new();
+            map.insert("previous".to_string(), other);
+            map
+        }
+    };
+    if let Value::Object(map) = object_value(data) {
+        for (k, v) in map {
+            merged.insert(k, v);
+        }
+    }
+    merged.insert(
+        "durationMs".to_string(),
+        Value::Number(serde_json::Number::from(
+            ended_ms.saturating_sub(row.started_ms),
+        )),
+    );
+    if let Err(e) = conn.execute(
+        "update traces set ended_ms = ?2, status = ?3, data_json = ?4 where id = ?1",
+        params![
+            event_id,
+            ended_ms,
+            status,
+            Value::Object(merged).to_string()
+        ],
+    ) {
+        eprintln!("chat trace finish update: {e}");
+    }
 }
 
 fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
@@ -65,7 +230,7 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = runtime().spawn(async move {
         let _ = start_rx.await;
-        if let Err(e) = drive(pool, bundle, chat_id.clone(), state, task_ended).await {
+        if let Err(e) = drive(pool, bundle, chat_id.clone(), state, task_ended, run_id).await {
             eprintln!("chat driver [{chat_id}]: {e}");
         }
         let mut running = RUNNING.lock().unwrap();
@@ -96,12 +261,43 @@ async fn drive(
     chat_id: String,
     state: Value,
     ended: Arc<AtomicBool>,
+    run_id: u64,
 ) -> Result<(), String> {
     let lock_arc = pool.chat_lock(&format!("chat:{chat_id}"));
     let _guard = lock_arc.lock().await;
 
     let _step_guard = StepLifecycle::new(state.get("lifecycleEvents"), ended);
-    drive_loop(&pool, &bundle, state).await
+    let turn_span = chat_trace_open(
+        pool.db_path(),
+        None,
+        &chat_id,
+        Some(run_id),
+        "turn",
+        "chat.driver",
+        json!({
+            "chatId": chat_id,
+            "runId": run_id,
+        }),
+    );
+    let result = drive_loop(
+        &pool,
+        &bundle,
+        state,
+        &chat_id,
+        run_id,
+        turn_span.as_deref(),
+    )
+    .await;
+    chat_trace_finish(
+        pool.db_path(),
+        turn_span,
+        if result.is_ok() { "ok" } else { "error" },
+        json!({
+            "runId": run_id,
+            "error": result.as_ref().err().cloned(),
+        }),
+    );
+    result
 }
 
 pub fn restart_ongoing(pool: Arc<Pool>, bundle: Arc<String>) {
@@ -225,12 +421,71 @@ impl Drop for StepLifecycle {
     }
 }
 
-async fn drive_loop(pool: &Arc<Pool>, bundle: &Arc<String>, state: Value) -> Result<(), String> {
+async fn drive_loop(
+    pool: &Arc<Pool>,
+    bundle: &Arc<String>,
+    state: Value,
+    chat_id: &str,
+    run_id: u64,
+    turn_span: Option<&str>,
+) -> Result<(), String> {
     let mut next_input = json!({ "command": "step-next", "state": state });
 
     loop {
-        let raw = call_v8(pool, bundle, next_input).await?;
-        let value = unwrap_value(&raw)?;
+        let command = next_input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("step-next")
+            .to_string();
+        let step_span = chat_trace_open(
+            pool.db_path(),
+            turn_span,
+            chat_id,
+            Some(run_id),
+            "step",
+            "harness.step",
+            json!({
+                "chatId": chat_id,
+                "command": command,
+                "statePhase": next_input.pointer("/state/phase").cloned().unwrap_or(Value::Null),
+                "hasLlmResult": next_input.get("llmResult").is_some(),
+                "hasToolResult": next_input.get("toolResult").is_some(),
+                "pendingToolCalls": next_input.pointer("/state/pendingToolCalls").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            }),
+        );
+        let raw = match call_v8(pool, bundle, next_input).await {
+            Ok(raw) => raw,
+            Err(e) => {
+                chat_trace_finish(
+                    pool.db_path(),
+                    step_span.clone(),
+                    "error",
+                    json!({ "command": command, "error": e }),
+                );
+                return Err(e);
+            }
+        };
+        let value = match unwrap_value(&raw) {
+            Ok(value) => value,
+            Err(e) => {
+                chat_trace_finish(
+                    pool.db_path(),
+                    step_span.clone(),
+                    "error",
+                    json!({ "command": command, "error": e }),
+                );
+                return Err(e);
+            }
+        };
+        chat_trace_finish(
+            pool.db_path(),
+            step_span.clone(),
+            "ok",
+            json!({
+                "command": command,
+                "nextKind": value.get("kind").cloned().unwrap_or(Value::Null),
+            }),
+        );
         match value.get("kind").and_then(|v| v.as_str()) {
             Some("llm") => {
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
@@ -248,10 +503,49 @@ async fn drive_loop(pool: &Arc<Pool>, bundle: &Arc<String>, state: Value) -> Res
                     .and_then(|v| v.as_u64())
                     .filter(|n| *n > 0)
                 {
+                    let sleep_span = chat_trace_open(
+                        pool.db_path(),
+                        step_span.as_deref(),
+                        chat_id,
+                        Some(run_id),
+                        "llm",
+                        "llm.retry_sleep",
+                        json!({ "chatId": chat_id, "delayMs": delay_ms }),
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    chat_trace_finish(
+                        pool.db_path(),
+                        sleep_span,
+                        "ok",
+                        json!({ "delayMs": delay_ms }),
+                    );
                 }
 
                 // No V8 worker held during this call.
+                let llm_span = chat_trace_open(
+                    pool.db_path(),
+                    step_span.as_deref(),
+                    chat_id,
+                    Some(run_id),
+                    "llm",
+                    "llm.stream",
+                    json!({
+                        "chatId": chat_id,
+                        "purpose": value.get("purpose").cloned().unwrap_or(Value::Null),
+                        "provider": value.get("requestProvider").cloned().unwrap_or(Value::Null),
+                        "model": value.get("requestModel").cloned().unwrap_or(Value::Null),
+                        "effort": value.get("requestEffort").cloned().unwrap_or(Value::Null),
+                        "url": url,
+                        "responsesApi": value.get("responsesApi").cloned().unwrap_or(Value::Null),
+                        "estimatedPromptTokens": value.get("estimatedPromptTokens").cloned().unwrap_or(Value::Null),
+                        "tokenBudget": value.get("tokenBudget").cloned().unwrap_or(Value::Null),
+                        "tokenThreshold": value.get("tokenThreshold").cloned().unwrap_or(Value::Null),
+                        "bodyChars": body.len(),
+                        "bodyKeys": body_value.as_object().map(|m| Value::Array(m.keys().cloned().map(Value::String).collect())).unwrap_or(Value::Null),
+                        "messageCount": body_value.get("messages").and_then(|v| v.as_array()).map(|a| a.len()).or_else(|| body_value.get("input").and_then(|v| v.as_array()).map(|a| a.len())).unwrap_or(0),
+                        "toolCount": body_value.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                    }),
+                );
                 let stream_started = std::time::Instant::now();
                 let llm_result = llm::stream_chat(
                     pool.clone(),
@@ -264,6 +558,26 @@ async fn drive_loop(pool: &Arc<Pool>, bundle: &Arc<String>, state: Value) -> Res
                 .await;
                 let duration_ms =
                     u64::try_from(stream_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let llm_ok = llm_result
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                chat_trace_finish(
+                    pool.db_path(),
+                    llm_span,
+                    if llm_ok { "ok" } else { "error" },
+                    json!({
+                        "status": llm_result.get("status").cloned().unwrap_or(Value::Null),
+                        "ok": llm_ok,
+                        "durationMs": duration_ms,
+                        "model": llm_result.get("model").cloned().unwrap_or(Value::Null),
+                        "usage": llm_result.get("usage").cloned().unwrap_or(Value::Null),
+                        "contentChars": llm_result.get("content").and_then(|v| v.as_str()).map(|s| s.chars().count()).unwrap_or(0),
+                        "toolCalls": llm_result.get("toolCalls").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                        "error": llm_result.get("errorBody").cloned().unwrap_or(Value::Null),
+                        "streamStats": llm_result.get("streamStats").cloned().unwrap_or(Value::Null),
+                    }),
+                );
 
                 next_input = json!({
                     "command": "step-next",
@@ -274,7 +588,38 @@ async fn drive_loop(pool: &Arc<Pool>, bundle: &Arc<String>, state: Value) -> Res
             }
             Some("tool-js") => {
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
-                let tool_result = run_js_tool_async(pool, bundle, &value).await;
+                let tool_span = chat_trace_open(
+                    pool.db_path(),
+                    step_span.as_deref(),
+                    chat_id,
+                    Some(run_id),
+                    "tool",
+                    "harness.runjs_tool",
+                    json!({
+                        "chatId": chat_id,
+                        "toolCallId": value.pointer("/toolCall/id").cloned().unwrap_or(Value::Null),
+                        "toolName": value.pointer("/toolCall/function/name").cloned().unwrap_or(Value::Null),
+                        "label": value.pointer("/toolCall/function/arguments").and_then(|v| v.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).and_then(|v| v.get("label").and_then(|s| s.as_str()).map(|s| Value::String(s.to_string()))).unwrap_or(Value::Null),
+                        "argumentChars": value.pointer("/toolCall/function/arguments").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0),
+                    }),
+                );
+                let tool_result =
+                    run_js_tool_async(pool, bundle, &value, tool_span.as_deref()).await;
+                let tool_ok = tool_result
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s != "failed")
+                    .unwrap_or(true);
+                chat_trace_finish(
+                    pool.db_path(),
+                    tool_span,
+                    if tool_ok { "ok" } else { "error" },
+                    json!({
+                        "toolCallId": tool_result.get("toolCallId").cloned().unwrap_or(Value::Null),
+                        "status": tool_result.get("status").cloned().unwrap_or(Value::Null),
+                        "contentChars": tool_result.get("content").and_then(|v| v.as_str()).map(|s| s.chars().count()).unwrap_or(0),
+                    }),
+                );
                 next_input = json!({
                     "command": "step-next",
                     "state": state,
@@ -287,7 +632,12 @@ async fn drive_loop(pool: &Arc<Pool>, bundle: &Arc<String>, state: Value) -> Res
     }
 }
 
-async fn run_js_tool_async(pool: &Arc<Pool>, bundle: &Arc<String>, value: &Value) -> Value {
+async fn run_js_tool_async(
+    pool: &Arc<Pool>,
+    bundle: &Arc<String>,
+    value: &Value,
+    parent_step_id: Option<&str>,
+) -> Value {
     let chat_id = value
         .pointer("/state/chatId")
         .and_then(|v| v.as_str())
@@ -310,11 +660,13 @@ async fn run_js_tool_async(pool: &Arc<Pool>, bundle: &Arc<String>, value: &Value
     let pool2 = pool.clone();
     let bundle2 = bundle.clone();
     let input_str = input.to_string();
-    let raw =
-        tokio::task::spawn_blocking(move || pool2.submit_async_tool(bundle2, input_str, handler))
-            .await
-            .map_err(|e| format!("spawn_blocking async tool: {e}"))
-            .and_then(|r| r);
+    let parent_step_id = parent_step_id.map(ToString::to_string);
+    let raw = tokio::task::spawn_blocking(move || {
+        pool2.submit_async_tool(bundle2, input_str, handler, parent_step_id)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking async tool: {e}"))
+    .and_then(|r| r);
     match raw {
         Ok(raw) => match serde_json::from_str::<Value>(&raw)
             .ok()
@@ -555,7 +907,7 @@ async fn drive_limited(
             }
             Some("tool-js") => {
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
-                let tool_result = run_js_tool_async(pool, bundle, &value).await;
+                let tool_result = run_js_tool_async(pool, bundle, &value, None).await;
                 next_input = json!({
                     "command": "step-next",
                     "state": state,

@@ -1,8 +1,8 @@
 import { For, Show, createSignal, onMount } from "solid-js";
 
 import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type V8RuntimeSettings, type V8SettingsValue } from "./api";
-import { RightSidebarToggle } from "./Sidebar";
 import type { Bag } from "./state";
+import { ActionRow, BackToChatButton, Card, EmptyState, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
 
 type ProviderMeta = {
   id: LlmProviderId;
@@ -226,7 +226,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const provider = () => settings()?.providers[meta.id];
     const canOAuth = !!meta.supportsOAuth;
     return (
-      <div class="settings-card llm-provider-card">
+      <Card class="settings-card llm-provider-card">
         <h2>{meta.title}</h2>
         <label class="field-label">Auth mode</label>
         <select value={draft().authMode} onInput={(e) => updateDraft(meta.id, { authMode: e.currentTarget.value as LlmAuthMode })}>
@@ -251,39 +251,33 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
               <small>Waiting for OpenAI… expires {new Date(login().expiresAt).toLocaleTimeString()}.</small>
             </div>}
           </Show>
-          <div class="settings-actions">
+          <ActionRow class="settings-actions">
             <button onClick={() => startOAuth(meta.id)} disabled={saving()}>{provider()?.hasAccessToken ? "Reconnect " + meta.title : "Connect " + meta.title}</button>
             <button class="secondary" onClick={() => logoutOAuth(meta.id)} disabled={saving() || !provider()?.hasAccessToken}>Disconnect</button>
-          </div>
+          </ActionRow>
         </Show>
         <div class="settings-row">
           <label><span>Base URL override</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={meta.defaultBaseUrl} /></label>
         </div>
-      </div>
+      </Card>
     );
   }
 
   return (
-    <div class="chat-shell llm-auth-shell">
-      <section class="main llm-auth-main">
-        <header class="conv-header">
-          <button class="header-icon-button" title="toggle sidebar" aria-label="toggle sidebar" onClick={props.onToggleSidebar}>☰</button>
-          <button class="header-icon-button" title="back to chat" onClick={() => props.bag.showChat()}>←</button>
-          <strong>Settings</strong>
-          <small class="conv-stats">LLM providers</small>
-          <RightSidebarToggle bag={props.bag} />
-        </header>
-        <main class="timeline settings-view">
-          <div class="settings-hero">
-            <h1>Settings</h1>
-            <p>Configure LLM provider credentials, base URLs, retry behavior, and V8 runtime defaults. Model choice stays in the chat model picker.</p>
-          </div>
-          <Show when={error()}><div class="settings-error">{error()}</div></Show>
-          <Show when={loading()}><div class="settings-card">Loading…</div></Show>
+    <PageShell class="llm-auth-shell" mainClass="llm-auth-main">
+        <PageHeader
+          bag={props.bag}
+          title="Settings"
+          onToggleSidebar={props.onToggleSidebar}
+          actions={<BackToChatButton bag={props.bag} />}
+        />
+        <PageBody class="settings-view">
+          <Show when={error()}><Notice class="settings-error" tone="error">{error()}</Notice></Show>
+          <Show when={loading()}><EmptyState class="settings-card">Loading…</EmptyState></Show>
           <Show when={!loading()}>
             <section class="settings-grid llm-provider-grid">
               <For each={PROVIDERS}>{providerCard}</For>
-              <div class="settings-card">
+              <Card class="settings-card">
                 <h2>Compaction</h2>
                 <div class="settings-row two">
                   <label>
@@ -292,8 +286,8 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   </label>
                 </div>
                 <p class="settings-help">Automatically compact when the estimated next prompt reaches this percentage of the model context window.</p>
-              </div>
-              <div class="settings-card v8-settings-card">
+              </Card>
+              <Card class="settings-card v8-settings-card">
                 <h2>V8 runtime</h2>
                 <Show when={v8Settings()}>
                   {(v8) => <>
@@ -331,8 +325,8 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                     <p class="settings-help">Heap and snapshot changes apply to new isolates immediately. Worker cap changes on restart.</p>
                   </>}
                 </Show>
-              </div>
-              <div class="settings-card">
+              </Card>
+              <Card class="settings-card">
                 <h2>Retries</h2>
                 <div class="settings-row two">
                   <label><span>Max attempts</span><input type="number" min="1" max="20" value={maxAttempts()} onInput={(e) => setMaxAttempts(e.currentTarget.value)} /></label>
@@ -341,12 +335,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   <label><span>Jitter (ms)</span><input type="number" min="0" value={jitterMs()} onInput={(e) => setJitterMs(e.currentTarget.value)} /></label>
                   <label><span>Max Retry-After (ms)</span><input type="number" min="0" value={maxRetryAfterMs()} onInput={(e) => setMaxRetryAfterMs(e.currentTarget.value)} /></label>
                 </div>
-              </div>
+              </Card>
             </section>
-            <div class="settings-footer"><button onClick={save} disabled={saving()}>{saving() ? "Saving…" : "Save settings"}</button></div>
+            <ActionRow class="settings-footer"><button onClick={save} disabled={saving()}>{saving() ? "Saving…" : "Save settings"}</button></ActionRow>
           </Show>
-        </main>
-      </section>
-    </div>
+        </PageBody>
+    </PageShell>
   );
 }

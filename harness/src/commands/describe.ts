@@ -14,6 +14,13 @@ import type { Input } from "./_shared";
 import { chatModelInfo } from "./models";
 
 
+const DEFAULT_TIMELINE_LIMIT = 160;
+// The trail sidebar is an index, not the transcript itself. Keep initial loads
+// bounded so old diffs/subagent payloads do not dominate chat switching time.
+const TRAIL_INDEX_LIMIT = 400;
+const TRAIL_STEP_INDEX_LIMIT = 240;
+
+
 type TimelineRef =
   | { type: "step"; id: string; at: number }
   | { type: "input"; id: string; at: number }
@@ -30,6 +37,7 @@ function timelineTypeOrder(type: string): number {
     case "log": return 40;
     case "trail": return 50;
     case "file-diff":
+    case "blob-add":
     case "memory-diff": return 60;
     case "compaction": return 70;
     default: return 100;
@@ -60,8 +68,92 @@ function compareTimelineItems(a: any, b: any): number {
   return (a.at ?? 0) - (b.at ?? 0) || timelineTypeOrder(a.type) - timelineTypeOrder(b.type);
 }
 
-async function loadTrailItems(c: ReturnType<typeof chatRefs>, rows: any[]) {
-  const entryIds = new Set<string>(rows.map((row) => row["?entry"]).filter(Boolean));
+function newestByAt<T>(rows: T[], limit: number, at: (row: T) => number): T[] {
+  if (!Number.isFinite(limit) || limit <= 0 || rows.length <= limit) return rows;
+  return rows.slice().sort((a, b) => at(b) - at(a)).slice(0, limit);
+}
+
+async function loadObjectsByHash(hashes: Iterable<string>, into = new Map<string, { kind: string; value: any } | null>()) {
+  const queue = [...new Set(hashes)].filter((hash) => !into.has(hash));
+  let next = 0;
+  const workerCount = Math.min(16, queue.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (next < queue.length) {
+      const hash = queue[next++]!;
+      into.set(hash, await moo.objects.getJSON({ hash }));
+    }
+  }));
+  return into;
+}
+
+async function selectRows(c: ReturnType<typeof chatRefs>, where: string, vars: string, limit = 0) {
+  const query = `select ${vars} where { ${where} } order by desc(?at)${limit > 0 ? ` limit ${limit}` : ""}`;
+  const rows = await moo.sparql.select({ store: c.facts, graph: c.graph, query });
+  return rows.map((row: Record<string, string>) => {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(row)) out[key.startsWith("?") ? key : `?${key}`] = value;
+    return out;
+  });
+}
+
+async function loadStepRows(c: ReturnType<typeof chatRefs>, limit = 0) {
+  return selectRows(c, "?step rdf:type agent:Step . ?step agent:kind ?kind . ?step agent:status ?status . ?step agent:createdAt ?at .", "?step ?kind ?status ?at", limit);
+}
+
+async function loadStepRowsByKind(c: ReturnType<typeof chatRefs>, kind: string, limit = 0) {
+  const rows = await selectRows(c, `?step rdf:type agent:Step . ?step agent:kind ${kind} . ?step agent:status ?status . ?step agent:createdAt ?at .`, "?step ?status ?at", limit);
+  return rows.map((row) => ({ ...row, "?kind": kind }));
+}
+
+async function loadInputResponseRows(c: ReturnType<typeof chatRefs>, limit = 0) {
+  return selectRows(c, "?resp rdf:type ui:InputResponse . ?resp ui:respondsTo ?req . ?resp ui:createdAt ?at .", "?resp ?req ?at", limit);
+}
+
+async function loadLogRows(c: ReturnType<typeof chatRefs>, limit = 0) {
+  return selectRows(c, "?log rdf:type agent:Log . ?log agent:createdAt ?at . ?log agent:message ?message .", "?log ?at ?message", limit);
+}
+
+async function loadTrailEntryRows(c: ReturnType<typeof chatRefs>, limit = 0) {
+  return selectRows(c, "?entry rdf:type agent:TrailEntry . ?entry agent:kind ?kind . ?entry agent:createdAt ?at .", "?entry ?kind ?at", limit);
+}
+
+async function loadStepCount(c: ReturnType<typeof chatRefs>, kind: string | null = null) {
+  const rows = await moo.facts.match({
+    store: c.facts,
+    graph: c.graph,
+    predicate: kind ? "agent:kind" : "rdf:type",
+    object: kind || "agent:Step",
+  });
+  return rows.length;
+}
+
+async function loadTypeCount(c: ReturnType<typeof chatRefs>, type: string) {
+  const rows = await moo.facts.match({ store: c.facts, graph: c.graph, predicate: "rdf:type", object: type });
+  return rows.length;
+}
+
+async function loadInputRows(c: ReturnType<typeof chatRefs>, responseRows: Array<Record<string, string>>, limit = 0) {
+  const rows = await selectRows(c, "?req rdf:type ui:InputRequest . ?req ui:kind ?kind . ?req ui:status ?status . ?req ui:createdAt ?at .", "?req ?kind ?status ?at", limit);
+  const visibleIds = new Set(rows.map((row) => row["?req"]).filter(Boolean));
+  const missingIds = responseRows
+    .map((row) => row["?req"])
+    .filter((id): id is string => !!id && !visibleIds.has(id))
+    .slice(0, Math.max(limit, responseRows.length));
+  if (!missingIds.length) return rows;
+  const extra = await Promise.all(missingIds.map(async (reqId) => {
+    const [kind, status, at] = await Promise.all([
+      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:kind", limit: 1 }),
+      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:status", limit: 1 }),
+      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:createdAt", limit: 1 }),
+    ]);
+    return { "?req": reqId, "?kind": kind[0]?.[3] || "ui:Form", "?status": status[0]?.[3] || "ui:Done", "?at": at[0]?.[3] || "0" };
+  }));
+  return rows.concat(extra);
+}
+
+async function loadTrailItems(c: ReturnType<typeof chatRefs>, rows: any[], limit = 0) {
+  const selectedRows = newestByAt(rows, limit, (row) => factTimestamp((row as any)["?at"]));
+  const entryIds = new Set<string>(selectedRows.map((row) => row["?entry"]).filter(Boolean));
   const payloadHashByEntry = new Map<string, string>();
   await Promise.all(
     [...entryIds].map(async (entryId) => {
@@ -75,11 +167,8 @@ async function loadTrailItems(c: ReturnType<typeof chatRefs>, rows: any[]) {
       if (hash) payloadHashByEntry.set(entryId, hash);
     }),
   );
-  const objectByHash = new Map<string, { kind: string; value: any } | null>();
-  for (const h of new Set(payloadHashByEntry.values())) {
-    objectByHash.set(h, await moo.objects.getJSON({ hash: h }));
-  }
-  return rows.map((row) => {
+  const objectByHash = await loadObjectsByHash(payloadHashByEntry.values());
+  return selectedRows.map((row) => {
     const entryId = row["?entry"]!;
     const hash = payloadHashByEntry.get(entryId);
     return trailRowToTimelineItem(row, hash ? objectByHash.get(hash) ?? null : null);
@@ -100,12 +189,17 @@ function trailRowToTimelineItem(row: any, payload: { kind?: string; value?: any 
   };
 }
 
-async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string, rows: any[]) {
+async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string, rows: any[], limit = 0) {
   // The main timeline can be limited to the newest N rows for responsiveness,
-  // but the Trails sidebar is a chat-wide index. Load only the historical step
-  // kinds it renders instead of resolving every old step payload/result.
-  const trailStepRows = rows.filter((row) =>
-    row["?kind"] === "agent:FileDiff" || row["?kind"] === "agent:Subagent"
+  // but the Trails sidebar is just a navigation index. Load only the newest
+  // historical step kinds it renders instead of resolving every old diff and
+  // subagent payload/result on every chat switch.
+  const trailStepRows = newestByAt(
+    rows.filter((row) =>
+      row["?kind"] === "agent:FileDiff" || row["?kind"] === "agent:Subagent"
+    ),
+    limit,
+    (row) => factTimestamp(row["?at"]),
   );
   const stepMetaRows = await Promise.all(
     trailStepRows.map(async (row) => {
@@ -121,7 +215,6 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
     }),
   );
 
-  const objectByHash = new Map<string, { kind: string; value: any } | null>();
   const wantedHashes = new Set<string>();
   for (const meta of stepMetaRows) {
     const payload = meta.payload[0]?.[3];
@@ -129,7 +222,7 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
     const result = meta.result[0]?.[3];
     if (result) wantedHashes.add(result);
   }
-  for (const h of wantedHashes) objectByHash.set(h, await moo.objects.getJSON({ hash: h }));
+  const objectByHash = await loadObjectsByHash(wantedHashes);
   const lookupObject = (hash?: string) => hash ? objectByHash.get(hash) ?? null : null;
 
   const items: any[] = [];
@@ -196,41 +289,6 @@ export async function describeCommand(input: Input) {
   const worktreePath = normalizedPath + "/.moo/" + chatId;
   const totalFacts = await moo.facts.count({ store: c.facts });
 
-  const steps = await moo.facts.matchAll({ patterns: [
-      ["?step", "rdf:type", "agent:Step"],
-      ["?step", "agent:kind", "?kind"],
-      ["?step", "agent:status", "?status"],
-      ["?step", "agent:createdAt", "?at"],
-    ], ...{ store: c.facts, graph: c.graph } });
-  const totalTurns = steps.filter((s) => s["?kind"] === "agent:UserInput").length;
-  const totalSteps = steps.length;
-  const totalCodeCalls = steps.filter((s) => s["?kind"] === "agent:RunJS").length;
-
-  const inputs = await moo.facts.matchAll({ patterns: [
-      ["?req", "rdf:type", "ui:InputRequest"],
-      ["?req", "ui:kind", "?kind"],
-      ["?req", "ui:status", "?status"],
-      ["?req", "ui:createdAt", "?at"],
-    ], ...{ store: c.facts, graph: c.graph } });
-
-  const inputResponses = await moo.facts.matchAll({ patterns: [
-      ["?resp", "rdf:type", "ui:InputResponse"],
-      ["?resp", "ui:respondsTo", "?req"],
-      ["?resp", "ui:createdAt", "?at"],
-    ], ...{ store: c.facts, graph: c.graph } });
-
-  const logs = await moo.facts.matchAll({ patterns: [
-      ["?log", "rdf:type", "agent:Log"],
-      ["?log", "agent:createdAt", "?at"],
-      ["?log", "agent:message", "?message"],
-    ], ...{ store: c.facts, graph: c.graph } });
-
-  const trailEntries = await moo.facts.matchAll({ patterns: [
-      ["?entry", "rdf:type", "agent:TrailEntry"],
-      ["?entry", "agent:kind", "?kind"],
-      ["?entry", "agent:createdAt", "?at"],
-    ], ...{ store: c.facts, graph: c.graph } });
-
   // Loading a long chat should not require formatting every historical step
   // and resolving every historical object payload. When the UI passes a
   // positive limit, return only the newest N timeline entries while still
@@ -239,8 +297,33 @@ export async function describeCommand(input: Input) {
   const rawLimit = Number(input.limit ?? input.timelineLimit ?? 0);
   const timelineLimit =
     Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.max(1, Math.min(10_000, Math.floor(rawLimit)))
+      ? Math.max(1, Math.floor(rawLimit))
       : 0;
+  const effectiveTimelineLimit = timelineLimit > 0 ? timelineLimit : DEFAULT_TIMELINE_LIMIT;
+  const boundedScanLimit = timelineLimit > 0 ? Math.max(effectiveTimelineLimit * 4, 512) : 0;
+  const [steps, totalSteps, totalTurns, totalCodeCalls, totalInputs, totalInputResponses, totalLogs, totalTrailEntries, compactionSteps, fileDiffTrailRows, subagentTrailRows, inputResponses, logs, trailEntries] = await Promise.all([
+    loadStepRows(c, boundedScanLimit),
+    loadStepCount(c),
+    loadStepCount(c, "agent:UserInput"),
+    loadStepCount(c, "agent:RunJS"),
+    loadTypeCount(c, "ui:InputRequest"),
+    loadTypeCount(c, "ui:InputResponse"),
+    loadTypeCount(c, "agent:Log"),
+    loadTypeCount(c, "agent:TrailEntry"),
+    loadStepRowsByKind(c, "agent:Compaction"),
+    loadStepRowsByKind(c, "agent:FileDiff", Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit)),
+    loadStepRowsByKind(c, "agent:Subagent", Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit)),
+    loadInputResponseRows(c, boundedScanLimit),
+    loadLogRows(c, boundedScanLimit),
+    loadTrailEntryRows(c, Math.max(TRAIL_INDEX_LIMIT, boundedScanLimit)),
+  ]);
+  const inputs = await loadInputRows(c, inputResponses, boundedScanLimit);
+  const trailStepRows = newestByAt(
+    [...fileDiffTrailRows, ...subagentTrailRows],
+    Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+    (row) => factTimestamp(row["?at"]),
+  );
+
   // Older compaction implementations only advanced chat/<id>/compaction
   // and did not append an agent:Compaction step, which made automatic
   // compactions invisible in the timeline. Include those compaction-chain
@@ -248,14 +331,12 @@ export async function describeCommand(input: Input) {
   // already have a real step payload.
   const compactionLayers = await readCompactionChain(chatId);
   const compactionStepPayloadHashes = new Set<string>();
-  const compactionStepIds = new Set<string>();
   await Promise.all(
-    steps
+    compactionSteps
       .filter((row) => row["?kind"] === "agent:Compaction")
       .map(async (row) => {
         const stepId = row["?step"];
         if (!stepId) return;
-        compactionStepIds.add(stepId);
         const payload = await moo.facts.match({ store: c.facts, ...{
           graph: c.graph,
           subject: stepId,
@@ -299,24 +380,14 @@ export async function describeCommand(input: Input) {
     ...trailEntries.map((row) => ({ type: "trail" as const, id: row["?entry"]!, at: factTimestamp(row["?at"]) })),
     ...syntheticCompactions,
   ].sort((a, b) => a.at - b.at || timelineTypeOrder(a.type) - timelineTypeOrder(b.type));
-  const totalTimelineItems = timelineRefs.length;
-  const timelineRefKey = (ref: TimelineRef) =>
-    ref.type === "input-response"
-      ? `${ref.type}:${ref.id}:${ref.reqId}`
-      : `${ref.type}:${ref.id}`;
-  const pinCompactionRef = (ref: TimelineRef) =>
-    ref.type === "compaction" || (ref.type === "step" && compactionStepIds.has(ref.id));
+  const totalTimelineItems = totalSteps + totalInputs + totalInputResponses + totalLogs + totalTrailEntries + syntheticCompactions.length;
   const visibleRefs = (() => {
     if (timelineLimit <= 0 || totalTimelineItems <= timelineLimit) return timelineRefs;
-    // Compaction is a major context-boundary event. Keep it visible even when
-    // the bounded timeline only loads the newest rows; otherwise a chat can
-    // compact successfully while the user sees no timeline evidence.
-    const byKey = new Map<string, TimelineRef>();
-    for (const ref of timelineRefs.slice(totalTimelineItems - timelineLimit)) byKey.set(timelineRefKey(ref), ref);
-    for (const ref of timelineRefs) {
-      if (pinCompactionRef(ref)) byKey.set(timelineRefKey(ref), ref);
-    }
-    return [...byKey.values()].sort((a, b) => a.at - b.at || timelineTypeOrder(a.type) - timelineTypeOrder(b.type));
+    // timelineRefs is already a bounded scan of recent rows, not the complete
+    // history. Slice from the scanned tail so old entries (including synthetic
+    // compactions) stay hidden until the user loads enough older messages for
+    // their chronological position to enter the window.
+    return timelineRefs.slice(-timelineLimit);
   })();
   const hiddenTimelineItems = totalTimelineItems - visibleRefs.length;
   const visibleStepIds = new Set(
@@ -348,52 +419,63 @@ export async function describeCommand(input: Input) {
   const visibleResponses = inputResponses.filter((r) => visibleResponseIds.has(r["?resp"]!));
   const visibleLogs = logs.filter((r) => visibleLogIds.has(r["?log"]!));
   const visibleTrailEntries = trailEntries.filter((r) => visibleTrailIds.has(r["?entry"]!));
-  const allTrailItems = await loadTrailItems(c, trailEntries);
-  const allTrailTimelineItems = [...allTrailItems, ...await loadTrailStepItems(c, chatId, steps)].sort(compareTimelineItems);
+  const trailIndexEntryRows = newestByAt(trailEntries, Math.max(TRAIL_INDEX_LIMIT, effectiveTimelineLimit), (row) => factTimestamp(row["?at"]));
+  const trailItems = await loadTrailItems(c, trailIndexEntryRows);
+  const trailTimelineItems = [
+    ...trailItems,
+    ...await loadTrailStepItems(c, chatId, trailStepRows),
+  ].sort(compareTimelineItems);
 
-  // Fetch per-step metadata only for the visible window. Predicate-only
-  // scans still walk every historical payload/result row in very long chats;
-  // during agent thinking, each fact write can request another describe. Bound
-  // the work to the requested timeline page so one refresh cannot monopolize a
-  // worker and leave the UI stuck on "agent thinking…" while loading.
-  const stepMetaRows = await Promise.all(
-    [...visibleStepIds].map(async (stepId) => {
-      const [payload, result, model, effort, deletedAt] = await Promise.all([
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:payload", limit: 1 } }),
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:result", limit: 1 } }),
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:model", limit: 1 } }),
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:effort", limit: 1 } }),
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:deletedAt", limit: 1 } }),
-      ]);
-      return { stepId, payload, result, model, effort, deletedAt };
-    }),
-  );
+  // Fetch per-step metadata with one scan per predicate, then filter to the
+  // visible window. Hundreds of subject-specific host calls are much slower
+  // than a few predicate scans once a chat has accumulated many steps.
+  const [payloadRows, resultRows, modelRows, effortRows, deletedAtRows] = await Promise.all([
+    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:payload" }),
+    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:result" }),
+    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:model" }),
+    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:effort" }),
+    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:deletedAt" }),
+  ]);
   const payloadHashByStep = new Map<string, string>();
   const resultHashByStep = new Map<string, string>();
   const modelByStep = new Map<string, string>();
   const effortByStep = new Map<string, string>();
   const deletedAtByStep = new Map<string, string>();
-  for (const row of stepMetaRows) {
-    const payload = row.payload[0]?.[3];
-    if (payload) payloadHashByStep.set(row.stepId, payload);
-    const result = row.result[0]?.[3];
-    if (result) resultHashByStep.set(row.stepId, result);
-    const model = row.model[0]?.[3];
-    if (model) modelByStep.set(row.stepId, model);
-    const effort = row.effort[0]?.[3];
-    if (effort) effortByStep.set(row.stepId, effort);
-    const deletedAt = row.deletedAt[0]?.[3];
-    if (deletedAt) deletedAtByStep.set(row.stepId, deletedAt);
+  const keepVisibleStepFact = (row: string[]) => visibleStepIds.has(row[1]);
+  for (const row of payloadRows) {
+    if (keepVisibleStepFact(row)) payloadHashByStep.set(row[1], row[3]);
+  }
+  for (const row of resultRows) {
+    if (keepVisibleStepFact(row)) resultHashByStep.set(row[1], row[3]);
+  }
+  for (const row of modelRows) {
+    if (keepVisibleStepFact(row)) modelByStep.set(row[1], row[3]);
+  }
+  for (const row of effortRows) {
+    if (keepVisibleStepFact(row)) effortByStep.set(row[1], row[3]);
+  }
+  for (const row of deletedAtRows) {
+    if (keepVisibleStepFact(row)) deletedAtByStep.set(row[1], row[3]);
   }
 
   // Dedupe object hashes — same payload referenced twice (rare) costs one
-  // lookup. Resolution still goes through __op_object_get one at a time
-  // since it's a sync host op.
+  // lookup. Keep object reads bounded so large visible RunJS histories do not
+  // create hundreds of host calls in one burst.
+  const runJsVisibleStepIds = new Set<string>(
+    visibleSteps
+      .filter((row) => row["?kind"] === "agent:RunJS")
+      .map((row) => row["?step"]!)
+      .filter(Boolean),
+  );
   const wantedHashes = new Set<string>();
   for (const h of payloadHashByStep.values()) wantedHashes.add(h);
-  for (const h of resultHashByStep.values()) wantedHashes.add(h);
-  const objectByHash = new Map<string, { kind: string; value: any } | null>();
-  for (const h of wantedHashes) objectByHash.set(h, await moo.objects.getJSON({ hash: h }));
+  for (const [stepId, h] of resultHashByStep) {
+    // RunJS results are often the largest visible objects and are hidden in a
+    // collapsed row. Return their hashes and hydrate only when the user opens
+    // the row; keep non-RunJS results eager for existing renderers.
+    if (!runJsVisibleStepIds.has(stepId)) wantedHashes.add(h);
+  }
+  const objectByHash = await loadObjectsByHash(wantedHashes);
 
   const lookupPayload = (stepId: string) => {
     const h = payloadHashByStep.get(stepId);
@@ -437,6 +519,25 @@ export async function describeCommand(input: Input) {
         error: typeof result?.value?.error === "string" ? result.value.error : null,
         durationMs: typeof result?.value?.durationMs === "number" ? result.value.durationMs : undefined,
       };
+      const resultHash = resultHashByStep.get(stepId);
+      if (resultHash && !result) {
+        item.lazyRunjsResult = true;
+        item.resultHash = resultHash;
+      }
+    }
+    if (s["?kind"] === "agent:BlobAdd" && payload?.value) {
+      return {
+        type: "blob-add",
+        id: stepId,
+        step: stepId,
+        chatId,
+        objectKind: payload.value.kind || "object",
+        hash: payload.value.hash,
+        size: payload.value.size,
+        chars: payload.value.chars,
+        encoding: payload.value.encoding,
+        at: factTimestamp(s["?at"]),
+      };
     }
     if ((s["?kind"] === "agent:FileDiff" || s["?kind"] === "agent:MemoryDiff") && payload?.value) {
       return {
@@ -478,6 +579,10 @@ export async function describeCommand(input: Input) {
       if (Number.isFinite(thoughtDurationMs) && thoughtDurationMs >= 0) {
         item.thoughtDurationMs = thoughtDurationMs;
       }
+      const draftId = payload?.value?.draftId;
+      if (typeof draftId === "string" && draftId) {
+        item.draftId = draftId;
+      }
     }
     return item;
   };
@@ -513,9 +618,7 @@ export async function describeCommand(input: Input) {
     }),
   );
   const uiHashes = new Set<string>(uiPayloadHashBySubject.values());
-  for (const h of uiHashes) {
-    if (!objectByHash.has(h)) objectByHash.set(h, await moo.objects.getJSON({ hash: h }));
-  }
+  await loadObjectsByHash(uiHashes, objectByHash);
   const lookupUiPayload = (subject: string) => {
     const h = uiPayloadHashBySubject.get(subject);
     return h ? objectByHash.get(h) ?? null : null;
@@ -653,7 +756,7 @@ export async function describeCommand(input: Input) {
       totalSteps,
       totalCodeCalls,
       timeline,
-      trail: allTrailTimelineItems,
+      trail: trailTimelineItems,
       tokens,
       totalTimelineItems,
       hiddenTimelineItems,

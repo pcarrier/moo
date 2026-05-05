@@ -1,4 +1,4 @@
-import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, FsPatchArgs, FsPatchReceipt, TermBindings, BindingTerm, QuadObject } from "./types";
+import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, FsPatchArgs, FsPatchReceipt, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic } from "./types";
 import { err, ok, errorInfo } from "./core/result";
 import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, unpackQuad, stringifyForLog } from "./lib";
@@ -134,7 +134,7 @@ const log: Moo["log"] = (...args) => {
 };
 
 let activeChatId: string | null = null;
-let activeRunJSContext: { chatId: string; runJsStepId: string; depth: number; outstanding: Set<string> } | null = null;
+let activeRunJSContext: { chatId: string; runJsStepId: string; depth: number; outstanding: Set<string>; traceId?: string | null } | null = null;
 
 export async function withMooChatContext<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
   const previous = activeChatId;
@@ -155,7 +155,7 @@ export async function withMooRunJSContext<T>(
   const previousChat = activeChatId;
   const previousRunJS = activeRunJSContext;
   activeChatId = chatId;
-  activeRunJSContext = { chatId, runJsStepId, depth, outstanding: new Set() };
+  activeRunJSContext = { chatId, runJsStepId, depth, outstanding: new Set(), traceId: null };
   try {
     return await fn();
   } finally {
@@ -171,6 +171,435 @@ export async function withMooRunJSContext<T>(
         }
       }
     }
+  }
+}
+
+
+type TraceRootInfo = { traceId?: string | null; resultHash?: string | null; error?: string | null; status?: string };
+
+export function startRunJSTraceRoot(stepId: string | null, data: Record<string, unknown> = {}) {
+  const raw = __op_trace_start_root(stepId, JSON.stringify(redactedTraceValue("runjs.root", data, "input")));
+  const cur = raw ? JSON.parse(raw) : null;
+  if (activeRunJSContext && cur?.traceId) activeRunJSContext.traceId = cur.traceId;
+  return cur;
+}
+export const startTraceRoot = startRunJSTraceRoot;
+
+export function finishRunJSTraceRoot(info: TraceRootInfo) {
+  let shouldLeave = false;
+  try {
+    const current = __op_trace_current();
+    const cur = current ? JSON.parse(current) : null;
+    const traceId = info.traceId || cur?.traceId;
+    if (!traceId) return false;
+    shouldLeave = true;
+    const root = __op_trace_get(JSON.stringify({ traceId }));
+    const row = root ? JSON.parse(root) : null;
+    const data = {
+      ...(row?.data && typeof row.data === "object" ? row.data : {}),
+      ...(info.resultHash ? { resultHash: info.resultHash } : {}),
+      ...(info.error ? { error: info.error } : {}),
+    };
+    return __op_trace_finish(traceId, info.status || (info.error ? "error" : "ok"), JSON.stringify(redactedTraceValue("runjs.root", data, "input")));
+  } finally {
+    if (shouldLeave) {
+      try {
+        __op_trace_leave();
+      } catch {
+        // best effort cleanup only
+      }
+    }
+  }
+}
+export const finishTraceRoot = finishRunJSTraceRoot;
+
+function parseTraceRow(raw: string | null): TraceRow | null {
+  return raw ? JSON.parse(raw) as TraceRow : null;
+}
+
+function parseTraceRows(raw: string): TraceRow[] {
+  const rows = JSON.parse(raw || "[]") as TraceRow[];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function buildTraceTree(rows: TraceRow[]): TraceTreeNode | null {
+  const nodes = new Map<string, TraceTreeNode>();
+  for (const row of rows) nodes.set(row.id, { ...(row as TraceRow), children: [] });
+  let root: TraceTreeNode | null = null;
+  for (const node of nodes.values()) {
+    const parentId = typeof node.data?.parentId === "string" ? node.data.parentId : null;
+    if (!parentId || !nodes.has(parentId)) {
+      if (node.kind === "trace" || !root) root = node;
+      continue;
+    }
+    nodes.get(parentId)!.children.push(node);
+  }
+  for (const node of nodes.values()) node.children.sort((a, b) => a.seq - b.seq);
+  return root;
+}
+
+type TraceRecentRow = TraceRow & {
+  chat?: { id: string; title: string | null };
+  events?: TraceRow[];
+  errorSummary?: string;
+  category?: "runjs_compile" | "patch_mismatch" | "missing_file" | "missing_tool" | "proc_nonzero" | "undefined_variable" | "no_change" | "timeout" | "api_error" | "unknown";
+};
+
+type TraceErrorInfoLocal = NonNullable<Awaited<ReturnType<Moo["traces"]["summary"]>>>["errors"][number];
+
+async function chatForTraceStep(stepId: string | null): Promise<{ id: string; title: string | null } | null> {
+  if (!stepId) return null;
+  for (const entry of await chat.list()) {
+    const refs = chatRefs(entry.chatId);
+    const rows = await facts.match({ store: refs.facts, graph: refs.graph, subject: stepId, predicate: "rdf:type", limit: 1 });
+    if (rows.length) return { id: entry.chatId, title: entry.title };
+  }
+  return null;
+}
+
+function traceText(value: unknown, depth = 0): string | null {
+  if (value == null || depth > 4) return null;
+  if (typeof value === "string") return value.length ? value : null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value.map((v) => traceText(v, depth + 1)).filter(Boolean) as string[];
+    return parts.length ? parts.join("; ") : null;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    for (const key of ["error", "message", "stderr", "stdout", "output", "details", "cause"]) {
+      const text = traceText(obj[key], depth + 1);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+function traceErrorOfRow(row: TraceRow): string | null {
+  const text = traceText(row.data);
+  if (row.status === "error") return text || row.name || row.status;
+  if (text && /\b(error|exception|failed|timed out|timeout)\b/i.test(text)) return text;
+  return null;
+}
+
+function traceCategory(message: string | null, row?: TraceRow): TraceRecentRow["category"] {
+  const text = [message ?? "", row?.name ?? "", row?.status ?? ""].join("\n");
+  if (/v8\.compile|Unexpected identifier|missing \) after argument list|SyntaxError/i.test(text)) return "runjs_compile";
+  if (/patch hunk did not match|hunk.*failed|No valid patches|malformed patch/i.test(text)) return "patch_mismatch";
+  if (/command not found|No such file or directory.*python|python3:|which: no/i.test(text)) return "missing_tool";
+  if (/No such file or directory|not found|missing file/i.test(text)) return "missing_file";
+  if (/exited [1-9]|process_failed|nonzero|non-zero/i.test(text)) return "proc_nonzero";
+  if (/\b[A-Za-z_$][\w$]* is not defined\b|ReferenceError/i.test(text)) return "undefined_variable";
+  if (/no changes|missing pattern|expectedCount|expected count|missing effects|missing actions/i.test(text)) return "no_change";
+  if (/timed out|timeout/i.test(text)) return "timeout";
+  if (/MooApiError|invalid_argument|path_escape|bad_sparql|conflict/i.test(text)) return "api_error";
+  return "unknown";
+}
+
+function rowContainsText(row: TraceRow, needle: string): boolean {
+  if (!needle) return true;
+  const haystack = [row.id, row.traceId, row.stepId ?? "", row.kind, row.name, row.status, traceText(row.data) ?? ""].join("\n").toLowerCase();
+  return haystack.includes(needle.toLowerCase());
+}
+
+function traceDurationMs(row: TraceRow): number | undefined {
+  if (typeof row.t0Ns !== "number" || typeof row.t1Ns !== "number") return undefined;
+  return Math.max(0, (row.t1Ns - row.t0Ns) / 1_000_000);
+}
+
+function countBy(rows: TraceRow[], key: (row: TraceRow) => string): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const name = key(row);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function traceParentId(row: TraceRow): string | null {
+  return typeof row.data?.parentId === "string" ? row.data.parentId : null;
+}
+
+function inclusiveMs(row: TraceRow): number {
+  return traceDurationMs(row) ?? 0;
+}
+
+function traceDataBytes(row: TraceRow): number {
+  try {
+    return stringBytes(JSON.stringify(row.data ?? {}));
+  } catch {
+    return 0;
+  }
+}
+
+function buildTracePayloadMetrics(rows: TraceRow[]): Record<string, unknown> {
+  const byKind = new Map<string, { count: number; bytes: number }>();
+  const largest = rows
+    .map((row) => ({ id: row.id, name: row.name, kind: row.kind, status: row.status, bytes: traceDataBytes(row) }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 20);
+  let totalBytes = 0;
+  for (const row of rows) {
+    const bytes = traceDataBytes(row);
+    totalBytes += bytes;
+    const cur = byKind.get(row.kind) ?? { count: 0, bytes: 0 };
+    cur.count += 1;
+    cur.bytes += bytes;
+    byKind.set(row.kind, cur);
+  }
+  return {
+    rows: rows.length,
+    dataBytes: totalBytes,
+    byKind: Array.from(byKind.entries()).map(([kind, value]) => ({ kind, ...value })).sort((a, b) => b.bytes - a.bytes || b.count - a.count),
+    largest,
+  };
+}
+
+function buildTraceCriticalPath(rows: TraceRow[]): TraceRow[] {
+  const byParent = new Map<string, TraceRow[]>();
+  for (const row of rows) {
+    const parentId = traceParentId(row);
+    if (!parentId) continue;
+    const list = byParent.get(parentId) ?? [];
+    list.push(row);
+    byParent.set(parentId, list);
+  }
+  const root = rows.find((row) => row.kind === "trace") ?? rows[0] ?? null;
+  const path: TraceRow[] = [];
+  let current = root;
+  while (current) {
+    path.push(current);
+    const children = (byParent.get(current.id) ?? []).filter((row) => traceDurationMs(row) != null);
+    current = children.sort((a, b) => inclusiveMs(b) - inclusiveMs(a))[0] ?? null;
+  }
+  return path;
+}
+
+function buildTraceWaterfall(rows: TraceRow[]): Array<Record<string, unknown>> {
+  const root = rows.find((row) => row.kind === "trace") ?? rows[0] ?? null;
+  const base = root?.t0Ns ?? rows[0]?.t0Ns ?? 0;
+  return rows
+    .filter((row) => typeof row.t0Ns === "number")
+    .map((row) => ({
+      id: row.id,
+      parentId: traceParentId(row),
+      name: row.name,
+      kind: row.kind,
+      status: row.status,
+      startMs: (row.t0Ns - base) / 1_000_000,
+      durationMs: traceDurationMs(row) ?? null,
+    }))
+    .sort((a, b) => (a.startMs as number) - (b.startMs as number));
+}
+
+function buildTraceSideEffects(rows: TraceRow[]): TraceRow[] {
+  return rows.filter((row) => /^(moo.(fs.(write|patch|record_diff|ensureDir)|proc.run|http.|facts.(add|addAll|remove|swap|update|clearStore|deleteStore|deleteGraph|deleteGraphEverywhere)|pointers.(set|cas|delete)|objects.put|memory.(assert|retract|patch)|chat.|ui.|mcp.|agent.run)|timeline.|usage.|command.)/.test(row.name));
+}
+
+function buildTraceCausalLinks(rows: TraceRow[]): Array<Record<string, unknown>> {
+  const links: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const data = row.data ?? {};
+    const parentId = traceParentId(row);
+    if (parentId) links.push({ type: "parent", from: parentId, to: row.id });
+    for (const key of ["traceId", "childTraceId", "childChatId", "chatId", "toolCallId", "instanceId", "statePointer", "runId", "requestId", "responseId"]) {
+      if (data[key] != null) links.push({ type: key, from: row.id, to: data[key] });
+    }
+  }
+  return links;
+}
+
+function buildTraceSummary(root: TraceRow | null, events: TraceRow[], includeEvents: boolean): TraceSummary | null {
+  if (!root) return null;
+  const errors = events.map((row) => {
+    const message = traceErrorOfRow(row);
+    return message ? { message, category: traceCategory(message, row)!, row } : null;
+  }).filter(Boolean) as TraceErrorInfoLocal[];
+  const spans = events.filter((row) => row.kind === "span" || row.kind === "trace");
+  const slowestSpans = spans
+    .filter((row) => traceDurationMs(row) != null)
+    .sort((a, b) => inclusiveMs(b) - inclusiveMs(a))
+    .slice(0, 20)
+    .map((row) => ({ row, durationMs: inclusiveMs(row) }));
+  const summary: any = {
+    traceId: root.traceId,
+    status: root.status,
+    root,
+    ...(traceDurationMs(root) !== undefined ? { durationMs: traceDurationMs(root) } : {}),
+    ...(errors[0] ? { error: errors[0] } : {}),
+    errors,
+    counts: {
+      total: events.length,
+      byKind: countBy(events, (row) => row.kind),
+      byStatus: countBy(events, (row) => row.status),
+      byName: countBy(events, (row) => row.name),
+    },
+    slowestSpans,
+    criticalPath: buildTraceCriticalPath(events).map((row) => ({ row, durationMs: traceDurationMs(row) ?? null })),
+    waterfall: buildTraceWaterfall(events),
+    sideEffects: buildTraceSideEffects(events),
+    causalLinks: buildTraceCausalLinks(events),
+    payload: buildTracePayloadMetrics(events),
+  };
+  if (includeEvents) summary.events = events;
+  return summary as TraceSummary;
+}
+
+const traces: Moo["traces"] = {
+  async current() {
+    const raw = __op_trace_current();
+    return raw ? JSON.parse(raw) : null;
+  },
+  async get(args = {}) {
+    return parseTraceRow(__op_trace_get(JSON.stringify(args ?? {})));
+  },
+  async events(args = {}) {
+    return parseTraceRows(__op_trace_events(JSON.stringify(args ?? {})));
+  },
+  async tree(args = {}) {
+    return buildTraceTree(await traces.events(args));
+  },
+  async recent(args = {}) {
+    const requestedLimit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 50)));
+    const needsOverscan = Boolean(args.chatId || args.status || args.kind || args.name || args.text || args.hasError);
+    const rows = parseTraceRows(__op_trace_recent(needsOverscan ? 1000 : requestedLimit));
+    const out: TraceRecentRow[] = [];
+    for (const row of rows) {
+      if (args.status && row.status !== args.status) continue;
+      if (args.kind && row.kind !== args.kind) continue;
+      if (args.name && row.name !== args.name) continue;
+      if (args.text && !rowContainsText(row, args.text)) continue;
+      let c: { id: string; title: string | null } | null = null;
+      if (args.chatId || args.includeChat) c = await chatForTraceStep(row.stepId);
+      if (args.chatId && c?.id !== args.chatId) continue;
+      let errorSummary = traceErrorOfRow(row);
+      let category = errorSummary ? traceCategory(errorSummary, row) : undefined;
+      if (args.hasError && !errorSummary) {
+        const errors = await traces.errors({ traceId: row.traceId });
+        if (!errors.length) continue;
+        errorSummary = errors[0].message;
+        category = errors[0].category;
+      }
+      out.push({ ...row, ...(args.includeChat && c ? { chat: c } : {}), ...(errorSummary ? { errorSummary, category } : {}) });
+      if (out.length >= requestedLimit) break;
+    }
+    return out;
+  },
+  async search(args = {}) {
+    const rows = await traces.recent(args);
+    if (!args.includeEvents) return rows;
+    const out: TraceRecentRow[] = [];
+    for (const row of rows) out.push({ ...row, events: await traces.events({ traceId: row.traceId }) });
+    return out;
+  },
+  async failed(args = {}) {
+    return traces.search({ ...args, hasError: true });
+  },
+  errorOf(row) {
+    return traceErrorOfRow(row);
+  },
+  async errors(args = {}) {
+    const events = await traces.events(args);
+    return events.map((row) => {
+      const message = traceErrorOfRow(row);
+      return message ? { message, category: traceCategory(message, row)!, row } : null;
+    }).filter(Boolean) as TraceErrorInfoLocal[];
+  },
+  async failed(args = {}) {
+    const limit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 20)));
+    const rows = await traces.recent({ limit: args.chatId ? 1000 : limit, includeChat: args.includeChat, chatId: args.chatId });
+    const failedRows = rows.filter((row) => row.status && row.status !== "ok" && row.status !== "running").slice(0, limit);
+    if (!args.includeEvents) return failedRows;
+    const out: TraceSummary[] = [];
+    for (const row of failedRows) out.push(await traces.summary({ traceId: row.traceId, includeEvents: true }));
+    return out;
+  },
+  async summary(args = {}) {
+    const root = await traces.get(args);
+    if (!root) return null;
+    const events = await traces.events({ traceId: root.traceId });
+    const summary = buildTraceSummary(root, events, args.includeEvents === true) as any;
+    const c = await chatForTraceStep(root.stepId);
+    if (c) summary.chat = c;
+    return summary;
+  },
+  async diagnose(args = {}) {
+    const limit = Math.max(1, Math.min(100, Math.floor(args.limit ?? 20)));
+    const failures = await traces.failed({ limit, chatId: args.chatId, includeEvents: true }) as TraceSummary[];
+    const recent = await traces.recent({ limit: args.chatId ? 1000 : limit, chatId: args.chatId });
+    const summaries: TraceSummary[] = [];
+    for (const row of recent.slice(0, limit)) summaries.push(await traces.summary({ traceId: row.traceId }));
+    const slowRecent = summaries
+      .filter((summary) => summary.durationMs != null)
+      .sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))
+      .slice(0, limit);
+    const slowestSpans = slowRecent.flatMap((summary: any) => (summary.slowestSpans ?? []).map((span: any) => ({ traceId: summary.traceId, ...span }))).sort((a: any, b: any) => (b.durationMs ?? 0) - (a.durationMs ?? 0)).slice(0, limit);
+    const sideEffects = summaries.flatMap((summary: any) => (summary.sideEffects ?? []).map((row: TraceRow) => ({ traceId: summary.traceId, row }))).slice(0, limit * 5);
+    const failuresByCategory = new Map<string, number>();
+    for (const failure of failures as any[]) {
+      const category = failure.error?.category ?? failure.category ?? "unknown";
+      failuresByCategory.set(category, (failuresByCategory.get(category) ?? 0) + 1);
+    }
+    return {
+      recentFailures: failures,
+      slowRecent,
+      slowestSpans,
+      sideEffects,
+      failureGroups: Array.from(failuresByCategory.entries()).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
+    } as any;
+  },
+  async mark(message, data = {}) {
+    return __op_trace_insert(JSON.stringify({ kind: "mark", name: "user.mark", status: "ok", data: redactedTraceValue("user.mark", { ...data, message }, "event") }));
+  },
+  async span(name: string, dataOrFn: any, maybeFn?: any) {
+    const hasData = typeof dataOrFn !== "function";
+    const fn = hasData ? maybeFn : dataOrFn;
+    if (typeof fn !== "function") throw new Error("moo.traces.span requires a callback");
+    const data = hasData ? dataOrFn : {};
+    const spanId = __op_trace_insert(JSON.stringify({ kind: "span", name, status: "running", data: redactedTraceValue(name, data ?? {}, "input") }));
+    const previousParent = spanId ? __op_trace_set_parent(spanId) : null;
+    try {
+      const value = await fn();
+      if (spanId) __op_trace_finish(spanId, "ok", traceDataJson(name, {}, "output"));
+      return value;
+    } catch (e: any) {
+      if (spanId) __op_trace_finish(spanId, "error", traceErrorJson(name, e));
+      throw e;
+    } finally {
+      if (spanId) __op_trace_set_parent(previousParent);
+    }
+  },
+};
+
+async function traceObserved<T>(
+  name: string,
+  data: Record<string, unknown>,
+  fn: () => T | Promise<T>,
+  finish?: (value: Awaited<T>) => Record<string, unknown>,
+): Promise<Awaited<T>> {
+  let spanId: string | null = null;
+  let previousParent: string | null = null;
+  try {
+    spanId = __op_trace_insert(JSON.stringify({ kind: "span", name, status: "running", data: redactedTraceValue(name, data, "input") }));
+    if (spanId) previousParent = __op_trace_set_parent(spanId);
+  } catch {
+    spanId = null;
+  }
+  try {
+    const value = await fn();
+    if (spanId) {
+      let finishData: Record<string, unknown> = {};
+      try { finishData = finish ? finish(value as Awaited<T>) : {}; } catch {}
+      __op_trace_finish(spanId, "ok", JSON.stringify(redactedTraceValue(name, finishData, "output")));
+    }
+    return value as Awaited<T>;
+  } catch (e: any) {
+    if (spanId) {
+      __op_trace_finish(spanId, "error", traceErrorJson(name, e));
+    }
+    throw e;
+  } finally {
+    if (spanId) __op_trace_set_parent(previousParent);
   }
 }
 
@@ -737,12 +1166,66 @@ async function recordMemoryDiff(
   events.publish({ kind: "memory-diff", chatId, store, graph, action, path, diff, stats, hash, stepId, at, count: changes.length, changes });
 }
 
+const TIMELINE_OBJECT_KINDS = new Set([
+  "agent:FileDiff",
+  "agent:MemoryDiff",
+  "agent:RunJS",
+  "agent:ToolResult",
+  "agent:Subagent",
+  "agent:SubagentSpec",
+  "agent:UserInput",
+  "agent:Reply",
+  "agent:Compaction",
+  "ui:Choice",
+  "ui:Form",
+  "ui:Response",
+]);
+
+function shouldRecordBlobAddition(kind: string): boolean {
+  if (!activeChatId) return false;
+  return !TIMELINE_OBJECT_KINDS.has(kind);
+}
+
+async function recordBlobAddition(kind: string, hash: string, content: string, encoding: "text" | "json"): Promise<void> {
+  const chatId = activeChatId;
+  if (!chatId) return;
+  const at = await time.nowMs();
+  const payload = {
+    chatId,
+    kind,
+    hash,
+    size: stringBytes(content),
+    chars: content.length,
+    encoding,
+    at,
+  };
+  const payloadHash = __op_object_put("agent:BlobAdd", JSON.stringify(payload));
+  const { stepId } = await appendStep(chatId, {
+    kind: "agent:BlobAdd",
+    status: "agent:Done",
+    payloadHash,
+    extras: [
+      ["agent:hash", hash],
+      ["agent:objectKind", kind],
+    ],
+  });
+  events.publish({ kind: "blob-add", chatId, objectKind: kind, hash, size: payload.size, chars: payload.chars, encoding, stepId, at });
+}
+
 const objects: Moo["objects"] = {
   async putText({ kind, text }) {
-    return __op_object_put(kind, String(text));
+    const normalizedKind = String(kind);
+    const content = String(text);
+    const hash = __op_object_put(normalizedKind, content);
+    if (shouldRecordBlobAddition(normalizedKind)) await recordBlobAddition(normalizedKind, hash, content, "text");
+    return hash;
   },
   async putJSON({ kind, value }) {
-    return __op_object_put(kind, JSON.stringify(value));
+    const normalizedKind = String(kind);
+    const content = JSON.stringify(value);
+    const hash = __op_object_put(normalizedKind, content);
+    if (shouldRecordBlobAddition(normalizedKind)) await recordBlobAddition(normalizedKind, hash, content, "json");
+    return hash;
   },
   async getText({ hash }) {
     const row = __op_object_get(hash);
@@ -1027,41 +1510,51 @@ const facts: Moo["facts"] = {
 
 const fs: Moo["fs"] = {
   async read(path) {
-    return __op_fs_read(path);
+    return await traceObserved("moo.fs.read", { path }, () => __op_fs_read(path), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
   async write(path, content) {
     const text = typeof content === "string" ? content : String(content);
     let before: string | null = null;
     try {
-      before = __op_fs_read(path);
+      before = await traceObserved("moo.fs.read_before_write", { path }, () => __op_fs_read(path), (value) => ({ chars: value.length }));
     } catch (_) {
       before = null;
     }
-    __op_fs_write(path, text);
-    await recordFileWriteDiff(path, before, text);
+    await traceObserved("moo.fs.write", {
+      path,
+      chars: text.length,
+      beforeExists: before != null,
+    }, () => __op_fs_write(path, text), () => ({ changed: before !== text }));
+    await traceObserved("moo.fs.record_diff", { path }, () => recordFileWriteDiff(path, before, text));
   },
   async list(path) {
-    return __op_fs_list(path);
+    return await traceObserved("moo.fs.list", { path }, () => __op_fs_list(path), (value) => ({ count: value.length }));
   },
   async glob(pattern) {
-    return __op_fs_glob(pattern);
+    return await traceObserved("moo.fs.glob", { pattern }, () => __op_fs_glob(pattern), (value) => ({ count: value.length }));
   },
   async stat(path) {
-    return __op_fs_stat(path);
+    return await traceObserved("moo.fs.stat", { path }, () => __op_fs_stat(path), (value) => ({ exists: value != null, kind: (value as any)?.kind ?? null, size: (value as any)?.size ?? null, mtime: (value as any)?.mtime ?? null }));
   },
   async canonical(path) {
-    return __op_fs_canonical(path);
+    return await traceObserved("moo.fs.canonical", { path }, () => __op_fs_canonical(path), (value) => ({ path: value }));
   },
   async exists(path) {
-    return (await fs.stat(path)) != null;
+    return await traceObserved("moo.fs.exists", { path }, async () => (await fs.stat(path)) != null, (value) => ({ exists: value }));
   },
   async ensureDir(path) {
-    __op_fs_mkdir(path);
+    await traceObserved("moo.fs.ensureDir", { path }, () => __op_fs_mkdir(path), () => ({ path }));
   },
   async patch(input) {
     const args = normalizePatchArgs(input);
     const parsed = parseUnifiedPatch(String(args.patch));
     const dryRun = !!args.dryRun;
+    return await traceObserved("moo.fs.patch", {
+      files: parsed.length,
+      dryRun,
+      cwd: args.cwd ?? null,
+      strip: args.strip ?? null,
+    }, async () => {
     const files: FsPatchReceipt["files"] = [];
     for (const file of parsed) {
       const sourcePath = file.oldPath ?? file.newPath;
@@ -1090,6 +1583,7 @@ const fs: Moo["fs"] = {
       files.push({ path: deleting ? readPath : writePath, beforeExists: before != null, afterExists: !deleting, added: applied.added, removed: applied.removed, hunks: file.hunks.length });
     }
     return { dryRun, files };
+    }, (value) => ({ files: value.files.length, added: value.files.reduce((n, f) => n + f.added, 0), removed: value.files.reduce((n, f) => n + f.removed, 0) }));
   },
 };
 
@@ -1117,16 +1611,35 @@ function checkedProcResult(input: ProcRunArgs, result: ProcResult): ProcResult {
 const proc: Moo["proc"] = {
   async run(input) {
     const { cmd, args = [], cwd = null, stdin = null, timeoutMs = 60_000, env = undefined, maxOutputBytes = null } = input;
-    const result = __op_proc_run(
+    return await traceObserved("moo.proc.run", {
       cmd,
-      JSON.stringify(args),
+      args,
       cwd,
-      stdin,
       timeoutMs,
-      env == null ? null : JSON.stringify(env),
-      maxOutputBytes ?? null,
-    );
-    return checkedProcResult(input, result);
+      hasStdin: stdin != null,
+      stdinChars: typeof stdin === "string" ? stdin.length : 0,
+      envKeys: env && typeof env === "object" ? Object.keys(env).sort() : [],
+      maxOutputBytes: maxOutputBytes ?? null,
+      check: input.check === true,
+    }, () => {
+      const result = __op_proc_run(
+        cmd,
+        JSON.stringify(args),
+        cwd,
+        stdin,
+        timeoutMs,
+        env == null ? null : JSON.stringify(env),
+        maxOutputBytes ?? null,
+      );
+      return checkedProcResult(input, result);
+    }, (result) => ({
+      code: result.code,
+      timedOut: result.timedOut,
+      stdoutChars: result.stdout?.length ?? 0,
+      stderrChars: result.stderr?.length ?? 0,
+      stdoutTruncated: result.stdoutTruncated ?? false,
+      stderrTruncated: result.stderrTruncated ?? false,
+    }));
   },
   async runChecked(input) {
     return proc.run({ ...input, check: true });
@@ -1202,28 +1715,42 @@ const http: Moo["http"] = {
     const method = opts.method || "GET";
     if (!opts.url) throw new Error("http.fetch requires url");
     const { body, headers } = buildBody(opts);
-    const response = __op_http_fetch(method, opts.url, JSON.stringify(headers), body, opts.timeoutMs ?? 60_000);
-    return { status: response.status, body: response.body, headers: parseResponseHeaders(response.headers) };
+    return await traceObserved("moo.http.fetch", {
+      method,
+      url: opts.url,
+      headerKeys: Object.keys(headers).sort(),
+      bodyChars: body?.length ?? 0,
+      timeoutMs: opts.timeoutMs ?? 60_000,
+    }, () => {
+      const response = __op_http_fetch(method, opts.url, JSON.stringify(headers), body, opts.timeoutMs ?? 60_000);
+      return { status: response.status, body: response.body, headers: parseResponseHeaders(response.headers) };
+    }, (response) => ({ status: response.status, bodyChars: response.body.length, responseHeaderKeys: Object.keys(response.headers).sort() }));
   },
   async stream(opts) {
     const method = opts.method || "GET";
     if (!opts.url) throw new Error("http.stream requires url");
     const { body, headers } = buildBody(opts);
-    const opened = __op_http_stream_open(
+    const opened = await traceObserved("moo.http.stream.open", {
       method,
-      opts.url,
-      JSON.stringify(headers),
-      body,
-      opts.timeoutMs ?? 120_000,
-    );
+      url: opts.url,
+      headerKeys: Object.keys(headers).sort(),
+      bodyChars: body?.length ?? 0,
+      timeoutMs: opts.timeoutMs ?? 120_000,
+    }, () => __op_http_stream_open(
+        method,
+        opts.url,
+        JSON.stringify(headers),
+        body,
+        opts.timeoutMs ?? 120_000,
+      ), (response) => ({ status: response.status, responseHeaderKeys: Object.keys(parseResponseHeaders(response.headers)).sort() }));
     return {
       status: opened.status,
       headers: parseResponseHeaders(opened.headers),
       async next() {
-        return __op_http_stream_next(opened.handle);
+        return await traceObserved("moo.http.stream.next", { status: opened.status }, () => __op_http_stream_next(opened.handle), (chunk) => ({ chunkChars: chunk?.length ?? 0, done: chunk == null }));
       },
       async close() {
-        __op_http_stream_close(opened.handle);
+        await traceObserved("moo.http.stream.close", { status: opened.status }, () => __op_http_stream_close(opened.handle));
       },
     };
   },
@@ -1801,6 +2328,7 @@ const mcpCore = {
     if (!opts.skipInitialize && method !== "initialize") {
       const session = await loadMcpSession(server.id);
       if (!session?.initializedAt) {
+        await traces.mark("mcp.initialize.required", { serverId: server.id, method });
         await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
       }
     }
@@ -1828,11 +2356,20 @@ const mcpCore = {
       timeoutMs: server.timeoutMs ?? 60_000,
     });
     const responseSessionId = headerValue(response.headers, "mcp-session-id");
+    await traces.mark("mcp.http.response", {
+      serverId: server.id,
+      method,
+      status: response.status,
+      bodyChars: response.body.length,
+      responseSessionId: responseSessionId ?? null,
+      retryingSession: !!opts.retryingSession,
+    });
     if (responseSessionId) await saveMcpSessionId(server.id, responseSessionId);
     if (response.status === 401 && server.oauth && !token) {
       throw new Error(`MCP ${server.id} requires OAuth login; run moo.mcp.login("${server.id}") from the UI or use the MCP settings Login button`);
     }
     if (isMcpSessionError(response.status, response.body) && !opts.retryingSession && method !== "initialize") {
+      await traces.mark("mcp.session.retry", { serverId: server.id, method, status: response.status });
       await clearMcpSessionId(server.id);
       await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
       return mcpCore.request<T>(server.id, method, params, { ...opts, retryingSession: true });
@@ -1841,6 +2378,13 @@ const mcpCore = {
       throw new Error(`MCP ${method} failed with HTTP ${response.status}: ${response.body}`);
     }
     const payload = parseMcpBody(response.body);
+    await traces.mark("mcp.payload", {
+      serverId: server.id,
+      method,
+      hasResult: payload?.result !== undefined,
+      hasError: !!payload?.error,
+      resultShape: resultShape(payload?.result),
+    });
     if (payload?.error) {
       throw new Error(payload.error.message || JSON.stringify(payload.error));
     }
@@ -1940,6 +2484,18 @@ const env: Moo["env"] = {
 };
 
 
+function addOptionalTrailFact(
+  txn: { add(args: { graph: string; subject: string; predicate: string; object: unknown }): void },
+  graph: string,
+  entryId: string,
+  predicate: string,
+  value: unknown,
+): void {
+  if (value == null) return;
+  const text = String(value);
+  txn.add({ graph, subject: entryId, predicate, object: text });
+}
+
 async function recordChatTrailEntry(
   chatId: string,
   kind: string,
@@ -1952,13 +2508,15 @@ async function recordChatTrailEntry(
   const now = await time.nowMs();
   if (opts.touch) await chat.touch(chatId);
   const entryId = await id.new("trail");
-  const payloadHash = await objects.putJSON({ kind, value: { ...payload, at: now } });
   await facts.update({ store: factsRef, fn: (txn) => {
     txn.add({ graph: graph, subject: entryId, predicate: "rdf:type", object: "agent:TrailEntry" });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:kind", object: kind });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:createdBy", object: "agent:moo" });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:createdAt", object: now });
-    txn.add({ graph: graph, subject: entryId, predicate: "agent:payload", object: payloadHash });
+    addOptionalTrailFact(txn, graph, entryId, "agent:title", payload.title);
+    addOptionalTrailFact(txn, graph, entryId, "agent:previousTitle", payload.previousTitle);
+    addOptionalTrailFact(txn, graph, entryId, "agent:body", payload.body);
+    addOptionalTrailFact(txn, graph, entryId, "agent:summary", payload.summary);
   } });
   return entryId;
 }
@@ -2175,6 +2733,15 @@ async function summarizeAllChatFacts(): Promise<Map<string, ChatFactsSummary>> {
   return summaries;
 }
 
+function emptyChatFactsSummary(): ChatFactsSummary {
+  return {
+    totalFacts: 0,
+    totalTurns: 0,
+    totalSteps: 0,
+    status: "agent:Done",
+  };
+}
+
 async function summarizeChatFacts(chatId: string): Promise<ChatFactsSummary> {
   const store = `chat/${chatId}/facts`;
   const graph = `chat:${chatId}`;
@@ -2345,10 +2912,15 @@ const chat: Moo["chat"] = {
         const hiddenRaw = refsForChat["hidden"] || null;
         const parentChatId = refsForChat["parent"] || null;
         const usageHash = refsForChat["usage"] || null;
-        const [usageObj, summary] = await Promise.all([
-          usageHash ? objects.getJSON<{ models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }> }>({ hash: usageHash }) : null,
-          allSummaries.get(cid) || summarizeChatFacts(cid),
-        ]);
+        const usageObj = usageHash
+          ? await objects.getJSON<{ models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }> }>({ hash: usageHash })
+          : null;
+        // __op_chat_fact_summaries() already summarizes every existing
+        // chat/<id>/facts store in one host-side pass. Pointer-only chats (for
+        // example an empty chat that has been created but not messaged yet)
+        // legitimately have no fact store, so avoid falling back to several
+        // per-chat fact scans for every such sidebar entry on startup.
+        const summary = allSummaries.get(cid) || emptyChatFactsSummary();
         const archivedAt = archivedRaw ? Number(archivedRaw) : null;
         // Keep chat listing metadata-only. Checking every possible worktree path
         // hits the filesystem for each chat and can dominate initial UI load in
@@ -2518,7 +3090,7 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
   const task = String(spec.task ?? "").trim();
   if (!label) throw new Error("moo.agent.run requires spec.label");
   if (!task) throw new Error("moo.agent.run requires spec.task");
-  const maxTurns = Math.max(1, Math.min(20, Math.floor(Number(spec.maxTurns ?? DEFAULT_SUBAGENT_TURNS) || DEFAULT_SUBAGENT_TURNS)));
+  const maxTurns = Math.max(1, Math.floor(Number(spec.maxTurns ?? DEFAULT_SUBAGENT_TURNS) || DEFAULT_SUBAGENT_TURNS));
   const timeoutMs = Math.max(1_000, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.floor(Number(spec.timeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS) || DEFAULT_SUBAGENT_TIMEOUT_MS)));
   const worktree = spec.worktree === "inherit" ? "inherit" : "isolated";
   return {
@@ -3051,7 +3623,7 @@ export const tryApi: Moo["try"] = async (fn) => {
   }
 };
 
-export const moo: Moo = {
+const rawMoo: Moo = {
   try: tryApi,
   time,
   validate,
@@ -3073,5 +3645,643 @@ export const moo: Moo = {
   memory,
   vocab,
   events,
+  traces,
   term,
 };
+
+const TRACE_SKIP_ROOTS = new Set(["traces"]);
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return !!value && (typeof value === "object" || typeof value === "function") && typeof (value as any).then === "function";
+}
+
+const TRACE_STRING_PREVIEW_CHARS = 256;
+const TRACE_ARRAY_SAMPLE_LENGTH = 8;
+const TRACE_OBJECT_SAMPLE_KEYS = 32;
+const TRACE_HARD_CAP_BYTES = 4 * 1024;
+const TRACE_HARD_CAP_PREVIEW_CHARS = 1024;
+const TRACE_ERROR_STACK_LINES = 20;
+const SENSITIVE_TRACE_KEY_RE = /password|token|secret|authorization|apiKey|api_key|cookie|bearer/i;
+const LONG_BASE64_RE = /^[A-Za-z0-9+/=_-]+$/;
+
+type TraceRedactContext = "input" | "output" | "error" | "event";
+type TraceRedactOpts = { context?: TraceRedactContext };
+type TraceShaper = (input: any) => any;
+
+type TraceIndirectValue = { __redacted: string; bytes: number; sha256: string; preview?: string; objectHash?: string; objectKind?: string };
+
+function canStoreTraceObject(): boolean {
+  return typeof globalThis.__op_object_put === "function";
+}
+
+function traceObjectHash(kind: string, value: string): { objectHash?: string; objectKind?: string } {
+  if (!canStoreTraceObject()) return {};
+  try {
+    return { objectHash: __op_object_put(kind, value), objectKind: kind };
+  } catch {
+    return {};
+  }
+}
+
+function utf8Bytes(value: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < value.length; i++) {
+    let code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+        i++;
+      }
+    }
+    if (code <= 0x7f) out.push(code);
+    else if (code <= 0x7ff) out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    else if (code <= 0xffff) out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    else out.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+  }
+  return out;
+}
+
+function bytesOf(value: string | ArrayBufferView | ArrayBuffer): number[] {
+  if (typeof value === "string") return utf8Bytes(value);
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+}
+
+function rightRotate(value: number, bits: number): number {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+export function sha256(value: string | ArrayBufferView | ArrayBuffer): string {
+  const bytes = bytesOf(value);
+  const bitLength = bytes.length * 8;
+  bytes.push(0x80);
+  while ((bytes.length % 64) !== 56) bytes.push(0);
+  const high = Math.floor(bitLength / 0x100000000);
+  const low = bitLength >>> 0;
+  bytes.push((high >>> 24) & 255, (high >>> 16) & 255, (high >>> 8) & 255, high & 255, (low >>> 24) & 255, (low >>> 16) & 255, (low >>> 8) & 255, low & 255);
+  const k = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const w = new Array<number>(64);
+  for (let i = 0; i < bytes.length; i += 64) {
+    for (let t = 0; t < 16; t++) {
+      const j = i + t * 4;
+      w[t] = (((bytes[j] ?? 0) << 24) | ((bytes[j + 1] ?? 0) << 16) | ((bytes[j + 2] ?? 0) << 8) | (bytes[j + 3] ?? 0)) >>> 0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = (rightRotate(w[t - 15]!, 7) ^ rightRotate(w[t - 15]!, 18) ^ (w[t - 15]! >>> 3)) >>> 0;
+      const s1 = (rightRotate(w[t - 2]!, 17) ^ rightRotate(w[t - 2]!, 19) ^ (w[t - 2]! >>> 10)) >>> 0;
+      w[t] = (w[t - 16]! + s0 + w[t - 7]! + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let t = 0; t < 64; t++) {
+      const s1 = (rightRotate(e!, 6) ^ rightRotate(e!, 11) ^ rightRotate(e!, 25)) >>> 0;
+      const ch = ((e! & f!) ^ (~e! & g!)) >>> 0;
+      const temp1 = (hh! + s1 + ch + k[t]! + w[t]!) >>> 0;
+      const s0 = (rightRotate(a!, 2) ^ rightRotate(a!, 13) ^ rightRotate(a!, 22)) >>> 0;
+      const maj = ((a! & b!) ^ (a! & c!) ^ (b! & c!)) >>> 0;
+      const temp2 = (s0 + maj) >>> 0;
+      hh = g; g = f; f = e; e = (d! + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    h[0] = (h[0]! + a!) >>> 0; h[1] = (h[1]! + b!) >>> 0; h[2] = (h[2]! + c!) >>> 0; h[3] = (h[3]! + d!) >>> 0;
+    h[4] = (h[4]! + e!) >>> 0; h[5] = (h[5]! + f!) >>> 0; h[6] = (h[6]! + g!) >>> 0; h[7] = (h[7]! + hh!) >>> 0;
+  }
+  return h.map((n) => n!.toString(16).padStart(8, "0")).join("");
+}
+
+function stableJson(value: unknown): string | null {
+  try {
+    const json = JSON.stringify(value);
+    return typeof json === "string" ? json : null;
+  } catch {
+    return null;
+  }
+}
+
+function maybeHardCap<T>(value: T): T | TraceIndirectValue {
+  const json = stableJson(value);
+  if (json == null) return value;
+  const bytes = stringBytes(json);
+  if (bytes <= TRACE_HARD_CAP_BYTES) return value;
+  return {
+    __redacted: "oversize",
+    bytes,
+    sha256: sha256(json),
+    preview: json.slice(0, TRACE_HARD_CAP_PREVIEW_CHARS),
+    ...traceObjectHash("trace:Value", json),
+  };
+}
+
+function redactString(value: string): string | Record<string, unknown> {
+  const bytes = stringBytes(value);
+  if (value.startsWith("data:") && value.length > TRACE_STRING_PREVIEW_CHARS) {
+    const comma = value.indexOf(",");
+    const header = comma >= 0 ? value.slice(5, comma) : value.slice(5, 128);
+    const mediaType = (header.split(";")[0] || "text/plain");
+    return { __redacted: "dataUrl", mediaType, bytes, sha256: sha256(value), ...traceObjectHash("trace:String", value) };
+  }
+  if (value.length > 1024 && LONG_BASE64_RE.test(value)) {
+    return { __redacted: "base64", bytes, sha256: sha256(value), ...traceObjectHash("trace:String", value) };
+  }
+  if (value.length > TRACE_STRING_PREVIEW_CHARS) {
+    return { __redacted: "string", bytes, sha256: sha256(value), preview: value.slice(0, TRACE_STRING_PREVIEW_CHARS), ...traceObjectHash("trace:String", value) };
+  }
+  return value;
+}
+
+function redactErrorObject(error: any): Record<string, unknown> {
+  const stack = typeof error?.stack === "string" ? error.stack.split("\n").slice(0, TRACE_ERROR_STACK_LINES + 1).join("\n") : null;
+  return {
+    name: typeof error?.name === "string" ? error.name : "Error",
+    message: typeof error?.message === "string" ? error.message : String(error),
+    stack,
+  };
+}
+
+function isBinaryValue(value: any): value is ArrayBuffer | ArrayBufferView {
+  return value instanceof ArrayBuffer || (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(value));
+}
+
+function redactInner(value: unknown, opts: TraceRedactOpts, seen: WeakSet<object>): unknown {
+  if (value == null || typeof value === "number" || typeof value === "boolean" || typeof value === "string") {
+    if (typeof value === "string") return maybeHardCap(redactString(value));
+    return value;
+  }
+  if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol") return undefined;
+  if (typeof value === "bigint") return String(value);
+  if (value instanceof Error) return maybeHardCap(redactInner(redactErrorObject(value), { ...opts, context: "error" }, seen));
+  if (isBinaryValue(value)) {
+    const bytes = value instanceof ArrayBuffer ? value.byteLength : value.byteLength;
+    const kind = value instanceof ArrayBuffer ? "ArrayBuffer" : ((value as any).constructor?.name ?? "TypedArray");
+    return { __redacted: "binary", kind, bytes, sha256: sha256(value) };
+  }
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value)) return { __redacted: "cycle" };
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const source = value.length > TRACE_ARRAY_SAMPLE_LENGTH ? value.slice(0, TRACE_ARRAY_SAMPLE_LENGTH) : value;
+    const sample = source.map((item) => {
+      const redacted = redactInner(item, opts, seen);
+      return redacted === undefined ? null : redacted;
+    });
+    const shaped = value.length > TRACE_ARRAY_SAMPLE_LENGTH ? { __redacted: "array", length: value.length, sample } : sample;
+    seen.delete(value);
+    return maybeHardCap(shaped);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  const selected = entries.length > TRACE_OBJECT_SAMPLE_KEYS ? entries.slice(0, TRACE_OBJECT_SAMPLE_KEYS) : entries;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of selected) {
+    if (SENSITIVE_TRACE_KEY_RE.test(key)) {
+      out[key] = "<redacted>";
+      continue;
+    }
+    const redacted = redactInner(child, opts, seen);
+    if (redacted !== undefined) out[key] = redacted;
+  }
+  const shaped = entries.length > TRACE_OBJECT_SAMPLE_KEYS ? { __redacted: "object", keys: entries.length, sample: out } : out;
+  seen.delete(value);
+  return maybeHardCap(shaped);
+}
+
+export function redactValue(value: unknown, opts: TraceRedactOpts = {}): unknown {
+  return redactInner(value, opts, new WeakSet<object>());
+}
+
+function shapePointerState(input: any): Record<string, unknown> {
+  const pointer = input?.pointer ?? input?.statePointer ?? input?.target ?? input?.name ?? null;
+  const state = input?.state ?? input?.value ?? input?.message ?? input?.data ?? input;
+  const json = stableJson(state) ?? String(state ?? "");
+  return { pointer, bytes: stringBytes(json), sha256: sha256(json) };
+}
+
+const inputShapers: Record<string, TraceShaper> = {
+  "fs.read": (i) => ({ path: i.path, bytes: i.bytes ?? null }),
+  "fs.write": (i) => ({ path: i.path, bytes: i?.content?.length ?? null, hash: i?.hash ?? null }),
+  "fs.patch": (i) => ({ files: (i.files ?? []).map((f: any) => ({ path: f.path, op: f.op })), bytes: i?.patch?.length ?? null }),
+  "objects.putText": (i) => ({ kind: i.kind, bytes: i?.text?.length ?? null }),
+  "objects.putJSON": (i) => ({ kind: i.kind, bytes: stableJson(i?.value ?? null)?.length ?? null }),
+  "objects.getText": (i) => ({ hash: i.hash }),
+  "objects.getJSON": (i) => ({ hash: i.hash }),
+  "facts.match": (i) => ({ store: i.store, graph: i.graph, patterns: i.patterns?.length ?? null }),
+  "facts.matchAll": (i) => ({ store: i.store, graph: i.graph, patternCount: (i.patterns ?? []).length, limit: i.limit }),
+  "sparql.select": (i) => ({ store: i.store, graph: i.graph, queryBytes: i.query?.length ?? null }),
+  "sparql.construct": (i) => ({ store: i.store, graph: i.graph, queryBytes: i.query?.length ?? null }),
+  "sparql.query": (i) => ({ store: i.store, graph: i.graph, queryBytes: i.query?.length ?? null }),
+  "ui.state.set": shapePointerState,
+  "ui.state.get": shapePointerState,
+  "chat.message.inflight": shapePointerState,
+};
+
+const outputShapers: Record<string, TraceShaper> = {
+  "facts.match": (o) => ({ rowCount: (o?.bindings ?? o?.rows ?? []).length, sample: (o?.bindings ?? o?.rows ?? []).slice(0, 4) }),
+  "facts.matchAll": (o) => ({ rowCount: (o?.bindings ?? o?.rows ?? []).length, sample: (o?.bindings ?? o?.rows ?? []).slice(0, 4) }),
+  "sparql.select": (o) => ({ rowCount: (o?.results?.bindings ?? []).length, sample: (o?.results?.bindings ?? []).slice(0, 4) }),
+  "sparql.construct": (o) => ({ rowCount: (o?.results?.bindings ?? o?.bindings ?? o?.rows ?? []).length, sample: (o?.results?.bindings ?? o?.bindings ?? o?.rows ?? []).slice(0, 4) }),
+  "sparql.query": (o) => ({ rowCount: (o?.results?.bindings ?? o?.bindings ?? o?.rows ?? []).length, sample: (o?.results?.bindings ?? o?.bindings ?? o?.rows ?? []).slice(0, 4) }),
+  "fs.read": (o) => (typeof o === "string" ? { bytes: stringBytes(o), preview: o.slice(0, TRACE_STRING_PREVIEW_CHARS) } : o),
+  "objects.getText": (o) => (typeof o === "string" ? { bytes: stringBytes(o), preview: o.slice(0, TRACE_STRING_PREVIEW_CHARS) } : o),
+  "objects.getJSON": (o) => ({ shape: resultShape(o) }),
+  "ui.state.set": shapePointerState,
+  "ui.state.get": shapePointerState,
+  "chat.message.inflight": shapePointerState,
+};
+
+function normalizeTraceName(name: string): string {
+  return name.startsWith("moo.") ? name.slice(4) : name;
+}
+
+function stateLikeTraceName(name: string): boolean {
+  const n = normalizeTraceName(name);
+  return /(^|\.)(ui\.state\.(set|get)|state\.(set|get)|chat\.message\.inflight|message\.inflight)(\.|$)/.test(n);
+}
+
+function applyTraceShaper(name: string, value: unknown, context: TraceRedactContext): unknown {
+  const n = normalizeTraceName(name);
+  const shaper = context === "output" ? outputShapers[n] : inputShapers[n];
+  if (shaper) {
+    try { return shaper(value as any); } catch (e: any) { return { shaperError: e?.message ?? String(e) }; }
+  }
+  if (stateLikeTraceName(n)) return shapePointerState(value as any);
+  return value;
+}
+
+function redactedTraceValue(name: string, value: unknown, context: TraceRedactContext): unknown {
+  const shaped = context === "error" ? redactErrorObject(value) : applyTraceShaper(name, value, context);
+  return redactValue(shaped, { context });
+}
+
+function traceDataJson(name: string, value: unknown, context: TraceRedactContext): string {
+  return JSON.stringify(redactedTraceValue(name, value, context));
+}
+
+function traceErrorJson(name: string, error: unknown): string {
+  return JSON.stringify(redactedTraceValue(name, error, "error"));
+}
+
+function semanticTraceInputValue(name: string, path: string[], args: unknown[]): unknown {
+  const raw = traceArgsObject(args);
+  const shaped = applyTraceShaper(name, raw, "input");
+  return shaped === raw ? traceSemanticInput(path, args) : shaped;
+}
+
+function semanticTraceOutputValue(name: string, path: string[], result: unknown): unknown {
+  const shaped = applyTraceShaper(name, result, "output");
+  return shaped === result ? traceSemanticOutput(path, result) : shaped;
+}
+
+export function summarizeTraceValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return redactValue(value);
+  if (typeof value === "function") return undefined;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((v) => summarizeTraceValue(v, depth + 1, seen));
+  }
+  if (typeof value === "object") {
+    if (seen.has(value as object)) return "[Circular]";
+    seen.add(value as object);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = summarizeTraceValue(v, depth + 1, seen);
+    }
+    return out;
+  }
+  return redactValue(String(value));
+}
+
+function stringBytes(value: string): number {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function resultShape(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") return { type: "string", chars: value.length, bytes: stringBytes(value) };
+  if (Array.isArray(value)) return { type: "array", length: value.length };
+  if (value && typeof value === "object") return { type: "object", keys: Object.keys(value as Record<string, unknown>) };
+  return { type: value === null ? "null" : typeof value };
+}
+
+function outputSummary(value: unknown): unknown {
+  if (typeof value === "string") return { type: "string", chars: value.length, bytes: stringBytes(value), value: redactValue(value) };
+  if (Array.isArray(value)) return { type: "array", length: value.length, value: redactValue(summarizeTraceValue(value)) };
+  if (value && typeof value === "object") return summarizeTraceValue(value);
+  return value;
+}
+
+function traceArgsObject(args: unknown[]): Record<string, unknown> {
+  if (args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) return args[0] as Record<string, unknown>;
+  return { args };
+}
+
+function rowCount(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") {
+    const result = (value as any).result;
+    if (Array.isArray(result)) return result.length;
+    const rows = (value as any).rows;
+    if (Array.isArray(rows)) return rows.length;
+  }
+  return null;
+}
+
+function traceSemanticInput(path: string[], args: unknown[]): Record<string, unknown> {
+  const root = path[0] ?? "";
+  const method = path[path.length - 1] ?? "";
+  const first = args[0] as any;
+  const obj = traceArgsObject(args);
+  const data: Record<string, unknown> = { input: summarizeTraceValue(args) };
+  if (root === "fs") {
+    data.path = typeof first === "string" ? first : (obj as any).path ?? null;
+    data.pattern = method === "glob" ? first ?? (obj as any).pattern ?? null : null;
+    data.cwd = (obj as any).cwd ?? null;
+    data.dryRun = (obj as any).dryRun ?? null;
+    if (method === "write") data.content = typeof args[1] === "string" ? { chars: args[1].length, bytes: stringBytes(args[1]) } : resultShape(args[1]);
+  } else if (root === "proc") {
+    data.cmd = obj.cmd ?? null;
+    data.argsCount = Array.isArray(obj.args) ? obj.args.length : 0;
+    data.cwd = obj.cwd ?? null;
+    data.timeoutMs = obj.timeoutMs ?? null;
+    data.check = obj.check ?? null;
+    data.maxOutputBytes = obj.maxOutputBytes ?? null;
+    data.envKeys = obj.env && typeof obj.env === "object" ? Object.keys(obj.env).sort() : [];
+    if (typeof obj.stdin === "string") data.stdin = { chars: obj.stdin.length, bytes: stringBytes(obj.stdin) };
+  } else if (root === "http") {
+    data.method = obj.method ?? (method === "fetch" || method === "stream" ? "GET" : null);
+    data.url = obj.url ?? null;
+    data.timeoutMs = obj.timeoutMs ?? null;
+    data.headerKeys = obj.headers && typeof obj.headers === "object" ? Object.keys(obj.headers).sort() : [];
+    data.bodyShape = resultShape(obj.body);
+    if (typeof obj.body === "string") data.body = { chars: obj.body.length, bytes: stringBytes(obj.body) };
+  } else if (root === "env") {
+    data.name = typeof first === "string" ? first : null;
+    data.names = Array.isArray(first) ? first : null;
+    data.count = Array.isArray(first) ? first.length : null;
+  } else if (root === "workspace") {
+    data.chatId = obj.chatId ?? null;
+    data.root = obj.root ?? null;
+  } else if (root === "objects") {
+    data.kind = first?.kind ?? null;
+    data.hash = first?.hash ?? null;
+    if (typeof first?.text === "string") data.textChars = first.text.length;
+    if ("value" in (first ?? {})) data.valueShape = resultShape(first.value);
+  } else if (root === "pointers") {
+    data.name = typeof first === "string" ? first : first?.name ?? null;
+    data.prefix = method === "list" || method === "entries" ? (args[0] ?? "") : null;
+    if (method === "cas") {
+      data.expected = args[1] ?? null;
+      data.next = args[2] ?? null;
+    } else if (method === "set") {
+      data.target = args[1] ?? null;
+    }
+  } else if (root === "facts") {
+    data.store = obj.store ?? null;
+    data.graph = obj.graph ?? null;
+    data.subject = obj.subject ?? null;
+    data.predicate = obj.predicate ?? null;
+    data.hasObject = obj.object != null;
+    data.limit = obj.limit ?? null;
+    data.format = obj.format ?? null;
+    data.quadCount = Array.isArray(obj.quads) ? obj.quads.length : null;
+    data.patternCount = Array.isArray(obj.patterns) ? obj.patterns.length : null;
+    data.dryRun = obj.dryRun ?? null;
+  } else if (root === "sparql") {
+    data.store = obj.store ?? null;
+    data.graph = obj.graph ?? null;
+    data.limit = obj.limit ?? null;
+    data.format = obj.format ?? null;
+    data.queryChars = typeof obj.query === "string" ? obj.query.length : null;
+  } else if (root === "memory") {
+    data.method = method;
+    data.projectId = method === "project" ? (typeof first === "string" ? first : null) : (obj as any).projectId ?? null;
+    data.factCount = Array.isArray((obj as any).facts) ? (obj as any).facts.length : Array.isArray(first) ? first.length : null;
+    data.patternCount = Array.isArray((obj as any).patterns) ? (obj as any).patterns.length : null;
+    data.limit = (obj as any).limit ?? null;
+    data.subject = (obj as any).subject ?? null;
+    data.predicate = (obj as any).predicate ?? null;
+    data.hasObject = (obj as any).object != null;
+  } else if (root === "chat") {
+    data.chatId = (obj as any).chatId ?? (typeof first === "string" ? first : null);
+    data.title = (obj as any).title ?? null;
+    data.path = (obj as any).path ?? null;
+    data.summaryChars = typeof (obj as any).summary === "string" ? (obj as any).summary.length : null;
+  } else if (root === "ui") {
+    data.chatId = (obj as any).chatId ?? null;
+    data.title = (obj as any).spec?.title ?? (obj as any).manifest?.title ?? null;
+    data.fieldCount = Array.isArray((obj as any).spec?.fields) ? (obj as any).spec.fields.length : null;
+    data.itemCount = Array.isArray((obj as any).spec?.items) ? (obj as any).spec.items.length : null;
+    data.uiId = (obj as any).uiId ?? (obj as any).id ?? (obj as any).manifest?.id ?? null;
+    data.instanceId = (obj as any).instanceId ?? null;
+    data.apiCount = Array.isArray((obj as any).manifest?.api) ? (obj as any).manifest.api.length : null;
+    const bundle = (obj as any).bundle;
+    if (bundle && typeof bundle === "object") data.bundle = {
+      htmlChars: typeof bundle.html === "string" ? bundle.html.length : null,
+      cssChars: typeof bundle.css === "string" ? bundle.css.length : null,
+      jsChars: typeof bundle.js === "string" ? bundle.js.length : null,
+      fileCount: bundle.files && typeof bundle.files === "object" ? Object.keys(bundle.files).length : 0,
+    };
+    if (typeof (obj as any).handler === "string") data.handlerChars = (obj as any).handler.length;
+    if ("state" in obj) data.stateShape = resultShape((obj as any).state);
+  } else if (root === "mcp") {
+    if (path.length >= 3 && !["list", "tools", "listServers", "getServer", "saveServer", "removeServer", "login", "completeLogin", "logout", "authStatus", "listTools", "callTool", "request"].includes(path[1]!)) {
+      data.serverId = path[1];
+      data.toolName = path[2];
+      data.callStyle = "dynamic";
+      data.argumentsShape = resultShape(first);
+    } else {
+      data.serverId = (obj as any).serverId ?? (method === "callTool" || method === "request" ? args[0] : typeof args[0] === "string" ? args[0] : null);
+      data.toolName = (obj as any).name ?? (method === "callTool" ? args[1] : null);
+      data.rpcMethod = method === "request" ? args[1] : null;
+      data.transport = (obj as any).transport ?? null;
+      data.enabled = (obj as any).enabled ?? null;
+    }
+  } else if (root === "agent") {
+    data.label = (obj as any).label ?? null;
+    data.taskChars = typeof (obj as any).task === "string" ? (obj as any).task.length : null;
+    data.chatId = (obj as any).chatId ?? (method === "fork" ? args[0] : null);
+    data.model = (obj as any).model ?? null;
+    data.effort = (obj as any).effort ?? null;
+    data.store = method === "claim" || method === "complete" ? args[0] : null;
+    data.graph = method === "claim" || method === "complete" ? args[1] : null;
+    data.runId = method === "claim" ? args[2] : null;
+    data.stepId = method === "complete" ? args[2] : null;
+  } else if (root === "vocab") {
+    data.name = typeof first === "string" ? first : (obj as any).name ?? null;
+    data.hasDescription = typeof (args[1] as any)?.description === "string";
+  } else if (root === "time") {
+    data.ms = method === "nowPlus" ? first ?? null : null;
+  } else if (root === "id") {
+    data.prefix = first ?? null;
+  } else if (root === "validate") {
+    data.value = first ?? null;
+  } else if (root === "term") {
+    data.value = first instanceof Date ? first.toISOString() : first ?? null;
+  } else if (root === "events") {
+    data.payloadShape = resultShape(first);
+  } else if (root === "log") {
+    data.argCount = args.length;
+  }
+  return data;
+}
+
+function traceSemanticOutput(path: string[], result: unknown): Record<string, unknown> {
+  const root = path[0] ?? "";
+  const method = path[path.length - 1] ?? "";
+  const data: Record<string, unknown> = { output: outputSummary(result), outputShape: resultShape(result) };
+  if (root === "facts" || root === "sparql" || root === "memory" || root === "vocab") data.rows = rowCount(result);
+  if (root === "fs") {
+    if (typeof result === "string") { data.chars = result.length; data.bytes = stringBytes(result); }
+    if (Array.isArray(result)) data.count = result.length;
+    if (result && typeof result === "object") { data.kind = (result as any).kind ?? null; data.size = (result as any).size ?? null; data.exists = true; }
+    if (result == null || typeof result === "boolean") data.exists = !!result;
+  }
+  if (root === "proc") {
+    data.code = (result as any)?.code ?? null;
+    data.durationMs = (result as any)?.durationMs ?? null;
+    data.timedOut = (result as any)?.timedOut ?? null;
+    if (typeof (result as any)?.stdout === "string") data.stdout = { chars: (result as any).stdout.length, bytes: stringBytes((result as any).stdout) };
+    if (typeof (result as any)?.stderr === "string") data.stderr = { chars: (result as any).stderr.length, bytes: stringBytes((result as any).stderr) };
+  }
+  if (root === "http") {
+    data.status = (result as any)?.status ?? null;
+    if (typeof (result as any)?.body === "string") data.body = { chars: (result as any).body.length, bytes: stringBytes((result as any).body) };
+    data.headerKeys = (result as any)?.headers && typeof (result as any).headers === "object" ? Object.keys((result as any).headers).sort() : [];
+    data.streaming = method === "stream";
+  }
+  if (root === "env") {
+    data.found = typeof result === "string";
+    if (result && typeof result === "object") data.count = Object.keys(result as Record<string, unknown>).length;
+  }
+  if (root === "workspace") data.root = (result as any)?.root ?? null;
+  if (root === "facts" || root === "memory") {
+    data.added = (result as any)?.added ?? null;
+    data.removed = (result as any)?.removed ?? null;
+    data.dryRun = (result as any)?.dryRun ?? null;
+  }
+  if (root === "pointers") {
+    data.changed = (result as any)?.changed ?? null;
+    data.matched = method === "cas" ? !!result : null;
+    if (Array.isArray(result)) data.count = result.length;
+  }
+  if (root === "objects") {
+    data.found = result != null;
+    data.kind = (result as any)?.kind ?? null;
+  }
+  if (root === "chat") {
+    data.chatId = (result as any)?.chatId ?? (typeof result === "string" ? result : null);
+    data.stepId = (result as any)?.stepId ?? null;
+    data.count = Array.isArray(result) ? result.length : null;
+  }
+  if (root === "ui") {
+    data.stepId = (result as any)?.stepId ?? null;
+    data.uiId = (result as any)?.uiId ?? null;
+    data.instanceId = (result as any)?.instanceId ?? null;
+    data.createdState = (result as any)?.createdState ?? null;
+  }
+  if (root === "mcp") {
+    data.toolCount = Array.isArray(result) ? result.length : Array.isArray((result as any)?.tools) ? (result as any).tools.length : null;
+    data.status = (result as any)?.status ?? null;
+    data.serverId = (result as any)?.serverId ?? null;
+    data.authenticated = (result as any)?.authenticated ?? null;
+  }
+  if (root === "agent") {
+    data.status = (result as any)?.status ?? null;
+    data.childChatId = (result as any)?.childChatId ?? (result as any)?.chatId ?? null;
+    data.runId = (result as any)?.runId ?? null;
+    data.stepId = (result as any)?.stepId ?? null;
+  }
+  if (root === "time") data.timestamp = result;
+  if (root === "id") data.id = result;
+  if (root === "validate") data.valid = result;
+  if (root === "term") data.turtle = String(result);
+  return data;
+}
+
+function currentTraceId(): string | null {
+  return typeof globalThis.__op_trace_current === "function" ? globalThis.__op_trace_current() : null;
+}
+
+function createTracedObject<T extends object>(target: T, path: string[] = []): T {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof prop !== "string") return value;
+      const nextPath = [...path, prop];
+      if (typeof value === "function") {
+        if (TRACE_SKIP_ROOTS.has(nextPath[0]!)) return value;
+        return (...args: unknown[]) => {
+          if (!currentTraceId()) {
+            return value.apply(obj, args);
+          }
+          const name = `moo.${nextPath.join(".")}`;
+          let previousParent: string | null = null;
+          const spanId = __op_trace_insert(JSON.stringify({
+            kind: "span",
+            name,
+            status: "running",
+            data: redactedTraceValue(name, semanticTraceInputValue(name, nextPath, args), "input"),
+          }));
+          if (spanId) previousParent = __op_trace_set_parent(spanId);
+          const finishOk = (result: unknown) => {
+            if (spanId) __op_trace_finish(spanId, "ok", JSON.stringify(redactedTraceValue(name, semanticTraceOutputValue(name, nextPath, result), "output")));
+            return result;
+          };
+          const finishError = (e: any) => {
+            if (spanId) __op_trace_finish(spanId, "error", traceErrorJson(name, e));
+          };
+          let pending = false;
+          try {
+            const result = value.apply(obj, args);
+            if (isThenable(result)) {
+              pending = true;
+              return Promise.resolve(result).then((resolved) => finishOk(resolved), (e) => {
+                finishError(e);
+                throw e;
+              }).finally(() => {
+                if (spanId) __op_trace_set_parent(previousParent);
+              });
+            }
+            return finishOk(result);
+          } catch (e: any) {
+            finishError(e);
+            throw e;
+          } finally {
+            if (!pending && spanId) __op_trace_set_parent(previousParent);
+          }
+        };
+      }
+      if (value && typeof value === "object" && !TRACE_SKIP_ROOTS.has(nextPath[0]!)) {
+        return createTracedObject(value, nextPath);
+      }
+      return value;
+    },
+  }) as T;
+}
+
+export const moo: Moo = createTracedObject(rawMoo);

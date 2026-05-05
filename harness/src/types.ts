@@ -319,6 +319,91 @@ export class MooApiError extends Error {
 
 export type MooTry = <T>(fn: () => T | Promise<T>) => Promise<ApiResult<Awaited<T>>>;
 
+export type TraceStatus = "running" | "ok" | "error" | "cancelled" | "timeout";
+export type TraceKind = "trace" | "span" | "mark" | string;
+export type TraceRow = {
+  id: string;
+  traceId: string;
+  seq: number;
+  stepId: string | null;
+  kind: TraceKind;
+  name: string;
+  t0Ns: number;
+  t1Ns: number | null;
+  status: TraceStatus | string;
+  data: Record<string, unknown>;
+};
+export type TraceCurrent = { traceId: string; id: string; stepId: string | null; parentId: string };
+export type TraceTreeNode = TraceRow & { children: TraceTreeNode[] };
+export type TraceChat = { id: string; title: string | null };
+export type TraceErrorCategory =
+  | "runjs_compile"
+  | "patch_mismatch"
+  | "missing_file"
+  | "missing_tool"
+  | "proc_nonzero"
+  | "undefined_variable"
+  | "no_change"
+  | "timeout"
+  | "api_error"
+  | "unknown";
+export type TraceErrorInfo = { message: string; category: TraceErrorCategory; row: TraceRow };
+export type TraceRecentArgs = {
+  limit?: number;
+  includeChat?: boolean;
+  chatId?: string;
+  status?: TraceStatus | string;
+  kind?: TraceKind;
+  name?: string;
+  text?: string;
+  hasError?: boolean;
+};
+export type TraceSearchArgs = TraceRecentArgs & { includeEvents?: boolean };
+export type TraceFailedArgs = Omit<TraceSearchArgs, "hasError" | "status">;
+export type TraceSearchRow = TraceRow & {
+  chat?: TraceChat;
+  events?: TraceRow[];
+  errorSummary?: string;
+  category?: TraceErrorCategory;
+};
+export type TraceSummary = {
+  traceId: string;
+  status: string;
+  root: TraceRow | null;
+  chat?: TraceChat;
+  durationMs?: number;
+  error?: TraceErrorInfo;
+  errors: TraceErrorInfo[];
+  events?: TraceRow[];
+  counts?: { total: number; byKind: Array<{ name: string; count: number }>; byStatus: Array<{ name: string; count: number }>; byName: Array<{ name: string; count: number }> };
+  slowestSpans?: Array<{ row: TraceRow; durationMs: number }>;
+  criticalPath?: Array<{ row: TraceRow; durationMs: number | null }>;
+  waterfall?: Array<Record<string, unknown>>;
+  sideEffects?: TraceRow[];
+  causalLinks?: Array<Record<string, unknown>>;
+  payload?: Record<string, unknown>;
+};
+export type TraceDiagnosisGroup = { category: TraceErrorCategory | string; count: number; examples?: TraceSearchRow[] };
+export type TraceDiagnosis = { total?: number; groups?: TraceDiagnosisGroup[]; recentFailures?: TraceSummary[]; slowRecent?: TraceSummary[]; slowestSpans?: Array<Record<string, unknown>>; sideEffects?: Array<Record<string, unknown>>; failureGroups?: TraceDiagnosisGroup[] };
+export type TraceDiagnostic = TraceDiagnosis;
+export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
+export type MooTracesApi = {
+  current(): Promise<TraceCurrent | null>;
+  get(args?: { traceId?: string; stepId?: string }): Promise<TraceRow | null>;
+  events(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceRow[]>;
+  tree(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceTreeNode | null>;
+  recent(args?: TraceRecentArgs): Promise<TraceSearchRow[]>;
+  search(args?: TraceSearchArgs): Promise<TraceSearchRow[]>;
+  failed(args?: TraceFailedArgs): Promise<TraceSearchRow[]>;
+  summary(args?: { traceId?: string; stepId?: string; includeEvents?: boolean }): Promise<TraceSummary | null>;
+  diagnose(args?: TraceFailedArgs & { examplesPerGroup?: number }): Promise<TraceDiagnosis>;
+  errorOf(row: TraceRow): string | null;
+  errors(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceErrorInfo[]>;
+  mark(message: string, data?: Record<string, unknown>): Promise<string | null>;
+  span<T>(name: string, fn: () => T | Promise<T>): Promise<Awaited<T>>;
+  span<T>(name: string, data: TraceSpanOptions, fn: () => T | Promise<T>): Promise<Awaited<T>>;
+};
+
 export type MemoryFact = [string, string, ObjectInput] | { subject: string; predicate: string; object: ObjectInput };
 export type MemoryPatchGroup = { asserts?: MemoryFact[]; retracts?: MemoryFact[] };
 
@@ -515,6 +600,7 @@ export type Moo = {
   events: {
     publish(payload: unknown): void;
   };
+  traces: MooTracesApi;
   env: {
     get(name: string): Promise<string | null>;
     getMany(names: string[]): Promise<Record<string, string | null>>;

@@ -1,8 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 
-import { RightSidebarToggle } from "./Sidebar";
 import type { Bag } from "./state";
 import { type Triple } from "./api";
+import { BackToChatButton, ControlField, EmptyState, HeaderIconButton, PageBody, PageHeader, PageToolbar, StatPill, ToolbarSection } from "./PageChrome";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
 const SHA256_RE = /sha256:[a-f0-9]{64}/gi;
@@ -61,7 +61,7 @@ type CategoryWithGraphs = {
 // styled when focused.
 export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const { bag } = props;
-  let scrollEl: HTMLDivElement | undefined;
+  let scrollEl: HTMLElement | undefined;
 
   const [search, setSearch] = createSignal("");
   const [page, setPage] = createSignal(1);
@@ -245,78 +245,52 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   });
 
   return (
-    <section class="main">
-      <header class="conv-header facts-header">
-        <div class="facts-header-main">
-          <button
-            class="header-icon-button"
-            title="toggle sidebar"
-            aria-label="toggle sidebar"
-            onClick={props.onToggleSidebar}
-          >
-            ☰
-          </button>
-          <button
-            class="header-icon-button facts-back"
-            title={selectedGraph() ? "back to graph list" : "back to chat"}
-            onClick={() => (selectedGraph() ? closeGraph() : bag.showChat())}
-          >
-            ←
-          </button>
-          <div class="facts-title-block">
-            <strong class="facts-title">
-              <Show when={selectedGraph()} fallback="facts">
-                facts <span class="facts-crumb">/ {selectedGraphLabel()}</span>
-              </Show>
-            </strong>
-          </div>
-          <div class="facts-summary" aria-label="facts summary">
-            <Show
-              when={selectedGraph()}
-              fallback={
-                <>
-                  <span class="facts-stat-pill">
-                    <strong>{search().trim() ? filteredGraphCount() : totalGraphs()}</strong>
-                    <span>{search().trim() ? "matching graphs" : "graphs"}</span>
-                  </span>
-                  <span class="facts-stat-pill">
-                    <strong>{graphCategories().reduce((sum, c) => sum + c.factCount, 0)}</strong>
-                    <span>facts</span>
-                  </span>
-                  <span class="facts-stat-pill">
-                    <strong>{totalPredicates()}</strong>
-                    <span>predicates</span>
-                  </span>
-                </>
-              }
-            >
-              <span class="facts-stat-pill">
-                <strong>{filteredFacts()}</strong>
-                <span>{search().trim() ? "matching facts" : "facts"}</span>
-              </span>
-              <span class="facts-stat-pill">
-                <strong>{filteredSubjects()}</strong>
-                <span>{search().trim() ? "matching subjects" : "subjects"}</span>
-              </span>
-            </Show>
-          </div>
-          <RightSidebarToggle bag={bag} />
-        </div>
+    <section class="main conversation-main memory-view facts-view">
+      <PageHeader
+        bag={bag}
+        class="memory-header facts-header"
+        title={selectedGraph() ? "Facts / " + selectedGraphLabel() : "Facts"}
+        onToggleSidebar={props.onToggleSidebar}
+        showRightSidebarToggle
+      />
 
-        <div class="facts-toolbar">
-          <label class="facts-search facts-control">
-            <span>Search</span>
+      <PageToolbar class="memory-toolbar facts-toolbar">
+        <HeaderIconButton
+          class="facts-back"
+          title={selectedGraph() ? "back to graph list" : "back to chat"}
+          aria-label={selectedGraph() ? "back to graph list" : "back to chat"}
+          onClick={() => (selectedGraph() ? closeGraph() : bag.showChat())}
+        >
+          ←
+        </HeaderIconButton>
+        <ToolbarSection class="facts-summary" ariaLabel="summary">
+          <Show
+            when={selectedGraph()}
+            fallback={
+              <>
+                <StatPill value={search().trim() ? filteredGraphCount() : totalGraphs()} label={search().trim() ? "matching graphs" : "graphs"} />
+                <StatPill value={graphCategories().reduce((sum, c) => sum + c.factCount, 0)} label="facts" />
+                <StatPill value={totalPredicates()} label="predicates" />
+              </>
+            }
+          >
+            <StatPill value={filteredFacts()} label={search().trim() ? "matching facts" : "facts"} />
+            <StatPill value={filteredSubjects()} label={search().trim() ? "matching subjects" : "subjects"} />
+          </Show>
+        </ToolbarSection>
+
+        <div class="facts-filterbar">
+          <ControlField class="facts-search" label="Search">
             <input
               type="search"
               placeholder={selectedGraph() ? "subject, predicate, object…" : "graph…"}
               value={search()}
               onInput={(event) => setSearch(event.currentTarget.value)}
             />
-          </label>
+          </ControlField>
 
           <div class="facts-actions">
-            <label class="facts-control facts-removed-mode">
-              <span>Removed</span>
+            <ControlField class="facts-removed-mode" label="Removed">
               <select
                 value={bag.triplesRemovedMode()}
                 onChange={(event) => {
@@ -329,11 +303,10 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 <option value="include">include</option>
                 <option value="only">only</option>
               </select>
-            </label>
+            </ControlField>
 
             <Show when={selectedGraph()}>
-              <label class="facts-control facts-page-size">
-                <span>Per page</span>
+              <ControlField class="facts-page-size" label="Per page">
                 <select
                   value={pageSize()}
                   onChange={(event) => setPageSize(Number(event.currentTarget.value))}
@@ -342,7 +315,7 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                     {(size) => <option value={size}>{size}</option>}
                   </For>
                 </select>
-              </label>
+              </ControlField>
               <div class="facts-pager" aria-label="facts pagination">
                 <button
                   type="button"
@@ -369,24 +342,25 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
             </Show>
           </div>
         </div>
-      </header>
+      </PageToolbar>
+
       <div class="memory-main">
       <Show when={selectedGraph() && bag.triplesTruncated()}>
         <div class="facts-limit-note">
           Showing the first {bag.triplesLimit() ?? bag.triples().length} facts in this graph to keep the browser responsive. Use search to narrow the view.
         </div>
       </Show>
-      <main class="timeline turtle" ref={scrollEl}>
+      <PageBody class="turtle" ref={(el) => { scrollEl = el; }}>
         <Show
           when={selectedGraph()}
           fallback={
             <Show
               when={totalGraphs() > 0}
-              fallback={<Show when={bag.graphSummariesLoaded()}><div class="empty">no graphs yet</div></Show>}
+              fallback={<Show when={bag.graphSummariesLoaded()}><EmptyState>no graphs yet</EmptyState></Show>}
             >
               <Show
                 when={filteredGraphCount() > 0}
-                fallback={<div class="empty">no graphs match <code>{search()}</code></div>}
+                fallback={<EmptyState>no graphs match <code>{search()}</code></EmptyState>}
               >
                 <For each={filteredGraphCategories()}>
                   {(category) => (
@@ -494,7 +468,7 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
             </For>
           </Show>
         </Show>
-      </main>
+      </PageBody>
       </div>
     </section>
   );
@@ -741,35 +715,31 @@ export function PointersView(props: { bag: Bag; onToggleSidebar?: () => void }) 
 
   return (
     <div class="main conversation-main memory-view facts-view pointers-view">
-      <header class="conv-header facts-header pointers-header">
-        <div class="facts-header-main pointers-header-main">
-          <button class="header-icon-button" title="toggle sidebar" aria-label="toggle sidebar" onClick={props.onToggleSidebar}>☰</button>
-          <button class="header-icon-button facts-back" title="back to chat" aria-label="back to chat" onClick={() => bag.showChat()}>←</button>
-          <div class="facts-title-block pointers-title-block">
-            <strong class="facts-title">pointers</strong>
-            <span class="pointers-subtitle">mutable names → content targets</span>
-          </div>
-          <div class="facts-summary pointers-summary" aria-label="pointers summary">
-            <span class="facts-stat-pill"><strong>{isSearching() ? visibleCount() : totalCount()}</strong><span>{isSearching() ? "matches" : "pointers"}</span></span>
-            <span class="facts-stat-pill"><strong>{rootGroups()}</strong><span>groups</span></span>
-          </div>
-          <RightSidebarToggle bag={bag} />
-        </div>
-        <div class="facts-toolbar pointers-toolbar">
-          <label class="facts-search facts-control pointers-search">
-            <span>Search</span>
+      <PageHeader
+        bag={bag}
+        class="memory-header facts-header pointers-header"
+        title="Pointers"
+        onToggleSidebar={props.onToggleSidebar}
+        showRightSidebarToggle
+      />
+      <PageToolbar class="memory-toolbar facts-toolbar pointers-toolbar">
+          <BackToChatButton bag={bag} class="facts-back" />
+          <ToolbarSection class="facts-summary pointers-summary" ariaLabel="summary">
+            <StatPill value={isSearching() ? visibleCount() : totalCount()} label={isSearching() ? "matches" : "pointers"} />
+            <StatPill value={rootGroups()} label="groups" />
+          </ToolbarSection>
+          <ControlField class="facts-search pointers-search" label="Search">
             <input type="search" placeholder="name, prefix, hash, or target…" value={search()} onInput={(event) => setSearch(event.currentTarget.value)} />
-          </label>
+          </ControlField>
           <div class="pointers-toolbar-actions">
             <Show when={isSearching()}>
               <button type="button" class="secondary small" onClick={() => setSearch("")}>clear</button>
             </Show>
             <button type="button" class="secondary small" onClick={() => void bag.refreshPointers()}>refresh</button>
           </div>
-        </div>
-      </header>
+      </PageToolbar>
       <div class="memory-main">
-        <main class="timeline turtle">
+        <PageBody class="turtle">
           <section class="turtle-category memory-pointers-section">
             <header class="turtle-category-head pointers-list-head">
               <div>
@@ -781,8 +751,8 @@ export function PointersView(props: { bag: Bag; onToggleSidebar?: () => void }) 
             <Show
               when={visibleCount() > 0}
               fallback={
-                <Show when={bag.pointersLoaded()} fallback={<div class="empty pointer-empty">loading pointers…</div>}>
-                  <div class="empty pointer-empty">{isSearching() ? "no matching pointers" : "no pointers yet"}</div>
+                <Show when={bag.pointersLoaded()} fallback={<EmptyState class="pointer-empty">loading pointers…</EmptyState>}>
+                  <EmptyState class="pointer-empty">{isSearching() ? "no matching pointers" : "no pointers yet"}</EmptyState>
                 </Show>
               }
             >
@@ -795,7 +765,7 @@ export function PointersView(props: { bag: Bag; onToggleSidebar?: () => void }) 
               />
             </Show>
           </section>
-        </main>
+        </PageBody>
       </div>
     </div>
   );

@@ -126,3 +126,19 @@ describe("llm retry policy", () => {
     expect(llmRetryDecision({ ok: false, status: 503 }, 3, policy)).toEqual({ retry: false, reason: "attempts-exhausted", delayMs: 0 });
   });
 });
+
+
+describe("trace helpers", () => {
+  test("summarizes trace payload metrics", async () => {
+    const { summarizeTraceValue } = await import("../src/moo");
+    const value: any = { text: "abc" };
+    value.self = value;
+    expect(summarizeTraceValue(value)).toEqual({ text: "abc", self: "[Circular]" });
+  });
+
+  test("keeps synchronous moo helpers synchronous under trace proxy", async () => {
+    const { moo } = await import("../src/moo");
+    expect(typeof moo.validate.pointerName("p")).toBe("boolean");
+    expect(String(moo.term.string("literal:value"))).toBe('"literal:value"');
+  });
+});

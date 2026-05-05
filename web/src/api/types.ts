@@ -82,11 +82,13 @@ export type ImageAttachment = {
 
 export type {
   DiffStats,
+  BlobAddItem,
   FileDiffItem,
   InputItem,
   InputResponseItem,
   LogItem,
   MemoryDiffItem,
+  MemoryFactChange,
   RunJSDetails,
   StepItem,
   SubagentDetails,
@@ -259,6 +261,9 @@ export type FsEntry = {
   kind: string;
   size: number;
   mtime: number;
+  changed?: boolean;
+  additions?: number;
+  deletions?: number;
 };
 
 export type FsListValue = {
@@ -283,6 +288,10 @@ export type FsReadValue = {
   size: number;
   mtime: number;
   content: string;
+  changed?: boolean;
+  additions?: number;
+  deletions?: number;
+  entries?: FsEntry[];
 };
 
 export type Predicate = {
@@ -400,3 +409,54 @@ export type V8StatsValue = {
     totalHeapSize: number;
   };
 };
+
+export interface TraceRow {
+  id: string;
+  parentId: string | null;
+  chatId: string | null;
+  runId: string | null;
+  kind: "chat" | "turn" | "step" | "llm" | "tool" | "runjs" | "system" | "user";
+  name: string;
+  depth: number;
+  seq: number;
+  status: "ok" | "error" | "running";
+  startedMs: number;
+  endedMs: number | null;
+  inputHash: string | null;
+  outputHash: string | null;
+  errorHash: string | null;
+  invokedFromStepId: string | null;
+  dataJson: any | null;
+}
+
+export interface TraceEventRow {
+  id: number;
+  spanId: string;
+  tsMs: number;
+  level: string | null;
+  message: string | null;
+  dataHash: string | null;
+}
+
+export interface TraceSearchArgs {
+  query?: string;
+  kind?: string;
+  status?: string;
+  chatId?: string;
+  runId?: string;
+  hasError?: boolean;
+  limit?: number;
+  beforeMs?: number;
+}
+
+export interface TraceSummary {
+  node: TraceRow;
+  totals: {
+    spans: number;
+    errors: number;
+    durationMs: number;
+    byKind: Record<string, number>;
+    byStatus: Record<string, number>;
+  };
+  slowest: TraceRow[];
+}

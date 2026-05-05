@@ -1,3 +1,6 @@
+import { Effect, ok } from "./core/effect";
+import { moo, summarizeTraceValue } from "./moo";
+
 type Input = Record<string, any>;
 
 type LlmAccumulatorState = {
@@ -12,49 +15,68 @@ type LlmAccumulatorState = {
 };
 
 export function llmStreamInitCommand(input: Input) {
-  const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
-  const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
-  const state: LlmAccumulatorState = {
-    content: "",
-    toolCalls: [],
-    model: null,
-    usage: null,
-    error: null,
-    lastTokenProgressUsed: estimated,
-    anthropicToolIndex: null,
-    anthropicToolBlockToCall: {},
-  };
-  const events: any[] = [];
-  const tokenEvent = streamEvents.tokenProgressEvent;
-  if (tokenEvent && typeof tokenEvent === "object") {
-    events.push(tokenProgressPayload(tokenEvent, estimated, Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0));
-  }
-  return { ok: true, value: { state, events } };
+  return llmStreamInitEffect(input).map((value) => ok(value));
+}
+
+export function llmStreamInitEffect(input: Input): Effect<{ state: LlmAccumulatorState; events: any[] }> {
+  return Effect.tryPromise(async () => moo.traces.span("llm.stream.init", llmStreamInputSummary(input), async () => {
+    const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
+    const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
+    const state: LlmAccumulatorState = {
+      content: "",
+      toolCalls: [],
+      model: null,
+      usage: null,
+      error: null,
+      lastTokenProgressUsed: estimated,
+      anthropicToolIndex: null,
+      anthropicToolBlockToCall: {},
+    };
+    const events: any[] = [];
+    const tokenEvent = streamEvents.tokenProgressEvent;
+    if (tokenEvent && typeof tokenEvent === "object") {
+      events.push(tokenProgressPayload(tokenEvent, estimated, Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0));
+    }
+    await moo.traces.mark("llm.stream.init.result", { estimatedPromptTokens: estimated, emittedEvents: events.length });
+    return { state, events };
+  }), "llm stream init failed");
 }
 
 export function llmStreamAccumulateCommand(input: Input) {
-  const state = normalizeLlmAccumulatorState(input.state);
-  const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
-  const events: any[] = [];
-  const rawEvents = Array.isArray(input.events) ? input.events : [];
-  for (const raw of rawEvents) {
-    if (typeof raw !== "string") continue;
-    const data = raw.trim();
-    if (!data || data === "[DONE]") continue;
-    let parsed: any;
-    try { parsed = JSON.parse(data); } catch { continue; }
-    accumulateLlmStreamEvent(state, parsed, streamEvents, events);
-  }
-  return { ok: true, value: { state, events } };
+  return llmStreamAccumulateEffect(input).map((value) => ok(value));
+}
+
+export function llmStreamAccumulateEffect(input: Input): Effect<{ state: LlmAccumulatorState; events: any[] }> {
+  return Effect.tryPromise(async () => moo.traces.span("llm.stream.accumulate", llmStreamInputSummary(input), async () => {
+    const state = normalizeLlmAccumulatorState(input.state);
+    const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
+    const events: any[] = [];
+    const rawEvents = Array.isArray(input.events) ? input.events : [];
+    let parsedCount = 0;
+    let ignoredCount = 0;
+    for (const raw of rawEvents) {
+      if (typeof raw !== "string") { ignoredCount++; continue; }
+      const parsed = parseStreamJsonEvent(raw);
+      if (parsed == null) { ignoredCount++; continue; }
+      parsedCount++;
+      await moo.traces.mark("llm.stream.event", llmStreamEventSummary(parsed));
+      accumulateLlmStreamEvent(state, parsed, streamEvents, events);
+    }
+    await moo.traces.mark("llm.stream.accumulate.result", { rawEvents: rawEvents.length, parsedEvents: parsedCount, ignoredEvents: ignoredCount, emittedEvents: events.length, state: llmStreamStateSummary(state) });
+    return { state, events };
+  }), "llm stream accumulate failed");
 }
 
 export function llmStreamFinalizeCommand(input: Input) {
-  const state = normalizeLlmAccumulatorState(input.state);
-  const status = Number(input.status ?? 0) || 0;
-  if (state.error != null) {
-    return {
-      ok: true,
-      value: {
+  return llmStreamFinalizeEffect(input).map((value) => ok(value));
+}
+
+export function llmStreamFinalizeEffect(input: Input): Effect<any> {
+  return Effect.tryPromise(async () => moo.traces.span("llm.stream.finalize", llmStreamInputSummary(input), async () => {
+    const state = normalizeLlmAccumulatorState(input.state);
+    const status = Number(input.status ?? 0) || 0;
+    const result = state.error != null
+      ? {
         status,
         ok: false,
         content: state.content,
@@ -63,37 +85,88 @@ export function llmStreamFinalizeCommand(input: Input) {
         headers: input.headers && typeof input.headers === "object" ? input.headers : null,
         model: state.model,
         usage: state.usage,
-      },
-    };
-  }
-  return {
-    ok: true,
-    value: {
-      status,
-      ok: true,
-      content: state.content,
-      toolCalls: state.toolCalls,
-      errorBody: null,
-      model: state.model,
-      usage: state.usage,
-    },
-  };
+      }
+      : {
+        status,
+        ok: true,
+        content: state.content,
+        toolCalls: state.toolCalls,
+        errorBody: null,
+        model: state.model,
+        usage: state.usage,
+      };
+    await moo.traces.mark("llm.stream.finalize.result", { status, ok: result.ok, contentChars: state.content.length, toolCalls: state.toolCalls.length, model: state.model, usage: summarizeTraceValue(state.usage), headers: summarizeTraceValue((result as any).headers ?? null) });
+    return result;
+  }), "llm stream finalize failed");
 }
 
 export function llmStreamErrorCommand(input: Input) {
-  const state = normalizeLlmAccumulatorState(input.state);
-  return {
-    ok: true,
-    value: {
+  return llmStreamErrorEffect(input).map((value) => ok(value));
+}
+
+export function llmStreamErrorEffect(input: Input): Effect<any> {
+  return Effect.tryPromise(async () => moo.traces.span("llm.stream.error", llmStreamInputSummary(input), async () => {
+    const state = normalizeLlmAccumulatorState(input.state);
+    const errorBody = formatStreamErrorBody(input.errorBody ?? input.error ?? "stream failed");
+    const result = {
       status: Number(input.status ?? 0) || 0,
       ok: false,
       content: state.content,
       toolCalls: state.toolCalls,
-      errorBody: typeof input.errorBody === "string" ? input.errorBody : String(input.errorBody ?? ""),
+      errorBody,
       headers: input.headers && typeof input.headers === "object" ? input.headers : null,
       model: state.model,
       usage: state.usage,
-    },
+    };
+    await moo.traces.mark("llm.stream.error.result", { status: result.status, errorBody: summarizeTraceValue(result.errorBody), headers: summarizeTraceValue(result.headers), state: llmStreamStateSummary(state) });
+    return result;
+  }), "llm stream error failed");
+}
+
+function llmStreamInputSummary(input: Input): Record<string, unknown> {
+  const rawEvents = Array.isArray(input.events) ? input.events : [];
+  const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
+  return {
+    provider: input.provider ?? streamEvents.provider ?? null,
+    model: input.model ?? streamEvents.model ?? input.state?.model ?? null,
+    status: input.status ?? null,
+    eventCount: rawEvents.length,
+    eventChars: rawEvents.reduce((n: number, value: unknown) => n + (typeof value === "string" ? value.length : 0), 0),
+    hasState: input.state != null,
+    state: input.state ? llmStreamStateSummary(normalizeLlmAccumulatorState(input.state)) : null,
+    streamEvents: summarizeTraceValue(streamEvents),
+    headers: input.headers && typeof input.headers === "object" ? summarizeTraceValue(input.headers) : null,
+    error: input.error ?? input.errorBody ?? null,
+  };
+}
+
+function llmStreamStateSummary(state: LlmAccumulatorState): Record<string, unknown> {
+  return {
+    contentChars: state.content.length,
+    toolCalls: state.toolCalls.length,
+    model: state.model,
+    hasUsage: state.usage != null,
+    hasError: state.error != null,
+    lastTokenProgressUsed: state.lastTokenProgressUsed,
+    anthropicToolIndex: state.anthropicToolIndex,
+  };
+}
+
+function llmStreamEventSummary(event: any): Record<string, unknown> {
+  const choice = Array.isArray(event?.choices) ? event.choices[0] : null;
+  const delta = choice?.delta ?? null;
+  return {
+    id: event?.id ?? null,
+    object: event?.object ?? null,
+    model: event?.model ?? null,
+    type: event?.type ?? null,
+    finishReason: choice?.finish_reason ?? null,
+    choiceCount: Array.isArray(event?.choices) ? event.choices.length : null,
+    contentChars: typeof delta?.content === "string" ? delta.content.length : 0,
+    hasUsage: event?.usage != null,
+    hasError: event?.error != null,
+    toolCallDeltaCount: Array.isArray(delta?.tool_calls) ? delta.tool_calls.length : null,
+    raw: summarizeTraceValue(event),
   };
 }
 
@@ -219,12 +292,35 @@ function appendLlmContentDelta(state: LlmAccumulatorState, delta: string, stream
   }
 }
 
+function parseStreamJsonEvent(raw: string): any {
+  const line = raw.startsWith("data: ") ? raw.slice(6).trimEnd() : raw.trim();
+  if (!line || line === "[DONE]") return null;
+  try {
+    const parsed = JSON.parse(line);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function estimateTextTokens(text: string): number {
   return Math.ceil(Array.from(text).length / 4);
 }
 
 function formatStreamErrorBody(error: any): string {
-  if (typeof error === "string") return error;
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    if (!trimmed) return "stream failed";
+    return trimmed;
+  }
+  const message = error?.error?.message ?? error?.message ?? error?.detail?.message;
+  if (typeof message === "string" && message.trim()) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return message.trim();
+    }
+  }
   try {
     return JSON.stringify(error);
   } catch {

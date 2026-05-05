@@ -1,9 +1,9 @@
 import { For, Show, createEffect, createSignal, onMount } from "solid-js";
 
 import { api, type ApiResult, type McpServerConfig, type McpTool } from "./api";
-import { RightSidebarToggle } from "./Sidebar";
 import { highlightByPath } from "./syntax";
 import type { Bag } from "./state";
+import { ActionRow, BackToChatButton, Card, EmptyState, HeaderIconButton, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
 
 type Draft = {
   id: string;
@@ -343,35 +343,24 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   }
 
   return (
-    <div class="chat-shell mcp-dashboard-view">
-      <section class="main mcp-view">
-        <header class="conv-header">
-          <button
-            class="header-icon-button"
-            title="toggle sidebar"
-            aria-label="toggle sidebar"
-            onClick={props.onToggleSidebar}
-          >
-            ☰
-          </button>
-          <button class="header-icon-button" title="back to chat" onClick={() => bag.showChat()}>
-            ←
-          </button>
-          <strong>MCP servers</strong>
-          <small class="conv-stats">
-            {servers().length} configured server{servers().length === 1 ? "" : "s"}
-          </small>
-          <button class="header-icon-button" title="refresh MCP servers" disabled={busy()} onClick={refresh}>
-            ↻
-          </button>
-          <RightSidebarToggle bag={bag} />
-        </header>
-        <main class="timeline mcp-settings">
+    <PageShell class="mcp-dashboard-view" mainClass="mcp-view">
+        <PageHeader
+          bag={bag}
+          title="MCP"
+          onToggleSidebar={props.onToggleSidebar}
+          navigation={<BackToChatButton bag={bag} />}
+          actions={
+            <>
+              <HeaderIconButton title="refresh MCP servers" aria-label="refresh MCP servers" disabled={busy()} onClick={refresh}>↻</HeaderIconButton>
+            </>
+          }
+        />
+        <PageBody class="mcp-settings">
           <Show when={message()}>
-            <div class="mcp-message">{message()}</div>
+            <Notice class="mcp-message">{message()}</Notice>
           </Show>
 
-          <section class="mcp-hero-card">
+          <Card class="mcp-hero-card">
             <div class="mcp-hero-copy">
               <p class="mcp-kicker">connect a remote MCP server</p>
               <h2>{selected() ? "Edit " + selected() : "Add MCP server"}</h2>
@@ -415,7 +404,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                   <span>Enabled</span>
                 </label>
               </div>
-              <div class="mcp-actions mcp-primary-actions">
+              <ActionRow class="mcp-actions mcp-primary-actions">
                 <button type="submit" class="primary" disabled={busy() || !draft().url.trim()}>{authLabel()}</button>
                 <button
                   type="button"
@@ -429,7 +418,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 <Show when={selected() && draft().oauthEnabled && auth()[selected()!]}>
                   <button type="button" disabled={busy()} onClick={() => logout(selected()!)}>Log out</button>
                 </Show>
-              </div>
+              </ActionRow>
 
               <details class="mcp-advanced">
                 <summary>Advanced options</summary>
@@ -484,11 +473,11 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 </div>
               </details>
             </form>
-          </section>
+          </Card>
 
-          <section class="mcp-card">
+          <Card class="mcp-card">
             <header class="mcp-card-header"><strong>Configured</strong></header>
-            <Show when={servers().length > 0} fallback={<Show when={bag.mcpServersLoaded()}><div class="empty">No MCP servers configured yet.</div></Show>}>
+            <Show when={servers().length > 0} fallback={<Show when={bag.mcpServersLoaded()}><EmptyState>No MCP servers configured yet.</EmptyState></Show>}>
               <ul class="mcp-server-list">
                 <For each={servers()}>{(server) => (
                   <li class="mcp-server-row" classList={{ disabled: server.enabled === false }}>
@@ -511,11 +500,11 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 )}</For>
               </ul>
             </Show>
-          </section>
+          </Card>
 
-          <section class="mcp-card">
+          <Card class="mcp-card">
             <header class="mcp-card-header"><strong>Tools</strong></header>
-            <Show when={tools().length > 0} fallback={<div class="empty">No tools discovered.</div>}>
+            <Show when={tools().length > 0} fallback={<EmptyState>No tools discovered.</EmptyState>}>
               <ul class="mcp-tool-list">
                 <For each={tools()}>{(tool) => {
                   const detail = splitDenseDescription(tool);
@@ -534,9 +523,8 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 }}</For>
               </ul>
             </Show>
-          </section>
-        </main>
-      </section>
-    </div>
+          </Card>
+        </PageBody>
+    </PageShell>
   );
 }

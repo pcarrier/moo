@@ -29,6 +29,7 @@ pub fn handle(
     pool: Arc<Pool>,
     bundle: BundleProvider,
     db: String,
+    base_url: Option<String>,
 ) -> std::io::Result<()> {
     let accept = compute_accept(sec_key);
     let response = format!(
@@ -83,6 +84,7 @@ pub fn handle(
         let writer_tx = writer_tx.clone();
         let pool = pool.clone();
         let bundle = bundle.clone();
+        let base_url = base_url.clone();
         thread::spawn(move || {
             let mut s = read_clone;
             loop {
@@ -120,8 +122,35 @@ pub fn handle(
                             let bundle = bundle.clone();
                             let payload = payload.clone();
                             let db = db.clone();
+                            let base_url = base_url.clone();
                             thread::spawn(move || {
-                                run_command(payload, id, pool, bundle, writer_tx, db);
+                                let id_for_error = id.clone();
+                                let writer_tx_for_error = writer_tx.clone();
+                                let result = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(move || {
+                                        match host::install(&db) {
+                                            Ok(()) => run_command(
+                                                payload, id, pool, bundle, writer_tx, db, base_url,
+                                            ),
+                                            Err(message) => {
+                                                let frame = json!({
+                                                    "kind": "run-result",
+                                                    "id": id,
+                                                    "result": { "ok": false, "error": { "message": message } },
+                                                });
+                                                let _ = writer_tx.send(frame.to_string());
+                                            }
+                                        }
+                                    }),
+                                );
+                                if result.is_err() {
+                                    let frame = json!({
+                                        "kind": "run-result",
+                                        "id": id_for_error,
+                                        "result": { "ok": false, "error": { "message": "command worker panicked" } },
+                                    });
+                                    let _ = writer_tx_for_error.send(frame.to_string());
+                                }
                             });
                         }
                     }
@@ -156,7 +185,21 @@ fn run_command(
     bundle: BundleProvider,
     writer_tx: mpsc::Sender<String>,
     db: String,
+    base_url: Option<String>,
 ) {
+    if let Err(e) = host::install(&db) {
+        let frame = json!({
+            "kind": "run-result",
+            "id": id,
+            "result": {
+                "ok": false,
+                "error": format!("host init: {e}"),
+            },
+        });
+        let _ = writer_tx.send(frame.to_string());
+        return;
+    }
+
     match command_from_payload(&payload) {
         "v8-stats" => {
             let frame = json!({
@@ -177,9 +220,56 @@ fn run_command(
             let _ = writer_tx.send(frame.to_string());
             return;
         }
+        "trace-chats" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_chats(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-node" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_node(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-subtree" => {
+            let frame = json!({ "kind": "run-result", "id": id, "result": trace_subtree_command(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-events" => {
+            let frame = json!({ "kind": "run-result", "id": id, "result": trace_events_command(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-search" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_search(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-failed" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_failed(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-summary" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_summary(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
+        "trace-chat-tree" => {
+            let frame =
+                json!({ "kind": "run-result", "id": id, "result": trace_chat_tree(&db, &payload) });
+            let _ = writer_tx.send(frame.to_string());
+            return;
+        }
         _ => {}
     }
     let source = bundle();
+    let payload = payload_with_base_url(payload, base_url.as_deref());
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
     apply_driver_actions(&result_value, &pool, source);
 
@@ -189,6 +279,17 @@ fn run_command(
         "result": result_value,
     });
     let _ = writer_tx.send(frame.to_string());
+}
+
+fn payload_with_base_url(mut payload: Value, base_url: Option<&str>) -> Value {
+    let Some(base_url) = base_url.filter(|s| !s.is_empty()) else {
+        return payload;
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("serverBaseUrl".to_string())
+            .or_insert_with(|| Value::String(base_url.to_string()));
+    }
+    payload
 }
 
 fn v8_settings_payload(stored: crate::pool::V8RuntimeSettings) -> Value {
@@ -241,6 +342,297 @@ fn v8_settings_save(db: &str, payload: &Value) -> Value {
             json!({ "ok": true, "value": v8_settings_payload(parsed) })
         }
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn trace_error(message: impl Into<String>) -> Value {
+    json!({ "ok": false, "error": { "message": message.into() } })
+}
+
+fn trace_ok(value: Value) -> Value {
+    json!({ "ok": true, "value": value })
+}
+
+fn trace_payload<'a>(payload: &'a Value, key: &str) -> Option<&'a Value> {
+    payload
+        .get(key)
+        .or_else(|| payload.get("input").and_then(|v| v.get(key)))
+}
+
+fn trace_string(payload: &Value, key: &str) -> Result<Option<String>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        _ => Err(format!("{key} must be a string")),
+    }
+}
+
+fn trace_required_string(payload: &Value, key: &str) -> Result<String, String> {
+    trace_string(payload, key)?.ok_or_else(|| format!("{key} is required"))
+}
+
+fn trace_i64(payload: &Value, key: &str) -> Result<Option<i64>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .ok_or_else(|| format!("{key} must be an integer"))
+            .map(Some),
+        _ => Err(format!("{key} must be a number")),
+    }
+}
+
+fn trace_bool(payload: &Value, key: &str) -> Result<Option<bool>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        _ => Err(format!("{key} must be a boolean")),
+    }
+}
+
+fn trace_limit(payload: &Value, default: i64, max: i64) -> Result<i64, String> {
+    Ok(trace_i64(payload, "limit")?
+        .unwrap_or(default)
+        .clamp(1, max))
+}
+
+fn trace_depth(payload: &Value, default: i32, max: i32) -> Result<i32, String> {
+    Ok(trace_i64(payload, "maxDepth")?
+        .unwrap_or(default as i64)
+        .clamp(0, max as i64) as i32)
+}
+
+fn trace_row_to_json(row: &host::TraceRow) -> Value {
+    let data_json = row
+        .data_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    json!({
+        "id": row.id,
+        "parentId": row.parent_id,
+        "chatId": row.chat_id,
+        "runId": row.run_id,
+        "kind": row.kind,
+        "name": row.name,
+        "depth": row.depth,
+        "seq": row.seq,
+        "status": row.status,
+        "startedMs": row.started_ms,
+        "endedMs": row.ended_ms,
+        "inputHash": row.input_hash,
+        "outputHash": row.output_hash,
+        "errorHash": row.error_hash,
+        "invokedFromStepId": row.invoked_from_step_id,
+        "dataJson": data_json,
+    })
+}
+
+fn trace_event_to_json(row: &host::TraceEventRow) -> Value {
+    json!({
+        "id": row.id,
+        "spanId": row.span_id,
+        "tsMs": row.ts_ms,
+        "level": row.level,
+        "message": row.message,
+        "dataHash": row.data_hash,
+    })
+}
+
+fn trace_rows_json(rows: Vec<host::TraceRow>) -> Vec<Value> {
+    rows.iter().map(trace_row_to_json).collect()
+}
+
+fn trace_events_json(rows: Vec<host::TraceEventRow>) -> Vec<Value> {
+    rows.iter().map(trace_event_to_json).collect()
+}
+
+fn trace_ancestors_for_node(id: &str) -> Result<Vec<host::TraceRow>, String> {
+    let mut ancestors = host::trace_ancestors(id)?;
+    if ancestors.last().map(|row| row.id.as_str()) == Some(id) {
+        ancestors.pop();
+    }
+    Ok(ancestors)
+}
+
+fn trace_chats(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let before_ms = trace_i64(payload, "beforeMs")?;
+        Ok(json!({ "chats": trace_rows_json(host::trace_chat_roots(limit, before_ms)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_node(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let id = trace_required_string(payload, "id")?;
+        let node = host::trace_get(&id)?.ok_or_else(|| format!("trace node not found: {id}"))?;
+        let children = host::trace_children(Some(&id), None)?;
+        let ancestors = trace_ancestors_for_node(&id)?;
+        let events = host::trace_events(&id, 1000, None)?;
+        Ok(json!({
+            "node": trace_row_to_json(&node),
+            "children": trace_rows_json(children),
+            "ancestors": trace_rows_json(ancestors),
+            "events": trace_events_json(events),
+        }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_subtree_command(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let id = trace_required_string(payload, "id")?;
+        let max_depth = trace_depth(payload, 4, 10)?;
+        Ok(json!({ "nodes": trace_rows_json(host::trace_subtree(&id, max_depth)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_events_command(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let span_id = trace_required_string(payload, "spanId")?;
+        let limit = trace_limit(payload, 200, 1000)?;
+        let before_ms = trace_i64(payload, "beforeMs")?;
+        Ok(json!({ "events": trace_events_json(host::trace_events(&span_id, limit, before_ms)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_search(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let query = host::TraceSearch {
+            query: trace_string(payload, "query")?,
+            kind: trace_string(payload, "kind")?,
+            status: trace_string(payload, "status")?,
+            chat_id: trace_string(payload, "chatId")?,
+            run_id: trace_string(payload, "runId")?,
+            has_error: trace_bool(payload, "hasError")?.unwrap_or(false),
+            limit,
+            before_ms: trace_i64(payload, "beforeMs")?,
+        };
+        let nodes = host::trace_search(query)?;
+        let mut hits = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let ancestors = trace_ancestors_for_node(&node.id)?;
+            hits.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+        }
+        Ok(json!({ "hits": hits }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_failed(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let chat_id = trace_string(payload, "chatId")?;
+        let before_ms = trace_i64(payload, "beforeMs")?;
+        let nodes = host::trace_failed(limit, chat_id.as_deref(), before_ms)?;
+        let mut failures = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let ancestors = trace_ancestors_for_node(&node.id)?;
+            failures.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+        }
+        Ok(json!({ "failures": failures }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_summary(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let id = trace_required_string(payload, "id")?;
+        let node = host::trace_get(&id)?.ok_or_else(|| format!("trace node not found: {id}"))?;
+        let nodes = host::trace_subtree(&id, 10)?;
+        let spans = nodes.len() as i64;
+        let errors = nodes.iter().filter(|row| row.status == "error").count() as i64;
+        let duration_ms = nodes
+            .iter()
+            .filter_map(|row| {
+                row.ended_ms
+                    .map(|ended| ended.saturating_sub(row.started_ms))
+            })
+            .sum::<i64>();
+        let mut by_kind = serde_json::Map::new();
+        let mut by_status = serde_json::Map::new();
+        for row in &nodes {
+            let n = by_kind.get(&row.kind).and_then(Value::as_i64).unwrap_or(0) + 1;
+            by_kind.insert(row.kind.clone(), json!(n));
+            let n = by_status
+                .get(&row.status)
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                + 1;
+            by_status.insert(row.status.clone(), json!(n));
+        }
+        let mut slowest = nodes.clone();
+        slowest.sort_by(|a, b| {
+            let da = a
+                .ended_ms
+                .map(|ended| ended.saturating_sub(a.started_ms))
+                .unwrap_or(0);
+            let db = b
+                .ended_ms
+                .map(|ended| ended.saturating_sub(b.started_ms))
+                .unwrap_or(0);
+            db.cmp(&da).then_with(|| b.started_ms.cmp(&a.started_ms))
+        });
+        slowest.truncate(5);
+        Ok(json!({
+            "node": trace_row_to_json(&node),
+            "totals": {
+                "spans": spans,
+                "errors": errors,
+                "durationMs": duration_ms,
+                "byKind": Value::Object(by_kind),
+                "byStatus": Value::Object(by_status),
+            },
+            "slowest": trace_rows_json(slowest),
+        }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_chat_tree(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let chat_id = trace_required_string(payload, "chatId")?;
+        let max_depth = trace_depth(payload, 6, 10)?;
+        let root = host::trace_chat_root_for(&chat_id)?;
+        let nodes = if let Some(root) = root.as_ref() {
+            host::trace_subtree(&root.id, max_depth)?
+        } else {
+            Vec::new()
+        };
+        Ok(json!({
+            "root": root.as_ref().map(trace_row_to_json),
+            "nodes": trace_rows_json(nodes),
+        }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
     }
 }
 
@@ -454,6 +846,28 @@ mod tests {
         assert_eq!(
             text,
             r#"{"run":{"command":"step","chatId":"c","message":"hi"}}"#
+        );
+    }
+
+    #[test]
+    fn payload_with_base_url_adds_server_base_url() {
+        assert_eq!(
+            payload_with_base_url(
+                json!({ "command": "mcp-oauth-start" }),
+                Some("http://100.126.83.89:5173")
+            ),
+            json!({ "command": "mcp-oauth-start", "serverBaseUrl": "http://100.126.83.89:5173" })
+        );
+    }
+
+    #[test]
+    fn payload_with_base_url_preserves_explicit_value() {
+        assert_eq!(
+            payload_with_base_url(
+                json!({ "serverBaseUrl": "http://explicit" }),
+                Some("http://configured")
+            ),
+            json!({ "serverBaseUrl": "http://explicit" })
         );
     }
 }
