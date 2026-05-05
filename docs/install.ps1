@@ -9,7 +9,7 @@ try {
     'X64' { 'x86_64-pc-windows-msvc'; break }
     default { throw "unsupported Windows architecture: $_" }
   }
-  $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
+  $Release = Invoke-RestMethod -Headers @{ Accept = 'application/vnd.github+json' } -Uri "https://api.github.com/repos/$Repo/releases/latest"
   $Asset = $Release.assets | Where-Object { $_.name -like "moo-*-$Arch.zip" } | Select-Object -First 1
   if (-not $Asset) { throw "could not find release asset for $Arch" }
 
@@ -19,8 +19,11 @@ try {
   Expand-Archive -Path $Zip -DestinationPath $TmpDir -Force
   $Moo = Get-ChildItem -Path $TmpDir -Recurse -Filter moo.exe | Select-Object -First 1
   if (-not $Moo) { throw 'release archive did not contain moo.exe' }
-  Copy-Item -Path $Moo.FullName -Destination (Join-Path $BinDir 'moo.exe') -Force
-  Write-Host "installed moo to $(Join-Path $BinDir 'moo.exe')"
+  $Dest = Join-Path $BinDir 'moo.exe'
+  Copy-Item -Path $Moo.FullName -Destination $Dest -Force
+  & $Dest --version *> $null
+  if ($LASTEXITCODE -ne 0) { Write-Warning "installed binary did not report a version; try: $Dest serve" }
+  Write-Host "installed moo to $Dest"
   if (($env:Path -split ';') -notcontains $BinDir) {
     Write-Host "add $BinDir to PATH, then run: moo serve"
   }
