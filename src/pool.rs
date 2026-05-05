@@ -1391,9 +1391,9 @@ mod tests {
             "globalThis.main = () => ({ ok: true, value: atob(btoa('two')) });".to_string(),
         );
 
-        assert_eq!(rt.ensure_snapshot_bundle(&bundle_one).unwrap(), false);
-        assert_eq!(rt.ensure_snapshot_bundle(&bundle_one).unwrap(), true);
-        assert_eq!(rt.ensure_snapshot_bundle(&bundle_two).unwrap(), false);
+        assert!(!rt.ensure_snapshot_bundle(&bundle_one).unwrap());
+        assert!(rt.ensure_snapshot_bundle(&bundle_one).unwrap());
+        assert!(!rt.ensure_snapshot_bundle(&bundle_two).unwrap());
 
         let outcome = run_snapshot_bundle_job(&mut rt, "{}", true);
         assert_eq!(outcome.result.unwrap(), r#"{"ok":true,"value":"two"}"#);

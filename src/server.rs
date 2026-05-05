@@ -113,9 +113,10 @@ fn handle_request(
     }
 
     if method == "GET"
-        && let Some(location) = legacy_facts_route_redirect(path_only, query) {
-            return write_redirect(&mut stream, &location);
-        }
+        && let Some(location) = legacy_facts_route_redirect(path_only, query)
+    {
+        return write_redirect(&mut stream, &location);
+    }
 
     if method == "GET" && serves_ui_route(&path) {
         return write_response(
