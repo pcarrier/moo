@@ -34,9 +34,9 @@
       <section id="top" class="hero section-pad" aria-labelledby="title">
         <div class="hero__grid">
           <div class="hero__copy reveal">
-            <p class="eyebrow">Rust host · V8 runtime · SQLite memory · MCP</p>
+            <p class="eyebrow">Rust host · V8 runtime · Chrome DevTools Protocol · SQLite memory · MCP</p>
             <h1 id="title">The local agent workbench.</h1>
-            <p class="lede">Moo is a local agent harness you can inspect while it works: a Rust/V8 host, a TypeScript tool runtime, a Solid web shell, and a SQLite store for chats, memory, diffs, and MCP state.</p>
+            <p class="lede">Moo is a local agent harness you can inspect while it works: a Rust/V8 host, a TypeScript tool runtime, Chrome DevTools Protocol debugging, a Solid web shell, and a SQLite store for chats, memory, diffs, and MCP state.</p>
             <div class="hero__actions" aria-label="Primary calls to action">
               <a class="button button--primary" href="#quickstart">Install Moo</a>
               <a class="button" href="https://github.com/pcarrier/moo" rel="noopener noreferrer">Read the source</a>
@@ -60,8 +60,8 @@
         <div class="feature-matrix" aria-label="Moo feature matrix">
           <article class="feature-card reveal">
             <h3>Agent runtime</h3>
-            <p>Run a TypeScript harness inside a Rust-hosted V8 runtime with streaming model calls, commands, async tools, startup snapshots, interrupts, queued messages, and subagent orchestration.</p>
-            <ul class="chip-list"><li>Rust host</li><li>V8 isolate</li><li>TypeScript harness</li><li>LLM streaming</li><li>subagents</li><li>interrupts</li></ul>
+            <p>Run a TypeScript harness inside a Rust-hosted V8 runtime with streaming model calls, commands, async tools, startup snapshots, interrupts, queued messages, Chrome DevTools Protocol inspection, and subagent orchestration.</p>
+            <ul class="chip-list"><li>Rust host</li><li>V8 isolate</li><li>TypeScript harness</li><li>CDP debugging</li><li>LLM streaming</li><li>subagents</li><li>interrupts</li></ul>
           </article>
 
           <article class="feature-card reveal">
@@ -149,12 +149,12 @@
         <div class="reveal">
           <p class="eyebrow">Architecture</p>
           <h2 id="architecture-title">One binary. Local store.</h2>
-          <p>Moo keeps the moving parts legible. The Rust process hosts V8, serves the web UI, stores state in SQLite, and exposes host operations. The TypeScript harness defines the agent-facing API. The Solid frontend gives you a live shell over the same local state.</p>
+          <p>Moo keeps the moving parts legible. The Rust process hosts V8, exposes a Chrome DevTools Protocol endpoint, serves the web UI, stores state in SQLite, and exposes host operations. The TypeScript harness defines the agent-facing API. The Solid frontend gives you a live shell over the same local state.</p>
           <div class="callout"><strong>Design rule:</strong> small primitives over a monolithic plugin platform. When something gets weird, inspect the object, pointer, fact graph, chat trail, or file diff that produced it.</div>
         </div>
         <div class="stack-card reveal reveal--late">
           <ol class="stack-list">
-            <li><span>01</span><div><b>Rust host</b><p>CLI, HTTP server, V8 ops, SQLite persistence, websocket events.</p></div></li>
+            <li><span>01</span><div><b>Rust host</b><p>CLI, HTTP server, Chrome DevTools Protocol, V8 ops, SQLite persistence, websocket events.</p></div></li>
             <li><span>02</span><div><b>TypeScript harness</b><p>Agent loop, commands, prompts, tool wrappers, and MCP proxy.</p></div></li>
             <li><span>03</span><div><b>SQLite store</b><p>Chats, pointers, objects, quads, fact history, summaries, and local memory.</p></div></li>
             <li><span>04</span><div><b>Solid web shell</b><p>Timeline, markdown, diffs, memory browser, MCP setup, responsive sidebars.</p></div></li>
