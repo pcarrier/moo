@@ -43,19 +43,18 @@ function useWorkspaceSnapshot(workspace: BlitWorkspace) {
   return snapshot;
 }
 
-function encodeTag(chatId: string, label: string) {
-  return `${TAG_PREFIX}${encodeURIComponent(chatId)}:${encodeURIComponent(label)}`;
+function encodeTag(chatId: string) {
+  return `${TAG_PREFIX}${encodeURIComponent(chatId)}`;
 }
 
-function decodeTag(tag: string): { chatId: string; label: string } | null {
+function decodeTag(tag: string): { chatId: string } | null {
   if (!tag.startsWith(TAG_PREFIX)) return null;
   const rest = tag.slice(TAG_PREFIX.length);
   const sep = rest.indexOf(":");
-  if (sep < 0) return null;
   try {
     return {
-      chatId: decodeURIComponent(rest.slice(0, sep)),
-      label: decodeURIComponent(rest.slice(sep + 1)) || "shell",
+      // Older chat terminals included a user-facing label after a second colon.
+      chatId: decodeURIComponent(sep < 0 ? rest : rest.slice(0, sep)),
     };
   } catch {
     return null;
@@ -63,13 +62,7 @@ function decodeTag(tag: string): { chatId: string; label: string } | null {
 }
 
 function sessionLabel(session: BlitSession, fallbackIndex: number) {
-  const tagged = decodeTag(session.tag);
-  return (
-    session.title ||
-    tagged?.label ||
-    session.command ||
-    `shell ${fallbackIndex + 1}`
-  );
+  return session.title || session.command || `terminal ${fallbackIndex + 1}`;
 }
 
 export function ChatTerminals(props: { chatId: string | null }) {
@@ -101,6 +94,9 @@ export function ChatTerminals(props: { chatId: string | null }) {
   const connectionStatus = createMemo(
     () => connection()?.status ?? "connecting",
   );
+  const terminalReady = createMemo(
+    () => connectionStatus() === "connected" && connection()?.ready === true,
+  );
   const chatSessions = createMemo(() => {
     const chatId = props.chatId;
     if (!chatId) return [];
@@ -115,7 +111,6 @@ export function ChatTerminals(props: { chatId: string | null }) {
       ? (chatSessions().find((session) => session.id === id) ?? null)
       : null;
   });
-  const nextLabel = () => `shell ${chatSessions().length + 1}`;
 
   const selectSession = (sessionId: SessionId | null) => {
     setSelectedSessionId(sessionId);
@@ -123,24 +118,22 @@ export function ChatTerminals(props: { chatId: string | null }) {
     if (sessionId) setOpen(true);
   };
 
-  const createShell = async (label?: string) => {
+  const createShell = async () => {
     const chatId = props.chatId;
     if (!chatId || creating()) return;
-    const trimmed = (
-      label ??
-      window.prompt("Terminal label", nextLabel()) ??
-      ""
-    ).trim();
-    if (!trimmed) return;
+    setOpen(true);
+    if (!terminalReady()) {
+      workspace().getConnection(CONNECTION_ID)?.connect();
+      return;
+    }
     setCreating(true);
     setError(null);
-    setOpen(true);
     try {
       const session = await workspace().createSession({
         connectionId: CONNECTION_ID,
         rows: 24,
         cols: 120,
-        tag: encodeTag(chatId, trimmed),
+        tag: encodeTag(chatId),
       });
       selectSession(session.id);
     } catch (err) {
@@ -179,9 +172,47 @@ export function ChatTerminals(props: { chatId: string | null }) {
     workspace().setVisibleSessions(open() && selected ? [selected] : []);
   });
 
+  const cycleSession = (direction: -1 | 1) => {
+    const sessions = chatSessions();
+    if (sessions.length === 0) return;
+    const selected = selectedSessionId();
+    const currentIndex = sessions.findIndex(
+      (session) => session.id === selected,
+    );
+    const nextIndex =
+      currentIndex < 0
+        ? direction > 0
+          ? 0
+          : sessions.length - 1
+        : (currentIndex + direction + sessions.length) % sessions.length;
+    selectSession(sessions[nextIndex].id);
+  };
+
+  const toggleTerminal = () => {
+    if (chatSessions().length === 0 && !open()) void createShell();
+    else setOpen((value) => !value);
+  };
+
   onMount(() => {
     const conn = workspace().getConnection(CONNECTION_ID);
     conn?.connect();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.key === "`") {
+        event.preventDefault();
+        toggleTerminal();
+      } else if (event.key === "[") {
+        event.preventDefault();
+        cycleSession(-1);
+      } else if (event.key === "]") {
+        event.preventDefault();
+        cycleSession(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    onCleanup(() => window.removeEventListener("keydown", onKeyDown, true));
   });
 
   onCleanup(() => workspace().dispose());
@@ -196,14 +227,11 @@ export function ChatTerminals(props: { chatId: string | null }) {
         <button
           type="button"
           class="quake-terminal-toggle"
-          onClick={() => {
-            if (chatSessions().length === 0) void createShell(nextLabel());
-            else setOpen((value) => !value);
-          }}
+          onClick={toggleTerminal}
           disabled={
             !props.chatId || (creating() && chatSessions().length === 0)
           }
-          title={open() ? "hide terminal" : "show terminal"}
+          title={open() ? "hide terminal (Ctrl-`)" : "show terminal (Ctrl-`)"}
         >
           ▾ terminal
         </button>
@@ -252,7 +280,10 @@ export function ChatTerminals(props: { chatId: string | null }) {
           type="button"
           class="quake-terminal-action"
           onClick={() => void createShell()}
-          disabled={!props.chatId || creating()}
+          disabled={!props.chatId || creating() || !terminalReady()}
+          title={
+            terminalReady() ? "new terminal" : "waiting for Blit connection"
+          }
         >
           {creating() ? "starting…" : "+"}
         </button>
@@ -271,7 +302,7 @@ export function ChatTerminals(props: { chatId: string | null }) {
           {error() ? <div class="terminal-error">{error()}</div> : null}
           {!selectedSession() && !error() ? (
             <div class="terminal-empty">
-              {connectionStatus() === "connected"
+              {terminalReady()
                 ? "Create a terminal for this chat."
                 : "Connecting to Blit…"}
             </div>
