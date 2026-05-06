@@ -671,9 +671,10 @@ pub fn trace_open_conn(
     invoked_from_step_id: Option<&str>,
     data_json: Option<&str>,
 ) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let parent: Option<(i64, Option<String>, Option<String>)> = match parent_id {
         Some(parent_id) => {
-            let found = conn
+            let found = tx
                 .query_row(
                     "select depth, chat_id, run_id from traces where id = ?1",
                     params![parent_id],
@@ -682,8 +683,8 @@ pub fn trace_open_conn(
                 .optional()
                 .map_err(|e| e.to_string())?;
             if found.is_none() {
-                let stub_seq = next_seq_conn(conn, None)?;
-                conn.execute(
+                let stub_seq = next_seq_conn(&tx, None)?;
+                tx.execute(
                     "insert or ignore into traces(
                        id, parent_id, chat_id, run_id, kind, name, depth, seq,
                        status, started_ms, ended_ms, input_hash, output_hash,
@@ -708,8 +709,8 @@ pub fn trace_open_conn(
     };
     let final_chat_id = chat_id.map(ToString::to_string).or(inherited_chat_id);
     let final_run_id = run_id.map(ToString::to_string).or(inherited_run_id);
-    let seq = next_seq_conn(conn, parent_id)?;
-    conn.execute(
+    let seq = next_seq_conn(&tx, parent_id)?;
+    tx.execute(
         "insert into traces(
            id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms,
            ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json
@@ -729,8 +730,8 @@ pub fn trace_open_conn(
             data_json,
         ],
     )
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn next_seq_conn(conn: &Connection, parent_id: Option<&str>) -> Result<i64, String> {
@@ -877,12 +878,11 @@ pub fn trace_subtree(id: &str, max_depth: i32) -> Result<Vec<TraceRow>, String> 
         let mut stmt = host.db.prepare(
             &format!(
                 "with recursive s(id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms, ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json, rel_depth) as (
-                   {select_sql} where id = ?1
+                   select id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms, ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json, 0 from traces where id = ?1
                    union all
                    select t.id, t.parent_id, t.chat_id, t.run_id, t.kind, t.name, t.depth, t.seq, t.status, t.started_ms, t.ended_ms, t.input_hash, t.output_hash, t.error_hash, t.invoked_from_step_id, t.data_json, s.rel_depth + 1
                    from traces t join s on t.parent_id = s.id where s.rel_depth < ?2
-                 ) select id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms, ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json from s order by depth asc, seq asc",
-                select_sql = TRACE_SELECT_SQL
+                 ) select id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms, ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json from s order by depth asc, seq asc"
             ),
         ).map_err(|e| e.to_string())?;
         stmt.query_map(params![id, max_depth], trace_row_from_sql)
