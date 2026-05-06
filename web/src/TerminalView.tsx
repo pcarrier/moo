@@ -4,6 +4,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
   onCleanup,
   onMount,
 } from "solid-js";
@@ -37,7 +38,7 @@ function useWorkspaceSnapshot(workspace: BlitWorkspace) {
     workspace.getSnapshot(),
   );
   const unsubscribe = workspace.subscribe(() =>
-    queueMicrotask(() => setSnapshot(workspace.getSnapshot())),
+    setSnapshot(workspace.getSnapshot()),
   );
   onCleanup(unsubscribe);
   return snapshot;
@@ -114,7 +115,6 @@ export function ChatTerminals(props: { chatId: string | null }) {
 
   const selectSession = (sessionId: SessionId | null) => {
     setSelectedSessionId(sessionId);
-    workspace().focusSession(sessionId);
     if (sessionId) setOpen(true);
   };
 
@@ -162,10 +162,12 @@ export function ChatTerminals(props: { chatId: string | null }) {
     const sessions = chatSessions();
     const selected = selectedSessionId();
     if (selected && sessions.some((session) => session.id === selected)) return;
-    const next = sessions[0] ?? null;
-    setSelectedSessionId(next?.id ?? null);
-    workspace().focusSession(next?.id ?? null);
+    setSelectedSessionId(sessions[0]?.id ?? null);
   });
+
+  createEffect(on(selectedSessionId, (id) => {
+    workspace().focusSession(id);
+  }));
 
   createEffect(() => {
     const selected = selectedSessionId();
