@@ -223,29 +223,34 @@ fn open_db_inner(path: &str) -> Result<Connection, String> {
 fn backfill_trace_step_roots(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
+        -- Historical trace rows were sometimes parented directly to chat step
+        -- ids. Materialize those missing step parents first so the trace tree
+        -- can become strict without losing chat/run metadata.
         insert or ignore into traces(
           id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms,
           ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json
         )
-        with runjs_steps as (
+        with step_rows as (
           select
             step.subject as step_id,
             substr(step.graph, 6) as chat_id,
-            run.object as run_id,
-            cast(created.object as integer) as started_ms,
+            coalesce(run.object, min(child.run_id)) as run_id,
+            coalesce(kind.object, 'agent:Step') as kind_name,
+            coalesce(cast(created.object as integer), min(child.started_ms)) as started_ms,
             payload.object as input_hash,
             row_number() over (
               partition by step.graph
-              order by cast(created.object as integer), step.subject
+              order by coalesce(cast(created.object as integer), min(child.started_ms)), step.subject
             ) - 1 as seq
           from quads step
-          join quads kind
+          join traces child
+            on child.parent_id = step.subject
+          left join quads kind
             on kind.ref_name = step.ref_name
            and kind.graph = step.graph
            and kind.subject = step.subject
            and kind.predicate = 'agent:kind'
-           and kind.object = 'agent:RunJS'
-          join quads created
+          left join quads created
             on created.ref_name = step.ref_name
            and created.graph = step.graph
            and created.subject = step.subject
@@ -265,11 +270,37 @@ fn backfill_trace_step_roots(conn: &Connection) -> Result<(), String> {
             and step.ref_name like 'chat/%/facts'
             and step.graph like 'chat:%'
             and not exists (select 1 from traces existing where existing.id = step.subject)
-            and exists (select 1 from traces child where child.parent_id = step.subject)
+          group by step.ref_name, step.graph, step.subject
         )
-        select step_id, null, chat_id, run_id, 'step', 'agent:RunJS', 0, seq, 'ok',
+        select step_id, null, chat_id, run_id, 'step', kind_name, 0, seq, 'ok',
                started_ms, started_ms, input_hash, null, null, step_id, null
-        from runjs_steps;
+        from step_rows
+        where started_ms is not null;
+
+        -- Any remaining orphaned parent ids may not have chat-step facts (for
+        -- example old ad-hoc system roots). Backfill them with the same neutral
+        -- root shape that trace_open_conn used to create lazily.
+        insert or ignore into traces(
+          id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms,
+          ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json
+        )
+        with missing_parents as (
+          select
+            child.parent_id as parent_id,
+            min(child.chat_id) as chat_id,
+            min(child.run_id) as run_id,
+            min(child.started_ms) as started_ms,
+            row_number() over (order by min(child.started_ms), child.parent_id) - 1
+              + (select coalesce(max(seq), -1) + 1 from traces where parent_id is null) as seq
+          from traces child
+          where child.parent_id is not null
+            and not exists (select 1 from traces parent where parent.id = child.parent_id)
+          group by child.parent_id
+        )
+        select parent_id, null, chat_id, run_id, 'system', parent_id, 0, seq, 'ok',
+               started_ms, started_ms, null, null, null, null, null
+        from missing_parents
+        where started_ms is not null;
         "#,
     )
     .map(|_| ())
@@ -492,6 +523,66 @@ mod tests {
         assert_eq!(root.ended_ms, Some(1234));
         assert_eq!(root.input_hash.as_deref(), Some("sha256:payload"));
         assert_eq!(root.invoked_from_step_id.as_deref(), Some("step1"));
+    }
+
+    #[test]
+    fn backfills_non_runjs_and_generic_trace_roots() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        conn.execute_batch("pragma foreign_keys = off;").unwrap();
+        conn.execute(
+            "insert into quads(ref_name, graph, subject, predicate, object) values
+             ('chat/c1/facts', 'chat:c1', 'step2', 'rdf:type', 'agent:Step'),
+             ('chat/c1/facts', 'chat:c1', 'step2', 'agent:kind', 'agent:UserInput'),
+             ('chat/c1/facts', 'chat:c1', 'step2', 'agent:createdAt', '2000')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into traces(
+               id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms,
+               ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json
+             ) values('trace-child', 'step2', null, 'run2', 'tool', 'tool.call', 1, 0,
+                      'ok', 2005, 2006, null, null, null, null, null)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into traces(
+               id, parent_id, chat_id, run_id, kind, name, depth, seq, status, started_ms,
+               ended_ms, input_hash, output_hash, error_hash, invoked_from_step_id, data_json
+             ) values('legacy-child', 'system:legacy-root', 'c2', 'run3', 'proc', 'cargo test', 1, 0,
+                      'ok', 3005, 3006, null, null, null, null, null)",
+            [],
+        )
+        .unwrap();
+
+        backfill_trace_step_roots(&conn).unwrap();
+
+        let step_root = trace_get_conn(&conn, "step2").unwrap().unwrap();
+        assert_eq!(step_root.parent_id.as_deref(), None);
+        assert_eq!(step_root.chat_id.as_deref(), Some("c1"));
+        assert_eq!(step_root.run_id.as_deref(), Some("run2"));
+        assert_eq!(step_root.kind, "step");
+        assert_eq!(step_root.name, "agent:UserInput");
+        assert_eq!(step_root.depth, 0);
+        assert_eq!(step_root.status, "ok");
+        assert_eq!(step_root.started_ms, 2000);
+        assert_eq!(step_root.ended_ms, Some(2000));
+        assert_eq!(step_root.invoked_from_step_id.as_deref(), Some("step2"));
+
+        let generic_root = trace_get_conn(&conn, "system:legacy-root")
+            .unwrap()
+            .unwrap();
+        assert_eq!(generic_root.parent_id.as_deref(), None);
+        assert_eq!(generic_root.chat_id.as_deref(), Some("c2"));
+        assert_eq!(generic_root.run_id.as_deref(), Some("run3"));
+        assert_eq!(generic_root.kind, "system");
+        assert_eq!(generic_root.name, "system:legacy-root");
+        assert_eq!(generic_root.depth, 0);
+        assert_eq!(generic_root.status, "ok");
+        assert_eq!(generic_root.started_ms, 3005);
+        assert_eq!(generic_root.ended_ms, Some(3005));
     }
 }
 

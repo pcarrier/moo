@@ -1547,14 +1547,25 @@ mod tests {
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
         let source = r#"
 globalThis.main = () => {
+  __op_trace_start_root('system:test-parent', JSON.stringify({ label: 'Parent trace' }));
+  const parent = JSON.parse(__op_trace_current());
+  __op_trace_finish(parent.id, 'ok', JSON.stringify({ parent: true }));
+
   const root = JSON.parse(__op_trace_start_root('system:test-parent', JSON.stringify({ label: 'Trace test' })));
   const span = __op_trace_insert(JSON.stringify({ kind: 'span', name: 'work', status: 'running', data: { phase: 1 } }));
   const previous = __op_trace_set_parent(span);
   const mark = __op_trace_insert(JSON.stringify({ kind: 'mark', name: 'checkpoint', status: 'ok', data: { message: 'inside' } }));
   __op_trace_set_parent(previous);
   __op_trace_finish(span, 'ok', JSON.stringify({ done: true }));
-  __op_trace_finish(root.traceId, 'ok', JSON.stringify({ resultHash: 'sha256:test' }));
-  return { root, span, mark, rows: JSON.parse(__op_trace_events(JSON.stringify({}))) };
+  __op_trace_finish(root.id, 'ok', JSON.stringify({ resultHash: 'sha256:test' }));
+  return {
+    root,
+    span,
+    mark,
+    rootRow: JSON.parse(__op_trace_get(JSON.stringify({ id: root.id }))),
+    rows: JSON.parse(__op_trace_events(JSON.stringify({ parentId: root.id }))),
+    nested: JSON.parse(__op_trace_events(JSON.stringify({ parentId: span })))
+  };
 };
 "#;
         let report = run_js_report_in(&mut isolate, source, "{}");
@@ -1563,23 +1574,41 @@ globalThis.main = () => {
             Ok(true)
         );
         let out: Value = serde_json::from_str(&report.result.unwrap()).unwrap();
-        let rows = out.get("rows").and_then(Value::as_array).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].get("kind").and_then(Value::as_str), Some("trace"));
-        assert_eq!(rows[0].get("status").and_then(Value::as_str), Some("ok"));
-        let root_data = rows[0].get("data").and_then(Value::as_object).unwrap();
-        assert!(root_data.contains_key("durationNs"));
-        assert!(!root_data.contains_key("durationMs"));
-        let span_data = rows[1].get("data").and_then(Value::as_object).unwrap();
-        assert!(span_data.contains_key("durationNs"));
-        assert!(!span_data.contains_key("durationMs"));
-        assert_eq!(rows[1].get("name").and_then(Value::as_str), Some("work"));
+        let root = out.get("rootRow").and_then(Value::as_object).unwrap();
+        assert_eq!(root.get("kind").and_then(Value::as_str), Some("runjs"));
+        assert_eq!(root.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(
-            rows[2]
-                .get("data")
-                .and_then(|v| v.get("parentId"))
-                .and_then(Value::as_str),
+            root.get("parentId").and_then(Value::as_str),
+            Some("system:test-parent")
+        );
+        let root_data = root.get("data").and_then(Value::as_object).unwrap();
+        assert!(root_data.contains_key("durationMs"));
+        assert_eq!(
+            root_data.get("resultHash").and_then(Value::as_str),
+            Some("sha256:test")
+        );
+
+        let rows = out.get("rows").and_then(Value::as_array).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("parentId").and_then(Value::as_str),
+            out.get("root")
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_str)
+        );
+        assert_eq!(rows[0].get("name").and_then(Value::as_str), Some("work"));
+        let span_data = rows[0].get("data").and_then(Value::as_object).unwrap();
+        assert!(span_data.contains_key("durationMs"));
+
+        let nested = out.get("nested").and_then(Value::as_array).unwrap();
+        assert_eq!(nested.len(), 1);
+        assert_eq!(
+            nested[0].get("parentId").and_then(Value::as_str),
             out.get("span").and_then(Value::as_str),
+        );
+        assert_eq!(
+            nested[0].get("name").and_then(Value::as_str),
+            Some("checkpoint")
         );
 
         let report = run_js_report_in(
