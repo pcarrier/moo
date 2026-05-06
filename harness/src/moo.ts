@@ -963,6 +963,71 @@ function resolvePatchPath(path: string, cwd?: string | null, strip?: number | nu
   return p;
 }
 
+function parsePatchHunkHeader(line: string, lineNumber: number): ParsedHunk {
+  const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (m) {
+    return {
+      oldStart: Number(m[1]),
+      oldCount: m[2] == null ? 1 : Number(m[2]),
+      newStart: Number(m[3]),
+      newCount: m[4] == null ? 1 : Number(m[4]),
+      lines: [],
+    };
+  }
+  if (/^@@(?:\s.*)?$/.test(line)) return { oldStart: 1, oldCount: 0, newStart: 1, newCount: 0, lines: [] };
+  throw new MooApiError("invalid_patch", "bad unified hunk header", { line: lineNumber, header: line });
+}
+
+function parsePatchHunkLine(hunk: ParsedHunk, line: string, lineNumber: number): boolean {
+  if (line.startsWith("\\ No newline at end of file")) {
+    const previous = hunk.lines[hunk.lines.length - 1];
+    if (!previous) throw new MooApiError("invalid_patch", "no-newline marker appears before a hunk line", { line: lineNumber });
+    previous.noNewline = true;
+    return true;
+  }
+  const prefix = line[0];
+  if (prefix === " ") hunk.lines.push({ kind: "context", text: line.slice(1) });
+  else if (prefix === "+") hunk.lines.push({ kind: "add", text: line.slice(1) });
+  else if (prefix === "-") hunk.lines.push({ kind: "del", text: line.slice(1) });
+  else if (line === "") return false;
+  else throw new MooApiError("invalid_patch", "unexpected line in hunk", { line: lineNumber, text: line });
+  return true;
+}
+
+function parseApplyPatch(patch: string): ParsedFilePatch[] {
+  const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const files: ParsedFilePatch[] = [];
+  let current: ParsedFilePatch | null = null;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (line.startsWith("*** Update File:")) {
+      const path = line.slice("*** Update File:".length).trim();
+      if (!path) throw new MooApiError("invalid_patch", "apply_patch update header missing path", { line: i + 1 });
+      current = { oldPath: path, newPath: path, hunks: [] };
+      files.push(current);
+      i++;
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      if (!current) throw new MooApiError("invalid_patch", "hunk appears before file header", { line: i + 1 });
+      const hunk = parsePatchHunkHeader(line, i + 1);
+      i++;
+      while (i < lines.length) {
+        const h = lines[i]!;
+        if (h.startsWith("*** ") || h.startsWith("@@")) break;
+        if (h === "" && i === lines.length - 1) break;
+        if (!parsePatchHunkLine(hunk, h, i + 1)) throw new MooApiError("invalid_patch", "empty line in hunk must be prefixed with space, +, or -", { line: i + 1 });
+        i++;
+      }
+      current.hunks.push(hunk);
+      continue;
+    }
+    i++;
+  }
+  return files.filter((f) => f.hunks.length > 0);
+}
+
 function parseUnifiedPatch(patch: string): ParsedFilePatch[] {
   const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const files: ParsedFilePatch[] = [];
@@ -980,35 +1045,14 @@ function parseUnifiedPatch(patch: string): ParsedFilePatch[] {
     }
     if (line.startsWith("@@ ")) {
       if (!current) throw new MooApiError("invalid_patch", "hunk appears before file header", { line: i + 1 });
-      const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-      if (!m) throw new MooApiError("invalid_patch", "bad unified hunk header", { line: i + 1, header: line });
-      const hunk: ParsedHunk = {
-        oldStart: Number(m[1]),
-        oldCount: m[2] == null ? 1 : Number(m[2]),
-        newStart: Number(m[3]),
-        newCount: m[4] == null ? 1 : Number(m[4]),
-        lines: [],
-      };
+      const hunk = parsePatchHunkHeader(line, i + 1);
       i++;
       while (i < lines.length) {
         const h = lines[i]!;
         if (h.startsWith("diff --git ") || h.startsWith("--- ") || h.startsWith("@@ ")) break;
-        if (h.startsWith("\\ No newline at end of file")) {
-          const previous = hunk.lines[hunk.lines.length - 1];
-          if (!previous) throw new MooApiError("invalid_patch", "no-newline marker appears before a hunk line", { line: i + 1 });
-          previous.noNewline = true;
-          i++;
-          continue;
-        }
-        const prefix = h[0];
-        if (prefix === " ") hunk.lines.push({ kind: "context", text: h.slice(1) });
-        else if (prefix === "+") hunk.lines.push({ kind: "add", text: h.slice(1) });
-        else if (prefix === "-") hunk.lines.push({ kind: "del", text: h.slice(1) });
-        else if (h === "") {
+        if (!parsePatchHunkLine(hunk, h, i + 1)) {
           if (i === lines.length - 1) break;
           throw new MooApiError("invalid_patch", "empty line in hunk must be prefixed with space, +, or -", { line: i + 1 });
-        } else {
-          throw new MooApiError("invalid_patch", "unexpected line in hunk", { line: i + 1, text: h });
         }
         i++;
       }
@@ -1018,7 +1062,11 @@ function parseUnifiedPatch(patch: string): ParsedFilePatch[] {
     i++;
   }
   const withHunks = files.filter((f) => f.hunks.length > 0);
-  if (!withHunks.length) throw new MooApiError("invalid_patch", "patch contains no unified hunks");
+  if (!withHunks.length) {
+    const applyPatchFiles = parseApplyPatch(patch);
+    if (applyPatchFiles.length) return applyPatchFiles;
+    throw new MooApiError("invalid_patch", "patch contains no unified hunks; use a unified diff (---/+++/@@ -a,b +c,d @@) or a simple *** Begin Patch / *** Update File: path patch");
+  }
   return withHunks;
 }
 

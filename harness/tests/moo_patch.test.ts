@@ -80,6 +80,69 @@ describe("moo.fs.patch", () => {
     expect(receipt.dryRun).toBe(true);
   });
 
+  test("accepts apply_patch update hunks without range headers", async () => {
+    files.set("/repo/src/ws.rs", "before\nthread::spawn(move || {\n    run_command(payload);\n});\nafter\n");
+
+    const receipt = await moo.fs.patch({
+      cwd: "/repo",
+      patch: "*** Begin Patch\n*** Update File: src/ws.rs\n@@\n thread::spawn(move || {\n-    run_command(payload);\n+    let result = std::panic::catch_unwind(move || run_command(payload));\n+    if result.is_err() {\n+        report_error();\n+    }\n });\n*** End Patch",
+    });
+
+    expect(files.get("/repo/src/ws.rs")).toBe("before\nthread::spawn(move || {\n    let result = std::panic::catch_unwind(move || run_command(payload));\n    if result.is_err() {\n        report_error();\n    }\n});\nafter\n");
+    expect(receipt.files[0]).toMatchObject({ path: "/repo/src/ws.rs", beforeExists: true, afterExists: true, added: 4, removed: 1, hunks: 1 });
+  });
+
+  test("accepts reported apply_patch update with JSON braces", async () => {
+    files.set("/repo/src/ws.rs", `before
+                            thread::spawn(move || {
+                                run_command(payload, id, pool, bundle, writer_tx, db, base_url);
+                            });
+                        }
+after
+`);
+
+    const receipt = await moo.fs.patch({
+      cwd: "/repo",
+      dryRun: true,
+      patch: `*** Begin Patch
+*** Update File: src/ws.rs
+@@
+-                            thread::spawn(move || {
+-                                run_command(payload, id, pool, bundle, writer_tx, db, base_url);
+-                            });
++                            thread::spawn(move || {
++                                let id_for_error = id.clone();
++                                let writer_tx_for_error = writer_tx.clone();
++                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
++                                    move || match host::install(&db) {
++                                        Ok(()) => run_command(payload, id, pool, bundle, writer_tx, db, base_url),
++                                        Err(message) => {
++                                            let frame = json!({
++                                                "kind": "run-result",
++                                                "id": id,
++                                                "result": { "ok": false, "error": { "message": message } },
++                                            });
++                                            let _ = writer_tx.send(frame.to_string());
++                                        }
++                                    },
++                                ));
++                                if result.is_err() {
++                                    let frame = json!({
++                                        "kind": "run-result",
++                                        "id": id_for_error,
++                                        "result": { "ok": false, "error": { "message": "command worker panicked" } },
++                                    });
++                                    let _ = writer_tx_for_error.send(frame.to_string());
++                                }
++                            });
+                         }
+*** End Patch`,
+    });
+
+    expect(files.get("/repo/src/ws.rs")).toContain("run_command(payload, id, pool, bundle, writer_tx, db, base_url);");
+    expect(receipt.files[0]).toMatchObject({ path: "/repo/src/ws.rs", beforeExists: true, afterExists: true, added: 25, removed: 3, hunks: 1 });
+  });
+
   test("preserves empty files when deleting the only line", async () => {
     files.set("/repo/empty.txt", "x\n");
 
