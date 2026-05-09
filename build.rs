@@ -158,7 +158,7 @@ fn is_release_profile() -> bool {
 }
 
 fn ensure_web_deps() {
-    if Path::new("web/node_modules/.bin/vite").exists() {
+    if vite_bin_exists() {
         return;
     }
 
@@ -179,9 +179,15 @@ fn ensure_web_deps() {
     );
 
     assert!(
-        Path::new("web/node_modules/.bin/vite").exists(),
-        "bun install completed but web/node_modules/.bin/vite is still missing"
+        vite_bin_exists(),
+        "bun install completed but no Vite launcher was found in web/node_modules/.bin"
     );
+}
+
+fn vite_bin_exists() -> bool {
+    ["vite", "vite.exe", "vite.cmd", "vite.ps1"]
+        .iter()
+        .any(|name| Path::new("web/node_modules/.bin").join(name).exists())
 }
 
 fn inline_vite_assets(html: &str, dist: &Path) -> String {
