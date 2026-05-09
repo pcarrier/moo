@@ -36,9 +36,9 @@
 
       webDepsHashes = {
         "x86_64-linux" = "sha256-09yIXRZf9yisJlq+AVZcpycUzgSKkPMY7MvtYLBrx0A=";
-        "aarch64-linux" = "sha256-2XvuqUYBC8z1c4JVgraMVEwnDbki1HP5ovSP//fnUoQ=";
-        "x86_64-darwin" = "sha256-tI9YnouVDBl81+QO6ySik+vQsxWit31h90CosSN3WCw=";
-        "aarch64-darwin" = "sha256-3I2HAyK0lI3uSehZ32abNnC2h+r/SOSABAj/E1A3ihw=";
+        "aarch64-linux" = "sha256-AyZx9i174w3fm7I7Tw7M3Esokj+EWyCSqCSLcHLyoBk=";
+        "x86_64-darwin" = "sha256-fBgmnPOM2lTK9XBlEx4VJiL32H5zOaFxNQ3b8KExvhM=";
+        "aarch64-darwin" = "sha256-sZdk3tx2TD6+LjTw08MnZ594mrpUUy2A8vvTxw872x4=";
       };
 
 
