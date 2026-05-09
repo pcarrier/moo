@@ -20,16 +20,17 @@
 // the inspector thread serves them one after the other.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -56,6 +57,7 @@ const SOURCE_MAP_PATH: &str = "/harness.js.map";
 const INTERNAL_PROFILER_ENABLE_ID: i64 = -10_001;
 const INTERNAL_PROFILER_START_ID: i64 = -10_002;
 const INTERNAL_PROFILER_STOP_ID: i64 = -10_003;
+const JSON_LIST_CACHE_TTL: Duration = Duration::from_millis(500);
 
 pub fn spawn(
     addr: &str,
@@ -77,6 +79,7 @@ pub fn spawn(
     let (session_tx, session_rx) = mpsc::channel::<PendingSession>();
     let (inspect_tx, inspect_rx) = mpsc::channel::<InspectRequest>();
     let active_target = Arc::new(Mutex::new(None::<TargetSpec>));
+    let target_cache = Arc::new(Mutex::new(None::<TargetCache>));
     let _ = CDP_HANDLE.set(CdpHandle {
         inspect_tx,
         active_target: active_target.clone(),
@@ -111,22 +114,17 @@ pub fn spawn(
         .spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let session_tx = session_tx.clone();
-                let advertised = advertised.clone();
-                let map_path = map_path.clone();
-                let bundle = bundle.clone();
-                let db_path = db_path.clone();
-                let active_target = listener_active_target.clone();
+                let context = CdpConnContext {
+                    advertised_host: advertised.clone(),
+                    session_tx: session_tx.clone(),
+                    map_path: map_path.clone(),
+                    bundle: bundle.clone(),
+                    db_path: db_path.clone(),
+                    active_target: listener_active_target.clone(),
+                    target_cache: target_cache.clone(),
+                };
                 thread::spawn(move || {
-                    let _ = handle_conn(
-                        stream,
-                        &advertised,
-                        session_tx,
-                        map_path,
-                        bundle,
-                        db_path,
-                        active_target,
-                    );
+                    let _ = handle_conn(stream, context);
                 });
             }
         })
@@ -146,6 +144,13 @@ struct TargetSpec {
     id: String,
     title: String,
     chat_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TargetCache {
+    refreshed_at: Instant,
+    targets: Vec<TargetSpec>,
+    json_by_host: HashMap<String, String>,
 }
 
 impl TargetSpec {
@@ -640,9 +645,12 @@ fn run_inspected_job(
     let context = v8::Local::new(scope, context_global);
     let mut scope = v8::ContextScope::new(scope, context);
     let report = match request.async_agent_run {
-        Some(agent_run) => {
-            runtime::run_loaded_main_async_in_scope(&mut scope, &request.input, agent_run)
-        }
+        Some(agent_run) => runtime::run_loaded_main_async_in_scope(
+            &mut scope,
+            &request.input,
+            agent_run,
+            Arc::new(AtomicBool::new(false)),
+        ),
         None => runtime::run_loaded_main_in_scope(&mut scope, &request.input),
     };
     let _ = request.response.send(report.result);
@@ -1186,15 +1194,26 @@ fn string_view_to_utf8(view: &StringView) -> Vec<u8> {
 // HTTP / WebSocket front-end.
 // =========================================================================
 
-fn handle_conn(
-    mut stream: TcpStream,
-    advertised_host: &str,
+struct CdpConnContext {
+    advertised_host: String,
     session_tx: Sender<PendingSession>,
     map_path: Option<Arc<PathBuf>>,
     bundle: BundleProvider,
     db_path: String,
     active_target: Arc<Mutex<Option<TargetSpec>>>,
-) -> std::io::Result<()> {
+    target_cache: Arc<Mutex<Option<TargetCache>>>,
+}
+
+fn handle_conn(mut stream: TcpStream, context: CdpConnContext) -> std::io::Result<()> {
+    let CdpConnContext {
+        advertised_host,
+        session_tx,
+        map_path,
+        bundle,
+        db_path,
+        active_target,
+        target_cache,
+    } = context;
     let read_clone = stream.try_clone()?;
     let mut reader = BufReader::new(read_clone);
 
@@ -1259,7 +1278,7 @@ fn handle_conn(
             &mut stream,
             "200 OK",
             "application/json; charset=utf-8",
-            json_list(advertised_host, &db_path, &active_target).as_bytes(),
+            json_list(&advertised_host, &db_path, &active_target, &target_cache).as_bytes(),
         ),
         "/json/version" => write_response(
             &mut stream,
@@ -1366,16 +1385,28 @@ fn json_list(
     advertised_host: &str,
     db_path: &str,
     active_target: &Arc<Mutex<Option<TargetSpec>>>,
+    target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> String {
-    let mut targets = chat_targets(db_path);
+    let active = active_target.lock().unwrap().clone();
+    if active.is_none()
+        && let Some(json) = cached_json_list(advertised_host, db_path, target_cache)
+    {
+        return json;
+    }
+
+    let mut targets = cached_chat_targets(db_path, target_cache);
     if targets.is_empty() {
         targets.push(TargetSpec::default_target());
     }
-    if let Some(active) = active_target.lock().unwrap().clone()
+    if let Some(active) = active
         && !targets.iter().any(|t| t.id == active.id)
     {
         targets.insert(0, active);
     }
+    targets_json(advertised_host, &targets)
+}
+
+fn targets_json(advertised_host: &str, targets: &[TargetSpec]) -> String {
     Value::Array(
         targets
             .iter()
@@ -1383,6 +1414,41 @@ fn json_list(
             .collect(),
     )
     .to_string()
+}
+
+fn cached_json_list(
+    advertised_host: &str,
+    db_path: &str,
+    target_cache: &Arc<Mutex<Option<TargetCache>>>,
+) -> Option<String> {
+    let now = Instant::now();
+    let mut cache = target_cache.lock().unwrap();
+    if cache
+        .as_ref()
+        .map(|cached| now.duration_since(cached.refreshed_at) >= JSON_LIST_CACHE_TTL)
+        .unwrap_or(true)
+    {
+        let targets = chat_targets(db_path);
+        *cache = Some(TargetCache {
+            refreshed_at: now,
+            targets,
+            json_by_host: HashMap::new(),
+        });
+    }
+
+    let cached = cache.as_mut()?;
+    if let Some(json) = cached.json_by_host.get(advertised_host) {
+        return Some(json.clone());
+    }
+    let mut targets = cached.targets.clone();
+    if targets.is_empty() {
+        targets.push(TargetSpec::default_target());
+    }
+    let json = targets_json(advertised_host, &targets);
+    cached
+        .json_by_host
+        .insert(advertised_host.to_string(), json.clone());
+    Some(json)
 }
 
 fn target_json(advertised_host: &str, target: &TargetSpec) -> Value {
@@ -1412,26 +1478,56 @@ fn target_json(advertised_host: &str, target: &TargetSpec) -> Value {
     })
 }
 
+fn cached_chat_targets(
+    db_path: &str,
+    target_cache: &Arc<Mutex<Option<TargetCache>>>,
+) -> Vec<TargetSpec> {
+    let now = Instant::now();
+    let mut cache = target_cache.lock().unwrap();
+    if let Some(cached) = cache.as_ref()
+        && now.duration_since(cached.refreshed_at) < JSON_LIST_CACHE_TTL
+    {
+        return cached.targets.clone();
+    }
+
+    let targets = chat_targets(db_path);
+    *cache = Some(TargetCache {
+        refreshed_at: now,
+        targets: targets.clone(),
+        json_by_host: HashMap::new(),
+    });
+    targets
+}
+
 fn chat_targets(db_path: &str) -> Vec<TargetSpec> {
     let Ok(conn) = host::open_db(db_path) else {
         return Vec::new();
     };
-    let mut ids = HashSet::new();
-    if let Ok(mut stmt) = conn.prepare("select name from refs where name like 'chat/%/%'")
-        && let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0))
-    {
-        for name in rows.flatten() {
-            if let Some(cid) = name.split('/').nth(1)
-                && !cid.is_empty()
+    // `/json/list` is polled by DevTools. Keep it off SQLite's LIKE slow path:
+    // chat titles are the only refs needed to build debugger targets, and this
+    // range predicate is served directly from the refs primary-key btree.
+    let mut targets = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "select name, target from refs
+         where name >= 'chat/' and name < 'chat0' and substr(name, length(name) - 5) = '/title'",
+    ) && let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        for (name, title) in rows.flatten() {
+            let mut parts = name.split('/');
+            if matches!(parts.next(), Some("chat"))
+                && let Some(chat_id) = parts.next()
+                && !chat_id.is_empty()
+                && matches!(parts.next(), Some("title"))
+                && parts.next().is_none()
             {
-                ids.insert(cid.to_string());
+                targets.push(TargetSpec {
+                    id: target_id_for_chat(chat_id),
+                    title: format!("moo: {title}"),
+                    chat_id: Some(chat_id.to_string()),
+                });
             }
         }
-    }
-
-    let mut targets = Vec::new();
-    for chat_id in ids {
-        targets.push(target_from_chat_id(&conn, &chat_id));
     }
     targets.sort_by(|a, b| b.title.cmp(&a.title));
     targets

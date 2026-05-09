@@ -5,12 +5,14 @@ use std::time::UNIX_EPOCH;
 
 use rusty_v8 as v8;
 
+use crate::ops::v8util::{
+    array_from_strings, required_args, set_object_str, set_object_value, set_return_str,
+};
 use crate::runtime::{install_fn, throw};
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_fs_read", op_fs_read)?;
     install_fn(scope, "__op_fs_write", op_fs_write)?;
-    install_fn(scope, "__op_fs_remove", op_fs_remove)?;
     install_fn(scope, "__op_fs_mkdir", op_fs_mkdir)?;
     install_fn(scope, "__op_fs_list", op_fs_list)?;
     install_fn(scope, "__op_fs_glob", op_fs_glob)?;
@@ -24,17 +26,14 @@ fn op_fs_read(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_read requires (path)");
+    if !required_args(scope, &args, 1, "fs_read requires (path)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
     match fs::read(&path) {
         Ok(bytes) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            if let Some(s) = v8::String::new(scope, &text) {
-                rv.set(s.into());
-            }
+            set_return_str(scope, &mut rv, &text);
         }
         Err(e) => throw(scope, &format!("fs_read {path}: {e}")),
     }
@@ -45,8 +44,7 @@ fn op_fs_write(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    if args.length() < 2 {
-        throw(scope, "fs_write requires (path, content)");
+    if !required_args(scope, &args, 2, "fs_write requires (path, content)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
@@ -63,28 +61,12 @@ fn op_fs_write(
     }
 }
 
-fn op_fs_remove(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    if args.length() < 1 {
-        throw(scope, "fs_remove requires (path)");
-        return;
-    }
-    let path = args.get(0).to_rust_string_lossy(scope);
-    if let Err(e) = fs::remove_file(&path) {
-        throw(scope, &format!("fs_remove {path}: {e}"));
-    }
-}
-
 fn op_fs_mkdir(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_mkdir requires (path)");
+    if !required_args(scope, &args, 1, "fs_mkdir requires (path)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
@@ -98,8 +80,7 @@ fn op_fs_list(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_list requires (path)");
+    if !required_args(scope, &args, 1, "fs_list requires (path)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
@@ -113,13 +94,7 @@ fn op_fs_list(
             return;
         }
     };
-    let arr = v8::Array::new(scope, entries.len() as i32);
-    for (i, name) in entries.iter().enumerate() {
-        if let Some(s) = v8::String::new(scope, name) {
-            arr.set_index(scope, i as u32, s.into());
-        }
-    }
-    rv.set(arr.into());
+    rv.set(array_from_strings(scope, &entries).into());
 }
 
 fn op_fs_glob(
@@ -127,8 +102,7 @@ fn op_fs_glob(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_glob requires (pattern)");
+    if !required_args(scope, &args, 1, "fs_glob requires (pattern)") {
         return;
     }
     let pattern = args.get(0).to_rust_string_lossy(scope);
@@ -143,13 +117,7 @@ fn op_fs_glob(
         .filter_map(|entry| entry.ok())
         .map(|path| path.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let arr = v8::Array::new(scope, entries.len() as i32);
-    for (i, name) in entries.iter().enumerate() {
-        if let Some(s) = v8::String::new(scope, name) {
-            arr.set_index(scope, i as u32, s.into());
-        }
-    }
-    rv.set(arr.into());
+    rv.set(array_from_strings(scope, &entries).into());
 }
 
 fn op_fs_canonical(
@@ -157,8 +125,7 @@ fn op_fs_canonical(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_canonical requires (path)");
+    if !required_args(scope, &args, 1, "fs_canonical requires (path)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
@@ -170,9 +137,7 @@ fn op_fs_canonical(
         }
     };
     let text = canonical.to_string_lossy();
-    if let Some(s) = v8::String::new(scope, &text) {
-        rv.set(s.into());
-    }
+    set_return_str(scope, &mut rv, &text);
 }
 
 fn op_fs_stat(
@@ -180,8 +145,7 @@ fn op_fs_stat(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "fs_stat requires (path)");
+    if !required_args(scope, &args, 1, "fs_stat requires (path)") {
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
@@ -208,16 +172,10 @@ fn op_fs_stat(
         .unwrap_or(0.0);
 
     let obj = v8::Object::new(scope);
-    if let (Some(k), Some(v)) = (v8::String::new(scope, "kind"), v8::String::new(scope, kind)) {
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "size") {
-        let v = v8::Number::new(scope, size);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "mtime") {
-        let v = v8::Number::new(scope, mtime);
-        obj.set(scope, k.into(), v.into());
-    }
+    set_object_str(scope, obj, "kind", kind);
+    let size = v8::Number::new(scope, size);
+    set_object_value(scope, obj, "size", size.into());
+    let mtime = v8::Number::new(scope, mtime);
+    set_object_value(scope, obj, "mtime", mtime.into());
     rv.set(obj.into());
 }

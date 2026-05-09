@@ -5,6 +5,12 @@
 // verify it on upgrade.
 
 const STORAGE_KEY = "moo.psk";
+let memoryPsk: string | null = null;
+
+export type PskStatus = {
+  required: boolean;
+  valid: boolean;
+};
 
 function readFragment(): string | null {
   const hash = location.hash;
@@ -23,11 +29,7 @@ export function captureFragmentPsk(): void {
   try {
     const fromFragment = readFragment();
     if (fromFragment === null) return;
-    if (fromFragment === "") {
-      localStorage.removeItem(STORAGE_KEY);
-    } else {
-      localStorage.setItem(STORAGE_KEY, fromFragment);
-    }
+    setPsk(fromFragment);
   } catch (_) {
     // localStorage may be disabled; non-fatal.
   }
@@ -35,8 +37,40 @@ export function captureFragmentPsk(): void {
 
 export function getPsk(): string | null {
   try {
-    return localStorage.getItem(STORAGE_KEY);
+    return localStorage.getItem(STORAGE_KEY) ?? memoryPsk;
   } catch (_) {
-    return null;
+    return memoryPsk;
   }
+}
+
+export function setPsk(value: string | null): void {
+  memoryPsk = value === "" ? null : value;
+  try {
+    if (value === null || value === "") {
+      localStorage.removeItem(STORAGE_KEY);
+    } else {
+      localStorage.setItem(STORAGE_KEY, value);
+    }
+  } catch (_) {
+    // localStorage may be disabled; keep the key in memory for this page.
+  }
+}
+
+export async function checkPsk(
+  value: string | null = getPsk(),
+): Promise<PskStatus> {
+  const params = new URLSearchParams();
+  if (value) params.set("psk", value);
+  const qs = params.toString();
+  const response = await fetch(`/api/auth/psk${qs ? `?${qs}` : ""}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`PSK check failed: HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  return {
+    required: !!data?.required,
+    valid: !!data?.valid,
+  };
 }

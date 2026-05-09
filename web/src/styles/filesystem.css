@@ -1,0 +1,456 @@
+/* Server filesystem explorer and new-chat project picker. */
+
+/* -- server filesystem explorer ---------------------------------------- */
+
+.sidebar {
+  position: relative;
+}
+
+.new-chat-header-title {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-chat-route {
+  flex: 1 1 0;
+  min-block-size: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+  padding: 0.75rem 1rem 1rem;
+}
+
+.new-chat-panel {
+  --fs-panel-inline-padding: 1rem;
+  --fs-row-inline-padding: 0.45rem;
+  --fs-start-action-width: 4.75rem;
+  flex: 1 1 auto;
+  inline-size: 100%;
+  max-block-size: 100%;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: auto;
+}
+
+
+.fs-explorer.fs-explorer-main {
+  inline-size: 100%;
+  flex: 0 1 auto;
+  max-block-size: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.fs-explorer {
+  max-height: min(calc(100dvh - 5rem), 44rem);
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-explorer-header,
+.fs-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.32rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.fs-explorer-header > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.fs-explorer-header strong,
+.fs-explorer-header span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-explorer-header span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.fs-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.fs-loading-centered,
+.facts-loading-centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 4rem;
+  width: 100%;
+}
+
+.fs-empty {
+  padding: 0.7rem var(--fs-panel-inline-padding);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.fs-section-title {
+  padding: 0.7rem var(--fs-panel-inline-padding) 0.25rem;
+  font-weight: 600;
+}
+
+.fs-recent-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 13rem;
+  overflow: auto;
+  padding: 0.25rem
+    calc(var(--fs-panel-inline-padding) - var(--fs-row-inline-padding)) 0.7rem;
+}
+
+.fs-explorer-main .fs-recent-list {
+  flex: 0 1 auto;
+  max-block-size: 14rem;
+  max-height: 14rem;
+  min-block-size: 0;
+  overflow: auto;
+}
+
+.fs-recent-list button,
+.fs-pick-toggle,
+.fs-path-row button,
+.fs-actions button,
+.fs-branch-pull,
+.fs-branch-upgrade {
+  border: 1px solid transparent;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.fs-recent-list button {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.35rem var(--fs-row-inline-padding);
+  text-align: left;
+}
+
+.fs-recent-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-repo-badge,
+.fs-repo-kind {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  padding: 0.08rem 0.28rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fs-repo-badge.is-git,
+.fs-repo-badge.is-jj {
+  color: var(--fg);
+}
+
+
+.fs-path-card {
+  padding: 0.75rem var(--fs-panel-inline-padding) 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.fs-path-card label {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-weight: 600;
+}
+
+.fs-branch-step {
+  padding: 0.9rem var(--fs-panel-inline-padding) 1rem;
+}
+
+.fs-branch-step-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.fs-branch-back {
+  flex: 0 0 auto;
+  border-color: var(--line);
+  padding: 0.32rem 0.55rem;
+  white-space: nowrap;
+}
+
+.fs-branch-title-block {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.fs-branch-project {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.fs-branch-start {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.fs-branch-card {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.fs-branch-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fs-branch-header label {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.fs-branch-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.fs-branch-pull,
+.fs-branch-upgrade {
+  flex: 0 0 auto;
+  padding: 0.32rem 0.55rem;
+  border-color: var(--line);
+  background: var(--button-bg);
+  white-space: nowrap;
+}
+
+.fs-branch-card select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 0.35rem 0.45rem;
+}
+
+.fs-branch-card select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.fs-branch-hint,
+.fs-branch-empty,
+.fs-branch-message,
+.fs-branch-error {
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.fs-branch-error {
+  color: crimson;
+}
+
+.fs-pick-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  margin: 0;
+  padding: 0.7rem var(--fs-panel-inline-padding);
+  text-align: left;
+  border-width: 0 0 1px;
+  border-color: var(--line);
+  background: var(--bg);
+}
+
+
+.fs-browse-toggle {
+  display: inline-flex;
+  width: auto;
+  margin-top: 0.6rem;
+  padding: 0.42rem 0.7rem;
+  border: 1px solid var(--line);
+}
+
+.fs-scratch-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+
+.fs-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--fs-start-action-width);
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.fs-path-row input {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 0.35rem 0.45rem;
+}
+
+.fs-path-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.fs-path-row button,
+.fs-actions button {
+  border-color: var(--line);
+  padding: 0.32rem 0.55rem;
+  white-space: nowrap;
+}
+
+
+.fs-recent-list button:hover:not(:disabled),
+.fs-pick-toggle:hover:not(:disabled),
+.fs-path-row button:hover:not(:disabled),
+.fs-actions button:hover:not(:disabled),
+.fs-branch-pull:hover:not(:disabled),
+.fs-branch-upgrade:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--sidebar-active);
+}
+
+.fs-path-row button:hover:not(:disabled),
+.fs-path-row button:focus-visible:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--button-hover-bg);
+}
+
+.fs-recent-list button:disabled,
+.fs-pick-toggle:disabled,
+.fs-path-row button:disabled,
+.fs-branch-pull:disabled,
+.fs-branch-upgrade:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.fs-error {
+  padding: 0 0.7rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.fs-picker {
+  border-top: 1px solid var(--line);
+  padding: 0.75rem var(--fs-panel-inline-padding) 0;
+}
+
+.fs-explorer-main .fs-picker {
+  flex: 0 1 auto;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-entries {
+  overflow: auto;
+  max-height: 18rem;
+  min-height: 8rem;
+  padding: 0.25rem 0.45rem 0.6rem;
+}
+
+.fs-explorer-main .fs-entries {
+  flex: 0 1 auto;
+  max-block-size: 18rem;
+  max-height: 18rem;
+  min-height: 0;
+}
+
+.fs-entry {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+  gap: 0.3rem;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  padding: 0.25rem 0.35rem;
+  cursor: pointer;
+}
+
+.fs-entry > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-entry.changed {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--fg);
+}
+
+.fs-entry-diff-stats {
+  align-self: center;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.fs-entry:hover:not(:disabled) {
+  background: var(--sidebar-active);
+}
+.fs-entry:disabled {
+  color: var(--muted);
+  cursor: default;
+}

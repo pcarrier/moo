@@ -13,9 +13,14 @@ export type Event =
   | { kind: "pointer"; pointer: string }
   | { kind: "facts"; store: string }
   | { kind: "file-diff"; chatId: string; path: string; diff: string; stats?: DiffStats; before?: string | null; after?: string | null; hash?: string; stepId?: string; at: number }
+  | { kind: "todo-diff"; chatId: string; changes?: import("./api").TodoDiffChange[]; hash?: string; stepId?: string; at: number; todos?: import("./api").AgentTodo[] }
   | { kind: "memory-diff"; chatId: string; store: string; graph: string; action?: "assert" | "retract"; path: string; diff: string; stats?: DiffStats; before?: string; after?: string; hash?: string; stepId?: string; at: number; count?: number }
-  | { kind: "tokens"; chatId: string; used: number; budget?: number; threshold?: number; fraction?: number; usage?: unknown; estimated?: boolean; reset?: boolean }
+  | { kind: "blob-add"; chatId: string; objectKind: string; hash: string; size?: number; chars?: number; encoding?: string; stepId?: string; at: number }
+  | { kind: "tokens"; chatId: string; used: number; budget?: number; threshold?: number; fraction?: number; usage?: unknown; source?: string; estimated?: boolean; reset?: boolean }
+  | { kind: "compaction-start"; chatId: string; at?: number }
+  | { kind: "compaction-end"; chatId: string; at?: number }
   | { kind: "v8"; event: V8Event }
+  | { kind: "trace-write-error"; message: string; rows?: number; at?: number }
   | { kind: "ping" };
 
 export type EventHandler = (event: Event) => void;
@@ -78,11 +83,11 @@ export class WSConnection {
   run<T = unknown>(payload: Record<string, unknown>): Promise<T> {
     const id = `r${this.nextId++}`;
     return new Promise<T>((resolve) => {
-      // Start the RPC timeout only once the frame is actually written to an
-      // open socket. During startup/reconnect the request can sit in outbox;
-      // timing it out before the server has even seen it creates spurious
-      // "ws request timed out" errors for boot-time refreshes.
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, timer: null });
+      // Start the timeout when the caller queues the RPC, not only once the
+      // socket opens. Otherwise a user action made while the websocket is stuck
+      // connecting can leave UI like /settings permanently in "Saving…".
+      this.startRpcTimer(id);
       this.send({ run: payload, id }, id);
     });
   }

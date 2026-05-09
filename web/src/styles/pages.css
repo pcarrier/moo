@@ -1,0 +1,72 @@
+/* Shared page toolbar, stats, notice, and action primitives. */
+
+/* -- shared page UI primitives ----------------------------------------- */
+.page-toolbar {
+  display: grid;
+  align-items: center;
+  flex: 0 0 auto;
+  min-inline-size: 0;
+}
+
+.toolbar-section,
+.control-field,
+.stat-pill,
+.action-row,
+.card-header {
+  display: flex;
+  align-items: center;
+}
+
+.stat-pill {
+  box-sizing: border-box;
+}
+
+.control-field {
+  min-inline-size: 0;
+}
+
+.empty-state {
+  text-align: center;
+}
+
+.ui-card,
+.metric-card,
+.notice {
+  box-sizing: border-box;
+}
+
+.metric-card {
+  min-width: 0;
+}
+
+.metric-label {
+  color: var(--muted, #8f98a8);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.62rem;
+  line-height: 1.15;
+}
+
+.metric-value {
+  margin-top: 0.1rem;
+  font-size: 1.05rem;
+  font-weight: 720;
+  line-height: 1.12;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-sub {
+  color: var(--muted, #8f98a8);
+  font-size: 0.68rem;
+  margin-top: 0.1rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.notice-error {
+  color: var(--danger, #f85149);
+  border-color: color-mix(in srgb, #f85149 55%, var(--border, var(--line)));
+}

@@ -10,7 +10,7 @@ export type SubagentDetails = {
     childChatId?: string;
     text?: string;
     error?: string | null;
-    durationMs?: number;
+    durationNs?: number;
     usage?: unknown;
   } | null;
 };
@@ -22,7 +22,7 @@ export type RunJSDetails = {
   code?: string | null;
   result?: string | null;
   error?: string | null;
-  durationMs?: number;
+  durationNs?: number;
 };
 
 export type StepItem = {
@@ -40,20 +40,27 @@ export type StepItem = {
       message?: string;
       type?: string | null;
       code?: string | null;
+      requestId?: string | null;
+      retryAfter?: string | null;
+      hint?: string | null;
       body?: unknown;
       [key: string]: unknown;
     };
     at?: number | string;
   };
   runjs?: RunJSDetails;
+  lazyRunjsResult?: boolean;
+  resultHash?: string | null;
   subagent?: SubagentDetails;
   attachments?: ImageAttachment[];
   // Provider-echoed model that produced the step (for LLM-driven kinds).
   model?: string;
   // Reasoning/thinking effort used for the step, when applicable.
   effort?: string;
-  // Milliseconds spent waiting on model responses for the final reply.
-  thoughtDurationMs?: number;
+  // Nanoseconds spent waiting on model responses for the final reply.
+  thoughtDurationNs?: number;
+  // Streaming draft id that produced this finalized reply, when available.
+  draftId?: string;
   // Present when a user message is hidden from future LLM prompts.
   deletedAt?: number | string;
 };
@@ -96,6 +103,34 @@ export type FileDiffItem = {
   at: number;
 };
 
+export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+
+export type AgentTodo = {
+  id: string;
+  text: string;
+  status: TodoStatus;
+  priority?: "high" | "normal" | "low";
+  note?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type TodoDiffChange =
+  | { kind: "added"; after: AgentTodo }
+  | { kind: "removed"; before: AgentTodo }
+  | { kind: "updated"; before: AgentTodo; after: AgentTodo; fields?: string[] };
+
+export type TodoDiffItem = {
+  type: "todo-diff";
+  id: string;
+  step?: string;
+  chatId: string;
+  changes?: TodoDiffChange[];
+  todos?: AgentTodo[];
+  hash?: string;
+  at: number;
+};
+
 export type MemoryDiffItem = {
   type: "memory-diff";
   id: string;
@@ -122,16 +157,28 @@ export type LogItem = {
   message: string;
 };
 
+export type BlobAddItem = {
+  type: "blob-add";
+  id: string;
+  step?: string;
+  chatId: ChatId;
+  objectKind: string;
+  hash: string;
+  size?: number;
+  chars?: number;
+  encoding?: "text" | "json" | string;
+  at: number;
+};
+
 export type TrailItem = {
   type: "trail";
   id: string;
   kind: string;
   at: number;
   title?: string | null;
-  previousTitle?: string | null;
   body?: string | null;
   summary?: string | null;
 };
 
-export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | MemoryDiffItem | LogItem | TrailItem;
+export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | TodoDiffItem | MemoryDiffItem | BlobAddItem | LogItem | TrailItem;
 

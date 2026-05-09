@@ -1,0 +1,323 @@
+/* MCP settings and tool list UI. */
+
+/* -- MCP settings ------------------------------------------------------- */
+.mcp-dashboard-view,
+.mcp-view {
+  min-width: 0;
+}
+
+.mcp-settings {
+  padding: clamp(1rem, 2vw, 1.6rem);
+  gap: 1rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.mcp-hero-card,
+.mcp-card,
+.ui-card.mcp-hero-card,
+.ui-card.mcp-card {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.14);
+}
+
+.mcp-hero-card {
+  display: grid;
+  grid-template-columns: minmax(14rem, 0.8fr) minmax(20rem, 1.2fr);
+  gap: clamp(1rem, 3vw, 2rem);
+  padding: clamp(1rem, 3vw, 2rem);
+}
+
+.mcp-hero-copy h2 {
+  margin: 0.15rem 0 0.5rem;
+  font-size: clamp(1.6rem, 3vw, 2.5rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.mcp-hero-copy p {
+  color: var(--muted);
+  margin: 0;
+  max-width: 28rem;
+}
+
+.mcp-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent) !important;
+}
+
+.mcp-quick-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.mcp-quick-form > label,
+.mcp-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.mcp-quick-form > label input {
+  font-size: 1.05rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.mcp-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.mcp-switch {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.45rem !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: 0.45rem 0.65rem;
+  cursor: pointer;
+}
+
+.mcp-switch input {
+  width: auto !important;
+}
+
+.mcp-settings button.danger {
+  color: var(--fg);
+}
+
+.mcp-settings button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, crimson 38%, var(--line));
+  background: color-mix(in srgb, crimson 8%, var(--button-hover-bg));
+}
+
+.mcp-primary-actions {
+  justify-content: flex-start !important;
+  margin: 0 !important;
+}
+
+.mcp-primary-actions .primary {
+  font-weight: 650;
+  padding-inline: 1rem;
+  border-color: var(--line-strong);
+  background: var(--button-bg);
+  color: var(--fg);
+}
+
+.mcp-primary-actions .primary:hover:not(:disabled) {
+  background: var(--button-hover-bg);
+}
+
+.mcp-reset-btn {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  padding-inline: 0.5rem;
+}
+
+.mcp-reset-btn:hover:not(:disabled) {
+  border-color: var(--line) !important;
+  background: var(--button-hover-bg) !important;
+  color: var(--fg) !important;
+}
+
+.mcp-card {
+  padding: 0.9rem;
+}
+
+.mcp-card-header,
+.card-header.mcp-card-header,
+.mcp-actions,
+.action-row.mcp-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.mcp-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.mcp-advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.mcp-advanced[open] summary {
+  margin-bottom: 0.8rem;
+  color: var(--fg);
+}
+
+.mcp-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mcp-form .wide {
+  grid-column: 1 / -1;
+}
+
+.mcp-quick-form input,
+.mcp-form input,
+.mcp-form select,
+.mcp-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+}
+
+.mcp-quick-form input:focus,
+.mcp-form input:focus,
+.mcp-form select:focus,
+.mcp-form textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.mcp-form textarea {
+  font-family: var(--font-mono);
+  resize: vertical;
+}
+
+.mcp-server-list,
+.mcp-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mcp-server-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: 0.45rem;
+}
+
+.mcp-server-row.disabled {
+  opacity: 0.55;
+}
+
+.mcp-server-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  text-align: left;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0.2rem;
+}
+
+.mcp-server-main:hover:not(:disabled) {
+  background: var(--button-hover-bg) !important;
+}
+
+.mcp-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.mcp-server-title {
+  font-weight: 700;
+}
+
+.mcp-server-meta,
+.mcp-server-url,
+.mcp-tool-list span,
+.mcp-message {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.mcp-server-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-tool-list li {
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.mcp-tool-list li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.mcp-tool-signature {
+  display: block;
+  white-space: pre;
+  overflow: auto;
+  overflow-wrap: normal;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: color-mix(in srgb, var(--fg) 88%, var(--muted));
+  font-size: 0.82rem;
+  line-height: 1.42;
+}
+
+.mcp-tool-signature .code-ident {
+  color: inherit;
+  font-weight: 500;
+}
+
+.mcp-tool-signature .code-namespace {
+  color: var(--muted);
+}
+
+.mcp-tool-signature .code-type {
+  color: color-mix(in srgb, dodgerblue 72%, var(--fg));
+  font-weight: 500;
+}
+
+.mcp-message {
+  border: 1px solid var(--line);
+  background: var(--sidebar-active);
+  padding: 0.5rem 0.7rem;
+}
+
+@media (max-width: 780px) {
+  .mcp-hero-card,
+  .mcp-form,
+  .mcp-server-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mcp-row-actions {
+    justify-content: flex-start;
+  }
+}

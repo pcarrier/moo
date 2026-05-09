@@ -1,9 +1,10 @@
+import * as host from "../host_ops";
 import { moo } from "../moo";
-import { assertFactObjects, chatRefs } from "../lib";
+import { chatRefs } from "../lib";
 import type { Input } from "./_shared";
 import { applyLastChatSettings, rememberChatEffort, rememberChatModel, setChatEffort, setChatModel } from "./models";
 import { estimateCostUsd, loadPricing } from "./describe";
-import type { FactHistoryRow, Quad } from "../types";
+import type { FactHistoryRow } from "../types";
 
 
 export type ChatAutocompleteSuggestion = {
@@ -35,9 +36,8 @@ type ChatAutocompleteIndex = {
 
 const CHAT_AUTOCOMPLETE_CHAT_CONCURRENCY = 8;
 const CHAT_AUTOCOMPLETE_PAYLOAD_CONCURRENCY = 24;
-const CHAT_AUTOCOMPLETE_COLD_CHAT_LIMIT = 8;
 const CHAT_AUTOCOMPLETE_BACKGROUND_CHAT_LIMIT = 160;
-const CHAT_AUTOCOMPLETE_META_TTL_MS = 3000;
+const CHAT_AUTOCOMPLETE_META_TTL_MS = 30000;
 const CHAT_AUTOCOMPLETE_QUERY_CACHE_LIMIT = 200;
 const chatAutocompleteIndexCache = new Map<string, ChatAutocompleteIndex>();
 let chatAutocompleteMetasCache: { at: number; metas: ChatAutocompleteChatMeta[]; signature: string } | null = null;
@@ -266,28 +266,11 @@ export async function chatAutocompleteCommand(input: Input) {
     else coldChats.push(chat);
   }
 
-  // Autocomplete is on the typing hot path: never wait for a cold chat scan.
-  // Return whatever is indexed now and warm the missing chats for subsequent
-  // keystrokes. This makes warm queries memory-only and cold queries bounded by
-  // chat-list metadata instead of payload reads across many histories.
-  let complete = coldChats.length === 0;
-  if (!complete && byText.size < limit) {
-    const foregroundChats = coldChats.slice(0, CHAT_AUTOCOMPLETE_COLD_CHAT_LIMIT);
-    const indexes = await mapWithConcurrency(foregroundChats, CHAT_AUTOCOMPLETE_CHAT_CONCURRENCY, async (chat) => {
-      try {
-        return await chatAutocompleteIndex(chat);
-      } catch {
-        return null;
-      }
-    });
-    for (const index of indexes) {
-      if (index) addAutocompleteMatches(byText, index, terms);
-    }
-    complete = coldChats.length <= CHAT_AUTOCOMPLETE_COLD_CHAT_LIMIT;
-    warmChatAutocompleteIndexes(coldChats.slice(CHAT_AUTOCOMPLETE_COLD_CHAT_LIMIT));
-  } else {
-    warmChatAutocompleteIndexes(coldChats);
-  }
+  // Autocomplete is on the typing hot path: never wait for cold chat
+  // payloads. Return indexed matches immediately and warm missing chats in the
+  // background so follow-up keystrokes become memory-only.
+  const complete = coldChats.length === 0;
+  warmChatAutocompleteIndexes(coldChats);
 
   const deduped = Array.from(byText.values())
     .sort((a, b) =>
@@ -311,12 +294,12 @@ export async function chatsListCommand() {
   let running: Set<string>;
   let runningStartedAt: Record<string, number>;
   try {
-    running = new Set(JSON.parse(__op_chat_running_ids()));
+    running = new Set(JSON.parse(host.runningChatIds()));
   } catch {
     running = new Set();
   }
   try {
-    runningStartedAt = JSON.parse(__op_chat_running_started_at());
+    runningStartedAt = JSON.parse(host.runningChatStartedAt());
   } catch {
     runningStartedAt = {};
   }
@@ -362,9 +345,10 @@ export async function chatsListCommand() {
 export const RECENT_CHAT_PATHS_REF = "user/recent-chat-paths";
 export const RECENT_CHAT_PATHS_LIMIT = 8;
 
-function chatWorktreePath(chatId: string, root: string | null): string {
-  const base = String(root || ".").replace(/\/+$/, "") || ".";
-  return base + "/.moo/" + String(chatId).replace(/^\/+/, "");
+async function chatWorktreePath(chatId: string): Promise<string> {
+  const home = String((await moo.env.get("HOME")) || "").trim().replace(/\/+$/, "");
+  const base = home ? home + "/moo" : "moo";
+  return base + "/" + String(chatId).replace(/^\/+/, "");
 }
 
 async function expandHomeDir(path: string): Promise<string> {
@@ -380,16 +364,23 @@ async function expandHomeDir(path: string): Promise<string> {
 
 export async function normalizeDir(path: string): Promise<string> {
   const raw = await expandHomeDir(path);
-  const result = await moo.proc.run({ cmd: "pwd", args: ["-P"], ...{ cwd: raw, timeoutMs: 5_000 } });
-  if (result.code !== 0) throw new Error((result.stderr || result.stdout || `not a directory: ${raw}`).trim());
-  return result.stdout.trim() || raw;
+  const stat = await moo.fs.stat(raw);
+  if (!stat || stat.kind !== "dir") throw new Error(`not a directory: ${raw}`);
+  return await moo.fs.canonical(raw);
 }
 
-function lazyWorktreePathParts(path: string): { chatId: string; rest: string } | null {
+async function lazyWorktreePathParts(path: string): Promise<{ chatId: string; rest: string } | null> {
   const normalized = String(path || "").replace(/\\/g, "/").replace(/\/+$/, "");
-  const match = /(?:^|\/)\.moo\/([^/]+)(?:\/(.*))?$/.exec(normalized);
-  if (!match?.[1]) return null;
-  return { chatId: match[1], rest: match[2] || "" };
+  const home = String((await moo.env.get("HOME")) || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (home) {
+    const prefix = home + "/moo/";
+    if (normalized.startsWith(prefix)) {
+      const [chatId = "", ...rest] = normalized.slice(prefix.length).split("/");
+      return chatId ? { chatId, rest: rest.join("/") } : null;
+    }
+  }
+  const legacy = /(?:^|\/)\.moo\/([^/]+)(?:\/(.*))?$/.exec(normalized);
+  return legacy?.[1] ? { chatId: legacy[1], rest: legacy[2] || "" } : null;
 }
 
 async function normalizeDirMaterializingChatWorktree(path: string): Promise<string> {
@@ -397,7 +388,7 @@ async function normalizeDirMaterializingChatWorktree(path: string): Promise<stri
   try {
     return await normalizeDir(raw);
   } catch (originalError: any) {
-    const lazy = lazyWorktreePathParts(raw);
+    const lazy = await lazyWorktreePathParts(raw);
     if (!lazy || !(await moo.pointers.get(`chat/${lazy.chatId}/created-at`))) throw originalError;
     try {
       const worktree = await moo.chat.scratch(lazy.chatId);
@@ -428,8 +419,26 @@ export async function rememberChatPath(path: string, alreadyNormalized = false):
   return next;
 }
 
+
+async function isJjAvailable(): Promise<boolean> {
+  const result = await moo.proc.run({ cmd: "sh", args: ["-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 });
+  return result.code === 0;
+}
+
+async function repoKindForPath(path: string): Promise<RepoKind> {
+  const [jj, git] = await Promise.all([jjRepoInfo(path), gitRepoInfo(path)]);
+  if (jj) return "jj";
+  if (git) return "git";
+  return null;
+}
+
+async function recentChatRepoSummaries(paths: string[]): Promise<Array<{ path: string; repoKind: RepoKind }>> {
+  return await Promise.all(paths.map(async (path) => ({ path, repoKind: await repoKindForPath(path) })));
+}
+
 export async function recentChatPathsCommand() {
-  return { ok: true, value: { paths: await loadRecentChatPaths() } };
+  const paths = await loadRecentChatPaths();
+  return { ok: true, value: { paths, repos: await recentChatRepoSummaries(paths) } };
 }
 
 export async function fsListCommand(input: Input) {
@@ -445,23 +454,294 @@ export async function fsListCommand(input: Input) {
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }
+  const changeStats = await gitFsChangeStats(path);
   const entries = await Promise.all(
     names.map(async (name) => {
       const child = path === "/" ? "/" + name : path + "/" + name;
       const stat = await moo.fs.stat(child);
-      return { name, path: child, kind: stat?.kind || "unknown", size: stat?.size || 0, mtime: stat?.mtime || 0 };
+      const relative = normalizeFsRelativePath(name);
+      const changed = relative ? changeStats?.get(relative) : null;
+      return { name, path: child, kind: stat?.kind || "unknown", size: stat?.size || 0, mtime: stat?.mtime || 0, ...(changed ? changed : {}) };
     }),
   );
-  entries.sort((a, b) => {
-    const ad = a.kind === "dir" ? 0 : 1;
-    const bd = b.kind === "dir" ? 0 : 1;
-    if (ad !== bd) return ad - bd;
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-  });
+  entries.sort(sortFsEntries);
   const parent = path === "/" ? null : path.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/";
   return { ok: true, value: { path, parent, entries, recent: await loadRecentChatPaths() } };
 }
 
+function sortFsEntries(a: { name: string; kind: string }, b: { name: string; kind: string }): number {
+  const ad = a.kind === "dir" ? 0 : 1;
+  const bd = b.kind === "dir" ? 0 : 1;
+  if (ad !== bd) return ad - bd;
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+type GitBranchItem = {
+  name: string;
+  ref: string;
+  kind: "head" | "local" | "remote";
+  current?: boolean;
+  upstream?: string | null;
+};
+
+type JjRevisionItem = {
+  name: string;
+  rev: string;
+  kind: "current" | "bookmark" | "trunk" | "recent";
+  description?: string | null;
+  current?: boolean;
+};
+
+type RepoKind = "git" | "jj" | null;
+
+type GitBranchesValue = {
+  path: string;
+  gitRoot: string | null;
+  repoRoot?: string | null;
+  repoKind?: RepoKind;
+  isRepo: boolean;
+  branches: GitBranchItem[];
+  jjRevisions?: JjRevisionItem[];
+  currentBranch: string | null;
+  defaultBranch: string | null;
+  selectedBranch: string | null;
+  currentJjRevision?: string | null;
+  selectedJjRevision?: string | null;
+  hasRemote: boolean;
+  jjAvailable?: boolean;
+  canUpgradeToJj?: boolean;
+  fetched?: boolean;
+  message?: string | null;
+};
+
+type GitBranchesCacheEntry = { expiresAt: number; value: GitBranchesValue };
+const gitBranchesCache = new Map<string, GitBranchesCacheEntry>();
+const GIT_BRANCHES_CACHE_MS = 15_000;
+
+function cleanGitLine(value: string): string {
+  return value.replace(/\r/g, "").trim();
+}
+
+function dedupeGitBranches(branches: GitBranchItem[]): GitBranchItem[] {
+  const byRef = new Map<string, GitBranchItem>();
+  for (const branch of branches) {
+    const existing = byRef.get(branch.ref);
+    if (!existing) {
+      byRef.set(branch.ref, branch);
+      continue;
+    }
+    byRef.set(branch.ref, {
+      ...existing,
+      current: Boolean(existing.current || branch.current),
+      upstream: existing.upstream ?? branch.upstream ?? null,
+    });
+  }
+  const rank = (branch: GitBranchItem) => branch.kind === "head" ? 0 : branch.kind === "local" ? 1 : 2;
+  return [...byRef.values()].sort((a, b) => rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+async function defaultGitBranch(gitRoot: string): Promise<string | null> {
+  const symbolic = await moo.proc.run({
+    cmd: "git",
+    args: ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    ...{ cwd: gitRoot, timeoutMs: 5_000 },
+  });
+  if (symbolic.code === 0) {
+    const remoteName = cleanGitLine(symbolic.stdout);
+    const localName = remoteName.replace(/^origin\//, "");
+    if (localName) {
+      const local = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/heads/" + localName], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+      return local.code === 0 ? localName : remoteName;
+    }
+  }
+  for (const candidate of ["main", "master"]) {
+    const local = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/heads/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+    if (local.code === 0) return candidate;
+    const remote = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/remotes/origin/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+    if (remote.code === 0) return "origin/" + candidate;
+  }
+  return null;
+}
+
+async function gitHasRemote(gitRoot: string): Promise<boolean> {
+  const remotes = await moo.proc.run({ cmd: "git", args: ["remote"], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+  return remotes.code === 0 && remotes.stdout.split("\n").some((line) => cleanGitLine(line));
+}
+
+function dedupeJjRevisions(revisions: JjRevisionItem[]): JjRevisionItem[] {
+  const byRev = new Map<string, JjRevisionItem>();
+  for (const revision of revisions) {
+    if (!revision.rev || byRev.has(revision.rev)) continue;
+    byRev.set(revision.rev, revision);
+  }
+  return [...byRev.values()];
+}
+
+async function loadJjRevisions(jjRoot: string): Promise<{ revisions: JjRevisionItem[]; current: string | null; selected: string | null }> {
+  const revisions: JjRevisionItem[] = [{ name: "Current change (@)", rev: "@", kind: "current", current: true }];
+  const current = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "1", "-r", "@", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
+  if (current.code === 0) {
+    const [changeId = "", description = ""] = current.stdout.split("\t");
+    const cleanChange = cleanGitLine(changeId);
+    if (cleanChange) revisions[0] = { ...revisions[0], name: "Current change @ " + cleanChange, description: cleanGitLine(description) || null };
+  }
+  const trunk = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "1", "-r", "trunk()", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
+  if (trunk.code === 0 && trunk.stdout.trim()) {
+    const [changeId = "", description = ""] = trunk.stdout.split("\t");
+    revisions.push({ name: "Trunk " + cleanGitLine(changeId), rev: "trunk()", kind: "trunk", description: cleanGitLine(description) || null });
+  }
+  const bookmarks = await moo.proc.run({ cmd: "jj", args: ["bookmark", "list", "--template", "name ++ '\t' ++ if(remote, remote, '') ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
+  if (bookmarks.code === 0) {
+    for (const line of bookmarks.stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const [rawName = "", rawRemote = ""] = line.split("\t");
+      const name = cleanGitLine(rawName);
+      const remote = cleanGitLine(rawRemote);
+      if (!name) continue;
+      const rev = remote ? name + "@" + remote : name;
+      revisions.push({ name: remote ? name + " (" + remote + ")" : name, rev, kind: "bookmark" });
+    }
+  }
+  const recent = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "12", "-r", "visible_heads() | ancestors(@, 6)", "-T", "change_id.short() ++ '\t' ++ description.first_line() ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
+  if (recent.code === 0) {
+    for (const line of recent.stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const [rawChange = "", rawDescription = ""] = line.split("\t");
+      const change = cleanGitLine(rawChange);
+      if (!change) continue;
+      const description = cleanGitLine(rawDescription) || null;
+      revisions.push({ name: description ? change + " — " + description : change, rev: change, kind: "recent", description });
+    }
+  }
+  const deduped = dedupeJjRevisions(revisions);
+  return { revisions: deduped, current: "@", selected: deduped[0]?.rev || "@" };
+}
+
+async function loadGitBranches(path: string, fetched = false, message: string | null = null): Promise<GitBranchesValue> {
+  const base = await normalizeDirMaterializingChatWorktree(path);
+  const [jjRepo, repo, jjAvailable] = await Promise.all([jjRepoInfo(base), gitRepoInfo(base), isJjAvailable()]);
+  if (jjRepo && !repo) {
+    const jj = await loadJjRevisions(jjRepo.jjRoot);
+    return { path: base, gitRoot: null, repoRoot: jjRepo.jjRoot, repoKind: "jj", isRepo: true, branches: [], jjRevisions: jj.revisions, currentBranch: null, defaultBranch: null, selectedBranch: null, currentJjRevision: jj.current, selectedJjRevision: jj.selected, hasRemote: false, jjAvailable, canUpgradeToJj: false, fetched, message };
+  }
+  if (!repo) {
+    return { path: base, gitRoot: null, repoRoot: null, repoKind: null, isRepo: false, branches: [], currentBranch: null, defaultBranch: null, selectedBranch: null, hasRemote: false, jjAvailable, canUpgradeToJj: false, fetched, message };
+  }
+  const cacheKey = repo.gitRoot;
+  if (!fetched) {
+    const cached = gitBranchesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return { ...cached.value, path: base, message };
+  }
+  const [branchesResult, remotesResult, jjRevisionsResult] = await Promise.all([
+    moo.proc.run({
+      cmd: "git",
+      args: ["for-each-ref", "--format=%(HEAD)%00%(refname:short)%00%(refname)%00%(upstream:short)%00%(symref:short)", "refs/heads", "refs/remotes"],
+      ...{ cwd: repo.gitRoot, timeoutMs: 10_000 },
+    }),
+    moo.proc.run({ cmd: "git", args: ["remote"], ...{ cwd: repo.gitRoot, timeoutMs: 5_000 } }),
+    jjRepo ? loadJjRevisions(jjRepo.jjRoot) : Promise.resolve(null),
+  ]);
+  let currentBranch: string | null = null;
+  let defaultBranchResult: string | null = null;
+  const branches: GitBranchItem[] = [];
+  if (branchesResult.code === 0) {
+    for (const line of branchesResult.stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const [rawHead = "", rawName = "", rawRef = "", rawUpstream = "", rawSymref = ""] = line.split("\0");
+      let name = cleanGitLine(rawName);
+      const fullRef = cleanGitLine(rawRef);
+      const upstream = cleanGitLine(rawUpstream) || null;
+      const symref = cleanGitLine(rawSymref).replace(/^refs\/remotes\//, "").replace(/^refs\/heads\//, "");
+      if (!name || !fullRef) continue;
+      if (fullRef.endsWith("/HEAD") || name === "origin/HEAD" || /\/HEAD$/.test(name)) {
+        if (!defaultBranchResult && symref) defaultBranchResult = symref;
+        continue;
+      }
+      const kind: GitBranchItem["kind"] = fullRef.startsWith("refs/remotes/") ? "remote" : "local";
+      if (kind === "remote" && name.startsWith("remotes/")) name = name.slice("remotes/".length);
+      const isCurrent = cleanGitLine(rawHead) === "*";
+      if (isCurrent && kind === "local") currentBranch = name;
+      branches.push({ name, ref: name, kind, current: isCurrent, upstream });
+    }
+  }
+  const deduped = dedupeGitBranches(branches);
+  if (!defaultBranchResult) {
+    if (deduped.some((branch) => branch.ref === "main")) defaultBranchResult = "main";
+    else if (deduped.some((branch) => branch.ref === "master")) defaultBranchResult = "master";
+    else if (deduped.some((branch) => branch.ref === "origin/main")) defaultBranchResult = "origin/main";
+    else if (deduped.some((branch) => branch.ref === "origin/master")) defaultBranchResult = "origin/master";
+  }
+  const hasRemote = remotesResult.code === 0 && remotesResult.stdout.split("\n").some((line) => cleanGitLine(line));
+  const selectedBranch = currentBranch || defaultBranchResult || deduped[0]?.ref || null;
+  const value: GitBranchesValue = {
+    path: base,
+    gitRoot: repo.gitRoot,
+    repoRoot: repo.gitRoot,
+    repoKind: jjRepo ? "jj" : "git",
+    isRepo: true,
+    branches: jjRepo ? [] : deduped,
+    jjRevisions: jjRevisionsResult?.revisions,
+    currentBranch: jjRepo ? null : currentBranch,
+    defaultBranch: jjRepo ? null : defaultBranchResult,
+    selectedBranch: jjRepo ? null : selectedBranch,
+    currentJjRevision: jjRevisionsResult?.current ?? null,
+    selectedJjRevision: jjRevisionsResult?.selected ?? null,
+    hasRemote: jjRepo ? false : hasRemote,
+    jjAvailable,
+    canUpgradeToJj: jjAvailable && !jjRepo,
+    fetched,
+    message,
+  };
+  gitBranchesCache.set(cacheKey, { expiresAt: Date.now() + GIT_BRANCHES_CACHE_MS, value });
+  return value;
+}
+
+export async function fsGitBranchesCommand(input: Input) {
+  try {
+    return { ok: true, value: await loadGitBranches(typeof input.path === "string" ? input.path : ".") };
+  } catch (e: any) {
+    return { ok: false, error: { message: e?.message || String(e) } };
+  }
+}
+
+export async function fsGitPullBranchesCommand(input: Input) {
+  try {
+    const path = typeof input.path === "string" ? input.path : ".";
+    const base = await normalizeDirMaterializingChatWorktree(path);
+    const repo = await gitRepoInfo(base);
+    if (!repo) return { ok: false, error: { message: "not a git repository: " + base } };
+    const before = await gitHasRemote(repo.gitRoot);
+    if (!before) return { ok: false, error: { message: "no git remotes configured for " + repo.gitRoot } };
+    const fetch = await moo.proc.run({ cmd: "git", args: ["fetch", "--all", "--prune"], ...{ cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 } });
+    if (fetch.code !== 0) {
+      return { ok: false, error: { message: (fetch.stderr || fetch.stdout || "git fetch failed").trim() } };
+    }
+    const message = (fetch.stderr || fetch.stdout || "Fetched remote branches").trim();
+    gitBranchesCache.delete(repo.gitRoot);
+    return { ok: true, value: await loadGitBranches(base, true, message || "Fetched remote branches") };
+  } catch (e: any) {
+    return { ok: false, error: { message: e?.message || String(e) } };
+  }
+}
+
+export async function fsGitUpgradeJjCommand(input: Input) {
+  try {
+    const path = typeof input.path === "string" ? input.path : ".";
+    const base = await normalizeDirMaterializingChatWorktree(path);
+    const [repo, jjRepo, jjAvailable] = await Promise.all([gitRepoInfo(base), jjRepoInfo(base), isJjAvailable()]);
+    if (!jjAvailable) return { ok: false, error: { message: "jj is not available on this system" } };
+    if (!repo) return { ok: false, error: { message: "not a git repository: " + base } };
+    if (jjRepo) return { ok: true, value: await loadGitBranches(base, false, "Already a Jujutsu repository") };
+    const init = await moo.proc.run({ cmd: "jj", args: ["git", "init", "--colocate"], cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 });
+    if (init.code !== 0) {
+      return { ok: false, error: { message: (init.stderr || init.stdout || "jj git init --colocate failed").trim() } };
+    }
+    gitBranchesCache.delete(repo.gitRoot);
+    return { ok: true, value: await loadGitBranches(base, false, "Upgraded Git repository to Jujutsu") };
+  } catch (e: any) {
+    return { ok: false, error: { message: e?.message || String(e) } };
+  }
+}
 
 function clampFsSearchLimit(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 24;
@@ -473,6 +753,238 @@ function normalizeFsSearchQuery(value: unknown): string {
     .trim()
     .replace(/^@+/, "")
     .replace(/^\/+/, "");
+}
+
+type FsChangeStats = { changed: boolean; additions: number; deletions: number };
+
+type FsDiffStats = { added: number; removed: number; lines: number };
+
+function normalizeFsRelativePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function relativePathWithin(root: string, path: string): string | null {
+  const cleanRoot = root.replace(/\/+$/, "");
+  const cleanPath = path.replace(/\/+$/, "");
+  if (cleanPath === cleanRoot) return "";
+  if (cleanPath.startsWith(cleanRoot + "/")) return normalizeFsRelativePath(cleanPath.slice(cleanRoot.length + 1));
+  return null;
+}
+
+function addFsChange(stats: Map<string, FsChangeStats>, relativePath: string, additions = 0, deletions = 0) {
+  const clean = normalizeFsRelativePath(relativePath);
+  if (!clean || clean.split("/").some((part) => !part || part === "..")) return;
+  const rootPrev = stats.get("") ?? { changed: false, additions: 0, deletions: 0 };
+  stats.set("", { changed: true, additions: rootPrev.additions + additions, deletions: rootPrev.deletions + deletions });
+  const parts = clean.split("/");
+  for (let i = 1; i <= parts.length; i += 1) {
+    const key = parts.slice(0, i).join("/");
+    const prev = stats.get(key) ?? { changed: false, additions: 0, deletions: 0 };
+    stats.set(key, { changed: true, additions: prev.additions + additions, deletions: prev.deletions + deletions });
+  }
+}
+
+async function countTextFileLines(path: string): Promise<number> {
+  try {
+    const stat = await moo.fs.stat(path);
+    if (stat?.kind !== "file" || stat.size > 1_000_000) return 0;
+    const content = await moo.fs.read(path);
+    if (!content) return 0;
+    const lines = content.split(/\r?\n/);
+    if (lines[lines.length - 1] === "") lines.pop();
+    return lines.length;
+  } catch {
+    return 0;
+  }
+}
+
+async function gitFsChangeStats(basePath: string): Promise<Map<string, FsChangeStats> | null> {
+  let base: string;
+  try {
+    base = await normalizeDirMaterializingChatWorktree(basePath);
+  } catch {
+    return null;
+  }
+  const rootResult = await moo.proc.run({
+    cmd: "git",
+    args: ["rev-parse", "--show-toplevel"],
+    ...{ cwd: base, timeoutMs: 5_000 },
+  });
+  if (rootResult.code !== 0) return null;
+  const gitRoot = rootResult.stdout.trim();
+  if (!gitRoot) return null;
+  const prefix = relativePathWithin(gitRoot, base);
+  if (prefix === null) return null;
+  const stats = new Map<string, FsChangeStats>();
+  const args = ["status", "--porcelain=v1", "--untracked-files=all"];
+  if (prefix) args.push("--", prefix);
+  const status = await moo.proc.run({ cmd: "git", args, ...{ cwd: gitRoot, timeoutMs: 10_000 } });
+  if (status.code !== 0) return null;
+  for (const line of status.stdout.split("\n")) {
+    if (line.length < 4) continue;
+    const statusCode = line.slice(0, 2);
+    let file = line.slice(3).trim();
+    const arrow = file.indexOf(" -> ");
+    if (arrow >= 0) file = file.slice(arrow + 4).trim();
+    if (!file) continue;
+    const rel = prefix ? relativePathWithin(prefix, file) : normalizeFsRelativePath(file);
+    if (rel !== null) {
+      const additions = statusCode === "??" ? await countTextFileLines(joinChildPath(gitRoot, file)) : 0;
+      addFsChange(stats, rel, additions, 0);
+    }
+  }
+  const numstatArgs = ["diff", "--numstat", "HEAD", "--"];
+  if (prefix) numstatArgs.push(prefix);
+  const numstat = await moo.proc.run({ cmd: "git", args: numstatArgs, ...{ cwd: gitRoot, timeoutMs: 10_000 } });
+  if (numstat.code === 0) {
+    for (const line of numstat.stdout.split("\n")) {
+      const parts = line.split("\t");
+      if (parts.length < 3) continue;
+      const additions = /^\d+$/.test(parts[0]) ? Number(parts[0]) : 0;
+      const deletions = /^\d+$/.test(parts[1]) ? Number(parts[1]) : 0;
+      let pathPart = parts.slice(2).join("\t");
+      const arrow = pathPart.indexOf(" => ");
+      if (arrow >= 0 && pathPart.includes("{")) {
+        pathPart = pathPart.slice(arrow + 4).replace(/[{}]/g, "").trim();
+      } else {
+        const renameArrow = pathPart.indexOf(" -> ");
+        if (renameArrow >= 0) pathPart = pathPart.slice(renameArrow + 4).trim();
+      }
+      const rel = prefix ? relativePathWithin(prefix, pathPart) : normalizeFsRelativePath(pathPart);
+      if (rel !== null) addFsChange(stats, rel, additions, deletions);
+    }
+  }
+  return stats;
+}
+
+function diffStatsFromText(diff: string): FsDiffStats {
+  const lines = diff ? diff.split("\n").length : 0;
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed, lines };
+}
+
+async function jjRepoInfo(
+  basePath: string,
+): Promise<{ jjRoot: string; prefix: string } | null> {
+  let base: string;
+  try {
+    base = await normalizeDirMaterializingChatWorktree(basePath);
+  } catch {
+    return null;
+  }
+  const rootResult = await moo.proc.run({ cmd: "jj", args: ["root"], ...{ cwd: base, timeoutMs: 5_000 } });
+  if (rootResult.code !== 0) return null;
+  const jjRoot = rootResult.stdout.trim();
+  if (!jjRoot) return null;
+  const prefix = relativePathWithin(jjRoot, base);
+  if (prefix === null) return null;
+  return { jjRoot, prefix };
+}
+
+async function gitRepoInfo(
+  basePath: string,
+): Promise<{ gitRoot: string; prefix: string } | null> {
+  let base: string;
+  try {
+    base = await normalizeDirMaterializingChatWorktree(basePath);
+  } catch {
+    return null;
+  }
+  const rootResult = await moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ cwd: base, timeoutMs: 5_000 } });
+  if (rootResult.code !== 0) return null;
+  const gitRoot = rootResult.stdout.trim();
+  if (!gitRoot) return null;
+  const prefix = relativePathWithin(gitRoot, base);
+  if (prefix === null) return null;
+  return { gitRoot, prefix };
+}
+
+async function gitTrackedFileDiff(
+  basePath: string,
+  path: string,
+): Promise<{ diff: string; stats: FsDiffStats } | null> {
+  const info = await gitRepoInfo(basePath);
+  if (!info) return null;
+  const rel = relativePathWithin(info.gitRoot, path);
+  if (rel === null) return null;
+  const args = ["diff", "--no-ext-diff", "--no-color", "HEAD"];
+  if (info.prefix) args.push("--relative=" + info.prefix);
+  args.push("--", rel);
+  const result = await moo.proc.run({
+    cmd: "git",
+    args,
+    ...{ cwd: info.gitRoot, timeoutMs: 10_000, maxOutputBytes: 5_000_000 },
+  });
+  if (result.code !== 0 || !result.stdout.trim()) return null;
+  return {
+    diff: result.stdout.trimEnd(),
+    stats: diffStatsFromText(result.stdout),
+  };
+}
+
+async function isGitUntrackedFile(
+  basePath: string,
+  path: string,
+): Promise<boolean> {
+  const info = await gitRepoInfo(basePath);
+  if (!info) return false;
+  const rel = relativePathWithin(info.gitRoot, path);
+  if (rel === null) return false;
+  const result = await moo.proc.run({
+    cmd: "git",
+    args: ["ls-files", "--others", "--exclude-standard", "--", rel],
+    ...{ cwd: info.gitRoot, timeoutMs: 5_000 },
+  });
+  if (result.code !== 0) return false;
+  return result.stdout
+    .split("\n")
+    .some((line) => normalizeFsRelativePath(line) === normalizeFsRelativePath(rel));
+}
+
+function untrackedFileDiff(
+  content: string,
+  displayPath: string,
+): { diff: string; stats: FsDiffStats } {
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.length ? normalized.split("\n") : [];
+  if (lines[lines.length - 1] === "") lines.pop();
+  const header = ["--- /dev/null", "+++ b/" + displayPath];
+  if (lines.length === 0) {
+    const diff = [...header, "@@ -0,0 +1,0 @@", " (empty file)"].join("\n");
+    return { diff, stats: { added: 0, removed: 0, lines: header.length + 2 } };
+  }
+  const body = [
+    "@@ -0,0 +1," + lines.length + " @@",
+    ...lines.map((line) => "+" + line),
+  ];
+  return {
+    diff: [...header, ...body].join("\n"),
+    stats: {
+      added: lines.length,
+      removed: 0,
+      lines: header.length + body.length,
+    },
+  };
+}
+
+async function currentFileDiff(
+  basePath: string,
+  path: string,
+  content: string,
+): Promise<{ diff: string; stats: FsDiffStats } | null> {
+  const tracked = await gitTrackedFileDiff(basePath, path);
+  if (tracked) return tracked;
+  if (!(await isGitUntrackedFile(basePath, path))) return null;
+  const base = await normalizeDirMaterializingChatWorktree(basePath);
+  const displayPath =
+    relativePathWithin(base, path) ?? normalizeFsRelativePath(path);
+  return untrackedFileDiff(content, displayPath || path);
 }
 
 function joinChildPath(base: string, child: string): string {
@@ -690,18 +1202,45 @@ export async function fsReadCommand(input: Input) {
       return { ok: false, error: { message: e?.message || String(e) } };
     }
   }
+  const includeDiff = input.includeDiff === true;
+
+  const normalizedBasePath = basePath ? await normalizeDirMaterializingChatWorktree(basePath) : null;
+  const changeStats = normalizedBasePath ? await gitFsChangeStats(normalizedBasePath) : null;
+  const relativePath = normalizedBasePath ? relativePathWithin(normalizedBasePath, path) : null;
+  const changed = relativePath === null ? null : changeStats?.get(relativePath);
 
   const stat = await moo.fs.stat(path);
   if (!stat) {
     return { ok: false, error: { message: `File not found: ${requestedPath}` } };
   }
   if (stat.kind !== "file") {
-    return { ok: false, error: { message: `Not a file: ${requestedPath}` } };
+    if (stat.kind !== "dir") {
+      return { ok: false, error: { message: `Not a file or directory: ${requestedPath}` } };
+    }
+
+    let names: string[];
+    try {
+      names = await moo.fs.list(path);
+    } catch (e: any) {
+      return { ok: false, error: { message: e?.message || String(e) } };
+    }
+    const entries = await Promise.all(names.map(async (name) => {
+      const child = joinChildPath(path, name);
+      const childStat = await moo.fs.stat(child);
+      const childRelative = relativePath === null ? null : normalizeFsRelativePath(relativePath ? relativePath + "/" + name : name);
+      const childChanged = childRelative ? changeStats?.get(childRelative) : null;
+      return { name, path: child, kind: childStat?.kind || "unknown", size: childStat?.size || 0, mtime: childStat?.mtime || 0, ...(childChanged ? childChanged : {}) };
+    }));
+    entries.sort(sortFsEntries);
+    return { ok: true, value: { path, kind: stat.kind, size: stat.size, mtime: stat.mtime, content: "", entries, ...(changed ? changed : {}) } };
   }
 
   try {
     const content = await moo.fs.read(path);
-    return { ok: true, value: { path, kind: stat.kind, size: stat.size, mtime: stat.mtime, content } };
+    const currentDiff = includeDiff && normalizedBasePath && changed?.changed
+      ? await currentFileDiff(normalizedBasePath, path, content)
+      : null;
+    return { ok: true, value: { path, kind: stat.kind, size: stat.size, mtime: stat.mtime, content, ...(changed ? changed : {}), ...(currentDiff ? { diff: currentDiff.diff, diffStats: currentDiff.stats } : {}) } };
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }
@@ -716,7 +1255,8 @@ export async function chatNewCommand(input: Input) {
       return { ok: false, error: { message: e?.message || String(e) } };
     }
   }
-  const cid = await moo.chat.create(input.chatId, path);
+  const branch = path && typeof input.branch === "string" && input.branch.trim() ? input.branch.trim() : null;
+  const cid = await moo.chat.create(input.chatId, path, { branch });
   const hasModel = Object.prototype.hasOwnProperty.call(input, "model");
   const hasEffort = Object.prototype.hasOwnProperty.call(input, "effort");
   if (!hasModel && !hasEffort) {
@@ -733,7 +1273,7 @@ export async function chatNewCommand(input: Input) {
   }
   let recent: string[] = [];
   if (path) recent = await rememberChatPath(path, true);
-  return { ok: true, value: { chatId: cid, path, worktreePath: chatWorktreePath(cid, path), recent } };
+  return { ok: true, value: { chatId: cid, path, branch, worktreePath: null, recent } };
 }
 
 
@@ -746,35 +1286,17 @@ function isAddAction(action: string): boolean {
   return action === "+" || action === "add" || action === "added";
 }
 
-function isRemoveAction(action: string): boolean {
-  return action === "-" || action === "remove" || action === "removed";
+function snapshotCopyChatFacts(sourceStore: string, targetStore: string, cutoffAt: number, fromGraph: string, toGraph: string): number {
+  return host.copyFactSnapshot(sourceStore, targetStore, cutoffAt, fromGraph, toGraph);
 }
 
-function remapChatQuad(q: Quad, fromGraph: string, toGraph: string): Quad {
-  return [q[0] === fromGraph ? toGraph : q[0], q[1], q[2], q[3]];
-}
-
-function latestFactsAt(history: FactHistoryRow[], cutoffAt: number, fromGraph: string, toGraph: string): Quad[] {
-  const present = new Map<string, Quad>();
+function stepAddedAt(history: FactHistoryRow[], stepId: string): number {
   for (const row of history) {
-    if (parseHistoryAt(row[5]) > cutoffAt) break;
-    const quad = remapChatQuad([row[0], row[1], row[2], row[3]], fromGraph, toGraph);
-    const key = JSON.stringify(quad);
-    const action = String(row[4] ?? "");
-    if (isAddAction(action)) present.set(key, quad);
-    else if (isRemoveAction(action)) present.delete(key);
+    if (row[1] !== stepId) continue;
+    if (row[2] !== "rdf:type" || row[3] !== "agent:Step") continue;
+    if (isAddAction(String(row[4] ?? ""))) return parseHistoryAt(row[5]);
   }
-  return Array.from(present.values());
-}
-
-function addEncodedQuads(store: string, quads: Quad[]) {
-  if (!quads.length) return;
-  // facts.history() returns object terms exactly as stored in the quad table
-  // (e.g. agent:Step, 123, or "literal"). Passing those rows back through
-  // moo.facts.addAll() would encode them a second time, turning IRIs/numbers
-  // into string literals and making describe/timeline queries miss every step.
-  assertFactObjects(quads);
-  __op_facts_swap(store, "[]", JSON.stringify(quads));
+  return 0;
 }
 
 function literalString(value: string): string {
@@ -786,15 +1308,6 @@ function forkTitle(title: string | null, chatId: string): string {
   const suffix = " fork";
   const maxBase = 80 - suffix.length;
   return (base.length > maxBase ? base.slice(0, maxBase).trimEnd() : base) + suffix;
-}
-
-function stepAddedAt(history: FactHistoryRow[], stepId: string): number {
-  for (const row of history) {
-    if (row[1] !== stepId) continue;
-    if (row[2] !== "rdf:type" || row[3] !== "agent:Step") continue;
-    if (isAddAction(String(row[4] ?? ""))) return parseHistoryAt(row[5]);
-  }
-  return 0;
 }
 
 async function copyRefIfPresent(from: string, to: string) {
@@ -809,29 +1322,32 @@ export async function chatForkCommand(input: Input) {
   if (!stepId) return { ok: false, error: { message: "chat-fork requires step" } };
 
   const sourceRefs = chatRefs(sourceChatId);
-  const history = await moo.facts.history({ store: sourceRefs.facts, ...{ graph: sourceRefs.graph } });
-  const cutoffAt = stepAddedAt(history, stepId);
+  const stepHistoryPromise = moo.facts.history({
+    store: sourceRefs.facts,
+    ...{ graph: sourceRefs.graph, subject: stepId, predicate: "rdf:type", object: "agent:Step", limit: 1 },
+  });
+  const sourcePathPromise = moo.pointers.get("chat/" + sourceChatId + "/path");
+  const sourceTitlePromise = moo.pointers.get("chat/" + sourceChatId + "/title");
+  const stepHistory = await stepHistoryPromise;
+  const cutoffAt = stepAddedAt(stepHistory, stepId);
   if (!cutoffAt) {
     return { ok: false, error: { message: "step not found in " + sourceChatId + ": " + stepId } };
   }
 
-  const [sourcePath, sourceTitle] = await Promise.all([
-    moo.pointers.get("chat/" + sourceChatId + "/path"),
-    moo.pointers.get("chat/" + sourceChatId + "/title"),
-  ]);
-  const forkChatId = await moo.chat.create(input.forkChatId || input.newChatId, sourcePath || null);
+  const [sourcePath, sourceTitle] = await Promise.all([sourcePathPromise, sourceTitlePromise]);
+  const sourceBranch = await moo.pointers.get(sourceRefs.startBranch);
+  const forkChatId = await moo.chat.create(input.forkChatId || input.newChatId, sourcePath || null, { branch: sourceBranch });
   const forkRefs = chatRefs(forkChatId);
 
-  const quads = latestFactsAt(history, cutoffAt, sourceRefs.graph, forkRefs.graph);
-  addEncodedQuads(forkRefs.facts, quads);
+  const copiedFacts = snapshotCopyChatFacts(sourceRefs.facts, forkRefs.facts, cutoffAt, sourceRefs.graph, forkRefs.graph);
 
   await Promise.all([
     copyRefIfPresent(sourceRefs.model, forkRefs.model),
     copyRefIfPresent(sourceRefs.effort, forkRefs.effort),
+    copyRefIfPresent(sourceRefs.startBranch, forkRefs.startBranch),
   ]);
 
-  const headRows = quads.filter((q) => q[1] === stepId && q[2] === "agent:kind");
-  if (headRows.length) await moo.pointers.set(forkRefs.head, stepId);
+  await moo.pointers.set(forkRefs.head, stepId);
   await moo.pointers.set("chat/" + forkChatId + "/parent", sourceChatId);
   await moo.pointers.set("chat/" + forkChatId + "/forked-from-step", stepId);
   await moo.pointers.set("chat/" + forkChatId + "/forked-from-at", String(cutoffAt));
@@ -855,8 +1371,8 @@ export async function chatForkCommand(input: Input) {
     forkedFromStep: stepId,
     forkedFromAt: cutoffAt,
     path: sourcePath || null,
-    worktreePath: chatWorktreePath(forkChatId, sourcePath || null),
-    copiedFacts: quads.length,
+    worktreePath: await chatWorktreePath(forkChatId),
+    copiedFacts,
   } };
 }
 
@@ -912,8 +1428,8 @@ export async function chatRenameCommand(input: Input) {
     return { ok: false, error: { message: "chat-rename requires chatId" } };
   }
   const title = typeof input.title === "string" ? input.title : null;
-  await moo.chat.setTitle({ chatId: input.chatId, title });
-  return { ok: true, value: { chatId: input.chatId, title: title ?? null } };
+  const receipt = await moo.chat.setTitle({ chatId: input.chatId, title, manual: true });
+  return { ok: true, value: { chatId: input.chatId, title: receipt.title } };
 }
 
 export async function chatArchiveCommand(input: Input) {

@@ -9,7 +9,7 @@ use rusty_v8 as v8;
 use serde::Serialize;
 
 use crate::broadcast;
-use crate::host::with_host;
+use crate::host::with_db;
 use crate::util::{now_ms, sha256_object_hash};
 
 const HEAP_SNAPSHOT_KIND: &str = "v8:heapSnapshot";
@@ -125,8 +125,8 @@ fn persist_heap_snapshot(
         bytes,
     )?;
 
-    with_host(|h| -> Result<(), String> {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    with_db(|conn| -> Result<(), String> {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
         let facts = [
             ("rdf:type", "v8:HeapSnapshot".to_string()),

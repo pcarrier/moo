@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use rusty_v8 as v8;
 
+use crate::ops::v8util::{required_args, set_object_str, set_object_value};
 use crate::runtime::{install_fn, throw};
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
@@ -18,11 +19,12 @@ fn op_proc_run(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 2 {
-        throw(
-            scope,
-            "proc_run requires (cmd, argsJson, [cwd], [stdin], [timeoutMs], [envJson], [maxOutputBytes])",
-        );
+    if !required_args(
+        scope,
+        &args,
+        2,
+        "proc_run requires (cmd, argsJson, [cwd], [stdin], [timeoutMs], [envJson], [maxOutputBytes])",
+    ) {
         return;
     }
     let cmd = args.get(0).to_rust_string_lossy(scope);
@@ -190,7 +192,7 @@ fn op_proc_run(
 
     let stdout_buf = stdout_thread.join().unwrap_or_default();
     let stderr_buf = stderr_thread.join().unwrap_or_default();
-    let elapsed_ms = started.elapsed().as_millis() as f64;
+    let elapsed_ns = started.elapsed().as_nanos() as f64;
     let code = status.code().unwrap_or(-1);
     let stdout_truncated = max_output_bytes.is_some_and(|max| stdout_buf.len() > max);
     let stderr_truncated = max_output_bytes.is_some_and(|max| stderr_buf.len() > max);
@@ -208,37 +210,17 @@ fn op_proc_run(
     let stderr = String::from_utf8_lossy(stderr_slice).into_owned();
 
     let obj = v8::Object::new(scope);
-    if let Some(k) = v8::String::new(scope, "code") {
-        let v = v8::Number::new(scope, code as f64);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let (Some(k), Some(v)) = (
-        v8::String::new(scope, "stdout"),
-        v8::String::new(scope, &stdout),
-    ) {
-        obj.set(scope, k.into(), v.into());
-    }
-    if let (Some(k), Some(v)) = (
-        v8::String::new(scope, "stderr"),
-        v8::String::new(scope, &stderr),
-    ) {
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "durationMs") {
-        let v = v8::Number::new(scope, elapsed_ms);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "timedOut") {
-        let v = v8::Boolean::new(scope, timed_out);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "stdoutTruncated") {
-        let v = v8::Boolean::new(scope, stdout_truncated);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "stderrTruncated") {
-        let v = v8::Boolean::new(scope, stderr_truncated);
-        obj.set(scope, k.into(), v.into());
-    }
+    let code_value = v8::Number::new(scope, code as f64);
+    set_object_value(scope, obj, "code", code_value.into());
+    set_object_str(scope, obj, "stdout", &stdout);
+    set_object_str(scope, obj, "stderr", &stderr);
+    let elapsed_value = v8::Number::new(scope, elapsed_ns);
+    set_object_value(scope, obj, "durationNs", elapsed_value.into());
+    let timed_out_value = v8::Boolean::new(scope, timed_out);
+    set_object_value(scope, obj, "timedOut", timed_out_value.into());
+    let stdout_truncated_value = v8::Boolean::new(scope, stdout_truncated);
+    set_object_value(scope, obj, "stdoutTruncated", stdout_truncated_value.into());
+    let stderr_truncated_value = v8::Boolean::new(scope, stderr_truncated);
+    set_object_value(scope, obj, "stderrTruncated", stderr_truncated_value.into());
     rv.set(obj.into());
 }

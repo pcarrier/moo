@@ -1,4 +1,5 @@
-import type { TimelineItem } from "./timeline";
+import type { UiAppBundle, UiAppManifest } from "../../../shared/src/ui";
+import type { DiffStats, TimelineItem } from "./timeline";
 
 export type Brand<T, B extends string> = T & { readonly __brand?: B };
 
@@ -82,11 +83,16 @@ export type ImageAttachment = {
 
 export type {
   DiffStats,
+  BlobAddItem,
   FileDiffItem,
   InputItem,
   InputResponseItem,
   LogItem,
   MemoryDiffItem,
+  TodoDiffItem,
+  TodoDiffChange,
+  AgentTodo,
+  MemoryFactChange,
   RunJSDetails,
   StepItem,
   SubagentDetails,
@@ -129,9 +135,11 @@ export type TokenPressure = {
   budget: number;
   threshold: number;
   fraction: number;
+  source?: string;
+  estimated?: boolean;
 };
 
-export type DescribeValue = {
+export type DescribeOverviewValue = {
   chatId: ChatId;
   title?: string | null;
   path?: string | null;
@@ -145,13 +153,41 @@ export type DescribeValue = {
   totalTurns: number;
   totalSteps: number;
   totalCodeCalls?: number;
-  timeline: TimelineItem[];
-  trail?: TimelineItem[];
   tokens: TokenPressure;
+  todos?: import("./timeline").AgentTodo[];
   totalTimelineItems?: number;
-  hiddenTimelineItems?: number;
-  timelineLimit?: number;
+  compaction?: string | null;
 };
+
+export type DescribeTimelinePage = {
+  items: TimelineItem[];
+  hiddenItems: number;
+  limit: number;
+  sinceAt?: number;
+};
+
+export type DescribeTrailPage = {
+  items: TimelineItem[];
+  limit: number;
+};
+
+export type DescribeSnapshotValue = {
+  mode: "snapshot";
+  overview: DescribeOverviewValue;
+  timeline: DescribeTimelinePage;
+  trail: DescribeTrailPage;
+};
+
+export type DescribeUpdateValue = {
+  mode: "update";
+  overview: DescribeOverviewValue;
+  changed: boolean;
+  timeline?: DescribeTimelinePage;
+};
+
+export type DescribeValue =
+  | DescribeSnapshotValue
+  | DescribeUpdateValue;
 
 export type CompactionLayer = {
   hash: Sha256Hash;
@@ -179,25 +215,11 @@ export type PointersValue = { pointers: PointerEntry[] };
 export type MemoryPattern = [string, string, string];
 export type MemoryBindings = Record<string, string>;
 export type MemoryWrite = { subject: string; predicate: string; object: string; project: string | null };
-export type MemoryPatchGroup = { asserts?: MemoryPattern[]; retracts?: MemoryPattern[] };
-export type MemoryPatch = { groups: MemoryPatchGroup[]; project: string | null };
 export type StoreObject = { kind: string; content?: string; text?: string; bytesBase64?: string; size?: number } | null;
 
-export type UiApp = {
-  id: string;
-  title: string;
-  description?: string;
-  icon?: string;
-  entry?: string;
-  api?: Array<{ name: string; input?: unknown }>;
-};
+export type UiApp = UiAppManifest;
 
-export type UiBundle = {
-  html?: string;
-  css?: string;
-  js?: string;
-  files?: Record<string, string>;
-};
+export type UiBundle = UiAppBundle;
 
 export type McpTransport = "http" | "sse";
 
@@ -259,6 +281,9 @@ export type FsEntry = {
   kind: string;
   size: number;
   mtime: number;
+  changed?: boolean;
+  additions?: number;
+  deletions?: number;
 };
 
 export type FsListValue = {
@@ -266,6 +291,44 @@ export type FsListValue = {
   parent: string | null;
   entries: FsEntry[];
   recent: string[];
+};
+
+export type GitBranchItem = {
+  name: string;
+  ref: string;
+  kind: "head" | "local" | "remote";
+  current?: boolean;
+  upstream?: string | null;
+};
+
+export type JjRevisionItem = {
+  name: string;
+  rev: string;
+  kind: "current" | "bookmark" | "trunk" | "recent";
+  description?: string | null;
+  current?: boolean;
+};
+
+export type RepoKind = "git" | "jj" | null;
+
+export type GitBranchesValue = {
+  path: string;
+  gitRoot: string | null;
+  repoRoot?: string | null;
+  repoKind?: RepoKind;
+  isRepo: boolean;
+  branches: GitBranchItem[];
+  jjRevisions?: JjRevisionItem[];
+  currentBranch: string | null;
+  defaultBranch: string | null;
+  selectedBranch: string | null;
+  currentJjRevision?: string | null;
+  selectedJjRevision?: string | null;
+  hasRemote: boolean;
+  jjAvailable?: boolean;
+  canUpgradeToJj?: boolean;
+  fetched?: boolean;
+  message?: string | null;
 };
 
 export type FsSearchEntry = FsEntry & {
@@ -283,6 +346,12 @@ export type FsReadValue = {
   size: number;
   mtime: number;
   content: string;
+  changed?: boolean;
+  additions?: number;
+  deletions?: number;
+  diff?: string;
+  diffStats?: DiffStats;
+  entries?: FsEntry[];
 };
 
 export type Predicate = {
@@ -312,6 +381,13 @@ export type V8HeapSnapshot = {
   totalAllocatedBytes: number;
 };
 
+export type V8PoolQueueSnapshot = {
+  lane: string;
+  queued: number;
+  totalEnqueued: number;
+  maxQueued: number;
+};
+
 export type V8WorkerSnapshot = {
   key: string;
   lane: string;
@@ -320,7 +396,7 @@ export type V8WorkerSnapshot = {
   status: string;
   currentCommand?: string | null;
   currentJobStartedAt?: number | null;
-  currentJobElapsedMs?: number | null;
+  currentJobElapsedNs?: number | null;
   jobs: number;
   generationJobs: number;
   errors: number;
@@ -331,7 +407,7 @@ export type V8WorkerSnapshot = {
   cacheMisses: number;
   snapshotHits: number;
   snapshotMisses: number;
-  lastDurationMs: number;
+  lastDurationNs: number;
   lastQueueWaitMs: number;
   lastCommand?: string | null;
   lastContextKind?: string | null;
@@ -358,12 +434,26 @@ export type V8Event = {
   detail?: string | null;
 };
 
-export type V8RuntimeSettings = {
+export type V8PoolRuntimeSettings = {
   maxWorkers: number | null;
   maxOldGenerationBytes: number | null;
   maxYoungGenerationBytes: number | null;
   recycleUsedHeapBytes: number | null;
+};
+
+export type V8RuntimeSettings = {
+  maxWorkers: number | null;
+  readMaxWorkers: number | null;
+  scanMaxWorkers: number | null;
+  toolMaxWorkers: number | null;
+  maxOldGenerationBytes: number | null;
+  maxYoungGenerationBytes: number | null;
+  recycleUsedHeapBytes: number | null;
   startupSnapshotsEnabled: boolean | null;
+  mainPool: V8PoolRuntimeSettings | null;
+  readPool: V8PoolRuntimeSettings | null;
+  scanPool: V8PoolRuntimeSettings | null;
+  toolPool: V8PoolRuntimeSettings | null;
 };
 
 export type V8SettingsValue = {
@@ -372,9 +462,30 @@ export type V8SettingsValue = {
   effective: V8RuntimeSettings;
 };
 
+export type TraceConfig = {
+  enabled: boolean;
+  clickhouseUrl: string;
+  clickhouseDatabase: string;
+  clickhouseTablePrefix: string;
+  clickhouseUser: string | null;
+  clickhousePassword: string | null;
+};
+
+export type TraceSettingsValue = {
+  enabled: boolean;
+  config: TraceConfig;
+  defaults: TraceConfig;
+  note: string;
+};
+
+export type TraceConfigTestValue = {
+  message: string;
+};
+
 export type V8StatsValue = {
   generatedAt: number;
   workers: V8WorkerSnapshot[];
+  pools: V8PoolQueueSnapshot[];
   events: V8Event[];
   config: {
     recycleUsedHeapBytes: number;
@@ -387,6 +498,9 @@ export type V8StatsValue = {
   totals: {
     workers: number;
     busy: number;
+    queued: number;
+    totalEnqueued: number;
+    maxQueued: number;
     totalJobs: number;
     totalErrors: number;
     totalTerminations: number;
@@ -399,4 +513,48 @@ export type V8StatsValue = {
     usedHeapSize: number;
     totalHeapSize: number;
   };
+};
+
+export interface TraceRow {
+  id: string;
+  traceId?: string | null;
+  parentId: string | null;
+  chatId: string | null;
+  runId: string | null;
+  kind: "chat" | "turn" | "step" | "llm" | "tool" | "runjs" | "system" | "user" | "frontend" | string;
+  name: string;
+  depth: number;
+  seq: number;
+  status: "ok" | "error" | "running" | "cancelled" | "timeout" | string;
+  t0Ns: number;
+  t0Us?: number;
+  t1Ns: number | null;
+  t1Us?: number | null;
+  inputHash: string | null;
+  outputHash: string | null;
+  errorHash: string | null;
+  inputObject?: StoreObject;
+  outputObject?: StoreObject;
+  errorObject?: StoreObject;
+  invokedFromStepId: string | null;
+  dataHash?: string | null;
+  dataJson: any | null;
+}
+
+
+export type TraceSearchArgs = Record<string, unknown> & {
+  query?: string;
+  kind?: string;
+  status?: string;
+  chatId?: string;
+  runId?: string;
+  scope?: "chat" | "global" | "any";
+  hasError?: boolean;
+  limit?: number;
+  beforeNs?: number | string;
+  beforeUs?: number;
+  startedAfterNs?: number | string;
+  startedBeforeNs?: number | string;
+  minDurationNs?: number | string;
+  maxDurationNs?: number | string;
 };

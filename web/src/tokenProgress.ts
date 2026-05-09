@@ -3,6 +3,8 @@ export type TokenProgressValue = {
   budget: number;
   threshold: number;
   fraction: number;
+  source?: string;
+  estimated?: boolean;
 };
 
 export function mergeTokenProgress(

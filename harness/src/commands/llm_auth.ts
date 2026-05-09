@@ -1,7 +1,9 @@
+import * as host from "../host_ops";
 import { moo } from "../moo";
 import type { RetryPolicy } from "../core/retry";
 import { DEFAULT_LLM_RETRY_POLICY } from "../core/retry";
 import type { Input } from "./_shared";
+import { PROVIDER_METADATA, normalizeProvider, type ProviderName } from "../llm_models";
 
 const SETTINGS_REF = "settings";
 const OAUTH_STATE_REF_PREFIX = "llm/auth/oauth/openai/";
@@ -12,10 +14,9 @@ const OPENAI_ISSUER = "https://auth.openai.com";
 const OPENAI_AUTHORIZE_URL = OPENAI_ISSUER + "/oauth/authorize";
 const OPENAI_TOKEN_URL = OPENAI_ISSUER + "/oauth/token";
 
-declare const __op_sha256_base64url: (input: string) => string;
 
-export type LlmAuthProviderId = "openai" | "anthropic" | "qwen";
-export type LlmAuthMode = "env" | "apiKey" | "oauth";
+export type LlmAuthProviderId = ProviderName;
+export type LlmAuthMode = "env" | "apiKey" | "oauth" | "subscription";
 
 export type LlmAuthProviderSettings = {
   authMode: LlmAuthMode;
@@ -24,6 +25,7 @@ export type LlmAuthProviderSettings = {
   refreshToken?: string | null;
   expiresAt?: number | null;
   oauthSubject?: string | null;
+  oauthAccountId?: string | null;
   baseUrl?: string | null;
 };
 
@@ -38,31 +40,10 @@ export type LlmAuthSettings = {
   updatedAt?: number;
 };
 
-const PROVIDERS: Record<LlmAuthProviderId, { envKey: string; envAltKeys?: string[]; baseUrlEnv: string; defaultBaseUrl: string; fallbackModel: string }> = {
-  openai: {
-    envKey: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    defaultBaseUrl: "https://api.openai.com/v1",
-    fallbackModel: "gpt-5.5",
-  },
-  anthropic: {
-    envKey: "ANTHROPIC_API_KEY",
-    baseUrlEnv: "ANTHROPIC_BASE_URL",
-    defaultBaseUrl: "https://api.anthropic.com/v1",
-    fallbackModel: "claude-opus-4-7",
-  },
-  qwen: {
-    envKey: "QWEN_API_KEY",
-    envAltKeys: ["DASHSCOPE_API_KEY"],
-    baseUrlEnv: "QWEN_BASE_URL",
-    defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    fallbackModel: "qwen3.6",
-  },
-};
+const PROVIDERS = PROVIDER_METADATA;
 
 function providerId(value: unknown): LlmAuthProviderId | null {
-  const id = String(value ?? "").trim().toLowerCase();
-  return id === "openai" || id === "anthropic" || id === "qwen" ? id : null;
+  return normalizeProvider(value);
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -81,7 +62,7 @@ export function normalizeRetryPolicy(input: Partial<RetryPolicy> | null | undefi
   };
 }
 
-export const DEFAULT_COMPACTION_THRESHOLD_PERCENT = 50;
+export const DEFAULT_COMPACTION_THRESHOLD_PERCENT = 75;
 
 export function normalizeCompactionSettings(input: Partial<LlmCompactionSettings> | null | undefined): LlmCompactionSettings {
   return {
@@ -99,16 +80,20 @@ function defaultSettings(): LlmAuthSettings {
       openai: defaultProviderSettings(),
       anthropic: defaultProviderSettings(),
       qwen: defaultProviderSettings(),
+      xai: defaultProviderSettings(),
     },
     compaction: normalizeCompactionSettings(null),
     retries: normalizeRetryPolicy(DEFAULT_LLM_RETRY_POLICY),
   };
 }
 
-function normalizeProvider(raw: unknown, id: LlmAuthProviderId): LlmAuthProviderSettings {
+function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuthProviderSettings {
   const r = raw && typeof raw === "object" ? raw as LlmAuthProviderSettings : {} as LlmAuthProviderSettings;
-  const requestedMode = r.authMode === "apiKey" || r.authMode === "oauth" ? r.authMode : "env";
-  const authMode: LlmAuthMode = id === "openai" ? requestedMode : requestedMode === "apiKey" ? "apiKey" : "env";
+  const requestedMode = r.authMode === "apiKey" || r.authMode === "oauth" || r.authMode === "subscription" ? r.authMode : "env";
+  const authMode: LlmAuthMode =
+    id === "openai" ? requestedMode === "subscription" ? "env" : requestedMode :
+    id === "anthropic" ? requestedMode === "oauth" ? "env" : requestedMode :
+    requestedMode === "apiKey" ? "apiKey" : "env";
   return {
     authMode,
     apiKey: typeof r.apiKey === "string" && r.apiKey ? r.apiKey : null,
@@ -116,6 +101,7 @@ function normalizeProvider(raw: unknown, id: LlmAuthProviderId): LlmAuthProvider
     refreshToken: id === "openai" && typeof r.refreshToken === "string" && r.refreshToken ? r.refreshToken : null,
     expiresAt: id === "openai" && Number.isFinite(r.expiresAt) ? Number(r.expiresAt) : null,
     oauthSubject: id === "openai" && typeof r.oauthSubject === "string" && r.oauthSubject ? r.oauthSubject : null,
+    oauthAccountId: id === "openai" && typeof r.oauthAccountId === "string" && r.oauthAccountId ? r.oauthAccountId : null,
     baseUrl: typeof r.baseUrl === "string" && r.baseUrl.trim() ? r.baseUrl.trim() : null,
   };
 }
@@ -127,9 +113,10 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
   const raw = obj?.value ?? {};
   return {
     providers: {
-      openai: normalizeProvider(raw.providers?.openai, "openai"),
-      anthropic: normalizeProvider(raw.providers?.anthropic, "anthropic"),
-      qwen: normalizeProvider(raw.providers?.qwen, "qwen"),
+      openai: normalizeProviderSettings(raw.providers?.openai, "openai"),
+      anthropic: normalizeProviderSettings(raw.providers?.anthropic, "anthropic"),
+      qwen: normalizeProviderSettings(raw.providers?.qwen, "qwen"),
+      xai: normalizeProviderSettings(raw.providers?.xai, "xai"),
     },
     compaction: normalizeCompactionSettings(raw.compaction),
     retries: normalizeRetryPolicy(raw.retries),
@@ -170,21 +157,32 @@ async function fallbackModelForProvider(id: LlmAuthProviderId): Promise<string> 
     const prefix = id + ":";
     if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim() || PROVIDERS[id].fallbackModel;
   }
-  const envName = id === "openai" ? "OPENAI_MODEL" : id === "anthropic" ? "ANTHROPIC_MODEL" : "QWEN_MODEL";
+  const envName = id === "openai" ? "OPENAI_MODEL" : id === "anthropic" ? "ANTHROPIC_MODEL" : id === "qwen" ? "QWEN_MODEL" : "XAI_MODEL";
   return (await moo.env.get(envName)) || PROVIDERS[id].fallbackModel;
 }
 
-export async function providerConfiguredCredential(id: LlmAuthProviderId): Promise<{ apiKey: string | null; authMode: LlmAuthMode; keyEnvHint: string; baseUrl: string; model: string }> {
+export async function providerConfiguredCredential(id: LlmAuthProviderId): Promise<{ apiKey: string | null; authMode: LlmAuthMode; keyEnvHint: string; baseUrl: string; model: string; oauthAccountId?: string | null }> {
   const settings = await readLlmAuthSettings();
   const provider = settings.providers[id];
   const meta = PROVIDERS[id];
   const baseUrl = provider.baseUrl || (await moo.env.get(meta.baseUrlEnv)) || meta.defaultBaseUrl;
   const model = await fallbackModelForProvider(id);
   if (id === "openai" && provider.authMode === "oauth") {
-    return { apiKey: provider.accessToken || null, authMode: "oauth", keyEnvHint: "OpenAI OAuth", baseUrl, model };
+    const oauthBaseUrl = provider.baseUrl || "https://chatgpt.com/backend-api/codex";
+    return { apiKey: provider.accessToken || null, authMode: "oauth", keyEnvHint: "OpenAI OAuth", baseUrl: oauthBaseUrl, model, oauthAccountId: provider.oauthAccountId };
+  }
+  if (id === "anthropic" && provider.authMode === "subscription") {
+    return { apiKey: provider.apiKey || (await moo.env.get("ANTHROPIC_AUTH_TOKEN")), authMode: "subscription", keyEnvHint: "ANTHROPIC_AUTH_TOKEN", baseUrl, model };
   }
   if (provider.authMode === "apiKey") {
     return { apiKey: provider.apiKey || null, authMode: "apiKey", keyEnvHint: "stored " + meta.envKey, baseUrl, model };
+  }
+  if (id === "anthropic") {
+    const apiKey = await moo.env.get(meta.envKey);
+    if (apiKey) return { apiKey, authMode: "env", keyEnvHint: meta.envKey, baseUrl, model };
+    const subscriptionToken = await moo.env.get("ANTHROPIC_AUTH_TOKEN");
+    if (subscriptionToken) return { apiKey: subscriptionToken, authMode: "subscription", keyEnvHint: "ANTHROPIC_AUTH_TOKEN", baseUrl, model };
+    return { apiKey: null, authMode: "env", keyEnvHint: meta.envKey + " or ANTHROPIC_AUTH_TOKEN", baseUrl, model };
   }
   return { apiKey: await envKeyForProvider(id), authMode: "env", keyEnvHint: meta.envKey, baseUrl, model };
 }
@@ -212,6 +210,7 @@ function redact(settings: LlmAuthSettings) {
       openai: redactProvider(settings.providers.openai),
       anthropic: redactProvider(settings.providers.anthropic),
       qwen: redactProvider(settings.providers.qwen),
+      xai: redactProvider(settings.providers.xai),
     },
   };
 }
@@ -224,7 +223,12 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
   if (!input || typeof input !== "object") return current;
   const providerInput = input as Record<string, unknown>;
   const modeRaw = String(providerInput.authMode ?? current.authMode ?? "env");
-  const authMode: LlmAuthMode = modeRaw === "apiKey" || (id === "openai" && modeRaw === "oauth") ? modeRaw as LlmAuthMode : "env";
+  const authMode: LlmAuthMode =
+    modeRaw === "apiKey" ||
+    (id === "openai" && modeRaw === "oauth") ||
+    (id === "anthropic" && modeRaw === "subscription")
+      ? modeRaw as LlmAuthMode
+      : "env";
   const apiKeyInput = providerInput.apiKey;
   const next: LlmAuthProviderSettings = {
     ...current,
@@ -264,6 +268,34 @@ function originFromInput(input: Input): string {
   return "http://localhost:3000";
 }
 
+function decodeBase64(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let bits = 0;
+  let bitLength = 0;
+  let out = "";
+  for (const ch of value.replace(/=+$/, "")) {
+    const n = alphabet.indexOf(ch);
+    if (n < 0) continue;
+    bits = (bits << 6) | n;
+    bitLength += 6;
+    if (bitLength >= 8) {
+      bitLength -= 8;
+      out += String.fromCharCode((bits >> bitLength) & 0xff);
+    }
+  }
+  return out;
+}
+
+function decodeJwtPayload(jwt: string): Record<string, any> | null {
+  try {
+    const parts = jwt.split(".");
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
+    return JSON.parse(decodeBase64(padded));
+  } catch { return null; }
+}
+
 function formEncode(values: Record<string, string | undefined>): string {
   return Object.entries(values)
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
@@ -288,13 +320,10 @@ async function exchangeOpenAiOAuthTokens(saved: { clientId: string; redirectUri:
   try { token = JSON.parse(resp.body); } catch { return { ok: false, error: { message: "OAuth token response was not JSON" } }; }
   const idToken = typeof token.id_token === "string" ? token.id_token : "";
   const loginAccessToken = typeof token.access_token === "string" ? token.access_token : "";
-  if (!idToken) return { ok: false, error: { message: "OAuth token response did not include an ID token" } };
-  const apiKeyResp = await moo.http.fetch({ method: "POST", url: OPENAI_TOKEN_URL, headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: formEncode({ grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", client_id: saved.clientId, requested_token: "openai-api-key", subject_token: idToken, subject_token_type: "urn:ietf:params:oauth:token-type:id_token" }), timeoutMs: 30_000 });
-  if (apiKeyResp.status >= 400) return { ok: false, error: { message: "OpenAI API token exchange failed (" + apiKeyResp.status + ")", detail: apiKeyResp.body } };
-  let apiKeyToken: any;
-  try { apiKeyToken = JSON.parse(apiKeyResp.body); } catch { return { ok: false, error: { message: "OpenAI API token exchange response was not JSON" } }; }
-  const accessToken = typeof apiKeyToken.access_token === "string" ? apiKeyToken.access_token : "";
-  if (!accessToken) return { ok: false, error: { message: "OpenAI API token exchange did not include an access token" } };
+  const accessToken = loginAccessToken;
+  if (!accessToken) return { ok: false, error: { message: "OpenAI OAuth did not produce a usable access token" } };
+  const jwt = decodeJwtPayload(loginAccessToken) || (idToken ? decodeJwtPayload(idToken) : null);
+  const accountId = jwt?.["https://api.openai.com/auth"]?.chatgpt_account_id ?? null;
   const current = await readLlmAuthSettings();
   const expiresIn = Number(token.expires_in);
   const openai: LlmAuthProviderSettings = {
@@ -304,6 +333,7 @@ async function exchangeOpenAiOAuthTokens(saved: { clientId: string; redirectUri:
     refreshToken: typeof token.refresh_token === "string" ? token.refresh_token : current.providers.openai.refreshToken ?? null,
     expiresAt: Number.isFinite(expiresIn) ? (await moo.time.nowMs()) + expiresIn * 1000 : null,
     oauthSubject: loginAccessToken ? loginAccessToken.slice(0, 32) : current.providers.openai.oauthSubject ?? null,
+    oauthAccountId: typeof accountId === "string" && accountId ? accountId : current.providers.openai.oauthAccountId ?? null,
   };
   return { ok: true, settings: await writeLlmAuthSettings({ ...current, providers: { ...current.providers, openai } }) };
 }
@@ -314,7 +344,7 @@ export async function llmAuthOAuthStartCommand(input: Input) {
   const state = randomState();
   const redirectUri = String(input.redirectUri ?? originFromInput(input) + "/llm-auth/oauth/callback").trim();
   const verifier = randomState() + randomState();
-  const codeChallenge = __op_sha256_base64url(verifier);
+  const codeChallenge = host.sha256Base64Url(verifier);
   const expiresAt = (await moo.time.nowMs()) + 10 * 60_000;
   const clientId = CODEX_OPENAI_CLIENT_ID;
   await moo.pointers.set(OAUTH_STATE_REF_PREFIX + state, await moo.objects.putJSON({ kind: "llm:OAuthState", value: { state, provider: "openai", clientId, redirectUri, verifier, tokenUrl: OPENAI_TOKEN_URL, expiresAt } }));

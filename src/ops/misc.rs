@@ -2,7 +2,8 @@ use rusty_v8 as v8;
 
 use crate::broadcast;
 use crate::driver;
-use crate::runtime::{install_fn, throw};
+use crate::ops::v8util::{required_args, set_return_str};
+use crate::runtime::install_fn;
 use crate::util::{now_ms, random_id};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -29,9 +30,7 @@ fn op_chat_running_ids(
 ) {
     let ids = driver::running_ids();
     let json = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
-    if let Some(v) = v8::String::new(scope, &json) {
-        rv.set(v.into());
-    }
+    set_return_str(scope, &mut rv, &json);
 }
 
 fn op_chat_running_started_at(
@@ -41,9 +40,7 @@ fn op_chat_running_started_at(
 ) {
     let started_at = driver::running_started_at();
     let json = serde_json::to_string(&started_at).unwrap_or_else(|_| "{}".to_string());
-    if let Some(v) = v8::String::new(scope, &json) {
-        rv.set(v.into());
-    }
+    set_return_str(scope, &mut rv, &json);
 }
 
 fn op_broadcast(
@@ -51,8 +48,7 @@ fn op_broadcast(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "broadcast requires (json)");
+    if !required_args(scope, &args, 1, "broadcast requires (json)") {
         return;
     }
     // No persistence — pushes a raw JSON event to all WS subscribers. Used
@@ -74,9 +70,7 @@ fn op_id(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: 
         "id".to_string()
     };
     let id = random_id(&prefix);
-    if let Some(v) = v8::String::new(scope, &id) {
-        rv.set(v.into());
-    }
+    set_return_str(scope, &mut rv, &id);
 }
 
 fn op_sha256_base64url(
@@ -84,8 +78,7 @@ fn op_sha256_base64url(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "sha256_base64url requires (input)");
+    if !required_args(scope, &args, 1, "sha256_base64url requires (input)") {
         return;
     }
     let input = args.get(0).to_rust_string_lossy(scope);
@@ -93,7 +86,5 @@ fn op_sha256_base64url(
     hasher.update(input.as_bytes());
     let digest = hasher.finalize();
     let out = B64URL.encode(digest);
-    if let Some(v) = v8::String::new(scope, &out) {
-        rv.set(v.into());
-    }
+    set_return_str(scope, &mut rv, &out);
 }

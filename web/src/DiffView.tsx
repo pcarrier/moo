@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffDisplaySections, type DiffDisplaySection } from "./diffs";
 import type { MemoryFactChange } from "./api";
-import { escapeHtml, highlightByPath } from "./syntax";
+import { escapeHtml, highlightLineFragmentByPath } from "./syntax";
 
 export type DiffExpansionStore = {
   shown: (key: string) => number;
@@ -94,7 +94,7 @@ function CollapsedDiffSection(props: {
     <Show when={remaining() > 0}>
       <div class="diff-collapsed-controls">
         <span class="diff-collapsed-label">
-          {remaining()} of {total()} unchanged lines hidden{location()}
+          {remaining()}/{total()} hidden
         </span>
         <span class="diff-collapsed-actions" aria-label="Expand hidden diff context">
           <button type="button" onClick={() => expand(10)}>+{Math.min(10, remaining())}</button>
@@ -292,7 +292,7 @@ function renderDiffLine(line: string, path: string): { cls: string; parts: DiffL
     body = line;
   } else if (line.startsWith("+++") || line.startsWith("---")) {
     cls = "diff-line diff-file";
-    prefixHtml = '<span class="diff-prefix">' + escapeHtml(line.slice(0, 3)) + '</span>';
+    prefixHtml = '<span class="diff-prefix diff-file-prefix">' + escapeHtml(line.slice(0, 3)) + '</span>';
     body = line.slice(3);
   } else if (line.startsWith("+")) {
     cls = "diff-line diff-add";
@@ -327,7 +327,7 @@ function linkifyHighlightedText(prefixHtml: string, text: string, path: string, 
   while ((match = SHA256_RE.exec(text)) !== null) {
     if (match.index > last) {
       const segment = text.slice(last, match.index);
-      parts.push({ html: highlight ? highlightByPath(segment, path) : escapeHtml(segment) });
+      parts.push({ html: highlight ? highlightLineFragmentByPath(segment, path) : escapeHtml(segment) });
     }
     const token = match[0]!;
     parts.push({ text: token, hash: normalizeSha256(token) });
@@ -335,7 +335,7 @@ function linkifyHighlightedText(prefixHtml: string, text: string, path: string, 
   }
   if (last < text.length) {
     const segment = text.slice(last);
-    parts.push({ html: highlight ? highlightByPath(segment, path) : escapeHtml(segment) });
+    parts.push({ html: highlight ? highlightLineFragmentByPath(segment, path) : escapeHtml(segment) });
   }
   return parts;
 }

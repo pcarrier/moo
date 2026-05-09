@@ -48,12 +48,21 @@ declare global {
     limit: number | null,
   ): string[][];
   function __op_facts_refs(prefix?: string | null): string[];
+  function __op_facts_graph_summaries(store?: string | null, graph?: string | null): string;
   function __op_facts_count(store: string): number;
   function __op_chat_fact_summaries(): string;
   function __op_facts_swap(store: string, removesJson: string, addsJson: string): void;
+  function __op_facts_snapshot_copy(
+    sourceStore: string,
+    targetStore: string,
+    cutoffAt: number,
+    fromGraph: string,
+    toGraph: string,
+  ): number;
   function __op_facts_clear(store: string): number;
   function __op_facts_purge(store: string): number;
   function __op_facts_purge_graph(graph: string): number;
+  function __op_facts_purge_subject_prefix(store: string, subjectPrefix: string, graph?: string | null): number;
   function __op_sparql_query(
     query: string,
     store: string,
@@ -65,7 +74,6 @@ declare global {
     | { type: "construct"; result: Array<[string, string, string, string]> };
   function __op_fs_read(path: string): string;
   function __op_fs_write(path: string, content: string): void;
-  function __op_fs_remove(path: string): void;
   function __op_fs_mkdir(path: string): void;
   function __op_fs_list(path: string): string[];
   function __op_fs_glob(pattern: string): string[];
@@ -83,7 +91,7 @@ declare global {
     code: number;
     stdout: string;
     stderr: string;
-    durationMs: number;
+    durationNs: number;
     timedOut: boolean;
     stdoutTruncated?: boolean;
     stderrTruncated?: boolean;
@@ -110,6 +118,17 @@ declare global {
   function __op_chat_running_ids(): string;
   function __op_chat_running_started_at(): string;
   function __op_agent_run(requestJson: string): Promise<string>;
+  function __op_trace_ensure_root(optsJson: string): void;
+  function __op_trace_start_root(stepId: string | null, dataJson: string): string;
+  function __op_trace_current(): string | null;
+  function __op_trace_get(optsJson: string): string | null;
+  function __op_trace_events(optsJson: string): string;
+  function __op_trace_recent(limit: number): string;
+  function __op_trace_enabled(): boolean;
+  function __op_trace_insert(optsJson: string): string | null;
+  function __op_trace_finish(id: string, status?: string | null, dataJson?: string | null): boolean;
+  function __op_trace_set_parent(id: string | null): string | null;
+  function __op_trace_leave(): void;
 
   // Set by index.ts so command handlers can call back into agent code without
   // a circular module-import problem.

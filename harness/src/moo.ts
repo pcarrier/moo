@@ -1,116 +1,32 @@
-import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, FsPatchArgs, FsPatchReceipt, TermBindings, BindingTerm, QuadObject } from "./types";
+import * as host from "./host_ops";
+import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic } from "./types";
 import { err, ok, errorInfo } from "./core/result";
+import { unifiedDiffWithStats } from "./core/diff";
+import { encodeObject, stringBytes, term, validate } from "./core/terms";
 import { Term, MooApiError } from "./types";
-import { assertFactObject, assertFactObjects, chatRefs, unpackQuad, stringifyForLog } from "./lib";
+import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
 import { appendStep } from "./steps";
-
-// IRIs and prefixed names render bare. Anything else is encoded as a Turtle
-// string literal with proper escaping. Numbers and booleans become bare
-// numeric/boolean literals. Variables (`?x`) pass through.
-function encodeObject(o: ObjectInput): string {
-  if (o instanceof Term) return o.turtle;
-  if (typeof o === "number") {
-    if (!Number.isFinite(o)) return `"${String(o)}"`;
-    return String(o);
-  }
-  if (typeof o === "boolean") return o ? "true" : "false";
-  if (typeof o === "string") {
-    if (o.startsWith("?")) return o; // variable
-    if (/^[A-Za-z][A-Za-z0-9_-]*:[^\s]+$/.test(o)) return o; // prefixed IRI
-    if (/^<[^>\s]+>$/.test(o)) return o; // full IRI
-    return encodeStringLiteral(o);
-  }
-  return encodeStringLiteral(String(o));
-}
-
-function encodeStringLiteral(s: string): string {
-  let out = '"';
-  for (const ch of s) {
-    if (ch === '"') out += '\\"';
-    else if (ch === "\\") out += "\\\\";
-    else if (ch === "\n") out += "\\n";
-    else if (ch === "\r") out += "\\r";
-    else if (ch === "\t") out += "\\t";
-    else out += ch;
-  }
-  return out + '"';
-}
-
-const HASH_RE = /^(sha256:)?[a-f0-9]{64}$/i;
-const UI_APP_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/;
-const REF_NAME_RE = /^[^\s]+$/;
-const POINTER_NAME_RE = /^(?!.*\[object\s+Promise\])[^\s]+$/;
-const GRAPH_NAME_RE = /^[^\s]+$/;
-
-const validate: Moo["validate"] = {
-  pointerName(name) {
-    return typeof name === "string" && name.length > 0 && POINTER_NAME_RE.test(name);
-  },
-  factStoreName(name) {
-    return typeof name === "string" && name.length > 0 && REF_NAME_RE.test(name);
-  },
-  graphName(graph) {
-    return typeof graph === "string" && graph.length > 0 && GRAPH_NAME_RE.test(graph);
-  },
-  uiAppId(id) {
-    return typeof id === "string" && UI_APP_ID_RE.test(id);
-  },
-  hash(hash) {
-    return typeof hash === "string" && HASH_RE.test(hash);
-  },
-  relativePath(path) {
-    if (typeof path !== "string" || path.length === 0 || path.startsWith("/")) return false;
-    return !path.split("/").some((seg) => seg === "..");
-  },
-};
-
-const term: Moo["term"] = {
-  iri(uri) {
-    if (/^<[^>\s]+>$/.test(uri)) return new Term(uri);
-    if (/^[A-Za-z][A-Za-z0-9_-]*:[^\s]+$/.test(uri)) return new Term(uri);
-    return new Term(`<${uri}>`);
-  },
-  string(s, opts) {
-    let t = encodeStringLiteral(s);
-    if (opts?.lang) t += `@${opts.lang}`;
-    else if (opts?.type) t += `^^${opts.type}`;
-    return new Term(t);
-  },
-  int(n) {
-    return new Term(String(Math.trunc(n)));
-  },
-  decimal(n) {
-    const s = String(n);
-    return new Term(s.includes(".") ? s : `${s}.0`);
-  },
-  bool(b) {
-    return new Term(b ? "true" : "false");
-  },
-  datetime(d) {
-    const iso = typeof d === "string" ? d : d.toISOString();
-    return new Term(`"${iso}"^^xsd:dateTime`);
-  },
-};
+import { addTodo, clearTodos, getTodos, patchTodos, updateTodo, withTodoDiffBatch } from "./todos";
 
 const time: Moo["time"] = {
   async nowMs() {
-    return __op_now();
+    return host.now();
   },
   async nowISO() {
-    return new Date(__op_now()).toISOString();
+    return new Date(host.now()).toISOString();
   },
   async datetime(d) {
-    const value = d == null ? new Date(__op_now()) : typeof d === "number" ? new Date(d) : d;
+    const value = d == null ? new Date(host.now()) : typeof d === "number" ? new Date(d) : d;
     return term.datetime(value);
   },
   async nowPlus(ms) {
-    return __op_now() + Number(ms);
+    return host.now() + Number(ms);
   },
 };
 
 const id: Moo["id"] = {
   async new(prefix = "id") {
-    return __op_id(prefix);
+    return host.newId(prefix);
   },
 };
 
@@ -119,9 +35,9 @@ const log: Moo["log"] = (...args) => {
   const chatId = activeChatId;
   if (!chatId) return;
   const c = chatRefs(chatId);
-  const logId = __op_id("log");
-  const at = String(__op_now());
-  __op_facts_swap(
+  const logId = host.newId("log");
+  const at = String(host.now());
+  host.swapFacts(
     c.facts,
     EMPTY_JSON_ARRAY,
     JSON.stringify([
@@ -134,7 +50,26 @@ const log: Moo["log"] = (...args) => {
 };
 
 let activeChatId: string | null = null;
-let activeRunJSContext: { chatId: string; runJsStepId: string; depth: number; outstanding: Set<string> } | null = null;
+let activeServerBaseUrl: string | null = null;
+let activeRunJSContext: { chatId: string; runJsStepId: string; depth: number; outstanding: Set<string>; traceId?: string | null } | null = null;
+
+function normalizeServerBaseUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed || !/^https?:\/\//i.test(trimmed) || /\s/.test(trimmed)) return null;
+  return trimmed;
+}
+
+export async function withMooServerBaseUrlContext<T>(serverBaseUrl: unknown, fn: () => Promise<T>): Promise<T> {
+  const previous = activeServerBaseUrl;
+  const next = normalizeServerBaseUrl(serverBaseUrl) || previous;
+  activeServerBaseUrl = next;
+  try {
+    return await fn();
+  } finally {
+    activeServerBaseUrl = previous;
+  }
+}
 
 export async function withMooChatContext<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
   const previous = activeChatId;
@@ -155,9 +90,9 @@ export async function withMooRunJSContext<T>(
   const previousChat = activeChatId;
   const previousRunJS = activeRunJSContext;
   activeChatId = chatId;
-  activeRunJSContext = { chatId, runJsStepId, depth, outstanding: new Set() };
+  activeRunJSContext = { chatId, runJsStepId, depth, outstanding: new Set(), traceId: null };
   try {
-    return await fn();
+    return await withTodoDiffBatch(chatId, fn);
   } finally {
     const ctx = activeRunJSContext;
     activeRunJSContext = previousRunJS;
@@ -174,289 +109,435 @@ export async function withMooRunJSContext<T>(
   }
 }
 
-function splitLinesForDiff(text: string): string[] {
-  if (text.length === 0) return [];
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const lines = normalized.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
+
+type TraceRootInfo = { traceId?: string | null; resultHash?: string | null; error?: string | null; status?: string };
+
+function inferTraceRoot(id: string, data: Record<string, unknown>) {
+  const chatId = typeof data.chatId === "string" && data.chatId ? data.chatId : null;
+  const runId = typeof data.runId === "string" && data.runId ? data.runId : null;
+  const label = typeof data.label === "string" && data.label ? data.label : id;
+  const command = typeof data.command === "string" && data.command ? data.command : null;
+  const startedNs = Date.now() * 1_000_000;
+  if (id.startsWith("command:")) {
+    return {
+      id,
+      chatId,
+      runId,
+      kind: "command",
+      name: command ? `command ${command}` : label,
+      startedNs,
+      data: { label, command, chatId },
+    };
+  }
+  if (id.startsWith("step:")) {
+    // Steps are interior nodes in the trace tree; never create root `step` rows.
+    // The step id is still used as the attachment point for the runjs trace.
+    return {
+      id,
+      chatId,
+      runId,
+      kind: "chat",
+      name: label,
+      startedNs,
+      data: { label, chatId, runId },
+    };
+  }
+  return { id, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } };
 }
 
-type DiffStats = { added: number; removed: number; lines: number };
-
-const DIFF_CONTEXT_LINES = 3;
-const MAX_EXACT_DIFF_CELLS = 2_000_000;
-const EMPTY_JSON_ARRAY = "[]";
-
-type LineOp = { kind: "equal" | "insert" | "delete"; line: string };
-type DiffAnchor = { oldIndex: number; newIndex: number };
-type UniqueLineInfo = { oldCount: number; oldIndex: number; newCount: number; newIndex: number };
-type UnifiedDiffBody = { lines: string[]; added: number; removed: number };
-
-function unifiedDiffWithStats(path: string, before: string | null, after: string): { diff: string; stats: DiffStats } {
-  const oldLines = splitLinesForDiff(before ?? "");
-  const newLines = splitLinesForDiff(after);
-  const ops = patienceLineDiff(oldLines, newLines);
-  const from = before == null ? "/dev/null" : "a/" + path;
-  const header = ["--- " + from, "+++ b/" + path];
-  const body = unifiedDiffBody(ops, DIFF_CONTEXT_LINES);
-
-  if (body.added === 0 && body.removed === 0) {
-    const diff = [...header, "@@ -1,0 +1,0 @@", " (no textual changes)"].join("\n");
-    return { diff, stats: { added: 0, removed: 0, lines: header.length + 2 } };
-  }
-
-  const diff = [...header, ...body.lines].join("\n");
-  return { diff, stats: { added: body.added, removed: body.removed, lines: header.length + body.lines.length } };
+export async function startRunJSTraceRoot(stepId: string | null, data: Record<string, unknown> = {}) {
+  if (stepId) await host.ensureTraceRoot(JSON.stringify(inferTraceRoot(stepId, data)));
+  const raw = await host.startTraceRoot(stepId, JSON.stringify(traceJsonValue(data)));
+  const cur = raw ? JSON.parse(raw) : null;
+  if (activeRunJSContext && cur?.traceId) activeRunJSContext.traceId = cur.traceId;
+  return cur;
 }
+export const startTraceRoot = startRunJSTraceRoot;
 
-function patienceLineDiff(oldLines: string[], newLines: string[]): LineOp[] {
-  const ops: LineOp[] = [];
-  appendPatienceDiff(oldLines, newLines, 0, oldLines.length, 0, newLines.length, ops);
-  return ops;
-}
-
-function appendPatienceDiff(
-  oldLines: string[],
-  newLines: string[],
-  oldStart: number,
-  oldEnd: number,
-  newStart: number,
-  newEnd: number,
-  out: LineOp[],
-): void {
-  while (oldStart < oldEnd && newStart < newEnd && oldLines[oldStart] === newLines[newStart]) {
-    out.push({ kind: "equal", line: oldLines[oldStart]! });
-    oldStart++;
-    newStart++;
-  }
-
-  const commonSuffix: string[] = [];
-  while (oldStart < oldEnd && newStart < newEnd && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
-    commonSuffix.push(oldLines[oldEnd - 1]!);
-    oldEnd--;
-    newEnd--;
-  }
-
-  if (oldStart === oldEnd) {
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
-    appendCommonSuffix(commonSuffix, out);
-    return;
-  }
-  if (newStart === newEnd) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
-    appendCommonSuffix(commonSuffix, out);
-    return;
-  }
-
-  const anchors = patienceAnchors(oldLines, newLines, oldStart, oldEnd, newStart, newEnd);
-  if (anchors.length === 0) {
-    appendFallbackLineDiff(oldLines, newLines, oldStart, oldEnd, newStart, newEnd, out);
-  } else {
-    let oldCursor = oldStart;
-    let newCursor = newStart;
-    for (const anchor of anchors) {
-      appendPatienceDiff(oldLines, newLines, oldCursor, anchor.oldIndex, newCursor, anchor.newIndex, out);
-      out.push({ kind: "equal", line: oldLines[anchor.oldIndex]! });
-      oldCursor = anchor.oldIndex + 1;
-      newCursor = anchor.newIndex + 1;
-    }
-    appendPatienceDiff(oldLines, newLines, oldCursor, oldEnd, newCursor, newEnd, out);
-  }
-
-  appendCommonSuffix(commonSuffix, out);
-}
-
-function appendCommonSuffix(commonSuffix: string[], out: LineOp[]): void {
-  for (let i = commonSuffix.length - 1; i >= 0; i--) out.push({ kind: "equal", line: commonSuffix[i]! });
-}
-
-function patienceAnchors(
-  oldLines: string[],
-  newLines: string[],
-  oldStart: number,
-  oldEnd: number,
-  newStart: number,
-  newEnd: number,
-): DiffAnchor[] {
-  const counts = new Map<string, UniqueLineInfo>();
-
-  for (let i = oldStart; i < oldEnd; i++) {
-    const line = oldLines[i]!;
-    let info = counts.get(line);
-    if (!info) {
-      info = { oldCount: 0, oldIndex: i, newCount: 0, newIndex: -1 };
-      counts.set(line, info);
-    }
-    info.oldCount++;
-    if (info.oldCount === 1) info.oldIndex = i;
-  }
-
-  for (let j = newStart; j < newEnd; j++) {
-    const line = newLines[j]!;
-    let info = counts.get(line);
-    if (!info) {
-      info = { oldCount: 0, oldIndex: -1, newCount: 0, newIndex: j };
-      counts.set(line, info);
-    }
-    info.newCount++;
-    if (info.newCount === 1) info.newIndex = j;
-  }
-
-  const candidates: DiffAnchor[] = [];
-  for (const info of counts.values()) {
-    if (info.oldCount === 1 && info.newCount === 1) candidates.push({ oldIndex: info.oldIndex, newIndex: info.newIndex });
-  }
-  candidates.sort((a, b) => a.oldIndex - b.oldIndex);
-  return longestIncreasingNewIndexSubsequence(candidates);
-}
-
-function longestIncreasingNewIndexSubsequence(candidates: DiffAnchor[]): DiffAnchor[] {
-  if (candidates.length <= 1) return candidates;
-
-  const tails: number[] = [];
-  const previous = new Array<number>(candidates.length).fill(-1);
-
-  for (let i = 0; i < candidates.length; i++) {
-    const value = candidates[i]!.newIndex;
-    let lo = 0;
-    let hi = tails.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (candidates[tails[mid]!]!.newIndex < value) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo > 0) previous[i] = tails[lo - 1]!;
-    tails[lo] = i;
-  }
-
-  const result = new Array<DiffAnchor>(tails.length);
-  let cursor = tails[tails.length - 1]!;
-  for (let i = tails.length - 1; i >= 0; i--) {
-    result[i] = candidates[cursor]!;
-    cursor = previous[cursor]!;
-  }
-  return result;
-}
-
-function appendFallbackLineDiff(
-  oldLines: string[],
-  newLines: string[],
-  oldStart: number,
-  oldEnd: number,
-  newStart: number,
-  newEnd: number,
-  out: LineOp[],
-): void {
-  const oldCount = oldEnd - oldStart;
-  const newCount = newEnd - newStart;
-
-  if (oldCount === 0) {
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
-    return;
-  }
-  if (newCount === 0) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
-    return;
-  }
-
-  const cells = (oldCount + 1) * (newCount + 1);
-  if (cells > MAX_EXACT_DIFF_CELLS) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
-    return;
-  }
-
-  const width = newCount + 1;
-  const dp = new Uint32Array(cells);
-  for (let i = oldCount - 1; i >= 0; i--) {
-    for (let j = newCount - 1; j >= 0; j--) {
-      dp[i * width + j] = oldLines[oldStart + i] === newLines[newStart + j]
-        ? dp[(i + 1) * width + j + 1] + 1
-        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
+export async function finishRunJSTraceRoot(info: TraceRootInfo) {
+  let shouldLeave = false;
+  try {
+    const current = await host.currentTrace();
+    const cur = current ? JSON.parse(current) : null;
+    const traceId = info.traceId || cur?.traceId;
+    if (!traceId) return false;
+    shouldLeave = true;
+    const root = await host.getTrace(JSON.stringify({ traceId }));
+    const row = root ? JSON.parse(root) : null;
+    const data = {
+      ...(row?.data && typeof row.data === "object" ? row.data : {}),
+      ...(info.resultHash ? { resultHash: info.resultHash } : {}),
+      ...(info.error ? { error: info.error } : {}),
+    };
+    return (await host.finishTrace(traceId, info.status || (info.error ? "error" : "ok"), JSON.stringify(traceJsonValue(data)))) === "true";
+  } finally {
+    if (shouldLeave) {
+      try {
+        host.leaveTrace();
+      } catch {
+        // best effort cleanup only
+      }
     }
   }
+}
+export const finishTraceRoot = finishRunJSTraceRoot;
 
-  let i = 0;
-  let j = 0;
-  while (i < oldCount && j < newCount) {
-    if (oldLines[oldStart + i] === newLines[newStart + j]) {
-      out.push({ kind: "equal", line: oldLines[oldStart + i]! });
-      i++;
-      j++;
-    } else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
-      out.push({ kind: "delete", line: oldLines[oldStart + i]! });
-      i++;
-    } else {
-      out.push({ kind: "insert", line: newLines[newStart + j]! });
-      j++;
-    }
-  }
-  while (i < oldCount) out.push({ kind: "delete", line: oldLines[oldStart + i++]! });
-  while (j < newCount) out.push({ kind: "insert", line: newLines[newStart + j++]! });
+function parseTraceRow(raw: string | null): TraceRow | null {
+  return raw ? JSON.parse(raw) as TraceRow : null;
 }
 
-function unifiedDiffBody(ops: LineOp[], contextLines: number): UnifiedDiffBody {
-  const lines: LineOp[] = [];
-  const oldPrefixCounts: number[] = [0];
-  const newPrefixCounts: number[] = [0];
-  const changeIndexes: number[] = [];
-  let added = 0;
-  let removed = 0;
+function parseTraceRows(raw: string): TraceRow[] {
+  const rows = JSON.parse(raw || "[]") as TraceRow[];
+  return Array.isArray(rows) ? rows : [];
+}
 
-  for (const op of ops) {
-    const index = lines.length;
-    lines.push(op);
-    if (op.kind === "insert") added++;
-    else if (op.kind === "delete") removed++;
-    if (op.kind !== "equal") changeIndexes.push(index);
-
-    oldPrefixCounts.push(oldPrefixCounts[oldPrefixCounts.length - 1]! + (op.kind === "insert" ? 0 : 1));
-    newPrefixCounts.push(newPrefixCounts[newPrefixCounts.length - 1]! + (op.kind === "delete" ? 0 : 1));
-  }
-
-  if (changeIndexes.length === 0) return { lines: [], added, removed };
-
-  const hunkLines: string[] = [];
-  let hunkStart = Math.max(0, changeIndexes[0]! - contextLines);
-  let hunkEnd = Math.min(lines.length, changeIndexes[0]! + contextLines + 1);
-
-  const emitHunk = (start: number, end: number) => {
-    const oldBefore = oldPrefixCounts[start]!;
-    const newBefore = newPrefixCounts[start]!;
-    const oldLength = oldPrefixCounts[end]! - oldBefore;
-    const newLength = newPrefixCounts[end]! - newBefore;
-    const oldStart = oldLength === 0 ? oldBefore : oldBefore + 1;
-    const newStart = newLength === 0 ? newBefore : newBefore + 1;
-    hunkLines.push("@@ -" + rangeHeader(oldStart, oldLength) + " +" + rangeHeader(newStart, newLength) + " @@");
-    for (let i = start; i < end; i++) {
-      const line = lines[i]!;
-      const prefix = line.kind === "insert" ? "+" : line.kind === "delete" ? "-" : " ";
-      hunkLines.push(prefix + line.line);
+function buildTraceTree(rows: TraceRow[]): TraceTreeNode | null {
+  const nodes = new Map<string, TraceTreeNode>();
+  for (const row of rows) nodes.set(row.id, { ...(row as TraceRow), children: [] });
+  let root: TraceTreeNode | null = null;
+  for (const node of nodes.values()) {
+    const parentId = typeof node.data?.parentId === "string" ? node.data.parentId : null;
+    if (!parentId || !nodes.has(parentId)) {
+      if (node.kind === "trace" || !root) root = node;
+      continue;
     }
+    nodes.get(parentId)!.children.push(node);
+  }
+  for (const node of nodes.values()) node.children.sort((a, b) => a.seq - b.seq);
+  return root;
+}
+
+type TraceRecentRow = TraceRow & {
+  chat?: { id: string; title: string | null };
+  events?: TraceRow[];
+  errorSummary?: string;
+  category?: "runjs_compile" | "patch_mismatch" | "missing_file" | "missing_tool" | "proc_nonzero" | "undefined_variable" | "no_change" | "timeout" | "api_error" | "unknown";
+};
+
+type TraceErrorInfoLocal = NonNullable<Awaited<ReturnType<Moo["traces"]["summary"]>>>["errors"][number];
+
+async function chatForTraceStep(stepId: string | null): Promise<{ id: string; title: string | null } | null> {
+  if (!stepId) return null;
+  for (const entry of await chat.list()) {
+    const refs = chatRefs(entry.chatId);
+    const rows = await facts.match({ store: refs.facts, graph: refs.graph, subject: stepId, predicate: "rdf:type", limit: 1 });
+    if (rows.length) return { id: entry.chatId, title: entry.title };
+  }
+  return null;
+}
+
+function traceText(value: unknown, depth = 0): string | null {
+  if (value == null || depth > 4) return null;
+  if (typeof value === "string") return value.length ? value : null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value.map((v) => traceText(v, depth + 1)).filter(Boolean) as string[];
+    return parts.length ? parts.join("; ") : null;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    for (const key of ["error", "message", "stderr", "stdout", "output", "details", "cause"]) {
+      const text = traceText(obj[key], depth + 1);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+function traceErrorOfRow(row: TraceRow): string | null {
+  const text = traceText(row.data);
+  if (row.status === "error") return text || row.name || row.status;
+  if (text && /\b(error|exception|failed|timed out|timeout)\b/i.test(text)) return text;
+  return null;
+}
+
+function traceCategory(message: string | null, row?: TraceRow): TraceRecentRow["category"] {
+  const text = [message ?? "", row?.name ?? "", row?.status ?? ""].join("\n");
+  if (/v8\.compile|Unexpected identifier|missing \) after argument list|SyntaxError/i.test(text)) return "runjs_compile";
+  if (/patch hunk did not match|hunk.*failed|No valid patches|malformed patch/i.test(text)) return "patch_mismatch";
+  if (/command not found|No such file or directory.*python|python3:|which: no/i.test(text)) return "missing_tool";
+  if (/No such file or directory|not found|missing file/i.test(text)) return "missing_file";
+  if (/exited [1-9]|process_failed|nonzero|non-zero/i.test(text)) return "proc_nonzero";
+  if (/\b[A-Za-z_$][\w$]* is not defined\b|ReferenceError/i.test(text)) return "undefined_variable";
+  if (/no changes|missing pattern|expectedCount|expected count|missing effects|missing actions/i.test(text)) return "no_change";
+  if (/timed out|timeout/i.test(text)) return "timeout";
+  if (/MooApiError|invalid_argument|path_escape|bad_sparql|conflict/i.test(text)) return "api_error";
+  return "unknown";
+}
+
+function rowContainsText(row: TraceRow, needle: string): boolean {
+  if (!needle) return true;
+  const haystack = [row.id, row.traceId, row.stepId ?? "", row.kind, row.name, row.status, traceText(row.data) ?? ""].join("\n").toLowerCase();
+  return haystack.includes(needle.toLowerCase());
+}
+
+function traceDurationNs(row: TraceRow): number | undefined {
+  if (typeof row.t0Ns !== "number" || typeof row.t1Ns !== "number") return undefined;
+  return Math.max(0, row.t1Ns - row.t0Ns);
+}
+
+function countBy(rows: TraceRow[], key: (row: TraceRow) => string): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const name = key(row);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function traceParentId(row: TraceRow): string | null {
+  return typeof row.data?.parentId === "string" ? row.data.parentId : null;
+}
+
+function inclusiveNs(row: TraceRow): number {
+  return traceDurationNs(row) ?? 0;
+}
+
+function buildTraceCriticalPath(rows: TraceRow[]): TraceRow[] {
+  const byParent = new Map<string, TraceRow[]>();
+  for (const row of rows) {
+    const parentId = traceParentId(row);
+    if (!parentId) continue;
+    const list = byParent.get(parentId) ?? [];
+    list.push(row);
+    byParent.set(parentId, list);
+  }
+  const root = rows.find((row) => row.kind === "trace") ?? rows[0] ?? null;
+  const path: TraceRow[] = [];
+  let current = root;
+  while (current) {
+    path.push(current);
+    const children = (byParent.get(current.id) ?? []).filter((row) => traceDurationNs(row) != null);
+    current = children.sort((a, b) => inclusiveNs(b) - inclusiveNs(a))[0] ?? null;
+  }
+  return path;
+}
+
+function buildTraceWaterfall(rows: TraceRow[]): Array<Record<string, unknown>> {
+  const root = rows.find((row) => row.kind === "trace") ?? rows[0] ?? null;
+  const base = root?.t0Ns ?? rows[0]?.t0Ns ?? 0;
+  return rows
+    .filter((row) => typeof row.t0Ns === "number")
+    .map((row) => ({
+      id: row.id,
+      parentId: traceParentId(row),
+      name: row.name,
+      kind: row.kind,
+      status: row.status,
+      startMs: (row.t0Ns - base) / 1_000_000,
+      durationNs: traceDurationNs(row) ?? null,
+    }))
+    .sort((a, b) => (a.startMs as number) - (b.startMs as number));
+}
+
+function buildTraceSideEffects(rows: TraceRow[]): TraceRow[] {
+  return rows.filter((row) => /^(moo.(fs.(write|patch|record_diff|ensureDir)|proc.run|http.|facts.(add|addAll|remove|swap|update|clearStore|deleteStore|deleteGraph|deleteGraphEverywhere)|pointers.(set|cas|delete)|objects.put|memory.(assert|retract|patch)|chat.|ui.|mcp.|agent.run)|timeline.|usage.|command.)/.test(row.name));
+}
+
+function buildTraceCausalLinks(rows: TraceRow[]): Array<Record<string, unknown>> {
+  const links: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const data = row.data ?? {};
+    const parentId = traceParentId(row);
+    if (parentId) links.push({ type: "parent", from: parentId, to: row.id });
+    for (const key of ["traceId", "childTraceId", "childChatId", "chatId", "toolCallId", "instanceId", "statePointer", "runId", "requestId", "responseId"]) {
+      if (data[key] != null) links.push({ type: key, from: row.id, to: data[key] });
+    }
+  }
+  return links;
+}
+
+function buildTraceSummary(root: TraceRow | null, events: TraceRow[], includeEvents: boolean): TraceSummary | null {
+  if (!root) return null;
+  const errors = events.map((row) => {
+    const message = traceErrorOfRow(row);
+    return message ? { message, category: traceCategory(message, row)!, row } : null;
+  }).filter(Boolean) as TraceErrorInfoLocal[];
+  const spans = events.filter((row) => row.kind === "span" || row.kind === "trace");
+  const slowestSpans = spans
+    .filter((row) => traceDurationNs(row) != null)
+    .sort((a, b) => inclusiveNs(b) - inclusiveNs(a))
+    .slice(0, 20)
+    .map((row) => ({ row, durationNs: inclusiveNs(row) }));
+  const summary: any = {
+    traceId: root.traceId,
+    status: root.status,
+    root,
+    ...(traceDurationNs(root) !== undefined ? { durationNs: traceDurationNs(root) } : {}),
+    ...(errors[0] ? { error: errors[0] } : {}),
+    errors,
+    counts: {
+      total: events.length,
+      byKind: countBy(events, (row) => row.kind),
+      byStatus: countBy(events, (row) => row.status),
+      byName: countBy(events, (row) => row.name),
+    },
+    slowestSpans,
+    criticalPath: buildTraceCriticalPath(events).map((row) => ({ row, durationNs: traceDurationNs(row) ?? null })),
+    waterfall: buildTraceWaterfall(events),
+    sideEffects: buildTraceSideEffects(events),
+    causalLinks: buildTraceCausalLinks(events),
   };
+  if (includeEvents) summary.events = events;
+  return summary as TraceSummary;
+}
 
-  for (let i = 1; i < changeIndexes.length; i++) {
-    const changeIndex = changeIndexes[i]!;
-    const nextStart = Math.max(0, changeIndex - contextLines);
-    const nextEnd = Math.min(lines.length, changeIndex + contextLines + 1);
-    if (nextStart <= hunkEnd) {
-      hunkEnd = Math.max(hunkEnd, nextEnd);
-    } else {
-      emitHunk(hunkStart, hunkEnd);
-      hunkStart = nextStart;
-      hunkEnd = nextEnd;
+const traces: Moo["traces"] = {
+  async current() {
+    const raw = await host.currentTrace();
+    return raw ? JSON.parse(raw) : null;
+  },
+  async get(args = {}) {
+    return parseTraceRow(await host.getTrace(JSON.stringify(args ?? {})));
+  },
+  async events(args = {}) {
+    return parseTraceRows(await host.traceEvents(JSON.stringify(args ?? {})));
+  },
+  async tree(args = {}) {
+    return buildTraceTree(await traces.events(args));
+  },
+  async recent(args = {}) {
+    const requestedLimit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 50)));
+    const needsOverscan = Boolean(args.chatId || args.status || args.kind || args.name || args.text || args.hasError);
+    const rows = parseTraceRows(await host.recentTraces(needsOverscan ? 1000 : requestedLimit));
+    const out: TraceRecentRow[] = [];
+    for (const row of rows) {
+      if (args.status && row.status !== args.status) continue;
+      if (args.kind && row.kind !== args.kind) continue;
+      if (args.name && row.name !== args.name) continue;
+      if (args.text && !rowContainsText(row, args.text)) continue;
+      let c: { id: string; title: string | null } | null = null;
+      if (args.chatId || args.includeChat) c = await chatForTraceStep(row.stepId);
+      if (args.chatId && c?.id !== args.chatId) continue;
+      let errorSummary = traceErrorOfRow(row);
+      let category = errorSummary ? traceCategory(errorSummary, row) : undefined;
+      if (args.hasError && !errorSummary) {
+        const errors = await traces.errors({ traceId: row.traceId });
+        if (!errors.length) continue;
+        errorSummary = errors[0].message;
+        category = errors[0].category;
+      }
+      out.push({ ...row, ...(args.includeChat && c ? { chat: c } : {}), ...(errorSummary ? { errorSummary, category } : {}) });
+      if (out.length >= requestedLimit) break;
     }
+    return out;
+  },
+  async search(args = {}) {
+    const rows = await traces.recent(args);
+    if (!args.includeEvents) return rows;
+    const out: TraceRecentRow[] = [];
+    for (const row of rows) out.push({ ...row, events: await traces.events({ traceId: row.traceId }) });
+    return out;
+  },
+  errorOf(row) {
+    return traceErrorOfRow(row);
+  },
+  async errors(args = {}) {
+    const events = await traces.events(args);
+    return events.map((row) => {
+      const message = traceErrorOfRow(row);
+      return message ? { message, category: traceCategory(message, row)!, row } : null;
+    }).filter(Boolean) as TraceErrorInfoLocal[];
+  },
+  async failed(args = {}) {
+    const limit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 20)));
+    const rows = await traces.recent({ limit: args.chatId ? 1000 : limit, includeChat: args.includeChat, chatId: args.chatId });
+    const failedRows = rows.filter((row) => row.status && row.status !== "ok" && row.status !== "running").slice(0, limit);
+    if (!args.includeEvents) return failedRows;
+    const out: TraceSummary[] = [];
+    for (const row of failedRows) out.push(await traces.summary({ traceId: row.traceId, includeEvents: true }));
+    return out as any;
+  },
+  async summary(args = {}) {
+    const root = await traces.get(args);
+    if (!root) return null;
+    const events = await traces.events({ traceId: root.traceId });
+    const summary = buildTraceSummary(root, events, args.includeEvents === true) as any;
+    const c = await chatForTraceStep(root.stepId);
+    if (c) summary.chat = c;
+    return summary;
+  },
+  async diagnose(args = {}) {
+    const limit = Math.max(1, Math.min(100, Math.floor(args.limit ?? 20)));
+    const failures = await traces.failed({ limit, chatId: args.chatId, includeEvents: true }) as unknown as TraceSummary[];
+    const recent = await traces.recent({ limit: args.chatId ? 1000 : limit, chatId: args.chatId });
+    const summaries: TraceSummary[] = [];
+    for (const row of recent.slice(0, limit)) summaries.push(await traces.summary({ traceId: row.traceId }));
+    const slowRecent = summaries
+      .filter((summary) => summary.durationNs != null)
+      .sort((a, b) => (b.durationNs ?? 0) - (a.durationNs ?? 0))
+      .slice(0, limit);
+    const slowestSpans = slowRecent.flatMap((summary: any) => (summary.slowestSpans ?? []).map((span: any) => ({ traceId: summary.traceId, ...span }))).sort((a: any, b: any) => (b.durationNs ?? 0) - (a.durationNs ?? 0)).slice(0, limit);
+    const sideEffects = summaries.flatMap((summary: any) => (summary.sideEffects ?? []).map((row: TraceRow) => ({ traceId: summary.traceId, row }))).slice(0, limit * 5);
+    const failuresByCategory = new Map<string, number>();
+    for (const failure of failures as any[]) {
+      const category = failure.error?.category ?? failure.category ?? "unknown";
+      failuresByCategory.set(category, (failuresByCategory.get(category) ?? 0) + 1);
+    }
+    return {
+      recentFailures: failures,
+      slowRecent,
+      slowestSpans,
+      sideEffects,
+      failureGroups: Array.from(failuresByCategory.entries()).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
+    } as any;
+  },
+  async mark(message, data = {}) {
+    const id = await host.insertTrace(JSON.stringify({ kind: "mark", name: "user.mark", status: "ok", data: traceJsonValue({ ...data, message }) }));
+    return id === "null" ? null : id;
+  },
+  async span(name: string, dataOrFn: any, maybeFn?: any) {
+    const hasData = typeof dataOrFn !== "function";
+    const fn = hasData ? maybeFn : dataOrFn;
+    if (typeof fn !== "function") throw new Error("moo.traces.span requires a callback");
+    const data = hasData ? dataOrFn : {};
+    const rawSpanId = await host.insertTrace(JSON.stringify({ kind: "span", name, status: "running", data: traceJsonValue(data ?? {}) }));
+    const spanId = rawSpanId === "null" ? null : rawSpanId;
+    const previousParent = spanId ? host.setTraceParent(spanId) : null;
+    try {
+      const value = await fn();
+      if (spanId) await host.finishTrace(spanId, "ok", traceDataJson({}));
+      return value;
+    } catch (e: any) {
+      if (spanId) await host.finishTrace(spanId, "error", traceErrorJson(name, e));
+      throw e;
+    } finally {
+      if (spanId) host.setTraceParent(previousParent);
+    }
+  },
+};
+
+async function traceObserved<T>(
+  name: string,
+  data: Record<string, unknown>,
+  fn: () => T | Promise<T>,
+  summarize?: (value: Awaited<T>) => Record<string, unknown>,
+): Promise<Awaited<T>> {
+  let spanId: string | null = null;
+  let previousParent: string | null = null;
+  try {
+    { const rawSpanId = await host.insertTrace(JSON.stringify({ kind: "span", name, status: "running", data: traceJsonValue(data) })); spanId = rawSpanId === "null" ? null : rawSpanId; }
+    if (spanId) previousParent = host.setTraceParent(spanId);
+  } catch {
+    spanId = null;
   }
-  emitHunk(hunkStart, hunkEnd);
-
-  return { lines: hunkLines, added, removed };
+  try {
+    const value = await fn();
+    if (spanId) {
+      await host.finishTrace(spanId, "ok", traceDataJson(summarize ? summarize(value as Awaited<T>) : { output: value }));
+    }
+    return value as Awaited<T>;
+  } catch (e: any) {
+    if (spanId) {
+      await host.finishTrace(spanId, "error", traceErrorJson(name, e));
+    }
+    throw e;
+  } finally {
+    if (spanId) host.setTraceParent(previousParent);
+  }
 }
 
-function rangeHeader(start: number, length: number): string {
-  return length === 1 ? String(start) : String(start) + "," + String(length);
-}
-
+const EMPTY_JSON_ARRAY = "[]";
 async function displayPathForChat(chatId: string, path: string): Promise<string> {
   const normalizedPath = String(path).replace(/\\/g, "/");
   const scratch = (await chat.scratch(chatId)).replace(/\\/g, "/").replace(/\/+$/, "");
@@ -479,187 +560,10 @@ async function recordFileWriteDiff(path: string, before: string | null, after: s
     payloadHash: hash,
     extras: [["agent:path", displayPath]],
   });
-  const diffId = await id.new("fsdiff");
-  await pointers.set(`fs-diffs/${diffId}`, hash);
   events.publish({ kind: "file-diff", chatId, path: displayPath, before, after, diff, stats, hash, stepId, at });
 }
 
 
-type PatchLine = { kind: "context" | "add" | "del"; text: string; noNewline?: boolean };
-type ParsedHunk = { oldStart: number; oldCount: number; newStart: number; newCount: number; lines: PatchLine[] };
-type ParsedFilePatch = { oldPath: string | null; newPath: string | null; hunks: ParsedHunk[] };
-type TextLines = { lines: string[]; trailingNewline: boolean };
-
-function normalizePatchArgs(args: string | FsPatchArgs): FsPatchArgs {
-  if (typeof args === "string") return { patch: args };
-  if (!args || typeof args !== "object") throw new MooApiError("invalid_argument", "fs.patch requires a patch string or {patch,...}");
-  return args;
-}
-
-function parsePatchPath(line: string): string | null {
-  let raw = line.slice(4).trim();
-  if (!raw || raw === "/dev/null") return null;
-  if (raw.startsWith('"')) {
-    const end = raw.lastIndexOf('"');
-    if (end > 0) {
-      try { raw = JSON.parse(raw.slice(0, end + 1)); }
-      catch { raw = raw.slice(1, end); }
-      return raw === "/dev/null" ? null : raw;
-    }
-  }
-  const tab = raw.indexOf("\t");
-  if (tab >= 0) raw = raw.slice(0, tab);
-  return raw === "/dev/null" ? null : raw;
-}
-
-function stripPatchPath(path: string, strip?: number | null): string {
-  let p = path.replace(/\\/g, "/");
-  if (strip == null) {
-    if (/^[ab]\//.test(p)) p = p.slice(2);
-    return p;
-  }
-  const n = Math.max(0, Math.floor(Number(strip) || 0));
-  for (let i = 0; i < n; i++) p = p.replace(/^[^/]+\/?/, "");
-  return p;
-}
-
-function resolvePatchPath(path: string, cwd?: string | null, strip?: number | null): string {
-  const p = stripPatchPath(path, strip);
-  if (!p) throw new MooApiError("invalid_patch", "patch path became empty after stripping", { path, strip });
-  if (p.startsWith("/")) return p;
-  if (cwd) {
-    if (!validate.relativePath(p)) throw new MooApiError("path_escape", "patch paths under cwd must be relative and may not contain ..", { cwd, path: p });
-    return joinPath(cwd, p);
-  }
-  return p;
-}
-
-function parseUnifiedPatch(patch: string): ParsedFilePatch[] {
-  const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  const files: ParsedFilePatch[] = [];
-  let current: ParsedFilePatch | null = null;
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i]!;
-    if (line.startsWith("--- ")) {
-      const next = lines[i + 1];
-      if (next == null || !next.startsWith("+++ ")) throw new MooApiError("invalid_patch", "unified patch file header missing +++ line", { line: i + 1 });
-      current = { oldPath: parsePatchPath(line), newPath: parsePatchPath(next), hunks: [] };
-      files.push(current);
-      i += 2;
-      continue;
-    }
-    if (line.startsWith("@@ ")) {
-      if (!current) throw new MooApiError("invalid_patch", "hunk appears before file header", { line: i + 1 });
-      const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-      if (!m) throw new MooApiError("invalid_patch", "bad unified hunk header", { line: i + 1, header: line });
-      const hunk: ParsedHunk = {
-        oldStart: Number(m[1]),
-        oldCount: m[2] == null ? 1 : Number(m[2]),
-        newStart: Number(m[3]),
-        newCount: m[4] == null ? 1 : Number(m[4]),
-        lines: [],
-      };
-      i++;
-      while (i < lines.length) {
-        const h = lines[i]!;
-        if (h.startsWith("diff --git ") || h.startsWith("--- ") || h.startsWith("@@ ")) break;
-        if (h.startsWith("\\ No newline at end of file")) {
-          const previous = hunk.lines[hunk.lines.length - 1];
-          if (!previous) throw new MooApiError("invalid_patch", "no-newline marker appears before a hunk line", { line: i + 1 });
-          previous.noNewline = true;
-          i++;
-          continue;
-        }
-        const prefix = h[0];
-        if (prefix === " ") hunk.lines.push({ kind: "context", text: h.slice(1) });
-        else if (prefix === "+") hunk.lines.push({ kind: "add", text: h.slice(1) });
-        else if (prefix === "-") hunk.lines.push({ kind: "del", text: h.slice(1) });
-        else if (h === "") {
-          if (i === lines.length - 1) break;
-          throw new MooApiError("invalid_patch", "empty line in hunk must be prefixed with space, +, or -", { line: i + 1 });
-        } else {
-          throw new MooApiError("invalid_patch", "unexpected line in hunk", { line: i + 1, text: h });
-        }
-        i++;
-      }
-      current.hunks.push(hunk);
-      continue;
-    }
-    i++;
-  }
-  const withHunks = files.filter((f) => f.hunks.length > 0);
-  if (!withHunks.length) throw new MooApiError("invalid_patch", "patch contains no unified hunks");
-  return withHunks;
-}
-
-function splitTextLines(text: string): TextLines {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  if (normalized === "") return { lines: [], trailingNewline: false };
-  const trailingNewline = normalized.endsWith("\n");
-  const lines = normalized.split("\n");
-  if (trailingNewline) lines.pop();
-  return { lines, trailingNewline };
-}
-
-function joinTextLines(t: TextLines): string {
-  return t.lines.join("\n") + (t.trailingNewline && t.lines.length ? "\n" : "");
-}
-
-function hunkOldLines(hunk: ParsedHunk): string[] {
-  return hunk.lines.filter((l) => l.kind !== "add").map((l) => l.text);
-}
-
-function findHunkIndex(oldLines: string[], needle: string[], preferred: number, floor: number): number {
-  const exact = matchesAt(oldLines, needle, preferred) ? preferred : -1;
-  if (exact >= 0) return exact;
-  if (needle.length === 0) return Math.max(floor, Math.min(preferred, oldLines.length));
-  for (let i = Math.max(0, floor); i <= oldLines.length - needle.length; i++) {
-    if (matchesAt(oldLines, needle, i)) return i;
-  }
-  return -1;
-}
-
-function matchesAt(lines: string[], needle: string[], index: number): boolean {
-  if (index < 0 || index + needle.length > lines.length) return false;
-  for (let j = 0; j < needle.length; j++) if (lines[index + j] !== needle[j]) return false;
-  return true;
-}
-
-function applyParsedFilePatch(file: ParsedFilePatch, before: string | null): { after: string; added: number; removed: number } {
-  const text = splitTextLines(before ?? "");
-  const out: string[] = [];
-  let cursor = 0;
-  let added = 0;
-  let removed = 0;
-  let lastPatchOutputNoNewline = false;
-  for (const hunk of file.hunks) {
-    const oldSeq = hunkOldLines(hunk);
-    const preferred = Math.max(0, hunk.oldStart - 1);
-    const start = findHunkIndex(text.lines, oldSeq, preferred, cursor);
-    if (start < 0) throw new MooApiError("patch_mismatch", "patch hunk did not match file", { path: file.newPath ?? file.oldPath, oldStart: hunk.oldStart });
-    while (cursor < start) out.push(text.lines[cursor++]!);
-    for (const line of hunk.lines) {
-      if (line.kind === "add") {
-        out.push(line.text);
-        lastPatchOutputNoNewline = !!line.noNewline;
-        added++;
-      } else {
-        const got = text.lines[cursor];
-        if (got !== line.text) throw new MooApiError("patch_mismatch", "patch line did not match file", { path: file.newPath ?? file.oldPath, expected: line.text, got });
-        if (line.kind === "context") {
-          out.push(got);
-          lastPatchOutputNoNewline = !!line.noNewline;
-        } else removed++;
-        cursor++;
-      }
-    }
-  }
-  const copiedTail = cursor < text.lines.length;
-  while (cursor < text.lines.length) out.push(text.lines[cursor++]!);
-  const trailingNewline = out.length > 0 && (copiedTail ? text.trailingNewline : !lastPatchOutputNoNewline);
-  return { after: joinTextLines({ lines: out, trailingNewline }), added, removed };
-}
 
 function turtleTriple(subject: string, predicate: string, object: string): string {
   const pred = predicate === "rdf:type" ? "a" : predicate;
@@ -732,53 +636,135 @@ async function recordMemoryDiff(
     payloadHash: hash,
     extras: [["agent:path", path], ["agent:graph", graph]],
   });
-  const diffId = await id.new("memdiff");
-  await pointers.set(`memory-diffs/${diffId}`, hash);
   events.publish({ kind: "memory-diff", chatId, store, graph, action, path, diff, stats, hash, stepId, at, count: changes.length, changes });
+}
+
+const TIMELINE_OBJECT_KINDS = new Set([
+  "agent:FileDiff",
+  "agent:MemoryDiff",
+  "agent:RunJS",
+  "agent:ToolResult",
+  "agent:Subagent",
+  "agent:SubagentSpec",
+  "agent:UserInput",
+  "agent:Reply",
+  "agent:Compaction",
+  "ui:Choice",
+  "ui:Form",
+  "ui:Response",
+]);
+
+function shouldRecordBlobAddition(kind: string): boolean {
+  if (!activeChatId) return false;
+  return !TIMELINE_OBJECT_KINDS.has(kind);
+}
+
+async function recordBlobAddition(kind: string, hash: string, content: string, encoding: "text" | "json"): Promise<void> {
+  const chatId = activeChatId;
+  if (!chatId) return;
+  const at = await time.nowMs();
+  const payload = {
+    chatId,
+    kind,
+    hash,
+    size: stringBytes(content),
+    chars: content.length,
+    encoding,
+    at,
+  };
+  const payloadHash = host.putObject("agent:BlobAdd", JSON.stringify(payload));
+  const { stepId } = await appendStep(chatId, {
+    kind: "agent:BlobAdd",
+    status: "agent:Done",
+    payloadHash,
+    extras: [
+      ["agent:hash", hash],
+      ["agent:objectKind", kind],
+    ],
+  });
+  events.publish({ kind: "blob-add", chatId, objectKind: kind, hash, size: payload.size, chars: payload.chars, encoding, stepId, at });
 }
 
 const objects: Moo["objects"] = {
   async putText({ kind, text }) {
-    return __op_object_put(kind, String(text));
+    const normalizedKind = String(kind);
+    const content = String(text);
+    const hash = host.putObject(normalizedKind, content);
+    if (shouldRecordBlobAddition(normalizedKind)) await recordBlobAddition(normalizedKind, hash, content, "text");
+    return hash;
   },
   async putJSON({ kind, value }) {
-    return __op_object_put(kind, JSON.stringify(value));
+    const normalizedKind = String(kind);
+    const content = JSON.stringify(value);
+    const hash = host.putObject(normalizedKind, content);
+    if (shouldRecordBlobAddition(normalizedKind)) await recordBlobAddition(normalizedKind, hash, content, "json");
+    return hash;
   },
   async getText({ hash }) {
-    const row = __op_object_get(hash);
+    const row = host.getObject(hash);
     return row ? { kind: row.kind, text: row.content } : null;
   },
   async getJSON({ hash }) {
-    const row = __op_object_get(hash);
+    const row = host.getObject(hash);
     if (!row) return null;
     return { kind: row.kind, value: JSON.parse(row.content) };
+  },
+};
+
+function requireActiveTodoChat(): string {
+  const chatId = activeChatId;
+  if (!chatId) throw new Error("moo.todos requires an active chat context");
+  return chatId;
+}
+
+const todos: Moo["todos"] = {
+  async list() {
+    return await getTodos(requireActiveTodoChat());
+  },
+  async add(args) {
+    return await addTodo(requireActiveTodoChat(), args);
+  },
+  async update(args) {
+    return await updateTodo(requireActiveTodoChat(), args);
+  },
+  async done(args) {
+    return await updateTodo(requireActiveTodoChat(), { id: args.id, status: "done", note: args.note });
+  },
+  async drop(args) {
+    return await updateTodo(requireActiveTodoChat(), { id: args.id, status: "dropped", note: args.note });
+  },
+  async patch(args) {
+    return await patchTodos(requireActiveTodoChat(), args);
+  },
+  async clear(args) {
+    return await clearTodos(requireActiveTodoChat(), args);
   },
 };
 
 const pointers: Moo["pointers"] = {
   async get(name) {
     if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
-    return __op_ref_get(name);
+    return host.getRef(name);
   },
   async set(name, target) {
     if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
-    const previous = __op_ref_get(name);
-    __op_ref_set(name, target);
+    const previous = host.getRef(name);
+    host.setRef(name, target);
     return { name, target, previous, changed: previous !== target };
   },
   async cas(name, expected, next) {
     if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
-    return __op_ref_cas(name, expected ?? null, next);
+    return host.compareAndSetRef(name, expected ?? null, next);
   },
   async list(prefix = "") {
-    return __op_refs_list(prefix);
+    return host.listRefs(prefix);
   },
   async entries(prefix = "") {
-    return JSON.parse(__op_refs_entries(prefix));
+    return JSON.parse(host.refEntries(prefix));
   },
   async delete(name) {
     if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
-    return __op_ref_delete(name);
+    return host.deleteRef(name);
   },
 };
 
@@ -807,22 +793,6 @@ function unpackMemoryWriteArgs(input: unknown): Array<[string, string, ObjectInp
   }
   return [unpackMemoryFact(input)];
 }
-function unpackMemoryPatchGroups(input: unknown): Array<{ asserts: Array<[string, string, ObjectInput]>; retracts: Array<[string, string, ObjectInput]> }> {
-  const groupsInput = input && typeof input === "object" && !Array.isArray(input) && "groups" in input
-    ? (input as { groups?: unknown }).groups
-    : [input];
-  if (!Array.isArray(groupsInput)) throw new Error("memory.patch groups must be an array");
-  return groupsInput.map((group) => {
-    if (!group || typeof group !== "object" || Array.isArray(group)) throw new Error("memory.patch group must be {asserts?, retracts?}");
-    const assertsInput = (group as { asserts?: unknown }).asserts ?? [];
-    const retractsInput = (group as { retracts?: unknown }).retracts ?? [];
-    return {
-      asserts: unpackMemoryFacts(assertsInput),
-      retracts: unpackMemoryFacts(retractsInput),
-    };
-  });
-}
-
 
 function parseBindingTerm(value: string): BindingTerm {
   const raw = String(value);
@@ -862,32 +832,47 @@ function factClearReceipt(store: string | undefined, graph: string | undefined, 
   return { ...(store ? { store } : {}), ...(graph ? { graph } : {}), removed, ...(dryRun ? { dryRun: true } : {}) };
 }
 
+type SparqlDecodedResult =
+  | { type: "select"; result: Bindings[] }
+  | { type: "ask"; result: boolean }
+  | { type: "construct"; result: Quad[] };
+
+async function nativeSparqlQuery(
+  caller: "query" | "select" | "ask" | "construct",
+  query: string,
+  store: string,
+  graph: string | null,
+  limit: number | null,
+): Promise<SparqlDecodedResult> {
+  return host.sparqlQuery(query, store, graph, limit) as SparqlDecodedResult;
+}
+
 const sparql: Moo["sparql"] = {
   async query(args) {
     const { query, graph = null, limit = null, format = "string" } = args || ({} as any);
     const store = factStore(args as any, "sparql.query");
-    const decoded = __op_sparql_query(query, store, graph, limit ?? null);
+    const decoded = await nativeSparqlQuery("query", query, store, graph, limit ?? null);
     if (decoded.type === "select") return formatBindings(decoded.result as Bindings[], format) as any;
     return decoded.result as any;
   },
   async select(args) {
     const { query, graph = null, limit = null, format = "string" } = args as any;
     const store = factStore(args as any, "sparql.select");
-    const decoded = __op_sparql_query(query, store, graph, limit ?? null);
+    const decoded = await nativeSparqlQuery("select", query, store, graph, limit ?? null);
     if (decoded.type !== "select") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not select");
     return formatBindings(decoded.result as Bindings[], format) as any;
   },
   async ask(args) {
     const { query, graph = null, limit = null } = args as any;
     const store = factStore(args as any, "sparql.ask");
-    const decoded = __op_sparql_query(query, store, graph, limit ?? null);
+    const decoded = await nativeSparqlQuery("ask", query, store, graph, limit ?? null);
     if (decoded.type !== "ask") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not ask");
     return decoded.result;
   },
   async construct(args) {
     const { query, graph = null, limit = null } = args as any;
     const store = factStore(args as any, "sparql.construct");
-    const decoded = __op_sparql_query(query, store, graph, limit ?? null);
+    const decoded = await nativeSparqlQuery("construct", query, store, graph, limit ?? null);
     if (decoded.type !== "construct") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not construct");
     return decoded.result;
   },
@@ -895,7 +880,24 @@ const sparql: Moo["sparql"] = {
 
 function encodeFactQuad(q: FactQuadInput): Quad {
   const raw = unpackQuad(q);
-  return [raw[0], raw[1], raw[2], encodeObject(raw[3])];
+  return [String(raw[0]), String(raw[1]), String(raw[2]), encodeObject(raw[3] as ObjectInput)];
+}
+
+function removeFactQuadCandidates(q: FactQuadInput): Quad[] {
+  const raw = unpackQuad(q);
+  const graph = String(raw[0]);
+  const subject = String(raw[1]);
+  const predicate = String(raw[2]);
+  const object = String(raw[3]);
+  const encoded = encodeObject(raw[3] as ObjectInput);
+  // Put the exact object string first. Query APIs return objects exactly as
+  // stored in quads, and callers commonly feed those rows back into remove/swap.
+  // Re-encoding first breaks deletion for stored IRIs that encodeObject would
+  // treat as literals (for example uppercase prefixed names like v8:HeapSnapshot).
+  const candidates: Quad[] = [[graph, subject, predicate, object]];
+  if (encoded !== object) candidates.push([graph, subject, predicate, encoded]);
+  if (object.startsWith('/')) candidates.push([graph, subject, predicate, '<' + object + '>']);
+  return candidates;
 }
 
 const facts: Moo["facts"] = {
@@ -904,7 +906,7 @@ const facts: Moo["facts"] = {
     const store = factStore(args, "facts.add");
     const encoded = encodeObject(object);
     assertFactObject(encoded);
-    __op_facts_add(store, graph, subject, predicate, encoded);
+    host.addFact(store, graph, subject, predicate, encoded);
     invalidateChatFactsSummary(store);
     return factReceipt(store, 1, 0);
   },
@@ -914,14 +916,15 @@ const facts: Moo["facts"] = {
     const adds = quads.map((q) => encodeFactQuad(q));
     if (!adds.length) return factReceipt(store, 0, 0);
     assertFactObjects(adds);
-    __op_facts_swap(store, EMPTY_JSON_ARRAY, JSON.stringify(adds));
+    host.swapFacts(store, EMPTY_JSON_ARRAY, JSON.stringify(adds));
     invalidateChatFactsSummary(store);
     return factReceipt(store, adds.length, 0);
   },
   async remove(args) {
     const { graph, subject, predicate, object } = args;
     const store = factStore(args, "facts.remove");
-    __op_facts_remove(store, graph, subject, predicate, encodeObject(object));
+    const removes = removeFactQuadCandidates({ graph, subject, predicate, object });
+    host.swapFacts(store, JSON.stringify(removes), EMPTY_JSON_ARRAY);
     invalidateChatFactsSummary(store);
     return factReceipt(store, 0, 1);
   },
@@ -929,20 +932,20 @@ const facts: Moo["facts"] = {
     const { graph = null, subject = null, predicate = null, object = null, limit = undefined, format = "tuple" } = args;
     const store = factStore(args, "facts.match");
     const encodedObject = object == null ? null : encodeObject(object);
-    const rows = __op_facts_match(store, graph, subject, predicate, encodedObject, limit ?? null) as Quad[];
+    const rows = host.matchFacts(store, graph, subject, predicate, encodedObject, limit ?? null) as Quad[];
     return (format === "object" ? quadObjects(rows) : rows) as any;
   },
   async history(args) {
     const { graph = null, subject = null, predicate = null, object = null, limit = undefined } = args;
     const store = factStore(args, "facts.history");
     const encodedObject = object == null ? null : encodeObject(object);
-    const rows = __op_facts_history(store, graph, subject, predicate, encodedObject, limit ?? null);
+    const rows = host.factHistory(store, graph, subject, predicate, encodedObject, limit ?? null);
     return rows as import("./types").FactHistoryRow[];
   },
   async matchAll(args) {
     const { patterns, graph = undefined, limit = undefined } = args;
     const store = factStore(args, "facts.matchAll");
-    return __op_facts_match_all(
+    return host.matchFactPatterns(
       store,
       JSON.stringify(patterns.map(([s, p, o]) => [s, p, encodeObject(o as ObjectInput)])),
       graph ?? null,
@@ -950,18 +953,18 @@ const facts: Moo["facts"] = {
     ) as Bindings[];
   },
   async stores(args = {}) {
-    return __op_facts_refs(args.prefix ?? null);
+    return host.factStores(args.prefix ?? null);
   },
   async count(args) {
-    return __op_facts_count(factStore(args, "facts.count"));
+    return host.countFacts(factStore(args, "facts.count"));
   },
   async swap(args) {
     const { removes, adds } = args;
     const store = factStore(args, "facts.swap");
-    const encodedRemoves = removes.map((q) => encodeFactQuad(q));
+    const encodedRemoves = removes.flatMap((q) => removeFactQuadCandidates(q));
     const encodedAdds = adds.map((q) => encodeFactQuad(q));
     assertFactObjects(encodedAdds);
-    __op_facts_swap(store, JSON.stringify(encodedRemoves), JSON.stringify(encodedAdds));
+    host.swapFacts(store, JSON.stringify(encodedRemoves), JSON.stringify(encodedAdds));
     invalidateChatFactsSummary(store);
     return factReceipt(store, encodedAdds.length, encodedRemoves.length);
   },
@@ -975,28 +978,28 @@ const facts: Moo["facts"] = {
         adds.push([graph, subject, predicate, encodeObject(object)]);
       },
       remove({ graph, subject, predicate, object }) {
-        removes.push([graph, subject, predicate, encodeObject(object)]);
+        removes.push(...removeFactQuadCandidates({ graph, subject, predicate, object }));
       },
     });
     if (!removes.length && !adds.length) return factReceipt(store, 0, 0);
     assertFactObjects(adds);
-    __op_facts_swap(store, JSON.stringify(removes), JSON.stringify(adds));
+    host.swapFacts(store, JSON.stringify(removes), JSON.stringify(adds));
     invalidateChatFactsSummary(store);
     return factReceipt(store, adds.length, removes.length);
   },
   async clearStore(args) {
     const store = factStore(args, "facts.clearStore");
     const dryRun = !!args.dryRun;
-    if (dryRun) return factClearReceipt(store, undefined, __op_facts_count(store), true);
-    const removed = __op_facts_clear(store);
+    if (dryRun) return factClearReceipt(store, undefined, host.countFacts(store), true);
+    const removed = host.clearFacts(store);
     invalidateChatFactsSummary(store);
     return factClearReceipt(store, undefined, removed);
   },
   async deleteStore(args) {
     const store = factStore(args, "facts.deleteStore");
     const dryRun = !!args.dryRun;
-    if (dryRun) return factClearReceipt(store, undefined, __op_facts_count(store), true);
-    const removed = __op_facts_purge(store);
+    if (dryRun) return factClearReceipt(store, undefined, host.countFacts(store), true);
+    const removed = host.purgeFacts(store);
     invalidateChatFactsSummary(store);
     return factClearReceipt(store, undefined, removed);
   },
@@ -1004,92 +1007,98 @@ const facts: Moo["facts"] = {
     const { graph } = args;
     const store = factStore(args, "facts.deleteGraph");
     const dryRun = !!args.dryRun;
-    const matches = __op_facts_match(store, graph, null, null, null, null) as Quad[];
+    const matches = host.matchFacts(store, graph, null, null, null, null) as Quad[];
     if (dryRun) return factClearReceipt(store, graph, matches.length, true);
     if (!matches.length) return factClearReceipt(store, graph, 0);
-    __op_facts_swap(store, JSON.stringify(matches), EMPTY_JSON_ARRAY);
+    host.swapFacts(store, JSON.stringify(matches), EMPTY_JSON_ARRAY);
     invalidateChatFactsSummary(store);
     return factClearReceipt(store, graph, matches.length);
   },
   async deleteGraphEverywhere({ graph, dryRun = false }) {
     if (dryRun) {
       let removed = 0;
-      for (const store of __op_facts_refs(null)) {
-        removed += (__op_facts_match(store, graph, null, null, null, null) as Quad[]).length;
+      for (const store of host.factStores(null)) {
+        removed += (host.matchFacts(store, graph, null, null, null, null) as Quad[]).length;
       }
       return factClearReceipt(undefined, graph, removed, true);
     }
-    const removed = __op_facts_purge_graph(graph);
+    const removed = host.purgeFactsGraph(graph);
     chatFactsSummaryCache.clear();
     return factClearReceipt(undefined, graph, removed);
   },
 };
 
+async function activeScratchRoot(): Promise<string | null> {
+  return activeChatId ? await chat.scratch(activeChatId) : null;
+}
+
+function resolveWorkspacePath(root: string, path: string = "."): string {
+  const raw = String(path || ".");
+  if (raw.startsWith("/")) return raw;
+  if (!validate.relativePath(raw) && raw !== ".") throw new MooApiError("path_escape", "workspace paths must be relative and may not contain ..", { root, path: raw });
+  const parts = raw.split("/").filter((part) => part && part !== ".");
+  return parts.length ? joinPath(root, parts.join("/")) : root;
+}
+
+async function resolveActivePath(path: string = "."): Promise<string> {
+  const raw = String(path || ".");
+  if (raw.startsWith("/")) return raw;
+  const root = await activeScratchRoot();
+  return root ? resolveWorkspacePath(root, raw) : raw;
+}
+
+async function resolveActiveCwd(cwd?: string | null): Promise<string | null> {
+  const raw = cwd == null ? null : String(cwd || ".");
+  if (raw?.startsWith("/")) return raw;
+  const root = await activeScratchRoot();
+  if (!root) return raw;
+  return raw ? resolveWorkspacePath(root, raw) : root;
+}
+
 const fs: Moo["fs"] = {
   async read(path) {
-    return __op_fs_read(path);
+    const resolved = await resolveActivePath(path);
+    return await traceObserved("moo.fs.read", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
   async write(path, content) {
+    const resolved = await resolveActivePath(path);
     const text = typeof content === "string" ? content : String(content);
     let before: string | null = null;
     try {
-      before = __op_fs_read(path);
+      before = await traceObserved("moo.fs.read_before_write", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length }));
     } catch (_) {
       before = null;
     }
-    __op_fs_write(path, text);
-    await recordFileWriteDiff(path, before, text);
+    await traceObserved("moo.fs.write", {
+      path,
+      resolved,
+      chars: text.length,
+      beforeExists: before != null,
+    }, () => host.writeFile(resolved, text), () => ({ changed: before !== text }));
+    await traceObserved("moo.fs.record_diff", { path, resolved }, () => recordFileWriteDiff(resolved, before, text));
   },
   async list(path) {
-    return __op_fs_list(path);
+    const resolved = await resolveActivePath(path);
+    return await traceObserved("moo.fs.list", { path, resolved }, () => host.listDir(resolved), (value) => ({ count: value.length }));
   },
   async glob(pattern) {
-    return __op_fs_glob(pattern);
+    const resolved = await resolveActivePath(pattern);
+    return await traceObserved("moo.fs.glob", { pattern, resolved }, () => host.globFiles(resolved), (value) => ({ count: value.length }));
   },
   async stat(path) {
-    return __op_fs_stat(path);
+    const resolved = await resolveActivePath(path);
+    return await traceObserved("moo.fs.stat", { path, resolved }, () => host.statFile(resolved), (value) => ({ exists: value != null, kind: (value as any)?.kind ?? null, size: (value as any)?.size ?? null, mtime: (value as any)?.mtime ?? null }));
   },
   async canonical(path) {
-    return __op_fs_canonical(path);
+    const resolved = await resolveActivePath(path);
+    return await traceObserved("moo.fs.canonical", { path, resolved }, () => host.canonicalPath(resolved), (value) => ({ path: value }));
   },
   async exists(path) {
-    return (await fs.stat(path)) != null;
+    return await traceObserved("moo.fs.exists", { path }, async () => (await fs.stat(path)) != null, (value) => ({ exists: value }));
   },
   async ensureDir(path) {
-    __op_fs_mkdir(path);
-  },
-  async patch(input) {
-    const args = normalizePatchArgs(input);
-    const parsed = parseUnifiedPatch(String(args.patch));
-    const dryRun = !!args.dryRun;
-    const files: FsPatchReceipt["files"] = [];
-    for (const file of parsed) {
-      const sourcePath = file.oldPath ?? file.newPath;
-      const targetPath = file.newPath ?? file.oldPath;
-      if (!sourcePath || !targetPath) throw new MooApiError("invalid_patch", "patch file header has no usable path", file);
-      const readPath = resolvePatchPath(sourcePath, args.cwd, args.strip);
-      const writePath = resolvePatchPath(targetPath, args.cwd, args.strip);
-      let before: string | null = null;
-      try {
-        before = __op_fs_read(readPath);
-      } catch (_) {
-        before = null;
-      }
-      if (before == null && file.oldPath != null) throw new MooApiError("patch_mismatch", "patch target file does not exist", { path: readPath });
-      const applied = applyParsedFilePatch(file, before);
-      const deleting = file.newPath == null;
-      if (!dryRun) {
-        if (deleting) {
-          __op_fs_remove(readPath);
-          await recordFileWriteDiff(readPath, before, "");
-        } else {
-          __op_fs_write(writePath, applied.after);
-          await recordFileWriteDiff(writePath, before, applied.after);
-        }
-      }
-      files.push({ path: deleting ? readPath : writePath, beforeExists: before != null, afterExists: !deleting, added: applied.added, removed: applied.removed, hunks: file.hunks.length });
-    }
-    return { dryRun, files };
+    const resolved = await resolveActivePath(path);
+    await traceObserved("moo.fs.ensureDir", { path, resolved }, () => host.makeDir(resolved), () => ({ path: resolved }));
   },
 };
 
@@ -1116,29 +1125,42 @@ function checkedProcResult(input: ProcRunArgs, result: ProcResult): ProcResult {
 
 const proc: Moo["proc"] = {
   async run(input) {
-    const { cmd, args = [], cwd = null, stdin = null, timeoutMs = 60_000, env = undefined, maxOutputBytes = null } = input;
-    const result = __op_proc_run(
+    const { cmd, args = [], stdin = null, timeoutMs = 60_000, env = undefined, maxOutputBytes = null } = input;
+    const cwd = await resolveActiveCwd(input.cwd);
+    return await traceObserved("moo.proc.run", {
       cmd,
-      JSON.stringify(args),
+      args,
       cwd,
-      stdin,
       timeoutMs,
-      env == null ? null : JSON.stringify(env),
-      maxOutputBytes ?? null,
-    );
-    return checkedProcResult(input, result);
+      hasStdin: stdin != null,
+      stdinChars: typeof stdin === "string" ? stdin.length : 0,
+      envKeys: env && typeof env === "object" ? Object.keys(env).sort() : [],
+      maxOutputBytes: maxOutputBytes ?? null,
+      check: input.check === true,
+    }, () => {
+      const result = host.runProcess(
+        cmd,
+        JSON.stringify(args),
+        cwd,
+        stdin,
+        timeoutMs,
+        env == null ? null : JSON.stringify(env),
+        maxOutputBytes ?? null,
+      );
+      return checkedProcResult({ ...input, cwd }, result);
+    }, (result) => ({
+      code: result.code,
+      timedOut: result.timedOut,
+      stdoutChars: result.stdout?.length ?? 0,
+      stderrChars: result.stderr?.length ?? 0,
+      stdoutTruncated: result.stdoutTruncated ?? false,
+      stderrTruncated: result.stderrTruncated ?? false,
+    }));
   },
   async runChecked(input) {
     return proc.run({ ...input, check: true });
   },
 };
-
-function workspacePath(root: string, path: string = "."): string {
-  const raw = String(path || ".");
-  if (!validate.relativePath(raw) && raw !== ".") throw new MooApiError("path_escape", "workspace paths must be relative and may not contain ..", { root, path: raw });
-  const parts = raw.split("/").filter(Boolean);
-  return parts.length ? joinPath(root, parts.join("/")) : root;
-}
 
 const workspace: Moo["workspace"] = {
   async current(args = {}) {
@@ -1146,19 +1168,18 @@ const workspace: Moo["workspace"] = {
     return {
       root,
       fs: {
-        read: (path) => fs.read(workspacePath(root, path)),
-        write: (path, content) => fs.write(workspacePath(root, path), content),
-        list: (path = ".") => fs.list(workspacePath(root, path)),
-        glob: (pattern) => fs.glob(workspacePath(root, pattern)),
-        stat: (path = ".") => fs.stat(workspacePath(root, path)),
-        canonical: (path = ".") => fs.canonical(workspacePath(root, path)),
-        exists: (path = ".") => fs.exists(workspacePath(root, path)),
-        ensureDir: (path = ".") => fs.ensureDir(workspacePath(root, path)),
-        patch: (input) => fs.patch(typeof input === "string" ? { patch: input, cwd: root } : { ...input, cwd: root }),
+        read: (path) => fs.read(resolveWorkspacePath(root, path)),
+        write: (path, content) => fs.write(resolveWorkspacePath(root, path), content),
+        list: (path = ".") => fs.list(resolveWorkspacePath(root, path)),
+        glob: (pattern) => fs.glob(resolveWorkspacePath(root, pattern)),
+        stat: (path = ".") => fs.stat(resolveWorkspacePath(root, path)),
+        canonical: (path = ".") => fs.canonical(resolveWorkspacePath(root, path)),
+        exists: (path = ".") => fs.exists(resolveWorkspacePath(root, path)),
+        ensureDir: (path = ".") => fs.ensureDir(resolveWorkspacePath(root, path)),
       },
       proc: {
-        run: (input: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }) => proc.run({ ...input, cwd: input.cwd ? workspacePath(root, input.cwd) : root }),
-        runChecked: (input: Omit<ProcRunArgs, "cwd" | "check"> & { cwd?: string | null }) => proc.runChecked({ ...input, cwd: input.cwd ? workspacePath(root, input.cwd) : root }),
+        run: (input: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }) => proc.run({ ...input, cwd: input.cwd ? resolveWorkspacePath(root, input.cwd) : root }),
+        runChecked: (input: Omit<ProcRunArgs, "cwd" | "check"> & { cwd?: string | null }) => proc.runChecked({ ...input, cwd: input.cwd ? resolveWorkspacePath(root, input.cwd) : root }),
       },
     };
   },
@@ -1202,28 +1223,42 @@ const http: Moo["http"] = {
     const method = opts.method || "GET";
     if (!opts.url) throw new Error("http.fetch requires url");
     const { body, headers } = buildBody(opts);
-    const response = __op_http_fetch(method, opts.url, JSON.stringify(headers), body, opts.timeoutMs ?? 60_000);
-    return { status: response.status, body: response.body, headers: parseResponseHeaders(response.headers) };
+    return await traceObserved("moo.http.fetch", {
+      method,
+      url: opts.url,
+      headers,
+      body,
+      timeoutMs: opts.timeoutMs ?? 60_000,
+    }, () => {
+      const response = host.fetchHttp(method, opts.url, JSON.stringify(headers), body, opts.timeoutMs ?? 60_000);
+      return { status: response.status, body: response.body, headers: parseResponseHeaders(response.headers) };
+    });
   },
   async stream(opts) {
     const method = opts.method || "GET";
     if (!opts.url) throw new Error("http.stream requires url");
     const { body, headers } = buildBody(opts);
-    const opened = __op_http_stream_open(
+    const opened = await traceObserved("moo.http.stream.open", {
       method,
-      opts.url,
-      JSON.stringify(headers),
+      url: opts.url,
+      headers,
       body,
-      opts.timeoutMs ?? 120_000,
-    );
+      timeoutMs: opts.timeoutMs ?? 120_000,
+    }, () => host.openHttpStream(
+        method,
+        opts.url,
+        JSON.stringify(headers),
+        body,
+        opts.timeoutMs ?? 120_000,
+      ));
     return {
       status: opened.status,
       headers: parseResponseHeaders(opened.headers),
       async next() {
-        return __op_http_stream_next(opened.handle);
+        return await traceObserved("moo.http.stream.next", { status: opened.status }, () => host.nextHttpStreamChunk(opened.handle), (chunk) => ({ chunkChars: chunk?.length ?? 0, done: chunk == null }));
       },
       async close() {
-        __op_http_stream_close(opened.handle);
+        await traceObserved("moo.http.stream.close", { status: opened.status }, () => host.closeHttpStream(opened.handle));
       },
     };
   },
@@ -1375,8 +1410,8 @@ type McpOAuthPending = {
 type McpSession = {
   id?: string;
   initializedAt?: number;
-  updatedAt?: number;
 };
+
 
 type McpRequestOptions = {
   skipInitialize?: boolean;
@@ -1422,7 +1457,7 @@ function addQuery(url: string, values: Record<string, string | undefined>): stri
 
 function oauthSecret(prefix: string): string {
   let out = "";
-  while (out.length < 64) out += __op_id(prefix).replace(/[^A-Za-z0-9._~-]/g, "");
+  while (out.length < 64) out += host.newId(prefix).replace(/[^A-Za-z0-9._~-]/g, "");
   return out.slice(0, 96);
 }
 
@@ -1502,31 +1537,34 @@ function headerValue(headers: Record<string, string | string[]> | undefined, nam
 async function loadMcpSession(serverId: string): Promise<McpSession | null> {
   const clean = cleanMcpId(serverId);
   if (!clean) return null;
-  const hash = await pointers.get(mcpSessionRef(clean));
-  if (!hash) return null;
-  const row = await objects.getJSON<McpSession>({ hash: hash });
-  const value = row?.value;
-  if (!value || typeof value !== "object") return null;
+  const target = await pointers.get(mcpSessionRef(clean));
+  if (!target) return null;
+  const value = decodeJsonPointer<McpSession>(target);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const session: McpSession = {};
   if (typeof value.id === "string" && value.id.trim()) session.id = value.id.trim();
   if (Number.isFinite(value.initializedAt)) session.initializedAt = Number(value.initializedAt);
-  if (Number.isFinite(value.updatedAt)) session.updatedAt = Number(value.updatedAt);
   return session.id || session.initializedAt ? session : null;
+}
+
+function encodeMcpSessionPointerTarget(session: McpSession): string {
+  const value: McpSession = {};
+  if (session.id) value.id = session.id;
+  if (Number.isFinite(session.initializedAt)) value.initializedAt = Number(session.initializedAt);
+  return encodeJsonPointer(value);
 }
 
 async function saveMcpSession(serverId: string, session: McpSession): Promise<void> {
   const clean = cleanMcpId(serverId);
   if (!clean) return;
-  const now = await time.nowMs();
+  const ref = mcpSessionRef(clean);
   const current = await loadMcpSession(clean);
   const next: McpSession = {
     ...(current || {}),
     ...session,
-    updatedAt: now,
   };
-  if (!next.initializedAt && session.initializedAt !== undefined) next.initializedAt = now;
-  const hash = await objects.putJSON({ kind: "mcp:Session", value: next });
-  await pointers.set(mcpSessionRef(clean), hash);
+  const nextTarget = encodeMcpSessionPointerTarget(next);
+  if ((await pointers.get(ref)) !== nextTarget) await pointers.set(ref, nextTarget);
 }
 
 async function loadMcpSessionId(serverId: string): Promise<string | null> {
@@ -1539,8 +1577,7 @@ async function saveMcpSessionId(serverId: string, sessionId: string): Promise<vo
 }
 
 async function markMcpInitialized(serverId: string, sessionId?: string | null): Promise<void> {
-  const now = await time.nowMs();
-  const session: McpSession = { initializedAt: now };
+  const session: McpSession = { initializedAt: await time.nowMs() };
   if (sessionId?.trim()) session.id = sessionId.trim();
   await saveMcpSession(serverId, session);
 }
@@ -1554,7 +1591,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.1.0" },
+    clientInfo: { name: "moo", version: "0.2.0" },
   };
 }
 
@@ -1569,9 +1606,14 @@ type McpOAuthClientRegistration = {
   token_endpoint_auth_method?: string;
 };
 
+function mcpOAuthRedirectUri(opts: McpOAuthStartOptions, oauth: NonNullable<McpServerConfig["oauth"]> & { redirectUri?: string }): string {
+  const origin = normalizeServerBaseUrl(opts.origin) || activeServerBaseUrl || "http://127.0.0.1:7777";
+  return normalizeServerBaseUrl(opts.redirectUri) || ((opts.origin || activeServerBaseUrl) ? origin + "/mcp/oauth/callback" : normalizeServerBaseUrl(oauth.redirectUri) || origin + "/mcp/oauth/callback");
+}
+
 async function registerMcpOAuthClient(server: McpServerConfig, oauth: Awaited<ReturnType<typeof discoverMcpOAuth>>, redirectUri: string): Promise<Awaited<ReturnType<typeof discoverMcpOAuth>>> {
   if (!oauth.registrationUrl) return oauth;
-  if (oauth.clientId && oauth.clientId !== "moo" && oauth.redirectUri === redirectUri) return oauth;
+  if (oauth.clientId && oauth.clientId !== "moo" && normalizeServerBaseUrl(oauth.redirectUri) === redirectUri) return oauth;
   const response = await http.fetch({
     method: "POST",
     url: oauth.registrationUrl,
@@ -1708,12 +1750,12 @@ const mcpCore = {
     const server = await mcpCore.getServer(serverId);
     if (!server) throw new Error(`MCP server not found: ${serverId}`);
     let oauth = await discoverMcpOAuth(server);
-    const redirectUri = opts.redirectUri || oauth.redirectUri || ((opts.origin || "http://127.0.0.1:7777").replace(/\/$/, "") + "/mcp/oauth/callback");
+    const redirectUri = mcpOAuthRedirectUri(opts, oauth);
     oauth = await registerMcpOAuthClient(server, oauth, redirectUri);
     const clientId = oauth.clientId || "moo";
     const state = oauthSecret("mcpstate");
     const codeVerifier = oauthSecret("mcpverifier");
-    const codeChallenge = __op_sha256_base64url(codeVerifier);
+    const codeChallenge = host.sha256Base64Url(codeVerifier);
     const expiresAt = (await time.nowMs()) + 10 * 60_000;
     const returnChatId = String(opts.returnChatId || activeChatId || "").trim() || undefined;
     const pending: McpOAuthPending = {
@@ -1801,6 +1843,7 @@ const mcpCore = {
     if (!opts.skipInitialize && method !== "initialize") {
       const session = await loadMcpSession(server.id);
       if (!session?.initializedAt) {
+        await traces.mark("mcp.initialize.required", { serverId: server.id, method });
         await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
       }
     }
@@ -1828,11 +1871,19 @@ const mcpCore = {
       timeoutMs: server.timeoutMs ?? 60_000,
     });
     const responseSessionId = headerValue(response.headers, "mcp-session-id");
-    if (responseSessionId) await saveMcpSessionId(server.id, responseSessionId);
+    await traces.mark("mcp.http.response", {
+      serverId: server.id,
+      method,
+      response,
+      responseSessionId: responseSessionId ?? null,
+      retryingSession: !!opts.retryingSession,
+    });
+    if (responseSessionId && method !== "initialize") await saveMcpSessionId(server.id, responseSessionId);
     if (response.status === 401 && server.oauth && !token) {
       throw new Error(`MCP ${server.id} requires OAuth login; run moo.mcp.login("${server.id}") from the UI or use the MCP settings Login button`);
     }
     if (isMcpSessionError(response.status, response.body) && !opts.retryingSession && method !== "initialize") {
+      await traces.mark("mcp.session.retry", { serverId: server.id, method, status: response.status });
       await clearMcpSessionId(server.id);
       await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
       return mcpCore.request<T>(server.id, method, params, { ...opts, retryingSession: true });
@@ -1841,6 +1892,11 @@ const mcpCore = {
       throw new Error(`MCP ${method} failed with HTTP ${response.status}: ${response.body}`);
     }
     const payload = parseMcpBody(response.body);
+    await traces.mark("mcp.payload", {
+      serverId: server.id,
+      method,
+      payload,
+    });
     if (payload?.error) {
       throw new Error(payload.error.message || JSON.stringify(payload.error));
     }
@@ -1924,21 +1980,33 @@ const events: Moo["events"] = {
   publish(payload) {
     const text =
       typeof payload === "string" ? payload : JSON.stringify(payload);
-    __op_broadcast(text);
+    host.broadcast(text);
   },
 };
 
 const env: Moo["env"] = {
   async get(name) {
-    return __op_env_get(name);
+    return host.getEnv(name);
   },
   async getMany(names) {
     const out: Record<string, string | null> = {};
-    for (const n of names) out[n] = __op_env_get(n);
+    for (const n of names) out[n] = host.getEnv(n);
     return out;
   },
 };
 
+
+function addOptionalTrailFact(
+  txn: { add(args: { graph: string; subject: string; predicate: string; object: unknown }): void },
+  graph: string,
+  entryId: string,
+  predicate: string,
+  value: unknown,
+): void {
+  if (value == null) return;
+  const text = String(value);
+  txn.add({ graph, subject: entryId, predicate, object: text });
+}
 
 async function recordChatTrailEntry(
   chatId: string,
@@ -1952,13 +2020,14 @@ async function recordChatTrailEntry(
   const now = await time.nowMs();
   if (opts.touch) await chat.touch(chatId);
   const entryId = await id.new("trail");
-  const payloadHash = await objects.putJSON({ kind, value: { ...payload, at: now } });
   await facts.update({ store: factsRef, fn: (txn) => {
     txn.add({ graph: graph, subject: entryId, predicate: "rdf:type", object: "agent:TrailEntry" });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:kind", object: kind });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:createdBy", object: "agent:moo" });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:createdAt", object: now });
-    txn.add({ graph: graph, subject: entryId, predicate: "agent:payload", object: payloadHash });
+    addOptionalTrailFact(txn, graph, entryId, "agent:title", payload.title);
+    addOptionalTrailFact(txn, graph, entryId, "agent:body", payload.body);
+    addOptionalTrailFact(txn, graph, entryId, "agent:summary", payload.summary);
   } });
   return entryId;
 }
@@ -2127,17 +2196,35 @@ const ui: Moo["ui"] = {
         txn.add({ graph: c.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
       } });
       const stateRef = `uiinst/${instanceId}/state`;
-      let stateHash = await pointers.get(stateRef);
+      let stateTarget = await pointers.get(stateRef);
       let createdState = false;
-      if (!stateHash) {
-        stateHash = await objects.putJSON({ kind: "ui:State", value: state ?? {} });
-        await pointers.set(stateRef, stateHash);
+      if (!stateTarget) {
+        stateTarget = encodeJsonPointer(state ?? {});
+        await pointers.set(stateRef, stateTarget);
         createdState = true;
       }
-      return { chatId, uiId, instanceId, stateHash, stateRef, createdState, facts: factReceipt };
+      return { chatId, uiId, instanceId, stateTarget, stateRef, createdState, facts: factReceipt };
     },
   },
 };
+
+type ChatUsageSummary = {
+  models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }>;
+  lastContextTokens?: number;
+  lastCompactionPromptTokens?: number;
+};
+
+function normalizeChatUsageSummary(value: unknown): ChatUsageSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const usage = value as Partial<ChatUsageSummary>;
+  usage.models = usage.models && typeof usage.models === "object" && !Array.isArray(usage.models) ? usage.models : {};
+  return usage as ChatUsageSummary;
+}
+
+async function readChatUsagePointerTarget(target: string | null | undefined): Promise<ChatUsageSummary | null> {
+  if (!target) return null;
+  return normalizeChatUsageSummary(decodeJsonPointer<ChatUsageSummary>(target));
+}
 
 type ChatFactsSummary = {
   totalFacts: number;
@@ -2158,7 +2245,7 @@ function invalidateChatFactsSummary(store: string): void {
 }
 
 async function summarizeAllChatFacts(): Promise<Map<string, ChatFactsSummary>> {
-  const raw = JSON.parse(__op_chat_fact_summaries()) as Record<string, ChatFactsSummary | undefined>;
+  const raw = JSON.parse(host.chatFactSummaries()) as Record<string, ChatFactsSummary | undefined>;
   const summaries = new Map<string, ChatFactsSummary>();
   for (const [chatId, summary] of Object.entries(raw)) {
     if (!summary) continue;
@@ -2173,6 +2260,15 @@ async function summarizeAllChatFacts(): Promise<Map<string, ChatFactsSummary>> {
     summaries.set(chatId, cached);
   }
   return summaries;
+}
+
+function emptyChatFactsSummary(): ChatFactsSummary {
+  return {
+    totalFacts: 0,
+    totalTurns: 0,
+    totalSteps: 0,
+    status: "agent:Done",
+  };
 }
 
 async function summarizeChatFacts(chatId: string): Promise<ChatFactsSummary> {
@@ -2235,12 +2331,14 @@ function joinPath(base: string, child: string): string {
   return b + "/" + child.replace(/^\/+/, "");
 }
 
-async function chatScratchRoot(chatId: string): Promise<string> {
-  return (await pointers.get(`chat/${chatId}/path`)) || ".";
+async function chatScratchRoot(chatId: string): Promise<string | null> {
+  return await pointers.get(`chat/${chatId}/path`);
 }
 
-function chatWorktreePath(chatId: string, root: string): string {
-  return joinPath(root, `.moo/${chatId}`);
+async function chatWorktreePath(chatId: string): Promise<string> {
+  const home = ((await env.get("HOME")) || "").trim();
+  const base = home ? joinPath(home, "moo") : "moo";
+  return joinPath(base, chatId);
 }
 
 const canonicalDirCache = new Map<string, Promise<string>>();
@@ -2265,7 +2363,7 @@ function forgetCanonicalDir(path: string) {
 }
 
 const chat: Moo["chat"] = {
-  refs({ chatId }) {
+  async refs({ chatId }) {
     const c = chatRefs(chatId);
     return {
       chatId,
@@ -2291,17 +2389,42 @@ const chat: Moo["chat"] = {
       usageRef: c.usage,
       modelRef: c.model,
       effortRef: c.effort,
+      startBranch: (c as any).startBranch ?? `chat/${chatId}/start-branch`,
+      startBranchRef: (c as any).startBranch ?? `chat/${chatId}/start-branch`,
     };
   },
   async scratch(chatId) {
     const root = await chatScratchRoot(chatId);
-    const path = chatWorktreePath(chatId, root);
+    const path = await chatWorktreePath(chatId);
     if (await fs.exists(path)) return await canonicalDir(path);
-    // If the cwd is a git repo, prefer a real `git worktree add` from HEAD so
-    // the agent gets per-chat branches, diffs, and clean state. Fall back to
-    // a plain mkdir when not in a repo (or when worktree creation fails).
+    const parentPath = path.split("/").slice(0, -1).join("/") || ".";
+    await fs.ensureDir(parentPath);
+    // Repo-less chats deliberately have no checkout root. Give them an empty
+    // per-chat scratch directory instead of treating "." as an implicit repo.
+    if (!root) {
+      await fs.ensureDir(path);
+      return await canonicalDir(path);
+    }
+    // If the cwd is a JJ repo, prefer a real `jj workspace add` so the agent
+    // gets an isolated checkout/workspace. Fall back to Git worktrees or a
+    // plain mkdir when repo-specific workspace creation fails.
+    if (await fs.exists(joinPath(root, ".jj"))) {
+      const startRevision = (await pointers.get(`chat/${chatId}/start-branch`))?.trim() || "@";
+      let result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", startRevision, path], ...{ cwd: root, timeoutMs: 10_000 } });
+      if (result.code !== 0 && startRevision !== "@") {
+        result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", "@", path], ...{ cwd: root, timeoutMs: 10_000 } });
+      }
+      if (result.code === 0) return await canonicalDir(path);
+    }
+    // If the cwd is a git repo, prefer a real `git worktree add` from the
+    // selected start branch (or HEAD) so the agent gets per-chat diffs and
+    // clean state.
     if (await fs.exists(joinPath(root, ".git"))) {
-      const result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", path, "HEAD"], ...{ cwd: root, timeoutMs: 10_000 } });
+      const startBranch = (await pointers.get(`chat/${chatId}/start-branch`))?.trim() || "HEAD";
+      let result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, startBranch], ...{ cwd: root, timeoutMs: 10_000 } });
+      if (result.code !== 0 && startBranch !== "HEAD") {
+        result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, "HEAD"], ...{ cwd: root, timeoutMs: 10_000 } });
+      }
       if (result.code === 0) return await canonicalDir(path);
     }
     await fs.ensureDir(path);
@@ -2344,11 +2467,13 @@ const chat: Moo["chat"] = {
         const archivedRaw = refsForChat["archived-at"] || null;
         const hiddenRaw = refsForChat["hidden"] || null;
         const parentChatId = refsForChat["parent"] || null;
-        const usageHash = refsForChat["usage"] || null;
-        const [usageObj, summary] = await Promise.all([
-          usageHash ? objects.getJSON<{ models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }> }>({ hash: usageHash }) : null,
-          allSummaries.get(cid) || summarizeChatFacts(cid),
-        ]);
+        const usage = await readChatUsagePointerTarget(refsForChat["usage"] || null);
+        // host.chatFactSummaries() already summarizes every existing
+        // chat/<id>/facts store in one host-side pass. Pointer-only chats (for
+        // example an empty chat that has been created but not messaged yet)
+        // legitimately have no fact store, so avoid falling back to several
+        // per-chat fact scans for every such sidebar entry on startup.
+        const summary = allSummaries.get(cid) || emptyChatFactsSummary();
         const archivedAt = archivedRaw ? Number(archivedRaw) : null;
         // Keep chat listing metadata-only. Checking every possible worktree path
         // hits the filesystem for each chat and can dominate initial UI load in
@@ -2356,7 +2481,6 @@ const chat: Moo["chat"] = {
         // lazily when code actually needs it, and chat-new returns it when a new
         // chat is explicitly materialized.
         const worktreePath = null;
-        const usage = usageObj?.value ?? null;
         return {
           chatId: cid,
           title: title || null,
@@ -2414,20 +2538,18 @@ const chat: Moo["chat"] = {
 
     return chats.sort((a, b) => (b.lastAt || b.createdAt || 0) - (a.lastAt || a.createdAt || 0));
   },
-  async create(chatId, path = null) {
+  async create(chatId, path = null, opts = {}) {
     let cid = chatId;
     if (!cid) {
       const raw = await id.new("chat");
-      // Keep the whole generated payload, including the per-process counter.
-      // The previous 12-char truncation kept only the high timestamp bits from
-      // ids like `chat:<16 hex nanos><8 hex counter>`, so chats created within
-      // the same ~65µs window could collide. Parallel subagents are commonly
-      // created that close together, which made distinct prompts share one
-      // hidden child chat.
+      // Host ids are `chat:<nanoid-ish payload>`; chat metadata stores just the payload.
       cid = raw.replace(/^chat:/, "");
     }
     if (path && String(path).trim()) {
       await pointers.set(`chat/${cid}/path`, String(path).trim());
+    }
+    if (opts.branch && String(opts.branch).trim()) {
+      await pointers.set(`chat/${cid}/start-branch`, String(opts.branch).trim());
     }
     await chat.touch(cid);
     // Do not materialize the per-chat scratch/worktree during creation.
@@ -2440,7 +2562,7 @@ const chat: Moo["chat"] = {
   async remove(chatId) {
     if (!chatId) throw new Error("remove requires chatId");
     const root = await chatScratchRoot(chatId);
-    const path = chatWorktreePath(chatId, root);
+    const path = await chatWorktreePath(chatId);
     forgetCanonicalDir(path);
     // If this scratch was set up as a git worktree, the directory contains a
     // .git *file* (not a dir) pointing back at the main repo. Clean it via
@@ -2462,33 +2584,42 @@ const chat: Moo["chat"] = {
     clearedQuads += (await facts.deleteStore({ store: `chat/${chatId}/facts` })).removed;
     return { chatId, refsDeleted: all.length, quadsCleared: clearedQuads };
   },
-  async setTitle({ chatId, title }) {
+  async setTitle({ chatId, title, manual }: { chatId: string; title: string | null; manual?: boolean }) {
     const ref = `chat/${chatId}/title`;
+    const manualRef = `chat/${chatId}/title-manual`;
     const previousTitle = await pointers.get(ref);
     const nextTitle = title == null || title.trim() === "" ? null : title.trim();
+    const manualTitle = await pointers.get(manualRef);
+    if (!manual && manualTitle && (previousTitle || null) === manualTitle && nextTitle !== manualTitle) {
+      return { chatId, previousTitle: previousTitle || null, title: previousTitle || null, changed: false };
+    }
     if (nextTitle == null) {
       await pointers.delete(ref);
+      if (manual) await pointers.delete(manualRef);
     } else {
       await pointers.set(ref, nextTitle);
+      if (manual) await pointers.set(manualRef, nextTitle);
     }
     const changed = (previousTitle || null) !== nextTitle;
     if (changed) {
       await recordChatTrailEntry(chatId, "agent:TitleUpdate", {
         title: nextTitle,
-        previousTitle: previousTitle || null,
       });
     }
     return { chatId, previousTitle: previousTitle || null, title: nextTitle, changed };
   },
-  async recordSummary({ chatId, summary, title = null }) {
+  async recordSummary({ chatId, summary, title }) {
+    const targetChatId = String(chatId || activeChatId || "").trim();
+    if (!targetChatId) throw new Error("recordSummary requires chatId outside a chat context");
     const body = String(summary ?? "").trim();
     if (!body) throw new Error("recordSummary requires a non-empty summary");
-    const cleanTitle = title == null ? null : String(title).trim() || null;
-    const entryId = await recordChatTrailEntry(chatId, "agent:Summary", {
+    const cleanTitle = String(title ?? "").trim();
+    if (!cleanTitle) throw new Error("recordSummary requires a non-empty title");
+    const entryId = await recordChatTrailEntry(targetChatId, "agent:Summary", {
       title: cleanTitle,
       body,
     }, { touch: true });
-    return { chatId, entryId, title: cleanTitle };
+    return { chatId: targetChatId, entryId, title: cleanTitle };
   },
   async archive(chatId) {
     const at = String(await time.nowMs());
@@ -2503,12 +2634,12 @@ const chat: Moo["chat"] = {
 
 const MAX_SUBAGENT_DEPTH = 1;
 const MAX_OUTSTANDING_SUBAGENTS_PER_RUNJS = 4;
-const DEFAULT_SUBAGENT_TURNS = 6;
+const DEFAULT_SUBAGENT_STEPS = 20;
 const DEFAULT_SUBAGENT_TIMEOUT_MS = 10 * 60_000;
 const MAX_SUBAGENT_TIMEOUT_MS = 30 * 60_000;
 
 type NormalizedSubagentSpec = Required<Pick<SubagentSpec, "label" | "task" | "worktree">> & Omit<SubagentSpec, "label" | "task" | "worktree"> & {
-  maxTurns: number;
+  maxSteps: number;
   timeoutMs: number;
 };
 
@@ -2518,14 +2649,14 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
   const task = String(spec.task ?? "").trim();
   if (!label) throw new Error("moo.agent.run requires spec.label");
   if (!task) throw new Error("moo.agent.run requires spec.task");
-  const maxTurns = Math.max(1, Math.min(20, Math.floor(Number(spec.maxTurns ?? DEFAULT_SUBAGENT_TURNS) || DEFAULT_SUBAGENT_TURNS)));
+  const maxSteps = Math.max(1, Math.floor(Number(spec.maxSteps ?? DEFAULT_SUBAGENT_STEPS) || DEFAULT_SUBAGENT_STEPS));
   const timeoutMs = Math.max(1_000, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.floor(Number(spec.timeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS) || DEFAULT_SUBAGENT_TIMEOUT_MS)));
   const worktree = spec.worktree === "inherit" ? "inherit" : "isolated";
   return {
     ...spec,
     label,
     task,
-    maxTurns,
+    maxSteps,
     timeoutMs,
     worktree,
     ...(typeof spec.context === "string" && spec.context.trim() ? { context: spec.context } : {}),
@@ -2577,7 +2708,7 @@ async function markOutstandingSubagentCancelled(parentChatId: string, childChatI
     childChatId,
     output: "",
     error,
-    durationMs: 0,
+    durationNs: 0,
   };
   const resultHash = await objects.putJSON({ kind: "agent:ToolResult", value: result });
   await replaceStepStatus(parentChatId, stepId, "agent:Cancelled", [["agent:result", resultHash], ["agent:error", error]]);
@@ -2600,7 +2731,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   await pointers.set(`chat/${childChatId}/subagent-depth`, String(ctx.depth + 1));
   await pointers.set(`chat/${childChatId}/subagent-parent-runjs`, ctx.runJsStepId);
   if (spec.model) await pointers.set(chatRefs(childChatId).model, spec.model);
-  if (spec.effort) await memory.assert({ subject: `chat:${childChatId}`, predicate: "ui:effortLevel", object: spec.effort });
+  if (spec.effort) await pointers.set(chatRefs(childChatId).effort, spec.effort);
 
   const specHash = await objects.putJSON({ kind: "agent:SubagentSpec", value: spec });
   await pointers.set(`chat/${childChatId}/subagent-spec`, specHash);
@@ -2612,7 +2743,6 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
     expectedOutput: spec.expectedOutput ?? null,
     childChatId,
     parentRunJsStepId: ctx.runJsStepId,
-    spec,
   } });
   const appended = await appendStep(parentChatId, {
     kind: "agent:Subagent",
@@ -2640,7 +2770,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
     childChatId,
     spec,
     limits: {
-      maxTurns: spec.maxTurns,
+      maxSteps: spec.maxSteps,
       timeoutMs: spec.timeoutMs,
       depth: ctx.depth + 1,
     },
@@ -2668,7 +2798,7 @@ async function failSubagentRun(childChatId: string | null, err: unknown) {
     childChatId,
     output: "",
     error: message,
-    durationMs: 0,
+    durationNs: 0,
   };
   await finishSubagentRun(childChatId, result);
 }
@@ -2736,7 +2866,7 @@ const agent: Moo["agent"] = {
     let request: Awaited<ReturnType<typeof createSubagentRunRequest>> | null = null;
     try {
       request = await createSubagentRunRequest(normalized);
-      const raw = await __op_agent_run(JSON.stringify(request));
+      const raw = await host.runAgent(JSON.stringify(request));
       const result = normalizeSubagentResult(JSON.parse(raw) as LegacySubagentResult);
       await finishSubagentRun(request.childChatId, result);
       return result;
@@ -2813,7 +2943,7 @@ function memoryScope(store: string, graph: string): MemoryScope {
     if (encoded.length === 0) return;
     const quads: Quad[] = encoded.map(([subject, predicate, object]) => [graph, subject, predicate, object]);
     assertFactObjects(quads);
-    const present = __op_facts_present(store, JSON.stringify(quads));
+    const present = host.factsPresent(store, JSON.stringify(quads));
     const changedQuads: Quad[] = [];
     const changes: MemoryChange[] = [];
     for (let i = 0; i < quads.length; i++) {
@@ -2832,40 +2962,6 @@ function memoryScope(store: string, graph: string): MemoryScope {
     await recordMemoryDiff(store, graph, action, changes);
   }
 
-  async function applyPatch(input: unknown): Promise<void> {
-    const groups = unpackMemoryPatchGroups(input);
-    for (const group of groups) {
-      const retracts = encodeMemoryFacts(group.retracts, false);
-      const asserts = encodeMemoryFacts(group.asserts, true);
-      if (retracts.length === 0 && asserts.length === 0) continue;
-      const retractQuads: Quad[] = retracts.map(([subject, predicate, object]) => [graph, subject, predicate, object]);
-      const assertQuads: Quad[] = asserts.map(([subject, predicate, object]) => [graph, subject, predicate, object]);
-      assertFactObjects([...retractQuads, ...assertQuads]);
-      const present = __op_facts_present(store, JSON.stringify([...retractQuads, ...assertQuads]));
-      const addKeys = new Set(assertQuads.map((quad) => JSON.stringify(quad)));
-      const removes: Quad[] = [];
-      const adds: Quad[] = [];
-      const removed: MemoryChange[] = [];
-      const added: MemoryChange[] = [];
-      for (let i = 0; i < retractQuads.length; i++) {
-        const quad = retractQuads[i]!;
-        if (!present[i] || addKeys.has(JSON.stringify(quad))) continue;
-        removes.push(quad);
-        removed.push({ subject: quad[1], predicate: quad[2], object: quad[3] });
-      }
-      const offset = retractQuads.length;
-      for (let i = 0; i < assertQuads.length; i++) {
-        const quad = assertQuads[i]!;
-        if (present[offset + i]) continue;
-        adds.push(quad);
-        added.push({ subject: quad[1], predicate: quad[2], object: quad[3] });
-      }
-      if (removes.length === 0 && adds.length === 0) continue;
-      await facts.swap({ store, removes, adds });
-      if (removed.length > 0) await recordMemoryDiff(store, graph, "retract", removed);
-      if (added.length > 0) await recordMemoryDiff(store, graph, "assert", added);
-    }
-  }
 
   return {
     async assert(args) {
@@ -2873,9 +2969,6 @@ function memoryScope(store: string, graph: string): MemoryScope {
     },
     async retract(args) {
       return applyAll("retract", args);
-    },
-    async patch(args) {
-      return applyPatch(args);
     },
     async query(patterns, opts) {
       const encoded: Triple[] = patterns.map(([s, p, o]) => [
@@ -2928,9 +3021,6 @@ const memory: Moo["memory"] = Object.assign(globalMemory, {
       },
       async retract(args) {
         return (await resolve()).retract(args);
-      },
-      async patch(args) {
-        return (await resolve()).patch(args);
       },
       async query(patterns, opts) {
         return (await resolve()).query(patterns, opts);
@@ -3007,16 +3097,10 @@ const vocab: Moo["vocab"] = {
       }
     }
 
-    // Backward-compat: older harness builds wrote vocab subjects as
-    // "vocab:<name>". Treat those as describing the bare "<name>" predicate
-    // so they line up with observed counts.
-    const canonical = (s: string) =>
-      s.startsWith("vocab:") ? s.slice("vocab:".length) : s;
-
     const out: Awaited<ReturnType<Moo["vocab"]["list"]>> = [];
     const seen = new Set<string>();
     for (const [subject, meta] of byPredicate) {
-      const name = canonical(subject);
+      const name = subject;
       seen.add(name);
       out.push({
         name,
@@ -3051,13 +3135,14 @@ export const tryApi: Moo["try"] = async (fn) => {
   }
 };
 
-export const moo: Moo = {
+const rawMoo: Moo = {
   try: tryApi,
   time,
   validate,
   id,
   log,
   objects,
+  todos,
   pointers,
   sparql,
   facts,
@@ -3073,5 +3158,326 @@ export const moo: Moo = {
   memory,
   vocab,
   events,
+  traces,
   term,
 };
+
+const TRACE_SKIP_ROOTS = new Set(["traces"]);
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return !!value && (typeof value === "object" || typeof value === "function") && typeof (value as any).then === "function";
+}
+
+type TraceJsonContext = "input" | "output" | "error" | "event";
+type TraceRedactOpts = { context?: TraceJsonContext };
+
+function utf8Bytes(value: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < value.length; i++) {
+    let code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+        i++;
+      }
+    }
+    if (code <= 0x7f) out.push(code);
+    else if (code <= 0x7ff) out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    else if (code <= 0xffff) out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    else out.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+  }
+  return out;
+}
+
+function bytesOf(value: string | ArrayBufferView | ArrayBuffer): number[] {
+  if (typeof value === "string") return utf8Bytes(value);
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+}
+
+function rightRotate(value: number, bits: number): number {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+export function sha256(value: string | ArrayBufferView | ArrayBuffer): string {
+  const bytes = bytesOf(value);
+  const bitLength = bytes.length * 8;
+  bytes.push(0x80);
+  while ((bytes.length % 64) !== 56) bytes.push(0);
+  const high = Math.floor(bitLength / 0x100000000);
+  const low = bitLength >>> 0;
+  bytes.push((high >>> 24) & 255, (high >>> 16) & 255, (high >>> 8) & 255, high & 255, (low >>> 24) & 255, (low >>> 16) & 255, (low >>> 8) & 255, low & 255);
+  const k = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const w = new Array<number>(64);
+  for (let i = 0; i < bytes.length; i += 64) {
+    for (let t = 0; t < 16; t++) {
+      const j = i + t * 4;
+      w[t] = (((bytes[j] ?? 0) << 24) | ((bytes[j + 1] ?? 0) << 16) | ((bytes[j + 2] ?? 0) << 8) | (bytes[j + 3] ?? 0)) >>> 0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = (rightRotate(w[t - 15]!, 7) ^ rightRotate(w[t - 15]!, 18) ^ (w[t - 15]! >>> 3)) >>> 0;
+      const s1 = (rightRotate(w[t - 2]!, 17) ^ rightRotate(w[t - 2]!, 19) ^ (w[t - 2]! >>> 10)) >>> 0;
+      w[t] = (w[t - 16]! + s0 + w[t - 7]! + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let t = 0; t < 64; t++) {
+      const s1 = (rightRotate(e!, 6) ^ rightRotate(e!, 11) ^ rightRotate(e!, 25)) >>> 0;
+      const ch = ((e! & f!) ^ (~e! & g!)) >>> 0;
+      const temp1 = (hh! + s1 + ch + k[t]! + w[t]!) >>> 0;
+      const s0 = (rightRotate(a!, 2) ^ rightRotate(a!, 13) ^ rightRotate(a!, 22)) >>> 0;
+      const maj = ((a! & b!) ^ (a! & c!) ^ (b! & c!)) >>> 0;
+      const temp2 = (s0 + maj) >>> 0;
+      hh = g; g = f; f = e; e = (d! + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    h[0] = (h[0]! + a!) >>> 0; h[1] = (h[1]! + b!) >>> 0; h[2] = (h[2]! + c!) >>> 0; h[3] = (h[3]! + d!) >>> 0;
+    h[4] = (h[4]! + e!) >>> 0; h[5] = (h[5]! + f!) >>> 0; h[6] = (h[6]! + g!) >>> 0; h[7] = (h[7]! + hh!) >>> 0;
+  }
+  return h.map((n) => n!.toString(16).padStart(8, "0")).join("");
+}
+
+function stableJson(value: unknown): string | null {
+  try {
+    const json = JSON.stringify(value);
+    return typeof json === "string" ? json : null;
+  } catch {
+    return null;
+  }
+}
+
+function ctorName(value: unknown): string | null {
+  const name = (value as any)?.constructor?.name;
+  return typeof name === "string" && name.length > 0 ? name : null;
+}
+
+function functionTraceValue(fn: Function): Record<string, unknown> {
+  const ctor = ctorName(fn);
+  let source = "";
+  try { source = Function.prototype.toString.call(fn); } catch {}
+  return {
+    type: "function",
+    name: fn.name || null,
+    async: ctor === "AsyncFunction" || source.startsWith("async "),
+    source,
+  };
+}
+
+const TRACE_BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let out = "";
+  let i = 0;
+  for (; i + 2 < bytes.length; i += 3) {
+    out += TRACE_BASE64_ALPHABET[bytes[i]! >> 2];
+    out += TRACE_BASE64_ALPHABET[((bytes[i]! & 0x03) << 4) | (bytes[i + 1]! >> 4)];
+    out += TRACE_BASE64_ALPHABET[((bytes[i + 1]! & 0x0f) << 2) | (bytes[i + 2]! >> 6)];
+    out += TRACE_BASE64_ALPHABET[bytes[i + 2]! & 0x3f];
+  }
+  if (i < bytes.length) {
+    out += TRACE_BASE64_ALPHABET[bytes[i]! >> 2];
+    if (i + 1 < bytes.length) {
+      out += TRACE_BASE64_ALPHABET[((bytes[i]! & 0x03) << 4) | (bytes[i + 1]! >> 4)];
+      out += TRACE_BASE64_ALPHABET[(bytes[i + 1]! & 0x0f) << 2];
+      out += "=";
+    } else {
+      out += TRACE_BASE64_ALPHABET[(bytes[i]! & 0x03) << 4];
+      out += "==";
+    }
+  }
+  return out;
+}
+
+function errorTraceValue(error: any, seen: WeakSet<object>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    type: "error",
+    name: typeof error?.name === "string" ? error.name : ctorName(error) ?? "Error",
+    message: typeof error?.message === "string" ? error.message : String(error),
+  };
+  if (typeof error?.stack === "string") out.stack = error.stack;
+  for (const key of Reflect.ownKeys(error ?? {})) {
+    if (key === "name" || key === "message" || key === "stack") continue;
+    out[String(key)] = traceJsonInner((error as any)[key as any], seen);
+  }
+  return out;
+}
+
+function traceJsonInner(value: unknown, seen: WeakSet<object>): unknown {
+  if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "symbol") return { type: "symbol", description: value.description ?? null, source: String(value) };
+  if (typeof value === "function") return functionTraceValue(value as Function);
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value as object)) return "[Circular]";
+  seen.add(value as object);
+  try {
+    if (value instanceof Date) return value.toISOString();
+    if (value instanceof Error) return errorTraceValue(value, seen);
+    if (value instanceof ArrayBuffer) return { type: "ArrayBuffer", encoding: "base64", data: bytesToBase64(new Uint8Array(value)) };
+    if (ArrayBuffer.isView(value as any)) {
+      const view = value as ArrayBufferView;
+      return {
+        type: ctorName(value) ?? "ArrayBufferView",
+        encoding: "base64",
+        data: bytesToBase64(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)),
+      };
+    }
+    if (Array.isArray(value)) return value.map((entry) => traceJsonInner(entry, seen));
+    if (value instanceof Map) return { type: "Map", entries: Array.from(value.entries()).map(([k, v]) => [traceJsonInner(k, seen), traceJsonInner(v, seen)]) };
+    if (value instanceof Set) return { type: "Set", values: Array.from(value.values()).map((entry) => traceJsonInner(entry, seen)) };
+    const out: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(value as object)) {
+      const desc = Object.getOwnPropertyDescriptor(value as object, key);
+      if (!desc || !("value" in desc)) continue;
+      out[String(key)] = traceJsonInner(desc.value, seen);
+    }
+    return out;
+  } finally {
+    seen.delete(value as object);
+  }
+}
+
+export function traceJsonValue(value: unknown): unknown {
+  return traceJsonInner(value, new WeakSet<object>());
+}
+
+export function redactValue(value: unknown, _opts: TraceRedactOpts = {}): unknown {
+  return traceJsonValue(value);
+}
+
+function traceDataJson(value: unknown): string {
+  return JSON.stringify(traceJsonValue(value));
+}
+
+function traceErrorJson(_name: string, error: unknown): string {
+  return JSON.stringify({ error: traceJsonValue(error) });
+}
+
+function traceArgsObject(args: unknown[]): Record<string, unknown> {
+  if (args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) return args[0] as Record<string, unknown>;
+  return { args };
+}
+
+function rowCount(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") {
+    const result = (value as any).result;
+    if (Array.isArray(result)) return result.length;
+    const rows = (value as any).rows;
+    if (Array.isArray(rows)) return rows.length;
+  }
+  return null;
+}
+
+const TRACE_NATIVE_WRAPPED = Symbol.for("moo.trace.native.wrapped");
+const TRACE_NATIVE_ORIGINAL = Symbol.for("moo.trace.native.original");
+
+function traceNativeOp<T>(name: string, opArgs: unknown[], fn: () => T): T {
+  let spanId: string | null = null;
+  try {
+    const raw = host.insertTrace(JSON.stringify({ kind: "span", name: `moo.native.${name}`, status: "running", data: traceJsonValue({ op: name, args: opArgs }) }));
+    spanId = raw === "null" ? null : raw;
+  } catch {}
+  try {
+    const value = fn();
+    if (isThenable(value)) {
+      return Promise.resolve(value).then((resolved) => {
+        if (spanId) host.finishTrace(spanId, "ok", traceDataJson({ output: resolved }));
+        return resolved;
+      }, (e) => {
+        if (spanId) host.finishTrace(spanId, "error", traceErrorJson(name, e));
+        throw e;
+      }) as T;
+    }
+    if (spanId) host.finishTrace(spanId, "ok", traceDataJson({ output: value }));
+    return value;
+  } catch (e: any) {
+    if (spanId) host.finishTrace(spanId, "error", traceErrorJson(name, e));
+    throw e;
+  }
+}
+function installNativeOpTracing(): void {
+  const g = globalThis as any;
+  for (const op of host.TRACED_NATIVE_OPS) {
+    const original = g[op.globalName];
+    if (typeof original !== "function" || original[TRACE_NATIVE_WRAPPED]) continue;
+    const wrapped = function(this: unknown, ...opArgs: unknown[]) {
+      return traceNativeOp(op.traceName, opArgs, () => original.apply(this, opArgs));
+    };
+    Object.defineProperty(wrapped, TRACE_NATIVE_WRAPPED, { value: true });
+    Object.defineProperty(wrapped, TRACE_NATIVE_ORIGINAL, { value: original });
+    try {
+      g[op.globalName] = wrapped;
+    } catch {
+      // Some embedders may expose native bindings as non-writable globals.
+    }
+  }
+}
+
+function createTracedObject<T extends object>(target: T, path: string[] = []): T {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof prop !== "string") return value;
+      const nextPath = [...path, prop];
+      if (typeof value === "function") {
+        if (TRACE_SKIP_ROOTS.has(nextPath[0]!)) return value;
+        return (...args: unknown[]) => {
+          if (!host.canTraceSpans()) return value.apply(obj, args);
+          const name = `moo.${nextPath.join(".")}`;
+          let previousParent: string | null = null;
+          const spanId = host.insertTrace(JSON.stringify({
+            kind: "span",
+            name,
+            status: "running",
+            data: traceJsonValue({ args }),
+          }));
+          if (spanId) previousParent = host.setTraceParent(spanId);
+          const finishOk = (result: unknown) => {
+            if (spanId) host.finishTrace(spanId, "ok", traceDataJson({ output: result }));
+            return result;
+          };
+          const finishError = (e: any) => {
+            if (spanId) host.finishTrace(spanId, "error", traceErrorJson(name, e));
+          };
+          let pending = false;
+          try {
+            const result = value.apply(obj, args);
+            if (isThenable(result)) {
+              pending = true;
+              return Promise.resolve(result).then((resolved) => finishOk(resolved), (e) => {
+                finishError(e);
+                throw e;
+              }).finally(() => {
+                if (spanId) host.setTraceParent(previousParent);
+              });
+            }
+            return finishOk(result);
+          } catch (e: any) {
+            finishError(e);
+            throw e;
+          } finally {
+            if (!pending && spanId) host.setTraceParent(previousParent);
+          }
+        };
+      }
+      if (value && typeof value === "object" && !TRACE_SKIP_ROOTS.has(nextPath[0]!)) {
+        return createTracedObject(value, nextPath);
+      }
+      return value;
+    },
+  }) as T;
+}
+
+installNativeOpTracing();
+
+export const moo: Moo = createTracedObject(rawMoo);

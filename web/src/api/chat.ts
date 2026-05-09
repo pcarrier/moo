@@ -1,5 +1,6 @@
 import { callCommand } from "./contract";
 import type { ApiCommand, ApiCommandReq, ApiCommandResult } from "./contract";
+import type { ApiResult } from "./transport";
 import { optional } from "./utils";
 import type {
   ChatAutocompleteSuggestion,
@@ -7,27 +8,34 @@ import type {
   ChatModelInfo,
   ChatSummary,
   CompactionsValue,
+  DescribeSnapshotValue,
+  DescribeUpdateValue,
   DescribeValue,
   ImageAttachment,
   StepId,
+  RepoKind,
 } from "./types";
 
+export type PendingMessage = { id: string; chatId: ChatId; text: string; attachments?: ImageAttachment[] };
+
 export type ChatCommands =
-  | ApiCommand<"describe", { chatId: ChatId; limit?: number }, DescribeValue>
+  | ApiCommand<"describe", { chatId: ChatId; mode: "snapshot"; limit?: number } | { chatId: ChatId; mode: "update"; limit?: number; sinceAt?: number; knownHead?: string | null; knownTotalTimelineItems?: number; knownCompaction?: string | null }, DescribeValue>
   | ApiCommand<"compactions", { chatId: ChatId }, CompactionsValue>
   | ApiCommand<"step", { chatId: ChatId; message: string; attachments?: ImageAttachment[] }, { chatId: ChatId; userStepId: StepId }>
+  | ApiCommand<"pending-messages", Record<string, never>, { messages: PendingMessage[] }>
+  | ApiCommand<"pending-messages-save", { messages: PendingMessage[] }, { messages: PendingMessage[] }>
+  | ApiCommand<"compact", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"resume", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"interrupt", { chatId: ChatId }, { chatId: ChatId; aborted: boolean }>
   | ApiCommand<"submit", { chatId: ChatId; requestId: string; values?: Record<string, unknown>; cancelled?: true }, { chatId: ChatId; requestId: string; kind: string }>
   | ApiCommand<"chats", Record<string, never>, { chats: ChatSummary[]; homeDir: string | null }>
   | ApiCommand<"chat-autocomplete", { query: string; limit?: number }, { suggestions: ChatAutocompleteSuggestion[] }>
-  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; worktreePath?: string | null; recent?: string[] }>
-  | ApiCommand<"chat-recent-paths", Record<string, never>, { paths: string[] }>
+  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; worktreePath?: string | null; recent?: string[] }>
+  | ApiCommand<"chat-recent-paths", Record<string, never>, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
   | ApiCommand<"chat-rm", { chatId: ChatId }, { chatId: ChatId; refsDeleted: number; quadsCleared: number }>
   | ApiCommand<"chat-fork", { chatId: ChatId; step: StepId; forkChatId?: ChatId }, { chatId: ChatId; sourceChatId: ChatId; forkedFromStep: StepId; forkedFromAt: number; path?: string | null; worktreePath?: string | null; copiedFacts: number }>
   | ApiCommand<"chat-rename", { chatId: ChatId; title: string | null }, { chatId: ChatId; title: string | null }>
   | ApiCommand<"chat-archive", { chatId: ChatId; archived: boolean }, { chatId: ChatId; archived: boolean; archivedAt: number | null }>
-  | ApiCommand<"chat-export", { chatId: ChatId }, { chatId: ChatId; url: string; bytes: number }>
   | ApiCommand<"chat-models", { chatId: ChatId }, ChatModelInfo>
   | ApiCommand<"chat-settings", { chatIds: ChatId[] }, { settings: Record<string, { effort: string | null }> }>
   | ApiCommand<"chat-model-set", { chatId: ChatId; model: string | null }, ChatModelInfo>
@@ -40,8 +48,10 @@ function newChat(params: ApiCommandReq<"chat-new"> = {}): ApiCommandResult<"chat
 }
 
 export const chatApi = {
-  describe: (chatId: ChatId, limit?: number) =>
-    callCommand("describe", { chatId, ...optional({ limit }) }),
+  describeSnapshot: (chatId: ChatId, limit?: number): Promise<ApiResult<DescribeSnapshotValue>> =>
+    callCommand("describe", { chatId, mode: "snapshot", ...optional({ limit }) }) as Promise<ApiResult<DescribeSnapshotValue>>,
+  describeUpdate: (chatId: ChatId, input: { limit?: number; sinceAt?: number; knownHead?: string | null; knownTotalTimelineItems?: number; knownCompaction?: string | null } = {}): Promise<ApiResult<DescribeUpdateValue>> =>
+    callCommand("describe", { chatId, mode: "update", ...optional(input) }) as Promise<ApiResult<DescribeUpdateValue>>,
   compactions: (chatId: ChatId) =>
     callCommand("compactions", { chatId }),
   step: (chatId: ChatId, message: string, attachments: ImageAttachment[] = []) =>
@@ -50,6 +60,10 @@ export const chatApi = {
       message,
       ...(attachments.length ? { attachments } : {}),
     }),
+  pendingMessages: () => callCommand("pending-messages", {}),
+  savePendingMessages: (messages: PendingMessage[]) =>
+    callCommand("pending-messages-save", { messages }),
+  compact: (chatId: ChatId) => callCommand("compact", { chatId }),
   resume: (chatId: ChatId) =>
     callCommand("resume", { chatId }),
   interrupt: (chatId: ChatId) =>
@@ -71,8 +85,6 @@ export const chatApi = {
     callCommand("chat-fork", { chatId, step }),
   archive: (chatId: ChatId, archived: boolean) =>
     callCommand("chat-archive", { chatId, archived }),
-  export: (chatId: ChatId) =>
-    callCommand("chat-export", { chatId }),
   models: (chatId: ChatId) =>
     callCommand("chat-models", { chatId }),
   settings: (chatIds: ChatId[]) =>

@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -90,6 +91,8 @@ fn build_harness(out_dir: &Path) {
 fn build_ui(out_dir: &Path) {
     let dist: PathBuf = env::var_os("MOO_VITE_DIST").map_or_else(
         || {
+            ensure_web_deps();
+
             let output = Command::new("bun")
                 .current_dir("web")
                 .arg("run")
@@ -114,8 +117,71 @@ fn build_ui(out_dir: &Path) {
     let html = fs::read_to_string(&html_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", html_path.display()));
     let html = inline_vite_assets(&html, &dist);
-    fs::write(out_dir.join("default_ui.html"), html)
+    fs::write(out_dir.join("default_ui.html"), &html)
         .unwrap_or_else(|err| panic!("failed to write embedded UI html: {err}"));
+    fs::write(
+        out_dir.join("default_ui.html.br"),
+        brotli_compress(html.as_bytes()),
+    )
+    .unwrap_or_else(|err| panic!("failed to write embedded UI Brotli html: {err}"));
+}
+
+fn brotli_compress(input: &[u8]) -> Vec<u8> {
+    let (quality, lgwin) = if is_release_profile() {
+        (11, 22)
+    } else {
+        // Keep developer and profiling builds fast; maximum compression only
+        // matters for release artifacts.
+        (0, 10)
+    };
+
+    let mut out = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut out, 4096, quality, lgwin);
+        writer
+            .write_all(input)
+            .expect("failed to Brotli-compress embedded UI html");
+    }
+
+    out
+}
+
+fn is_release_profile() -> bool {
+    let Ok(out_dir) = env::var("OUT_DIR") else {
+        return false;
+    };
+
+    let components: Vec<_> = Path::new(&out_dir).components().collect();
+    components
+        .windows(2)
+        .any(|pair| pair[0].as_os_str() == "release" && pair[1].as_os_str() == "build")
+}
+
+fn ensure_web_deps() {
+    if Path::new("web/node_modules/.bin/vite").exists() {
+        return;
+    }
+
+    let output = Command::new("bun")
+        .current_dir("web")
+        .arg("install")
+        .arg("--frozen-lockfile")
+        .arg("--no-progress")
+        .output()
+        .expect("failed to run bun; install Bun to install embedded Vite UI dependencies");
+
+    assert!(
+        output.status.success(),
+        "failed to install embedded Vite UI dependencies with bun install: status={}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        Path::new("web/node_modules/.bin/vite").exists(),
+        "bun install completed but web/node_modules/.bin/vite is still missing"
+    );
 }
 
 fn inline_vite_assets(html: &str, dist: &Path) -> String {

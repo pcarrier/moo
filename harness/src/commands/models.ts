@@ -7,11 +7,15 @@ import {
   normalizeEffort,
   resolveProvider,
 } from "../agent";
+import {
+  defaultModelIds,
+  inferProviderForModelId,
+  modelSupportsTools,
+  normalizeProvider,
+  PROVIDERS,
+  type ProviderName,
+} from "../llm_models";
 import type { Input } from "./_shared";
-
-export type ProviderName = "openai" | "qwen" | "anthropic";
-
-const PROVIDERS: ProviderName[] = ["openai", "anthropic", "qwen"];
 
 export type ModelOption = {
   id: string;
@@ -20,14 +24,9 @@ export type ModelOption = {
   label: string;
 };
 
-export function normalizeProvider(value: unknown): ProviderName | null {
-  const provider = String(value ?? "").trim().toLowerCase();
-  return provider === "openai" || provider === "qwen" || provider === "anthropic" ? provider : null;
-}
-
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
   const raw = String(value ?? "").trim();
-  const match = /^(openai|qwen|anthropic):(.*)$/i.exec(raw);
+  const match = /^(openai|qwen|anthropic|xai):(.*)$/i.exec(raw);
   if (!match) return { provider: null, model: raw };
   return { provider: normalizeProvider(match[1]), model: match[2].trim() };
 }
@@ -36,21 +35,49 @@ export function modelOptionId(provider: ProviderName, model: string): string {
   return provider + ":" + model;
 }
 
-function inferProviderNameForModel(model: string): ProviderName | null {
-  const id = model.trim().toLowerCase();
-  if (!id) return null;
-  if (id.startsWith("qwen")) return "qwen";
-  if (id.startsWith("claude")) return "anthropic";
-  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4") || id.startsWith("chatgpt-")) return "openai";
-  return null;
+function inferProviderNameForModel(model: string | null | undefined): ProviderName | null {
+  return inferProviderForModelId(model);
+}
+
+async function getChatSetting(chatId: string, key: "model" | "provider" | "effort", predicate: string): Promise<string | null> {
+  const c = chatRefs(chatId);
+  const ref = c[key];
+  const stored = String((await moo.pointers.get(ref)) ?? "").trim();
+  if (stored) return stored;
+  return getChatFact(chatId, predicate);
+}
+
+async function setChatSetting(chatId: string, key: "model" | "provider" | "effort", predicate: string, value: string | null): Promise<void> {
+  const c = chatRefs(chatId);
+  const ref = c[key];
+  const normalized = String(value ?? "").trim();
+  if (normalized) await moo.pointers.set(ref, normalized);
+  else await moo.pointers.delete(ref);
+
+  const store = chatFactsRef(chatId);
+  const graph = chatGraph(chatId);
+  const subject = chatSubject(chatId);
+  const existing = await moo.facts.match({ store, ...{ graph, subject, predicate } });
+  if (existing.length) {
+    await moo.facts.swap({
+      store,
+      removes: existing.map((row) => ({
+        graph: row[0],
+        subject: row[1],
+        predicate: row[2],
+        object: new Term(row[3]),
+      })),
+      adds: [],
+    });
+  }
 }
 
 export async function getChatProvider(chatId: string): Promise<ProviderName | null> {
-  return normalizeProvider(await getChatFact(chatId, CHAT_PROVIDER_PREDICATE));
+  return normalizeProvider(await getChatSetting(chatId, "provider", CHAT_PROVIDER_PREDICATE));
 }
 
 export async function getChatModel(chatId: string): Promise<string | null> {
-  const raw = await getChatFact(chatId, CHAT_MODEL_PREDICATE);
+  const raw = await getChatSetting(chatId, "model", CHAT_MODEL_PREDICATE);
   const parsed = splitModelId(raw);
   return parsed.model || null;
 }
@@ -61,12 +88,12 @@ export async function setChatModel(chatId: string, model: string | null): Promis
   // Persist explicit provider when given (e.g. "openai:gpt-5"); otherwise infer from
   // model name so the picker shows the same row the user clicked even after a refresh.
   const provider = modelName ? (parsed.provider || inferProviderNameForModel(modelName)) : null;
-  await setChatFact(chatId, CHAT_MODEL_PREDICATE, modelName);
-  await setChatFact(chatId, CHAT_PROVIDER_PREDICATE, provider);
+  await setChatSetting(chatId, "model", CHAT_MODEL_PREDICATE, modelName);
+  await setChatSetting(chatId, "provider", CHAT_PROVIDER_PREDICATE, provider);
 }
 
 export async function setChatEffort(chatId: string, effort: string | null): Promise<void> {
-  await setChatFact(chatId, CHAT_EFFORT_PREDICATE, normalizeEffort(effort));
+  await setChatSetting(chatId, "effort", CHAT_EFFORT_PREDICATE, normalizeEffort(effort));
 }
 
 export const CHAT_MODEL_PREDICATE = "ui:model";
@@ -120,7 +147,7 @@ async function setChatFact(chatId: string, predicate: string, value: string | nu
 }
 
 export async function getChatEffort(chatId: string): Promise<string | null> {
-  return normalizeEffort(await getChatFact(chatId, CHAT_EFFORT_PREDICATE));
+  return normalizeEffort(await getChatSetting(chatId, "effort", CHAT_EFFORT_PREDICATE));
 }
 
 export async function defaultChatEffort(): Promise<string | null> {
@@ -174,24 +201,7 @@ export function effortAllowedForModel(efforts: readonly string[], effort: string
 }
 
 export function modelSupportsToolCalls(model: string): boolean {
-  const id = model.trim().toLowerCase();
-  if (!id) return false;
-  if (id.startsWith("claude-")) return true;
-
-  if (id.startsWith("qwen")) {
-    if (/(?:omni|vl|audio|image|asr|tts|embedding|rerank|long)/.test(id)) return false;
-    return /^qwen3(?:[.-]|$)/.test(id) || /^qwen-(?:plus|max|turbo|flash)(?:[-.]|$)/.test(id);
-  }
-
-  if (/(?:^|[-.])(?:audio|realtime|image|transcribe|tts|search|embedding|moderation|whisper|dall-e|deep-research)(?:[-.]|$)/.test(id)) {
-    return false;
-  }
-  return (
-    /^gpt-5(?:[.-]|$)/.test(id) ||
-    /^gpt-4(?:\.1|o)?(?:[.-]|$)/.test(id) ||
-    /^o(?:3|4)(?:[.-]|$)/.test(id) ||
-    /^chatgpt-/.test(id)
-  );
+  return modelSupportsTools(inferProviderNameForModel(model), model);
 }
 
 function configuredModelsFrom(raw: string | null): string[] {
@@ -221,81 +231,11 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   for (const model of configuredModelsFrom(await moo.env.get("OPENAI_MODELS"))) add("openai", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get("QWEN_MODELS"))) add("qwen", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get("ANTHROPIC_MODELS"))) add("anthropic", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get("XAI_MODELS"))) add("xai", splitModelId(model).model);
   return out;
 }
 
 export async function modelOptionsFor(selectedProvider: ProviderName | null, selectedModel: string | null): Promise<ModelOption[]> {
-  const openaiDefaults = [
-    "gpt-5.5",
-    "gpt-5.5-pro",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "gpt-5.4-pro",
-    "gpt-5.3-chat-latest",
-    "gpt-5.3-codex",
-    "gpt-5.2",
-    "gpt-5.2-chat-latest",
-    "gpt-5.2-codex",
-    "gpt-5.2-pro",
-    "gpt-5.1",
-    "gpt-5.1-chat-latest",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5",
-    "gpt-5-chat-latest",
-    "gpt-5-codex",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-5-pro",
-    "o4-mini",
-    "o3",
-    "o3-pro",
-    "o3-mini",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    "gpt-4o",
-    "gpt-4o-mini",
-  ];
-  const qwenDefaults = [
-    "qwen3.6",
-    "qwen3-max",
-    "qwen3-plus",
-    "qwen3-turbo",
-    "qwen3-flash",
-    "qwen3-coder-plus",
-    "qwen3-coder-flash",
-    "qwen3-coder-next",
-    "qwen-plus",
-    "qwen-plus-latest",
-    "qwen-max",
-    "qwen-max-latest",
-    "qwen-turbo",
-    "qwen-turbo-latest",
-    "qwen-flash",
-  ];
-  const anthropicDefaults = [
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-    "claude-opus-4-1",
-    "claude-sonnet-4",
-    "claude-opus-4",
-    "claude-3-7-sonnet-latest",
-    "claude-3-7-sonnet",
-  ];
-
-  const defaults: Record<ProviderName, string[]> = {
-    openai: openaiDefaults,
-    anthropic: anthropicDefaults,
-    qwen: qwenDefaults,
-  };
-
   const options: ModelOption[] = [];
   const seen = new Set<string>();
   const add = (provider: ProviderName, model: string) => {
@@ -315,7 +255,7 @@ export async function modelOptionsFor(selectedProvider: ProviderName | null, sel
   }
 
   for (const option of await configuredModelOptions()) add(option.provider, option.model);
-  for (const provider of PROVIDERS) for (const model of defaults[provider]) add(provider, model);
+  for (const provider of PROVIDERS) for (const model of defaultModelIds(provider)) add(provider, model);
   return options;
 }
 
@@ -394,8 +334,9 @@ export async function chatEffortSetCommand(input: Input) {
 
 export async function chatSettingsCommand(input: Input) {
   const rawIds = Array.isArray(input.chatIds) ? input.chatIds : [];
-  const ids = rawIds.map((id: unknown) => String(id ?? "").trim()).filter(Boolean);
+  const ids = [...new Set(rawIds.map((id: unknown) => String(id ?? "").trim()).filter(Boolean))];
+  const entries = await Promise.all(ids.map(async (id) => [id, await getChatEffort(id)] as const));
   const settings: Record<string, { effort: string | null }> = {};
-  for (const id of ids) settings[id] = { effort: await getChatEffort(id) };
+  for (const [id, effort] of entries) settings[id] = { effort };
   return { ok: true, value: { settings } };
 }

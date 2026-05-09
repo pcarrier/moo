@@ -1,0 +1,1774 @@
+/* Conversation timeline, Markdown rendering, runJS output, and message controls. */
+
+/* -- conversation column ------------------------------------------------ */
+
+.main {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  min-height: 0;
+}
+
+.conversation {
+  display: contents;
+}
+
+.conversation-main {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  overflow: hidden;
+  container: conversation-main / inline-size;
+}
+
+.conversation-main > .conv-header,
+.conversation-main > .ongoing-todos,
+.conversation-main > .pending-list,
+.conversation-main > #input-bar {
+  flex: 0 0 auto;
+}
+
+.conversation-main > .timeline {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+.conv-header {
+  box-sizing: border-box;
+  block-size: var(--top-bar-h);
+  min-block-size: var(--top-bar-h);
+  max-block-size: var(--top-bar-h);
+  padding: calc((var(--top-bar-h) - var(--top-bar-button-size)) / 2) 0.55rem;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: auto minmax(0, max-content) minmax(8rem, 1fr) auto minmax(9rem, 0.55fr) auto;
+  grid-template-areas: "nav parent title model tokens right";
+  column-gap: 0.5rem;
+  row-gap: 0.25rem;
+  align-items: center;
+  flex: 0 0 var(--top-bar-h);
+  white-space: nowrap;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: visible;
+}
+
+.conv-header > .header-icon-button:first-child {
+  grid-area: nav;
+}
+
+.page-title {
+  grid-area: title;
+  margin: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.conv-header strong {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: inherit;
+}
+
+.parent-chat-link {
+  grid-area: parent;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  max-inline-size: clamp(7rem, 18vw, 14rem);
+  min-block-size: 1.75rem;
+  padding: 0 0.45rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.75rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-inline-size: 0;
+}
+
+.parent-chat-link:hover,
+.parent-chat-link:focus-visible {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.parent-chat-arrow {
+  font-size: 1em;
+  line-height: 1;
+}
+
+.parent-chat-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+}
+
+.timeline-header-apps {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: 0.18rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--bg);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.timeline-header-apps-label {
+  flex: 0 0 auto;
+  font-size: 0.64rem;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.timeline-header-app {
+  min-inline-size: 0;
+  max-inline-size: 11rem;
+  block-size: 1.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.timeline-header-app:hover,
+.timeline-header-app:focus-visible,
+.timeline-header-app.active {
+  border-color: color-mix(in srgb, dodgerblue 65%, var(--line-strong));
+  background: color-mix(in srgb, dodgerblue 12%, var(--button-hover-bg));
+}
+
+.timeline-header-app-title {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker {
+  --model-select-inline: clamp(9rem, 18cqw, 16rem);
+  --effort-select-inline: clamp(5.75rem, 10cqw, 7rem);
+  grid-area: model;
+  display: grid;
+  grid-template-columns: auto minmax(0, var(--model-select-inline)) auto minmax(
+      0,
+      var(--effort-select-inline)
+    );
+  align-items: center;
+  justify-self: start;
+  gap: 0.25rem;
+  min-width: 0;
+  max-inline-size: min(100%, 28rem);
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.model-label {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.65rem;
+  line-height: 1.1;
+  min-inline-size: 0;
+}
+
+.model-picker select,
+.model-custom input {
+  block-size: 1.75rem;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0 0.95rem 0 0.28rem;
+  font: inherit;
+  line-height: 1;
+}
+
+.model-custom {
+  display: flex;
+  gap: 0.25em;
+  min-width: 0;
+}
+
+.model-custom button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  padding: 0.25em 0.55em;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.conv-stats {
+  color: var(--muted);
+  font-size: 0.8em;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.conv-token-slot {
+  grid-area: tokens;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: 0;
+  min-width: 0;
+  inline-size: 100%;
+  overflow: hidden;
+}
+
+.right-sidebar-toggle {
+  grid-area: right;
+  justify-self: end;
+  margin-left: 0;
+}
+
+.token-meter {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.25rem;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 1.75rem;
+  color: var(--fg);
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.token-meter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  flex: 0 0 auto;
+  min-inline-size: max-content;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.token-compact-button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  inline-size: var(--compact-header-button-size);
+  block-size: var(--compact-header-button-size);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.token-compact-button:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.token-compact-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ui-icon {
+  inline-size: 1rem;
+  block-size: 1rem;
+  display: block;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  pointer-events: none;
+}
+
+.token-compact-icon {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.token-meter-head strong {
+  color: var(--fg);
+  font-size: inherit;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-bar {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  position: relative;
+  block-size: 0.42rem;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  overflow: hidden;
+}
+
+.token-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, mediumseagreen 72%, transparent);
+  transition: width 0.12s linear;
+}
+
+.token-meter.over .token-fill {
+  background: color-mix(in srgb, orange 78%, transparent);
+}
+
+.token-meter.empty .token-bar {
+  opacity: 0.7;
+}
+
+.token-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--fg);
+  opacity: 0.55;
+}
+
+.timeline {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.2em 0.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08em;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-height: 0;
+}
+
+@container conversation-main (max-width: 68rem) {
+  .conv-header {
+    grid-template-columns:
+      auto minmax(0, max-content) minmax(4rem, 1fr) minmax(0, max-content)
+      minmax(0, 1fr) auto;
+    grid-template-areas: "nav parent title model tokens right";
+    gap: 0.18rem;
+    padding-inline: 0.3rem;
+  }
+
+  .model-picker {
+    --model-select-inline: clamp(8rem, 20cqw, 14rem);
+    --effort-select-inline: clamp(5.75rem, 10cqw, 7rem);
+    grid-template-columns: minmax(0, var(--model-select-inline)) minmax(
+        0,
+        var(--effort-select-inline)
+      );
+    max-inline-size: min(100%, 20rem);
+  }
+
+  .model-label,
+  .token-meter-head > span {
+    display: none;
+  }
+}
+
+@container conversation-main (max-width: 56rem) {
+  .conv-header {
+    grid-template-columns:
+      auto minmax(0, max-content) minmax(3rem, 1fr) minmax(0, max-content)
+      minmax(0, 1fr) auto;
+    grid-template-areas: "nav parent title model tokens right";
+    gap: 0.2rem;
+  }
+
+  .conv-header strong,
+  .conv-stats,
+  .model-picker,
+  .conv-token-slot {
+    min-width: 0;
+  }
+
+  .parent-chat-link {
+    max-inline-size: clamp(4rem, 16cqw, 10rem);
+  }
+
+  .conv-header .right-sidebar-toggle {
+    align-self: center;
+  }
+
+  .model-picker {
+    max-inline-size: min(100%, 20rem);
+  }
+
+  .model-picker select,
+  .model-custom input {
+    block-size: 1.45rem;
+  }
+}
+
+@container conversation-main (max-width: 30rem) {
+  .conv-header {
+    block-size: auto;
+    max-block-size: none;
+    flex-basis: auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "nav parent right"
+      "title title title"
+      "model model model"
+      "tokens tokens tokens";
+  }
+
+  .model-picker {
+    --model-select-inline: 1fr;
+    --effort-select-inline: minmax(5.75rem, max-content);
+    grid-template-columns: minmax(0, 1fr) minmax(5.75rem, max-content);
+    justify-self: stretch;
+    max-inline-size: none;
+  }
+
+  .timeline-header-app {
+    max-inline-size: none;
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}
+
+.conv-header.chat-loading {
+  /* Keep chat loads to the same one-row chrome as the sidebar. The responsive
+     model/token rows are useful after data arrives, but they have repeatedly
+     made the timeline header too tall while the describe request is pending. */
+  block-size: var(--top-bar-h);
+  min-block-size: var(--top-bar-h);
+  max-block-size: var(--top-bar-h);
+  flex: 0 0 var(--top-bar-h);
+  grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) auto;
+  grid-template-areas: "nav parent title right";
+  align-content: center;
+  overflow: hidden;
+}
+
+.conv-header.chat-loading .model-picker,
+.conv-header.chat-loading .conv-token-slot {
+  display: none;
+}
+
+.history-loading {
+  align-self: center;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+  margin: 0.25em 0 0.5em;
+  min-inline-size: 7em;
+  padding-block: 0.35em;
+}
+
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 2em;
+}
+
+.empty code {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  padding: 0.05em 0.4em;
+  border-radius: 0;
+}
+
+/* -- step bubbles ------------------------------------------------------- */
+
+.step {
+  box-sizing: border-box;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: 0.18em 0.45em;
+  border-radius: 0;
+  line-height: 1.25;
+}
+
+[data-timeline-key].timeline-jump-highlight {
+  outline: 2px solid color-mix(in srgb, var(--accent) 78%, transparent);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  transition:
+    background 0.2s ease,
+    outline-color 0.2s ease;
+}
+
+.step .meta {
+  font-size: 0.68em;
+  color: var(--muted);
+  margin-bottom: 0.02em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Quiet footer metadata for a timeline step. */
+.step-footer {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 0.35em;
+  row-gap: 0.2em;
+  margin-top: 0.12em;
+  font-family: var(--font-mono);
+  font-size: 0.65em;
+  line-height: 1.2;
+  color: var(--muted);
+  min-inline-size: 0;
+}
+
+.step-footer-part {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-inline-size: 0;
+}
+
+.step-footer-separator {
+  flex: none;
+  color: var(--muted);
+  font: inherit;
+  line-height: inherit;
+}
+
+.step-time {
+  font-size: inherit;
+}
+
+.step-time-group,
+.step-model-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+}
+
+.step-thought,
+.step-model,
+.step-effort,
+.step-duration {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.step .body {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.step.user-input {
+  background: var(--bubble-user);
+  align-self: flex-end;
+}
+
+.step.user-input.message-hidden {
+  background: color-mix(in srgb, var(--bubble-user) 28%, transparent);
+  border: 1px dashed var(--line-strong);
+  color: var(--muted);
+  opacity: 0.78;
+}
+
+.step.user-input.message-hidden .timeline-attachment {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.step-action-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  padding: 0;
+  text-decoration: none;
+}
+
+.step-action-label {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.step-action-btn:hover,
+.step-action-btn:focus-visible {
+  color: var(--fg);
+}
+
+.step.reply {
+  background: var(--bubble-reply);
+  align-self: flex-start;
+}
+
+.step.shell-command {
+  background: var(--bubble-shell);
+  align-self: flex-start;
+}
+
+.step.run-j-s {
+  background: var(--bubble-runjs);
+  align-self: flex-start;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+/* Code/result blocks inside runJS are wrapped in <pre>, which already
+   inherits the ui-monospace rule. The title and description are prose, so
+   the bubble itself stays in the system font. */
+
+.step.compaction {
+  background: transparent;
+  align-self: center;
+  font-size: 0.8em;
+  max-width: 80%;
+  padding-block: 0.08em;
+  color: var(--muted);
+}
+
+.step.compaction .meta,
+.step.compaction .step-footer {
+  display: none;
+}
+
+.compaction-summary {
+  text-align: left;
+}
+
+.compaction-summary > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.compaction-summary > summary::-webkit-details-marker {
+  display: none;
+}
+
+.compaction-summary > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 0.9em;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.compaction-summary > summary time {
+  font-size: 0.75em;
+  opacity: 0.75;
+}
+
+.compaction-summary[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.compaction-summary .body {
+  margin-top: 0.35em;
+  padding: 0.35em 0.55em;
+  border: 1px dashed var(--line-strong);
+  background: var(--bubble-compact);
+  color: var(--fg);
+}
+
+.step.tick {
+  align-self: center;
+  font-size: 0.78em;
+  color: var(--muted);
+  padding: 0.06em 0.45em;
+}
+
+.step.log {
+  background: var(--bubble-log);
+  align-self: stretch;
+}
+
+.log-open {
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.55em;
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.log-open:hover .log-summary,
+.log-open:focus-visible .log-summary {
+  color: var(--fg);
+}
+
+.log-open:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.log-open .meta {
+  margin-bottom: 0;
+}
+
+.log-summary {
+  min-inline-size: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-open-hint {
+  color: var(--muted);
+  font-size: 0.68em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.step.failed {
+  outline: 1px solid color-mix(in srgb, crimson 60%, transparent);
+}
+
+.step.error {
+  background: var(--bubble-error);
+  align-self: stretch;
+}
+
+.error-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.error-icon {
+  width: 1.2em;
+  height: 1.2em;
+  border-radius: 0;
+  background: crimson;
+  color: white;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0.85em;
+}
+
+.error-body {
+  margin-top: 0.25em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.error-payload {
+  margin-top: 0.5em;
+}
+
+.error-payload summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: inherit;
+}
+
+.error-payload pre {
+  margin: 0.35em 0 0;
+  padding: 0.65em 0.75em;
+  border: 1px solid color-mix(in srgb, crimson 35%, transparent);
+  background: color-mix(in srgb, var(--bubble-error) 82%, black 8%);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 0.9em var(--font-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .error-body {
+    color: rgba(255, 255, 255, 0.85);
+  }
+}
+
+.shell-cmd {
+  font-weight: 600;
+  margin-bottom: 0.12em;
+}
+
+/* Dismissed content: cancelled steps and interrupted reply drafts. */
+.dismissed-block {
+  box-sizing: border-box;
+  align-self: stretch;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  border: 1px dashed var(--line-strong);
+  background: color-mix(in srgb, var(--bubble-error) 34%, transparent);
+  color: var(--muted);
+  opacity: 0.86;
+}
+
+.dismissed-block > summary {
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+  list-style: none;
+  min-inline-size: 0;
+  padding: 0.18em 0.45em;
+  user-select: none;
+}
+
+.dismissed-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dismissed-block > summary::before {
+  content: "▸";
+  display: inline-block;
+  flex: 0 0 auto;
+  inline-size: 0.9em;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.dismissed-block[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.dismissed-title {
+  color: var(--fg);
+  font-size: 0.78em;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dismissed-meta {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.65em;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+.dismissed-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08em;
+  padding: 0 0.45em 0.45em 1.8em;
+}
+
+.dismissed-body .step {
+  opacity: 0.78;
+}
+
+.dismissed-draft {
+  align-self: stretch;
+}
+
+/* runJS bubble: label-as-headline, code + result both folded by default. */
+/* runJS is a single-line summary by default; click expands to show full
+   description + code + result folds. */
+details.runjs-step {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+details.runjs-step > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  user-select: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+details.runjs-step > summary::-webkit-details-marker {
+  display: none;
+}
+
+.runjs-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.runjs-loading {
+  flex-shrink: 0;
+  margin-right: 0.1em;
+  vertical-align: baseline;
+}
+
+.runjs-markdown {
+  display: inline;
+}
+.runjs-markdown :not(pre) > code {
+  white-space: nowrap;
+}
+.runjs-markdown pre code {
+  /* Preserve fenced code block line breaks in expanded runJS/subagent prompts. */
+  white-space: inherit;
+}
+.runjs-desc-full.runjs-markdown {
+  display: block;
+}
+.runjs-desc-full.runjs-markdown p {
+  margin: 0.25em 0;
+}
+
+.runjs-desc-inline {
+  font-size: 0.88em;
+  line-height: 1.3;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+  white-space: nowrap;
+}
+
+.runjs-desc-separator {
+  flex: 0 0 auto;
+}
+
+.runjs-desc-text.runjs-markdown {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runjs-desc-text > * {
+  display: inline;
+}
+
+/* Hide the inline preview once open; show the full description instead. */
+details.runjs-step[open] .runjs-desc-inline {
+  display: none;
+}
+details.runjs-step:not([open]) .runjs-desc-full {
+  display: none;
+}
+details.runjs-step:not([open]) > .runjs-body,
+details.runjs-step:not([open]) > .step-footer {
+  display: none;
+}
+
+.runjs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  margin-top: 0.18em;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.runjs-desc-full {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin: 0 0 0.05em;
+  color: color-mix(in srgb, currentColor 75%, transparent);
+  font-size: 0.88em;
+  line-height: 1.3;
+}
+
+/* runJS code + result: shown as clearly separated labeled blocks once expanded. */
+.runjs-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12em;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.runjs-block-label {
+  align-self: flex-start;
+  font-size: 0.68em;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
+.runjs-body .runjs-code,
+.runjs-body .runjs-args,
+.runjs-body .runjs-out {
+  display: block;
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.05);
+  border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 0;
+  padding: 0.3em 0.45em;
+  font-size: 0.82em;
+  line-height: 1.3;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runjs-body .runjs-error {
+  border-left-color: color-mix(in srgb, crimson 70%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .runjs-body .runjs-code,
+  :root:not([data-theme="light"]) .runjs-body .runjs-args,
+  :root:not([data-theme="light"]) .runjs-body .runjs-out {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
+.shell-out,
+.tool-out,
+.runjs-code,
+.runjs-args,
+.runjs-out {
+  display: block;
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.3em 0.45em;
+  border-radius: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-size: 0.86em;
+  line-height: 1.3;
+}
+
+details.collapsible {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 0;
+  font-size: 0.9em;
+}
+
+details.collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.32em 0.45em;
+  display: flex;
+  gap: 0.6em;
+  align-items: baseline;
+  user-select: none;
+}
+
+details.collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.collapsible > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 0.8em;
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+details.collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.collapsible > summary .summary-head {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+details.collapsible > summary .summary-meta {
+  color: var(--muted);
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+details.collapsible > pre {
+  display: block;
+  margin: 0;
+  padding: 0.45em 0.6em 0.6em 1.6em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid var(--line);
+}
+
+/* -- JSON + Turtle syntax tinting ------------------------------------- */
+.json-key {
+  color: color-mix(in srgb, dodgerblue 80%, var(--fg));
+}
+.json-str {
+  color: color-mix(in srgb, mediumseagreen 75%, var(--fg));
+}
+.json-store-link {
+  color: inherit;
+}
+.json-store-link .json-str {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.18em;
+}
+.json-embedded {
+  color: var(--fg);
+}
+.json-num {
+  color: color-mix(in srgb, orange 75%, var(--fg));
+}
+.json-bool {
+  color: color-mix(in srgb, mediumpurple 75%, var(--fg));
+}
+.json-null {
+  color: var(--muted);
+}
+.json-punct {
+  color: var(--muted);
+}
+.json-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+.token.property,
+.token.attr-name,
+.token.function,
+.token.url {
+  color: color-mix(in srgb, dodgerblue 80%, var(--fg));
+}
+.token.attr-value,
+.token.string {
+  color: color-mix(in srgb, mediumseagreen 75%, var(--fg));
+}
+.token.number {
+  color: color-mix(in srgb, orange 75%, var(--fg));
+}
+.token.boolean,
+.token.doctype,
+.token.keyword {
+  color: color-mix(in srgb, mediumpurple 75%, var(--fg));
+  font-weight: 600;
+}
+.token.null {
+  color: var(--muted);
+}
+.token.prolog,
+.token.punctuation,
+.token.operator {
+  color: var(--muted);
+}
+.token.entity,
+.token.selector,
+.token.tag {
+  color: color-mix(in srgb, salmon 80%, var(--fg));
+}
+.token.comment {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.ttl-kw {
+  color: color-mix(in srgb, mediumpurple 75%, var(--fg));
+  font-weight: 600;
+}
+.ttl-iri,
+.ttl-pn {
+  color: color-mix(in srgb, dodgerblue 75%, var(--fg));
+}
+.ttl-str {
+  color: color-mix(in srgb, mediumseagreen 75%, var(--fg));
+}
+.ttl-num {
+  color: color-mix(in srgb, orange 75%, var(--fg));
+}
+.ttl-bool {
+  color: color-mix(in srgb, mediumpurple 75%, var(--fg));
+}
+.ttl-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shell-out,
+  :root:not([data-theme="light"]) .tool-out,
+  :root:not([data-theme="light"]) .runjs-code,
+  :root:not([data-theme="light"]) .runjs-out,
+  :root:not([data-theme="light"]) details.collapsible {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
+.shell-cmd,
+.shell-tail {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.shell-tail {
+  font-size: 0.85em;
+  color: var(--muted);
+  margin-top: 0.3em;
+}
+
+.tool-details {
+  margin-top: 0.3em;
+}
+
+.tool-details summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--muted);
+  user-select: none;
+  padding: 0.15em 0;
+}
+
+.tool-details summary:hover {
+  color: var(--fg);
+}
+
+.runjs-arrow {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 0.4em 0 0.15em;
+}
+
+/* -- inline input requests --------------------------------------------- */
+
+.input {
+  align-self: stretch;
+  box-sizing: border-box;
+  min-inline-size: 0;
+  max-width: min(45em, 100%);
+  padding: 0.4em 0.6em;
+  border-radius: 0;
+  background: var(--bubble-input);
+  border: 1px solid color-mix(in srgb, mediumpurple 40%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.input-title {
+  font-weight: 500;
+}
+
+.input-meta {
+  font-size: 0.75em;
+  color: var(--muted);
+}
+
+.input-title,
+.input-meta {
+  overflow-wrap: anywhere;
+}
+
+.input-fields {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.field {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.field-label {
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.field.checkbox .field-label {
+  font-size: 1em;
+  color: var(--fg);
+}
+
+.field input[type="text"],
+.field input[type="url"],
+.field input[type="number"],
+.field input[type="password"],
+.field textarea,
+.field select {
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: 0.25em 0.4em;
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.field textarea {
+  min-height: 2.4em;
+  resize: vertical;
+}
+
+.field input[type="checkbox"] {
+  width: 1em;
+  height: 1em;
+}
+
+.input-actions {
+  display: flex;
+  gap: 0.4em;
+  margin-top: 0.1em;
+}
+
+.input-actions button.primary,
+.input-actions button.secondary {
+  padding: 0.25em 0.7em;
+  font-size: 0.9em;
+}
+
+.input-actions button.secondary {
+  font: inherit;
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.input-actions button.secondary:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.input.answered {
+  opacity: 0.85;
+  border-style: dashed;
+}
+
+.input.response {
+  align-self: flex-end;
+  background: var(--bubble-user);
+  border-color: color-mix(in srgb, dodgerblue 38%, transparent);
+}
+
+.input-deferred-answer {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.answer-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15em 0.6em;
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.answer-summary dt {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.answer-summary dd {
+  margin: 0;
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.choice-btn {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+  padding: 0.55em 0.85em;
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.choice-btn:hover:not(:disabled) {
+  background: var(--button-hover-bg);
+  border-color: var(--line-strong);
+}
+
+.choice-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.choice-desc {
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+/* -- thinking ----------------------------------------------------------- */
+
+.step.thinking {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.4em 0.85em;
+}
+
+.loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--loading-dot-gap);
+  vertical-align: baseline;
+}
+
+.loading-dot {
+  width: var(--loading-dot-size);
+  height: var(--loading-dot-size);
+  border: 1px solid currentColor;
+  background: currentColor;
+  opacity: var(--loading-dot-opacity-dim);
+  animation: loading-dot-blink var(--loading-dot-duration) infinite
+    var(--loading-dot-easing);
+}
+
+.loading-dot:nth-child(2) {
+  animation-delay: var(--loading-dot-delay-step);
+}
+.loading-dot:nth-child(3) {
+  animation-delay: calc(var(--loading-dot-delay-step) * 2);
+}
+
+@keyframes loading-dot-blink {
+  0%,
+  80%,
+  100% {
+    opacity: var(--loading-dot-opacity-dim);
+  }
+  40% {
+    opacity: var(--loading-dot-opacity-bright);
+  }
+}
+
+/* -- markdown ----------------------------------------------------------- */
+
+/* Marked output is real HTML; without this the `pre-wrap` on `.body` makes
+   every `\n` marked emits between block tags render as a visible blank
+   line, on top of the `<p>` margins. The `.step` prefix bumps specificity
+   above `.step .body`. */
+
+.step .body.markdown,
+.markdown {
+  white-space: normal;
+}
+.markdown p {
+  margin: 0.45em 0;
+}
+.markdown p:first-child,
+.markdown > *:first-child {
+  margin-top: 0;
+}
+.markdown p:last-child,
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+.markdown br + br {
+  display: none;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  margin: 0.65em 0 0.3em;
+  font-weight: 600;
+}
+.markdown h1 {
+  font-size: 1.3em;
+}
+.markdown h2 {
+  font-size: 1.15em;
+}
+.markdown h3 {
+  font-size: 1em;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.45em 0;
+  padding-left: 1.35em;
+}
+/* "Loose" lists wrap each <li> content in <p>; that on top of our paragraph
+   margins produces visible blank lines between bullets. Collapse the
+   single-paragraph case so loose lists look like tight ones. */
+.markdown li > p {
+  margin: 0;
+}
+.markdown li > p + p {
+  margin-top: 0.35em;
+}
+.markdown li {
+  margin: 0;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 0.25em 0;
+}
+.markdown code {
+  background: rgba(0, 0, 0, 0.07);
+  padding: 0.05em 0.3em;
+  border-radius: 0;
+  font-size: 0.9em;
+}
+.markdown .mermaid {
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  margin: 0.65em 0;
+  padding: 0.55em 0.7em;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.035);
+}
+.markdown .mermaid svg {
+  display: block;
+  max-inline-size: 100%;
+  height: auto;
+}
+.markdown .mermaid-zoomable {
+  cursor: zoom-in;
+}
+.markdown .mermaid-zoomable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+body.mermaid-lightbox-open {
+  overflow: hidden;
+}
+
+.mermaid-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: rgba(0, 0, 0, 0.82);
+  color: white;
+}
+
+.mermaid-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.72);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.mermaid-lightbox-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.mermaid-lightbox-button {
+  min-inline-size: 2.25rem;
+  min-block-size: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 0.3rem;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mermaid-lightbox-button:hover,
+.mermaid-lightbox-button:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.mermaid-lightbox-close {
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.mermaid-lightbox-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.mermaid-lightbox-viewport.is-panning {
+  cursor: grabbing;
+}
+
+.mermaid-lightbox-content {
+  transform-origin: center;
+  will-change: transform;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 1rem;
+  border-radius: 0.45rem;
+  box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.5);
+  max-inline-size: calc(100vw - 4rem);
+  max-block-size: calc(100vh - 8rem);
+  overflow: auto;
+}
+
+.mermaid-lightbox-content svg {
+  display: block;
+  inline-size: auto;
+  block-size: auto;
+  max-inline-size: none;
+  max-block-size: none;
+}
+.markdown pre {
+  box-sizing: border-box;
+  max-inline-size: 100%;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.55em 0.7em;
+  border-radius: 0;
+  overflow-x: auto;
+  position: relative;
+  margin: 0.55em 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.markdown pre code {
+  display: block;
+  min-inline-size: 0;
+  color: var(--fg);
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  white-space: inherit;
+}
+.markdown a {
+  color: var(--accent);
+}
+.markdown blockquote {
+  margin: 0.55em 0;
+  padding: 0 0.85em;
+  border-left: 0.2em solid var(--line-strong);
+  color: var(--muted);
+}
+.markdown table {
+  display: block;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.65em 0;
+}
+.markdown img {
+  max-inline-size: 100%;
+  height: auto;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--line);
+  padding: 0.25em 0.55em;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .markdown code,
+  :root:not([data-theme="light"]) .markdown pre {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  :root:not([data-theme="light"]) .markdown pre code {
+    background: transparent;
+  }
+  :root:not([data-theme="light"]) .markdown .mermaid {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}

@@ -4,8 +4,6 @@ import { optional } from "./utils";
 import type {
   GraphSummariesValue,
   MemoryBindings,
-  MemoryPatch,
-  MemoryPatchGroup,
   MemoryPattern,
   MemoryWrite,
   PointerEntry,
@@ -15,7 +13,6 @@ import type {
 } from "./types";
 
 type MemoryWriteArgs = { subject: string; predicate: string; object: string; project?: string };
-type MemoryPatchArgs = ({ asserts?: MemoryPattern[]; retracts?: MemoryPattern[] } | { groups: MemoryPatchGroup[] }) & { project?: string };
 
 export type MemoryCommands =
   | ApiCommand<"memory-query", { patterns: MemoryPattern[]; project?: string; limit?: number }, { bindings: MemoryBindings[] }>
@@ -25,7 +22,6 @@ export type MemoryCommands =
   | ApiCommand<"pointers", { prefix?: string }, PointersValue>
   | ApiCommand<"pointer-rm", { name: string; recursive?: boolean }, { name: string; removed: boolean; removedCount?: number; recursive?: boolean }>
   | ApiCommand<"assert", MemoryWriteArgs, MemoryWrite>
-  | ApiCommand<"memory-patch", MemoryPatchArgs, MemoryPatch>
   | ApiCommand<"retract", MemoryWriteArgs, MemoryWrite>
   | ApiCommand<"triple-rm", { graph: string; subject: string; predicate: string; object: string }, MemoryWrite & { graph: string; removed: number }>
   | ApiCommand<"subject-rm", { graph: string; subject: string }, { graph: string; subject: string; removed: number; project: string | null }>
@@ -46,8 +42,6 @@ export const memoryApi = {
   triples,
   assert: (args: MemoryWriteArgs) =>
     callCommand("assert", args),
-  patch: (args: MemoryPatchArgs) =>
-    callCommand("memory-patch", args),
   retract: (args: MemoryWriteArgs) =>
     callCommand("retract", args),
   vocabulary: () =>

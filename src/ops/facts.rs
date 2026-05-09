@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, Transaction, params, params_from_iter};
 use rusty_v8 as v8;
 
 use crate::broadcast;
-use crate::host::with_host;
+use crate::host::with_db;
 use crate::runtime::{install_fn, throw};
 use crate::util::now_ms;
 
@@ -17,13 +17,36 @@ pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_facts_present", op_facts_present)?;
     install_fn(scope, "__op_facts_history", op_facts_history)?;
     install_fn(scope, "__op_facts_refs", op_facts_refs)?;
+    install_fn(
+        scope,
+        "__op_facts_graph_summaries",
+        op_facts_graph_summaries,
+    )?;
     install_fn(scope, "__op_chat_fact_summaries", op_chat_fact_summaries)?;
     install_fn(scope, "__op_facts_count", op_facts_count)?;
     install_fn(scope, "__op_facts_swap", op_facts_swap)?;
+    install_fn(scope, "__op_facts_snapshot_copy", op_facts_snapshot_copy)?;
     install_fn(scope, "__op_facts_clear", op_facts_clear)?;
     install_fn(scope, "__op_facts_purge", op_facts_purge)?;
     install_fn(scope, "__op_facts_purge_graph", op_facts_purge_graph)?;
+    install_fn(
+        scope,
+        "__op_facts_purge_subject_prefix",
+        op_facts_purge_subject_prefix,
+    )?;
     Ok(())
+}
+
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let mut bytes = prefix.as_bytes().to_vec();
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] != 0xff {
+            bytes[i] += 1;
+            bytes.truncate(i + 1);
+            return String::from_utf8(bytes).ok();
+        }
+    }
+    None
 }
 
 fn optional_arg_str(
@@ -57,6 +80,24 @@ fn positive_limit_arg(
 
 fn is_fact_var(term: &str) -> bool {
     term.starts_with('?')
+}
+
+fn log_fact_change(
+    tx: &Transaction<'_>,
+    ref_name: &str,
+    graph: &str,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    action: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, 'system', ?7)",
+        params![ref_name, graph, subject, predicate, object, action, now_ms()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug)]
@@ -172,8 +213,8 @@ fn op_facts_add(
     let s = args.get(2).to_rust_string_lossy(scope);
     let p = args.get(3).to_rust_string_lossy(scope);
     let o = args.get(4).to_rust_string_lossy(scope);
-    let r: Result<usize, String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let n = tx
             .execute(
                 "insert or ignore into quads(ref_name, graph, subject, predicate, object)
@@ -182,12 +223,7 @@ fn op_facts_add(
             )
             .map_err(|e| e.to_string())?;
         if n > 0 {
-            tx.execute(
-                "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
-                 values (?1, ?2, ?3, ?4, ?5, 'add', 'system', ?6)",
-                params![&ref_name, &graph, &s, &p, &o, now_ms()],
-            )
-            .map_err(|e| e.to_string())?;
+            log_fact_change(&tx, &ref_name, &graph, &s, &p, &o, "add")?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(n)
@@ -212,20 +248,15 @@ fn op_facts_remove(
     let s = args.get(2).to_rust_string_lossy(scope);
     let p = args.get(3).to_rust_string_lossy(scope);
     let o = args.get(4).to_rust_string_lossy(scope);
-    let r: Result<usize, String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let n = tx.execute(
             "delete from quads where ref_name = ?1 and graph = ?2 and subject = ?3 and predicate = ?4 and object = ?5",
             params![&ref_name, &graph, &s, &p, &o],
         )
         .map_err(|e| e.to_string())?;
         if n > 0 {
-            tx.execute(
-                "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
-                 values (?1, ?2, ?3, ?4, ?5, 'remove', 'system', ?6)",
-                params![&ref_name, &graph, &s, &p, &o, now_ms()],
-            )
-            .map_err(|e| e.to_string())?;
+            log_fact_change(&tx, &ref_name, &graph, &s, &p, &o, "remove")?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(n)
@@ -278,10 +309,10 @@ fn op_facts_match(
         vals.push(SqlValue::Integer(n));
     }
 
-    let rows: Result<Vec<[String; 4]>, String> = with_host(|h| {
+    let rows: Result<Vec<[String; 4]>, String> = with_db(|conn| {
         // Dynamic SQL (variable number of bind params), so prepare_cached
         // wins more here than for fixed-shape statements.
-        let mut stmt = h.db.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map(params_from_iter(vals.iter()), |r| {
                 Ok([
@@ -347,7 +378,7 @@ fn op_facts_match_all(
     }
 
     let query = build_match_all_query(&ref_name, &patterns, graph.as_deref(), limit);
-    let rows = with_host(|h| run_match_all_query(&h.db, &query));
+    let rows = with_db(|conn| run_match_all_query(conn, &query));
 
     match rows {
         Ok(rows) => {
@@ -389,9 +420,8 @@ fn op_facts_present(
         }
     };
 
-    let r: Result<Vec<bool>, String> = with_host(|h| {
-        let mut stmt = h
-            .db
+    let r: Result<Vec<bool>, String> = with_db(|conn| {
+        let mut stmt = conn
             .prepare_cached(
                 "select exists(select 1 from quads where ref_name = ?1 and graph = ?2 and subject = ?3 and predicate = ?4 and object = ?5)",
             )
@@ -467,8 +497,8 @@ fn op_facts_history(
         vals.push(SqlValue::Integer(n));
     }
 
-    let rows: Result<Vec<[String; 6]>, String> = with_host(|h| {
-        let mut stmt = h.db.prepare_cached(&sql).map_err(|e| e.to_string())?;
+    let rows: Result<Vec<[String; 6]>, String> = with_db(|conn| {
+        let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map(params_from_iter(vals.iter()), |r| {
                 Ok([
@@ -513,27 +543,28 @@ fn op_facts_refs(
     } else {
         None
     };
-    let refs: Result<Vec<String>, String> = with_host(|h| {
+    let refs: Result<Vec<String>, String> = with_db(|conn| {
         let (sql, vals): (&str, Vec<SqlValue>) = if let Some(prefix) = prefix {
-            (
-                "select ref_name from quads where ref_name like ?1 escape '\\'
-                 union select ref_name from fact_log where ref_name like ?1 escape '\\'
-                 order by ref_name",
-                vec![SqlValue::Text(format!(
-                    "{}%",
-                    prefix
-                        .replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                ))],
-            )
+            if let Some(upper) = prefix_upper_bound(&prefix) {
+                (
+                    "select distinct ref_name from quads where ref_name >= ?1 and ref_name < ?2
+                     order by ref_name",
+                    vec![SqlValue::Text(prefix), SqlValue::Text(upper)],
+                )
+            } else {
+                (
+                    "select distinct ref_name from quads where ref_name >= ?1
+                     order by ref_name",
+                    vec![SqlValue::Text(prefix)],
+                )
+            }
         } else {
             (
-                "select ref_name from quads union select ref_name from fact_log order by ref_name",
+                "select distinct ref_name from quads order by ref_name",
                 Vec::new(),
             )
         };
-        let mut stmt = h.db.prepare_cached(sql).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map(params_from_iter(vals.iter()), |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
@@ -550,6 +581,72 @@ fn op_facts_refs(
             }
             rv.set(arr.into());
         }
+        Err(e) => throw(scope, &e),
+    }
+}
+
+fn op_facts_graph_summaries(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let ref_name = optional_arg_str(scope, &args, 0);
+    let graph = optional_arg_str(scope, &args, 1);
+    let summaries: Result<Vec<(String, i64, i64)>, String> = with_db(|conn| {
+        let (sql, vals): (&str, Vec<SqlValue>) = match (&ref_name, &graph) {
+            (Some(_), Some(_)) => (
+                "select graph, count(*) as facts, count(distinct subject) as subjects
+                   from quads
+                  where ref_name = ?1 and graph = ?2
+                  group by graph
+                  order by graph",
+                vec![SqlValue::Text(ref_name.clone().unwrap()), SqlValue::Text(graph.clone().unwrap())],
+            ),
+            (Some(_), None) => (
+                "select graph, count(*) as facts, count(distinct subject) as subjects
+                   from quads
+                  where ref_name = ?1
+                  group by graph
+                  order by graph",
+                vec![SqlValue::Text(ref_name.clone().unwrap())],
+            ),
+            (None, Some(_)) => (
+                "select graph, count(*) as facts, count(distinct subject) as subjects
+                   from (select distinct graph, subject, predicate, object from quads where graph = ?1)
+                  group by graph
+                  order by graph",
+                vec![SqlValue::Text(graph.clone().unwrap())],
+            ),
+            (None, None) => (
+                "select graph, count(*) as facts, count(distinct subject) as subjects
+                   from (select distinct graph, subject, predicate, object from quads)
+                  group by graph
+                  order by graph",
+                Vec::new(),
+            ),
+        };
+        let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(vals.iter()), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    });
+    match summaries {
+        Ok(rows) => match serde_json::to_string(&rows) {
+            Ok(json) => {
+                if let Some(s) = v8::String::new(scope, &json) {
+                    rv.set(s.into());
+                }
+            }
+            Err(e) => throw(scope, &e.to_string()),
+        },
         Err(e) => throw(scope, &e),
     }
 }
@@ -577,15 +674,15 @@ fn op_chat_fact_summaries(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let summaries: Result<HashMap<String, ChatFactSummary>, String> = with_host(|h| {
+    let summaries: Result<HashMap<String, ChatFactSummary>, String> = with_db(|conn| {
         let mut summaries: HashMap<String, ChatFactSummary> = HashMap::new();
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select ref_name, count(*)
                        from quads
-                      where ref_name like 'chat/%/facts'
+                      where ref_name >= 'chat/' and ref_name < 'chat0' and substr(ref_name, length(ref_name) - 5) = '/facts'
                       group by ref_name",
                 )
                 .map_err(|e| e.to_string())?;
@@ -605,11 +702,11 @@ fn op_chat_fact_summaries(
         }
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select ref_name, count(*)
                        from quads
-                      where ref_name like 'chat/%/facts'
+                      where ref_name >= 'chat/' and ref_name < 'chat0' and substr(ref_name, length(ref_name) - 5) = '/facts'
                         and predicate = 'agent:kind'
                         and object = 'agent:UserInput'
                       group by ref_name",
@@ -633,8 +730,8 @@ fn op_chat_fact_summaries(
         }
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select t.ref_name, count(*)
                        from quads t
                        join quads s on s.ref_name = t.ref_name
@@ -645,7 +742,7 @@ fn op_chat_fact_summaries(
                                    and c.graph = t.graph
                                    and c.subject = t.subject
                                    and c.predicate = 'agent:createdAt'
-                      where t.ref_name like 'chat/%/facts'
+                      where t.ref_name >= 'chat/' and t.ref_name < 'chat0' and substr(t.ref_name, length(t.ref_name) - 5) = '/facts'
                         and t.predicate = 'rdf:type'
                         and t.object = 'agent:Step'
                       group by t.ref_name",
@@ -671,8 +768,8 @@ fn op_chat_fact_summaries(
         let mut priority_status: HashMap<String, i32> = HashMap::new();
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select distinct r.ref_name
                        from quads r
                        join quads s on s.ref_name = r.ref_name
@@ -680,7 +777,7 @@ fn op_chat_fact_summaries(
                                    and s.subject = r.subject
                                    and s.predicate = 'ui:status'
                                    and s.object = 'ui:Pending'
-                      where r.ref_name like 'chat/%/facts'
+                      where r.ref_name >= 'chat/' and r.ref_name < 'chat0' and substr(r.ref_name, length(r.ref_name) - 5) = '/facts'
                         and r.predicate = 'rdf:type'
                         and r.object = 'ui:InputRequest'",
                 )
@@ -704,11 +801,11 @@ fn op_chat_fact_summaries(
         }
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select distinct ref_name, object
                        from quads
-                      where ref_name like 'chat/%/facts'
+                      where ref_name >= 'chat/' and ref_name < 'chat0' and substr(ref_name, length(ref_name) - 5) = '/facts'
                         and predicate = 'agent:status'
                         and object in ('agent:Running', 'agent:Queued')",
                 )
@@ -736,8 +833,8 @@ fn op_chat_fact_summaries(
         }
 
         {
-            let mut stmt =
-                h.db.prepare_cached(
+            let mut stmt = conn
+                .prepare_cached(
                     "select s.ref_name, s.object, c.object
                        from quads s
                        join quads t on t.ref_name = s.ref_name
@@ -749,7 +846,7 @@ fn op_chat_fact_summaries(
                                    and c.graph = s.graph
                                    and c.subject = s.subject
                                    and c.predicate = 'agent:createdAt'
-                      where s.ref_name like 'chat/%/facts'
+                      where s.ref_name >= 'chat/' and s.ref_name < 'chat0' and substr(s.ref_name, length(s.ref_name) - 5) = '/facts'
                         and s.predicate = 'agent:status'
                       order by s.ref_name, cast(c.object as integer) desc",
                 )
@@ -802,8 +899,8 @@ fn op_facts_count(
         return;
     }
     let ref_name = args.get(0).to_rust_string_lossy(scope);
-    let count: Result<i64, String> = with_host(|h| {
-        h.db.prepare_cached("select count(*) from quads where ref_name = ?1")
+    let count: Result<i64, String> = with_db(|conn| {
+        conn.prepare_cached("select count(*) from quads where ref_name = ?1")
             .map_err(|e| e.to_string())?
             .query_row(params![&ref_name], |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())
@@ -845,8 +942,8 @@ fn op_facts_swap(
         }
     };
 
-    let r: Result<(), String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<(), String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = now_ms();
         {
             let mut del = tx
@@ -901,6 +998,104 @@ fn op_facts_swap(
     }
 }
 
+fn op_facts_snapshot_copy(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if args.length() < 5 {
+        throw(
+            scope,
+            "facts_snapshot_copy requires (sourceRef, targetRef, cutoffAt, fromGraph, toGraph)",
+        );
+        return;
+    }
+    let source_ref = args.get(0).to_rust_string_lossy(scope);
+    let target_ref = args.get(1).to_rust_string_lossy(scope);
+    let Some(cutoff_at) = args.get(2).to_integer(scope).map(|n| n.value()) else {
+        throw(scope, "facts_snapshot_copy cutoffAt must be a number");
+        return;
+    };
+    let from_graph = args.get(3).to_rust_string_lossy(scope);
+    let to_graph = args.get(4).to_rust_string_lossy(scope);
+
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = now_ms();
+        let latest_at = tx
+            .query_row(
+                "select max(created_at) from fact_log where ref_name = ?1",
+                params![&source_ref],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let inserted = if latest_at.is_some_and(|latest_at| latest_at <= cutoff_at) {
+            tx.execute(
+                "insert or ignore into quads(ref_name, graph, subject, predicate, object)
+                 select ?1,
+                        case when graph = ?2 then ?3 else graph end,
+                        subject,
+                        predicate,
+                        object
+                 from quads
+                 where ref_name = ?4",
+                params![&target_ref, &from_graph, &to_graph, &source_ref],
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            tx.execute(
+                "insert or ignore into quads(ref_name, graph, subject, predicate, object)
+                 with latest_time as (
+                   select graph, subject, predicate, object, max(created_at) as created_at
+                   from fact_log
+                   where ref_name = ?4 and created_at <= ?5
+                   group by graph, subject, predicate, object
+                 ), latest_id as (
+                   select l.graph, l.subject, l.predicate, l.object, max(l.id) as id
+                   from fact_log l
+                   join latest_time t
+                     on t.graph = l.graph
+                    and t.subject = l.subject
+                    and t.predicate = l.predicate
+                    and t.object = l.object
+                    and t.created_at = l.created_at
+                   where l.ref_name = ?4
+                   group by l.graph, l.subject, l.predicate, l.object
+                 )
+                 select ?1,
+                        case when l.graph = ?2 then ?3 else l.graph end,
+                        l.subject,
+                        l.predicate,
+                        l.object
+                 from fact_log l
+                 join latest_id latest on latest.id = l.id
+                 where l.action in ('+', 'add', 'added')",
+                params![&target_ref, &from_graph, &to_graph, &source_ref, cutoff_at],
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if inserted > 0 {
+            tx.execute(
+                "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
+                 select ref_name, graph, subject, predicate, object, 'add', 'system', ?2
+                 from quads
+                 where ref_name = ?1",
+                params![&target_ref, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(inserted)
+    });
+    match r {
+        Err(e) => throw(scope, &e),
+        Ok(count) => {
+            broadcast::facts_changed(&target_ref);
+            rv.set(v8::Number::new(scope, count as f64).into());
+        }
+    }
+}
+
 fn op_facts_purge(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -911,8 +1106,8 @@ fn op_facts_purge(
         return;
     }
     let ref_name = args.get(0).to_rust_string_lossy(scope);
-    let r: Result<usize, String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let quads = tx
             .execute("delete from quads where ref_name = ?1", params![&ref_name])
             .map_err(|e| e.to_string())?;
@@ -944,8 +1139,8 @@ fn op_facts_purge_graph(
         return;
     }
     let graph = args.get(0).to_rust_string_lossy(scope);
-    let r: Result<(usize, Vec<String>), String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<(usize, Vec<String>), String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let refs = {
             let mut stmt = tx
                 .prepare_cached(
@@ -980,6 +1175,55 @@ fn op_facts_purge_graph(
     }
 }
 
+fn op_facts_purge_subject_prefix(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if args.length() < 2 {
+        throw(
+            scope,
+            "facts_purge_subject_prefix requires (ref, subjectPrefix, [graph])",
+        );
+        return;
+    }
+    let ref_name = args.get(0).to_rust_string_lossy(scope);
+    let prefix = args.get(1).to_rust_string_lossy(scope);
+    let graph = optional_arg_str(scope, &args, 2);
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let like = format!(
+            "{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_"),
+        );
+        let count = if let Some(graph) = graph {
+            tx.execute(
+                "delete from quads where ref_name = ?1 and graph = ?2 and subject like ?3 escape '\'",
+                params![&ref_name, &graph, &like],
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            tx.execute(
+                "delete from quads where ref_name = ?1 and subject like ?2 escape '\'",
+                params![&ref_name, &like],
+            )
+            .map_err(|e| e.to_string())?
+        };
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(count)
+    });
+    match r {
+        Ok(count) => {
+            broadcast::facts_changed(&ref_name);
+            rv.set(v8::Number::new(scope, count as f64).into());
+        }
+        Err(e) => throw(scope, &e),
+    }
+}
+
 fn op_facts_clear(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -990,8 +1234,8 @@ fn op_facts_clear(
         return;
     }
     let ref_name = args.get(0).to_rust_string_lossy(scope);
-    let r: Result<usize, String> = with_host(|h| {
-        let tx = h.db.transaction().map_err(|e| e.to_string())?;
+    let r: Result<usize, String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = now_ms();
         let rows = {
             let mut stmt = tx

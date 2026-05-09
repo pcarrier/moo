@@ -1,22 +1,40 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
+use crate::blit;
 use crate::driver;
 use crate::host;
 use crate::pool::Pool;
 use crate::settings;
+use crate::util;
 use crate::ws;
 
 pub type BundleProvider = Arc<dyn Fn() -> Arc<String> + Send + Sync>;
 
+pub fn normalize_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("--base-url must not be empty".to_string());
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("--base-url must start with http:// or https://".to_string());
+    }
+    if trimmed.contains(|ch: char| ch.is_ascii_whitespace()) {
+        return Err("--base-url must not contain whitespace".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 pub fn serve(
     host_addr: &str,
     port: u16,
+    base_url: Option<String>,
     bundle: BundleProvider,
-    ui_html: &'static str,
+    ui_html_br: &'static [u8],
     db: &str,
 ) -> Result<(), String> {
     let listener = TcpListener::bind((host_addr, port)).map_err(|e| e.to_string())?;
@@ -36,7 +54,7 @@ pub fn serve(
         .map(|n| (n.get() * 2).max(8))
         .unwrap_or(crate::pool::DEFAULT_MAX_WORKERS)
         .min(crate::pool::configured_max_workers());
-    let pool = Arc::new(Pool::new(workers, db));
+    let pool = Arc::new(Pool::new(workers, db, base_url.clone()));
     driver::restart_ongoing(pool.clone(), bundle());
     let db = Arc::new(db.to_string());
 
@@ -45,11 +63,12 @@ pub fn serve(
             Ok(s) => {
                 let bundle = bundle.clone();
                 let db = db.clone();
+                let base_url = base_url.clone();
                 let pool = pool.clone();
                 thread::spawn(move || {
                     // The /api/ws handler carries both broadcast events and
                     // request/response RPC over a single WebSocket.
-                    let _ = handle_request(s, &bundle, ui_html, pool, &db);
+                    let _ = handle_request(s, &bundle, ui_html_br, pool, &db, base_url.as_deref());
                 });
             }
             Err(_) => continue,
@@ -61,9 +80,10 @@ pub fn serve(
 fn handle_request(
     mut stream: TcpStream,
     bundle: &BundleProvider,
-    ui_html: &'static str,
+    ui_html_br: &'static [u8],
     pool: Arc<Pool>,
     db: &str,
+    base_url: Option<&str>,
 ) -> std::io::Result<()> {
     let read_clone = stream.try_clone()?;
     let mut reader = BufReader::new(read_clone);
@@ -79,6 +99,7 @@ fn handle_request(
 
     let mut upgrade_to: Option<String> = None;
     let mut ws_key: Option<String> = None;
+    let mut accept_br = false;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -91,6 +112,8 @@ fn handle_request(
         let lower = trimmed.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("upgrade:") {
             upgrade_to = Some(rest.trim().to_string());
+        } else if let Some(rest) = lower.strip_prefix("accept-encoding:") {
+            accept_br |= accepts_encoding(rest, "br");
         } else if lower.starts_with("sec-websocket-key:") {
             // header values keep their original case; pull from `trimmed`.
             if let Some(idx) = trimmed.find(':') {
@@ -110,6 +133,10 @@ fn handle_request(
         None => (path.as_str(), None),
     };
 
+    if method == "GET" && path_only == "/api/auth/psk" {
+        return write_psk_status(&mut stream, db, query);
+    }
+
     if is_ws_upgrade && method == "GET" && path_only == "/api/ws" {
         if !psk_ok(db, query) {
             return write_response(
@@ -120,7 +147,27 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
-        return ws::handle(stream, &key, pool, bundle.clone(), db.to_string());
+        return ws::handle(
+            stream,
+            &key,
+            pool,
+            bundle.clone(),
+            db.to_string(),
+            base_url.map(str::to_string),
+        );
+    }
+
+    if is_ws_upgrade && method == "GET" && path_only == "/api/blit/ws" {
+        if !psk_ok(db, query) {
+            return write_response(
+                &mut stream,
+                "401 Unauthorized",
+                "text/plain; charset=utf-8",
+                b"invalid psk",
+            );
+        }
+        let key = ws_key.unwrap_or_default();
+        return blit::handle_ws(stream, &key);
     }
 
     if method == "GET"
@@ -136,12 +183,7 @@ fn handle_request(
     }
 
     if method == "GET" && serves_ui_route(&path) {
-        return write_response(
-            &mut stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            ui_html.as_bytes(),
-        );
+        return write_ui_response(&mut stream, ui_html_br, accept_br, path_only);
     }
 
     write_response(
@@ -149,6 +191,38 @@ fn handle_request(
         "404 Not Found",
         "text/plain; charset=utf-8",
         b"not found",
+    )
+}
+
+fn write_psk_status(stream: &mut TcpStream, db: &str, query: Option<&str>) -> std::io::Result<()> {
+    let configured = match configured_psk(db) {
+        Ok(v) => v,
+        Err(()) => {
+            return write_response(
+                stream,
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                b"psk status unavailable",
+            );
+        }
+    };
+    let Some(expected) = configured else {
+        return write_response(
+            stream,
+            "200 OK",
+            "application/json; charset=utf-8",
+            br#"{"required":false,"valid":true}"#,
+        );
+    };
+    let valid = query
+        .and_then(|q| query_get(q, "psk"))
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()));
+    let body = format!(r#"{{"required":true,"valid":{valid}}}"#);
+    write_response(
+        stream,
+        "200 OK",
+        "application/json; charset=utf-8",
+        body.as_bytes(),
     )
 }
 
@@ -494,7 +568,112 @@ fn serves_ui_route(path: &str) -> bool {
         || path.starts_with("/apps/")
         || path == "/mcp"
         || path.starts_with("/mcp/")
+        || path == "/v8"
+        || path.starts_with("/v8/")
+        || path == "/traces"
+        || path.starts_with("/traces/")
+        || path == "/settings"
+        || path.starts_with("/settings/")
         || path.starts_with("/chat/")
+}
+
+fn accepts_encoding(value: &str, coding: &str) -> bool {
+    value.split(',').any(|part| {
+        let mut pieces = part.trim().split(';');
+        let Some(token) = pieces.next() else {
+            return false;
+        };
+        if !token.trim().eq_ignore_ascii_case(coding) {
+            return false;
+        }
+        pieces.all(|piece| {
+            let piece = piece.trim();
+            let Some((name, raw_value)) = piece.split_once('=') else {
+                return true;
+            };
+            if !name.trim().eq_ignore_ascii_case("q") {
+                return true;
+            }
+            raw_value.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+        })
+    })
+}
+
+fn decode_ui_html(ui_html_br: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    brotli::Decompressor::new(ui_html_br, 4096).read_to_end(&mut body)?;
+    Ok(body)
+}
+
+fn write_ui_response(
+    stream: &mut TcpStream,
+    ui_html_br: &[u8],
+    accept_br: bool,
+    path: &str,
+) -> std::io::Result<()> {
+    if accept_br {
+        let started = Instant::now();
+        let result = write_encoded_response(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            ui_html_br,
+            Some("br"),
+        );
+        trace_asset_response(path, "br", true, ui_html_br.len(), None, started);
+        return result;
+    }
+
+    let started = Instant::now();
+    let body = decode_ui_html(ui_html_br)?;
+    let len = body.len();
+    let result = write_encoded_response(stream, "200 OK", "text/html; charset=utf-8", &body, None);
+    trace_asset_response(
+        path,
+        "identity",
+        false,
+        len,
+        Some(ui_html_br.len()),
+        started,
+    );
+    result
+}
+
+fn trace_asset_response(
+    path: &str,
+    encoding: &str,
+    precompressed: bool,
+    response_bytes: usize,
+    source_br_bytes: Option<usize>,
+    started: Instant,
+) {
+    if !host::tracing_enabled() {
+        return;
+    }
+    let id = util::random_id("trace");
+    let elapsed_ns = started.elapsed().as_nanos() as i64;
+    let started_ns = util::now_ns().saturating_sub(elapsed_ns);
+    let data = serde_json::json!({
+        "path": path,
+        "content_type": "text/html; charset=utf-8",
+        "content_encoding": encoding,
+        "brotli_precompressed_asset": precompressed,
+        "brotli_runtime_compression": false,
+        "response_bytes": response_bytes,
+        "source_br_bytes": source_br_bytes,
+        "durationNs": elapsed_ns,
+    });
+    let data_json = data.to_string();
+    let _ = host::trace_ensure_root(host::TraceRootParams {
+        id: &id,
+        chat_id: None,
+        run_id: None,
+        kind: "http",
+        name: "serve-ui-asset",
+        started_ns,
+        input_hash: None,
+        data_json: Some(&data_json),
+    });
 }
 
 fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()> {
@@ -506,6 +685,31 @@ fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()>
          Connection: close\r\n\r\n"
     );
     stream.write_all(header.as_bytes())?;
+    stream.flush()
+}
+
+fn write_encoded_response(
+    stream: &mut TcpStream,
+    status: &str,
+    ctype: &str,
+    body: &[u8],
+    encoding: Option<&str>,
+) -> std::io::Result<()> {
+    let encoding_header = encoding
+        .map(|encoding| format!("Content-Encoding: {encoding}\r\n"))
+        .unwrap_or_default();
+    let header = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: {ctype}\r\n\
+         {encoding_header}\
+         Vary: Accept-Encoding\r\n\
+         Content-Length: {len}\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        len = body.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(body)?;
     stream.flush()
 }
 
@@ -573,5 +777,42 @@ mod tests {
         assert_eq!(raw.psk, None);
         assert_eq!(raw.root, "/tmp/site");
         assert_eq!(raw.rest, "docs/index.html");
+    }
+
+    #[test]
+    fn normalize_base_url_trims_trailing_slash() {
+        assert_eq!(
+            normalize_base_url(" http://100.126.83.89:5173/ ").unwrap(),
+            "http://100.126.83.89:5173"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_requires_http_url() {
+        assert!(normalize_base_url("100.126.83.89:5173").is_err());
+        assert!(normalize_base_url("file:///tmp/moo").is_err());
+        assert!(normalize_base_url("http://bad host:5173").is_err());
+    }
+
+    #[test]
+    fn accept_encoding_matches_brotli_token() {
+        assert!(accepts_encoding("gzip, br", "br"));
+        assert!(accepts_encoding("br;q=1.0", "br"));
+        assert!(accepts_encoding("gzip, BR ; q=0.5", "br"));
+        assert!(!accepts_encoding("gzip", "br"));
+        assert!(!accepts_encoding("brr", "br"));
+        assert!(!accepts_encoding("br;q=0", "br"));
+        assert!(!accepts_encoding("br;q=0.0", "br"));
+    }
+
+    #[test]
+    fn decode_ui_html_inflates_embedded_brotli() {
+        let html = b"<!doctype html><title>moo</title>";
+        let mut compressed = Vec::new();
+        {
+            let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 5, 22);
+            writer.write_all(html).unwrap();
+        }
+        assert_eq!(decode_ui_html(&compressed).unwrap(), html);
     }
 }
