@@ -1,5 +1,5 @@
 import { moo } from "../moo";
-import { chatRefs } from "../lib";
+import { chatRefs, decodeJsonPointer, encodeJsonPointer } from "../lib";
 import type { Input } from "./_shared";
 
 export type UiBundle = {
@@ -21,10 +21,16 @@ export type UiManifest = {
 export const UI_GRAPH = "memory:facts";
 export const UI_REF = "memory/facts";
 
+function readUiStateTarget(target: string | null): { state: unknown; target: string | null } {
+  if (!target) return { state: {}, target: null };
+  const inline = decodeJsonPointer(target);
+  return { state: target.startsWith("json:") ? (inline ?? {}) : {}, target };
+}
+
 export function cleanUiId(id: unknown): string | null {
   if (typeof id !== "string") return null;
-  const v = id.trim();
-  return /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(v) ? v : null;
+  const trimmedId = id.trim();
+  return /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(trimmedId) ? trimmedId : null;
 }
 
 export function nowIso(ms: number): string {
@@ -48,9 +54,9 @@ export async function uiBundle(uiId: string): Promise<UiBundle | null> {
 export async function listUiIds(): Promise<string[]> {
   const refs = await moo.pointers.list("ui/");
   const ids = new Set<string>();
-  for (const r of refs) {
-    const m = /^ui\/([^/]+)\/manifest$/.exec(r);
-    if (m) ids.add(m[1]!);
+  for (const pointerName of refs) {
+    const match = /^ui\/([^/]+)\/manifest$/.exec(pointerName);
+    if (match) ids.add(match[1]!);
   }
   return [...ids].sort();
 }
@@ -128,8 +134,8 @@ export async function uiBundleCommand(input: Input) {
 
 export async function uiChatCommand(input: Input) {
   const chatId = input.chatId || "demo";
-  const c = chatRefs(chatId);
-  const rows = await moo.facts.match({ store: c.facts, ...{ graph: c.graph, predicate: "ui:involves" } });
+  const refs = chatRefs(chatId);
+  const rows = await moo.facts.match({ store: refs.facts, ...{ graph: refs.graph, predicate: "ui:involves" } });
   const ids = [...new Set(rows.map((r) => String(r[3]).replace(/^ui:/, "")))];
   const apps: UiManifest[] = [];
   for (const id of ids) {
@@ -140,12 +146,12 @@ export async function uiChatCommand(input: Input) {
   const instRows = await moo.facts.matchAll({ patterns: [
     ["?inst", "rdf:type", "ui:Instance"],
     ["?inst", "ui:app", "?app"],
-  ], ...{ store: c.facts, graph: c.graph } });
-  for (const r of instRows) {
-    const instanceId = r["?inst"]!.replace(/^uiinst:/, "");
-    instances.push({ instanceId, uiId: r["?app"]!.replace(/^ui:/, "") });
+  ], ...{ store: refs.facts, graph: refs.graph } });
+  for (const instanceRow of instRows) {
+    const instanceId = instanceRow["?inst"]!.replace(/^uiinst:/, "");
+    instances.push({ instanceId, uiId: instanceRow["?app"]!.replace(/^ui:/, "") });
   }
-  const primaryRows = await moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:primary", limit: 1 } });
+  const primaryRows = await moo.facts.match({ store: refs.facts, ...{ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:primary", limit: 1 } });
   return { ok: true, value: { chatId, apps, instances, primaryUiId: primaryRows[0]?.[3]?.replace(/^ui:/, "") ?? null } };
 }
 
@@ -154,27 +160,26 @@ export async function uiOpenCommand(input: Input) {
   const uiId = cleanUiId(input.uiId ?? input.id);
   if (!uiId) return { ok: false, error: { message: "ui-open requires uiId" } };
   if (!(await uiManifest(uiId))) return { ok: false, error: { message: `ui not found: ${uiId}` } };
-  const c = chatRefs(chatId);
+  const refs = chatRefs(chatId);
   let instanceId = typeof input.instanceId === "string" && input.instanceId.trim() ? input.instanceId.trim() : null;
   if (!instanceId) {
     const existing = await moo.facts.matchAll({ patterns: [
       ["?inst", "rdf:type", "ui:Instance"],
       ["?inst", "ui:app", `ui:${uiId}`],
-    ], ...{ store: c.facts, graph: c.graph, limit: 1 } });
+    ], ...{ store: refs.facts, graph: refs.graph, limit: 1 } });
     instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await moo.id.new("uiinst"));
   }
   const inst = `uiinst:${instanceId}`;
-  await moo.facts.update({ store: c.facts, fn: (txn) => {
-    txn.add({ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:involves", object: `ui:${uiId}` });
-    txn.add({ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
-    txn.add({ graph: c.graph, subject: inst, predicate: "rdf:type", object: "ui:Instance" });
-    txn.add({ graph: c.graph, subject: inst, predicate: "ui:app", object: `ui:${uiId}` });
-    txn.add({ graph: c.graph, subject: inst, predicate: "ui:chat", object: `chat:${chatId}` });
-    txn.add({ graph: c.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
+  await moo.facts.update({ store: refs.facts, fn: (txn) => {
+    txn.add({ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:involves", object: `ui:${uiId}` });
+    txn.add({ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
+    txn.add({ graph: refs.graph, subject: inst, predicate: "rdf:type", object: "ui:Instance" });
+    txn.add({ graph: refs.graph, subject: inst, predicate: "ui:app", object: `ui:${uiId}` });
+    txn.add({ graph: refs.graph, subject: inst, predicate: "ui:chat", object: `chat:${chatId}` });
+    txn.add({ graph: refs.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
   } });
   if (!(await moo.pointers.get(`uiinst/${instanceId}/state`))) {
-    const stateHash = await moo.objects.putJSON({ kind: "ui:State", value: input.state ?? {} });
-    await moo.pointers.set(`uiinst/${instanceId}/state`, stateHash);
+    await moo.pointers.set(`uiinst/${instanceId}/state`, encodeJsonPointer(input.state ?? {}));
   }
   return { ok: true, value: { chatId, uiId, instanceId } };
 }
@@ -186,9 +191,9 @@ export async function uiCloseCommand(input: Input) {
   const instanceId = typeof input.instanceId === "string" && input.instanceId.trim()
     ? input.instanceId.trim().replace(/^uiinst:/, "")
     : null;
-  const c = chatRefs(chatId);
-  await moo.facts.update({ store: c.facts, fn: (txn) => {
-    txn.remove({ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
+  const refs = chatRefs(chatId);
+  await moo.facts.update({ store: refs.facts, fn: (txn) => {
+    txn.remove({ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
   } });
   return { ok: true, value: { chatId, uiId, instanceId } };
 }
@@ -196,19 +201,17 @@ export async function uiCloseCommand(input: Input) {
 export async function uiStateGetCommand(input: Input) {
   const instanceId = String(input.instanceId ?? "").replace(/^uiinst:/, "");
   if (!instanceId) return { ok: false, error: { message: "ui-state-get requires instanceId" } };
-  const hash = await moo.pointers.get(`uiinst/${instanceId}/state`);
-  if (!hash) return { ok: true, value: { instanceId, state: {}, hash: null } };
-  const row = await moo.objects.getJSON<any>({ hash: hash });
-  return { ok: true, value: { instanceId, state: row?.value ?? {}, hash } };
+  const state = readUiStateTarget(await moo.pointers.get(`uiinst/${instanceId}/state`));
+  return { ok: true, value: { instanceId, state: state.state, target: state.target } };
 }
 
 export async function uiStateSetCommand(input: Input) {
   const instanceId = String(input.instanceId ?? "").replace(/^uiinst:/, "");
   if (!instanceId) return { ok: false, error: { message: "ui-state-set requires instanceId" } };
   const state = input.state ?? {};
-  const hash = await moo.objects.putJSON({ kind: "ui:State", value: state });
-  await moo.pointers.set(`uiinst/${instanceId}/state`, hash);
-  return { ok: true, value: { instanceId, state, hash } };
+  const target = encodeJsonPointer(state);
+  await moo.pointers.set(`uiinst/${instanceId}/state`, target);
+  return { ok: true, value: { instanceId, state, target } };
 }
 
 export async function uiCallCommand(input: Input) {

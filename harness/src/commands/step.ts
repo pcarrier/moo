@@ -1,5 +1,5 @@
 import { moo } from "../moo";
-import { chatRefs } from "../lib";
+import { chatRefs, decodeJsonPointer, encodeJsonPointer } from "../lib";
 import {
   appendStep,
   buildLLMMessages,
@@ -16,30 +16,41 @@ import {
   loadPayloadJSON,
   loadResultJSON,
   readCompactionChain,
+  persistCompactionLayer,
   recordCompactionFailure,
   recordErrorStep,
+  recordLastCompactionPromptTokens,
   recordLastContextTokens,
   recordUsage,
   effortLevelsForProvider,
-  llmProviderHeaders,
   reply,
   normalizeEffort,
   normalizeUsage,
   tokenUsageEvent,
+  tokenPressureEvent,
   llmStreamEventOptions,
   resolveProvider,
+  llmBodyForTrace,
+  messagesForTrace,
+  toolCallForTrace,
+  traceMark,
+  traceSpan,
   buildStreamingLLMRequest,
-  respondTo,
+  compactionProviderForRequest,
+  compactionRequestTokenLimit,
+  fitCompactionSummaryMessages,
+  runCompaction,
   TOOLS,
 } from "../agent";
 import type { Input } from "./_shared";
+import { buildCompactionSummaryPromptMessages } from "../prompt";
 import {
   initialStepDriverState,
   planStepDriverEffects,
   reduceStepDriverState,
   stepNextInputEvents,
 } from "../driver/step";
-import { llmAttempt, llmRetryDecision } from "../core/retry";
+import { llmAttempt, llmRetryDecisionFromSchedule } from "../core/retry";
 import { currentLlmRetryPolicy } from "./llm_auth";
 import {
   defaultChatEffort,
@@ -48,6 +59,151 @@ import {
   getChatModel,
   getChatProvider,
 } from "./models";
+
+
+type PendingMessage = { id: string; chatId: string; text: string; attachments?: Array<{ type: "image"; mimeType: string; dataUrl: string; name?: string }> };
+const CHAT_PENDING_MESSAGES_REF = "chat/pending-messages";
+
+function sanitizePendingMessage(value: any): PendingMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const chatId = String(value.chatId ?? "").trim();
+  const text = String(value.text ?? "");
+  const attachments = sanitizeAttachments(value.attachments);
+  if (!chatId || (!text.trim() && attachments.length === 0)) return null;
+  const id = String(value.id ?? "").trim() || String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
+  return { id, chatId, text, ...(attachments.length ? { attachments } : {}) };
+}
+
+async function readPendingMessages(): Promise<PendingMessage[]> {
+  const target = await moo.pointers.get(CHAT_PENDING_MESSAGES_REF);
+  const decoded = target ? decodeJsonPointer(target) : null;
+  if (!Array.isArray(decoded)) return [];
+  return decoded.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
+}
+
+async function writePendingMessages(messages: PendingMessage[]) {
+  const clean = messages.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
+  if (clean.length === 0) await moo.pointers.delete(CHAT_PENDING_MESSAGES_REF);
+  else await moo.pointers.set(CHAT_PENDING_MESSAGES_REF, encodeJsonPointer(clean));
+  return clean;
+}
+
+export async function pendingMessagesCommand(_input: Input) {
+  return { ok: true, value: { messages: await readPendingMessages() } };
+}
+
+export async function pendingMessagesSaveCommand(input: Input) {
+  const raw = Array.isArray(input.messages) ? input.messages : [];
+  return { ok: true, value: { messages: await writePendingMessages(raw as any[]) } };
+}
+
+function parseProviderErrorBody(raw: unknown): any {
+  if (raw == null) return null;
+  if (typeof raw !== "string") return raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch { return trimmed; }
+}
+
+function providerErrorMessage(parsed: any, status: number): string {
+  const candidates = [
+    parsed?.error?.message,
+    typeof parsed?.error === "string" ? parsed.error : "",
+    parsed?.message,
+    parsed?.detail?.message,
+    typeof parsed?.detail === "string" ? parsed.detail : "",
+    parsed?.details,
+    parsed?.error_description,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  if (typeof parsed === "string" && parsed.trim() && parsed.trim() !== "error") return parsed.trim();
+  if (status >= 400) return `request failed with HTTP ${status}`;
+  if (status >= 200) return "provider stream returned an error";
+  if (status > 0) return `request ended with HTTP ${status}`;
+  return "LLM request failed before an HTTP response was received";
+}
+
+function providerErrorType(parsed: any): string | null {
+  return parsed?.error?.type ?? parsed?.type ?? null;
+}
+
+function providerErrorCode(parsed: any): string | null {
+  return parsed?.error?.code ?? parsed?.code ?? null;
+}
+
+function providerErrorRequestId(parsed: any, headers: unknown): string | null {
+  return firstHeader(headers, "request-id", "x-request-id", "anthropic-request-id", "cf-ray")
+    || stringField(parsed?.request_id)
+    || stringField(parsed?.requestId)
+    || stringField(parsed?.error?.request_id)
+    || stringField(parsed?.error?.requestId);
+}
+
+function providerErrorRetryAfter(headers: unknown, parsed: any): string | null {
+  return firstHeader(headers, "retry-after", "x-ratelimit-reset", "anthropic-ratelimit-requests-reset")
+    || stringField(parsed?.retry_after)
+    || stringField(parsed?.retryAfter)
+    || stringField(parsed?.error?.retry_after)
+    || stringField(parsed?.error?.retryAfter);
+}
+
+function providerErrorBodyForRecord(parsed: any, raw: unknown): any {
+  if (parsed != null) return parsed;
+  if (raw == null) return "";
+  return raw;
+}
+
+function stringField(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function firstHeader(headers: unknown, ...names: string[]): string | null {
+  if (!headers || typeof headers !== "object") return null;
+  const map = headers as Record<string, unknown>;
+  for (const name of names) {
+    const direct = headerValue(map[name]);
+    if (direct) return direct;
+    const lower = name.toLowerCase();
+    const match = Object.keys(map).find((key) => key.toLowerCase() === lower);
+    if (match) {
+      const value = headerValue(map[match]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function headerValue(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const text = stringField(item);
+      if (text) return text;
+    }
+    return null;
+  }
+  return stringField(value);
+}
+
+function anthropicSubscriptionRateLimitHint(input: Input, status: number, type: string | null, parsed?: any): string | null {
+  if (status !== 429) return null;
+  if (input.requestProvider !== "anthropic") return null;
+  if (input.requestAuthMode !== "subscription") return null;
+  if (type && type !== "rate_limit_error") return null;
+  const message = String(parsed?.error?.message ?? parsed?.message ?? "").toLowerCase();
+  if (message && !/(subscription|oauth|claude app|first[- ]party|consumer|usage limit)/.test(message)) return null;
+  return "This Anthropic request used a Claude subscription token, so Anthropic may apply Claude app limits instead of API quota. If that is not intended, configure an Anthropic API key; API-key credentials now take precedence over ANTHROPIC_AUTH_TOKEN in env mode.";
+}
+
+function providerFailureReason(status: number): string {
+  if (status >= 400) return `provider returned HTTP ${status}`;
+  if (status >= 200) return "provider stream returned an error";
+  if (status > 0) return `provider returned HTTP ${status}`;
+  return "provider request failed before an HTTP response";
+}
 
 export async function stepCommand(input: Input) {
   const chatId = String(input.chatId || "demo").trim() || "demo";
@@ -63,6 +219,18 @@ export async function stepCommand(input: Input) {
       chatId,
       accepted: true,
       driver: stepDriverAction(chatId, "step", { message, attachments }),
+    },
+  };
+}
+
+export async function compactCommand(input: Input) {
+  const chatId = String(input.chatId || "demo").trim() || "demo";
+  return {
+    ok: true,
+    value: {
+      chatId,
+      accepted: true,
+      driver: stepDriverAction(chatId, "compact", {}),
     },
   };
 }
@@ -290,21 +458,51 @@ export async function cancelChatInFlightSteps(chatId: string, reason = "interrup
 // (Tokio) without tying up an isolate; the worker is borrowed only for short
 // JS calls (event shape, build messages, run tool, record fact).
 
-export function stepLifecycleEvents(chatId: string) {
+export function stepLifecycleEvents(chatId: string, compacting = false) {
   return {
-    start: { kind: "step-start", chatId },
+    start: compacting
+      ? { kind: "step-start", chatId, compacting: true }
+      : { kind: "step-start", chatId },
     end: { kind: "step-end", chatId },
   };
 }
 
-export function stepDriverAction(chatId: string, mode: "step" | "resume", extra: Record<string, any> = {}) {
-  const lifecycleEvents = stepLifecycleEvents(chatId);
+export function stepDriverAction(chatId: string, mode: "step" | "resume" | "compact", extra: Record<string, any> = {}) {
+  const lifecycleEvents = stepLifecycleEvents(chatId, mode === "compact");
   return {
     action: "drive",
     chatId,
     state: { chatId, mode, ...extra, lifecycleEvents },
     lifecycleEvents,
   };
+}
+
+export async function compactPreludeCommand(input: Input) {
+  const chatId = input.chatId;
+
+  await moo.chat.unarchive(chatId);
+  const selectedModel = await getChatModel(chatId);
+  const selectedEffort = await getChatEffort(chatId);
+  const selectedProvider = await getChatProvider(chatId);
+  const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
+  if (!provider.apiKey) {
+    await reply(chatId, `cannot compact: ${provider.keyEnvHint} not set`);
+    await setChatOngoing(chatId, false);
+    return { ok: true, value: { kind: "done" } };
+  }
+
+  await setChatOngoing(chatId, true);
+  const result = await runCompaction(chatId, provider, { trigger: "manual" });
+  await reply(
+    chatId,
+    result === "compacted"
+      ? "compacted older turns into a summary"
+      : result === "empty"
+        ? "nothing to compact yet"
+        : "compaction failed; see the error above",
+  );
+  await setChatOngoing(chatId, false);
+  return { ok: true, value: { kind: "done" } };
 }
 
 export async function stepPreludeCommand(input: Input) {
@@ -330,14 +528,6 @@ export async function stepPreludeCommand(input: Input) {
     payloadHash,
   });
 
-  // Known slash commands are dispatched inline (synchronous). They may invoke
-  // shell commands or compaction, but they don't run the agent loop. Unknown
-  // slash-prefixed input falls through and is sent as a normal message.
-  if (message.startsWith("/") && await respondTo(chatId, message)) {
-    await setChatOngoing(chatId, false);
-    return { ok: true, value: { kind: "done" } };
-  }
-
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
@@ -346,13 +536,8 @@ export async function stepPreludeCommand(input: Input) {
     await reply(
       chatId,
       [
-        `I'd love to think for you, but \`${provider.keyEnvHint}\` isn't set.`,
-        provider.name === "qwen"
-          ? "Set QWEN_API_KEY (or DASHSCOPE_API_KEY) before starting the server."
-          : provider.name === "anthropic"
-            ? "Set ANTHROPIC_API_KEY before starting the server."
-            : "Restart with: `OPENAI_API_KEY=sk-... cargo run -- serve`",
-        "Until then, try `/help`.",
+        "LLM authentication is not configured for " + provider.name + ".",
+        "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
       ].join("\n"),
     );
     await setChatOngoing(chatId, false);
@@ -380,12 +565,8 @@ export async function stepResumeCommand(input: Input) {
     await reply(
       chatId,
       [
-        "Cannot resume this chat because `" + provider.keyEnvHint + "` isn't set.",
-        provider.name === "qwen"
-          ? "Set QWEN_API_KEY (or DASHSCOPE_API_KEY), then restart the server."
-          : provider.name === "anthropic"
-            ? "Set ANTHROPIC_API_KEY, then restart the server."
-            : "Restart with: `OPENAI_API_KEY=sk-... cargo run -- serve`",
+        "Cannot resume this chat because LLM authentication is not configured for " + provider.name + ".",
+        "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
       ].join("\n"),
     );
     await setChatOngoing(chatId, false);
@@ -411,39 +592,90 @@ export async function stepNextCommand(input: Input) {
   if (!chatId) return { ok: false, error: { message: "step-next requires state.chatId" } };
 
   for (const event of stepNextInputEvents(input as any, state)) {
+    await traceMark("driver.event", {
+      chatId,
+      type: event.type,
+      beforePhase: (state as any)?.phase ?? null,
+      hadMessages: Array.isArray((state as any)?.messages),
+      pendingToolCalls: Array.isArray((state as any)?.pendingToolCalls) ? (state as any).pendingToolCalls.length : 0,
+    });
     state = reduceStepDriverState(state, event);
+    await traceMark("driver.state", {
+      chatId,
+      afterEvent: event.type,
+      phase: (state as any)?.phase ?? null,
+      messages: Array.isArray((state as any)?.messages) ? (state as any).messages.length : null,
+      pendingToolCalls: Array.isArray((state as any)?.pendingToolCalls) ? (state as any).pendingToolCalls.length : 0,
+      llmAttempts: (state as any)?.llmAttempts ?? null,
+    });
   }
 
   while (true) {
     const [effect] = planStepDriverEffects(state);
     if (!effect) return { ok: true, value: { kind: "done" } };
 
+    await traceMark("driver.effect", {
+      chatId,
+      type: effect.type,
+      phase: (state as any)?.phase ?? null,
+      pendingToolCalls: Array.isArray((state as any)?.pendingToolCalls) ? (state as any).pendingToolCalls.length : 0,
+      llmAttempts: (state as any)?.llmAttempts ?? null,
+      hasMessages: Array.isArray((state as any)?.messages),
+    });
+
     if (effect.type === "Return") {
+      await traceMark("driver.return", {
+        chatId,
+        kind: (effect.value as any)?.kind ?? null,
+        hasState: !!(effect.value as any)?.state,
+        hasToolCall: !!(effect.value as any)?.toolCall,
+      });
       return { ok: true, value: effect.value };
     }
 
     if (effect.type === "ContinueToolCalls") {
-      const handled = await commandValue(await stepContinueToolCallsCommand(effect.input as Input));
+      const handled = await traceSpan("driver.continue_tools", {
+        chatId,
+        pendingToolCalls: Array.isArray((effect.input as any)?.toolCalls) ? (effect.input as any).toolCalls.length : 0,
+      }, async () => commandValue(await stepContinueToolCallsCommand(effect.input as Input)));
       state = reduceStepDriverState(state, { type: "ToolContinuationHandled", handled });
       continue;
     }
 
     if (effect.type === "HandleLlm") {
-      const handled = await commandValue(await stepHandleLlmCommand(effect.input as Input));
+      const handled = await traceSpan("driver.handle_llm", {
+        chatId,
+        purpose: (effect.input as any)?.purpose ?? null,
+        attempt: (effect.input as any)?.attempt ?? null,
+        ok: (effect.input as any)?.llmResult?.ok ?? null,
+        status: (effect.input as any)?.llmResult?.status ?? null,
+      }, async () => commandValue(await stepHandleLlmCommand(effect.input as Input)));
       state = reduceStepDriverState(state, { type: "LlmHandled", handled });
       continue;
     }
 
     if (effect.type === "Start") {
-      const started = await commandValue(effect.mode === "resume"
+      const started = await traceSpan("driver.start", {
+        chatId,
+        mode: effect.mode,
+        hasMessage: typeof (effect.input as any)?.message === "string" && (effect.input as any).message.length > 0,
+        attachments: Array.isArray((effect.input as any)?.attachments) ? (effect.input as any).attachments.length : 0,
+      }, async () => commandValue(effect.mode === "resume"
         ? await stepResumeCommand(effect.input as Input)
-        : await stepPreludeCommand(effect.input as Input));
+        : ((effect.input as any)?.mode === "compact"
+          ? await compactPreludeCommand(effect.input as Input)
+          : await stepPreludeCommand(effect.input as Input))));
       state = reduceStepDriverState(state, { type: "Started", started });
       continue;
     }
 
     if (effect.type === "Prepare") {
-      const prepared = await commandValue(await stepPrepareCommand(effect.input as Input));
+      const prepared = await traceSpan("driver.prepare_llm", {
+        chatId,
+        hasCarriedMessages: Array.isArray((effect.input as any)?.messages),
+        provider: (effect.input as any)?.provider?.name ?? null,
+        model: (effect.input as any)?.provider?.model ?? null,
+      }, async () => commandValue(await stepPrepareCommand(effect.input as Input)));
       state = reduceStepDriverState(state, { type: "Prepared", prepared });
       continue;
     }
@@ -456,9 +688,12 @@ export async function stepContinueToolCallsCommand(input: Input) {
   const toolCalls = Array.isArray(input.toolCalls) ? input.toolCalls : [];
   const usedModel = input.usedModel ?? null;
   const requestEffort = input.requestEffort ?? input.state?.requestEffort ?? null;
+  await traceMark("tool.batch.start", { chatId, count: toolCalls.length, carriedMessages: messages.length, usedModel, requestEffort });
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
+    await traceMark("tool.call.queued", { chatId, index: i, ...toolCallForTrace(tc) });
     if (tc?.function?.name === "runJS") {
+      await traceMark("tool.runjs.deferred", { chatId, index: i, remainingToolCalls: toolCalls.length - i - 1, ...toolCallForTrace(tc) });
       return {
         ok: true,
         value: {
@@ -476,13 +711,16 @@ export async function stepContinueToolCallsCommand(input: Input) {
         },
       };
     }
-    const exec = await executeToolCall(chatId, tc, usedModel, requestEffort);
+    const exec = await traceSpan("tool.execute", { chatId, usedModel, requestEffort, ...toolCallForTrace(tc) }, () => executeToolCall(chatId, tc, usedModel, requestEffort));
+    await traceMark("tool.result.ready", { chatId, index: i, toolCallId: tc.id ?? null, result: exec });
     messages.push({ role: "tool", tool_call_id: tc.id, content: exec.toolText });
   }
   if (await hasPendingInput(chatId)) {
+    await traceMark("tool.batch.wait_input", { chatId, messages: messages.length });
     await setChatOngoing(chatId, false);
     return { ok: true, value: { kind: "wait-input" } };
   }
+  await traceMark("tool.batch.complete", { chatId, messages: messages.length });
   return { ok: true, value: { kind: "iterate", messages } };
 }
 
@@ -606,6 +844,7 @@ export async function restartOngoingCommand() {
 export async function stepPrepareCommand(input: Input) {
   const chatId = input.chatId;
   const provider = input.provider;
+  await traceMark("llm.prepare.start", { chatId, provider: provider?.name ?? null, baseModel: provider?.model ?? null, carriedMessages: Array.isArray(input.messages) ? (input.messages as any[]).length : null });
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   if (selectedModel) provider.model = selectedModel;
@@ -616,6 +855,7 @@ export async function stepPrepareCommand(input: Input) {
   } else {
     provider.effort = null;
   }
+  await traceMark("llm.provider.selected", { chatId, provider: provider?.name ?? null, model: provider?.model ?? null, effort: provider?.effort ?? null, selectedModel: selectedModel ?? null, selectedEffort: selectedEffort ?? null, supportedEfforts: efforts });
   const passedMessages = Array.isArray(input.messages) ? (input.messages as any[]) : null;
 
   // First iteration (no carried-over messages): build from DB and check
@@ -626,51 +866,105 @@ export async function stepPrepareCommand(input: Input) {
   let estimatedPromptTokens = 0;
   let budget = await contextBudget(provider);
   if (passedMessages == null) {
-    messages = await buildLLMMessages(chatId);
-    estimatedPromptTokens = await estimateCompactionPromptTokens(chatId, messages);
+    messages = await traceSpan("llm.build_messages", { chatId }, () => buildLLMMessages(chatId));
+    await traceMark("llm.messages.ready", { chatId, source: "chat", ...messagesForTrace(messages, TOOLS) });
+    estimatedPromptTokens = await traceSpan("compaction.estimate", { chatId, messages: messages.length }, () => estimateCompactionPromptTokens(chatId, messages));
     const threshold = await compactionThresholdForBudget(budget);
+    await recordLastCompactionPromptTokens(chatId, estimatedPromptTokens);
+    moo.events.publish(tokenPressureEvent(chatId, estimatedPromptTokens, {
+      budget,
+      threshold,
+      source: "compaction",
+      estimated: true,
+    }));
+    await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+    await traceMark("compaction.check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
     if (estimatedPromptTokens >= threshold) {
-      const summaryMessages = [
-        {
-          role: "system",
-          content:
-            "You compress conversation history. Produce a tight summary capturing user intents, decisions made, files touched, errors hit. Plain prose, 200-400 words.",
-        },
-        ...(await buildCompactionMessages(chatId)).slice(1),
-        { role: "user", content: "Summarize the above conversation now." },
-      ];
+      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+      const compactionMessages = await traceSpan("compaction.build_messages", { chatId }, () => buildCompactionMessages(chatId));
+      moo.events.publish({ kind: "compaction-start", chatId });
+      const rawSummaryMessages = buildCompactionSummaryPromptMessages(compactionMessages);
+      const requestTokenLimit = compactionRequestTokenLimit(budget, threshold);
+      const summaryMessages = fitCompactionSummaryMessages(rawSummaryMessages, requestTokenLimit);
+      const requestPromptTokens = estimateTokens(summaryMessages);
+      const compactionProvider = compactionProviderForRequest(provider);
+      const request = buildStreamingLLMRequest(compactionProvider, summaryMessages, null);
+      await traceMark("llm.request.prepared", {
+        chatId,
+        purpose: "compact",
+        provider: compactionProvider.name,
+        model: request.requestModel,
+        effort: request.requestEffort,
+        url: request.url,
+        responsesApi: request.responsesApi,
+        estimatedPromptTokens,
+        requestPromptTokens,
+        requestTokenLimit,
+        tokenBudget: budget,
+        tokenThreshold: threshold,
+        truncatedForRequest: requestPromptTokens < estimateTokens(rawSummaryMessages),
+        ...messagesForTrace(summaryMessages, null),
+        request: llmBodyForTrace(request.body),
+      });
       return {
         ok: true,
         value: {
           kind: "llm",
           purpose: "compact",
-          ...buildStreamingLLMRequest(provider, summaryMessages, null),
+          ...request,
           countThoughtDuration: false,
-          headers: llmProviderHeaders(provider),
+          headers: request.headers,
           draftId: "",
           // After compaction, the next prepare call rebuilds from DB.
           messages: null,
           estimatedPromptTokens,
           tokenBudget: budget,
           tokenThreshold: threshold,
+          requestPromptTokens,
+          requestTokenLimit,
+          requestProvider: compactionProvider.name,
+          streamEvents: llmStreamEventOptions(chatId, "", {
+            estimatedPromptTokens,
+            tokenBudget: budget,
+            tokenThreshold: threshold,
+            source: "compaction",
+            estimated: true,
+          }),
         },
       };
     }
   } else {
     messages = passedMessages;
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
+    await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
   }
 
   const threshold = await compactionThresholdForBudget(budget);
   const draftId = await moo.id.new("draft");
+  await traceMark("llm.draft.created", { chatId, draftId });
+  const request = buildStreamingLLMRequest(provider, messages, TOOLS);
+  await traceMark("llm.request.prepared", {
+    chatId,
+    purpose: "step",
+    ...messagesForTrace(messages, TOOLS),
+    provider: provider.name,
+    model: request.requestModel,
+    effort: request.requestEffort,
+    url: request.url,
+    responsesApi: request.responsesApi,
+    estimatedPromptTokens,
+    tokenBudget: budget,
+    tokenThreshold: threshold,
+    request: llmBodyForTrace(request.body),
+  });
   return {
     ok: true,
     value: {
       kind: "llm",
       purpose: "step",
-      ...buildStreamingLLMRequest(provider, messages, TOOLS),
+      ...request,
       countThoughtDuration: true,
-      headers: llmProviderHeaders(provider),
+      headers: request.headers,
       draftId,
       messages,
       estimatedPromptTokens,
@@ -680,6 +974,8 @@ export async function stepPrepareCommand(input: Input) {
         estimatedPromptTokens,
         tokenBudget: budget,
         tokenThreshold: threshold,
+        source: passedMessages == null ? "compaction" : "context",
+        estimated: true,
       }),
     },
   };
@@ -700,10 +996,22 @@ export async function stepHandleLlmCommand(input: Input) {
     usage: any | null;
   };
   const draftId = String(input.draftId ?? "");
-  const thoughtDurationMs = Number(input.thoughtDurationMs);
+  const thoughtDurationNs = Number(input.thoughtDurationNs);
   let messages = (Array.isArray(input.messages) ? (input.messages as any[]) : null) as any[] | null;
 
   if (draftId) moo.events.publish({ kind: "draft-end", chatId, draftId });
+  await traceMark("llm.result.received", {
+    chatId,
+    purpose,
+    attempt,
+    ok: llmResult.ok,
+    status: llmResult.status,
+    model: llmResult.model,
+    usage: llmResult.usage,
+    content: llmResult.content || "",
+    toolCalls: Array.isArray(llmResult.toolCalls) ? llmResult.toolCalls : [],
+    errorBody: llmResult.errorBody || null,
+  });
 
   // The model that actually served the request. Provider may echo back a
   // pinned variant (e.g. `gpt-5.5-2026-01`), so prefer that over the model
@@ -717,37 +1025,74 @@ export async function stepHandleLlmCommand(input: Input) {
   const partialOutputText = llmResult.content || partialToolCallsText;
   const hasPartialBillableOutput = Boolean(partialOutputText);
   const normalizedUsage = normalizeUsage(llmResult.usage) ?? (llmResult.ok || hasPartialBillableOutput ? estimateRawUsage(messages, partialOutputText, Number(input.estimatedPromptTokens) || 0) : null);
+  await traceMark("usage.normalized", {
+    chatId,
+    purpose,
+    hasProviderUsage: !!llmResult.usage,
+    estimated: !llmResult.usage && !!normalizedUsage,
+    hasPartialBillableOutput,
+    usage: normalizedUsage,
+  });
   if (normalizedUsage && purpose !== "compact") {
-    const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" ? input.requestProvider : "openai";
+    const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" ? input.requestProvider : "openai";
     const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel } : null);
     if (tokenEvent) moo.events.publish(tokenEvent);
     await recordUsage(chatId, usedModel, normalizedUsage);
+    await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: true, model: usedModel });
   } else if (normalizedUsage) {
     await recordUsage(chatId, usedModel, normalizedUsage, { updateLastContextTokens: false });
+    await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: false, model: usedModel });
   }
 
   if (purpose === "compact") {
     if (!llmResult.ok) {
-      await recordCompactionFailure(chatId, `provider returned HTTP ${llmResult.status}`, {
+      const status = Number(llmResult.status) || 0;
+      const parsed = parseProviderErrorBody(llmResult.errorBody);
+      const reason = providerFailureReason(status);
+      const message = providerErrorMessage(parsed, status);
+      const type = providerErrorType(parsed);
+      const requestId = providerErrorRequestId(parsed, llmResult.headers);
+      const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
+      const hint = anthropicSubscriptionRateLimitHint(input, status, type, parsed);
+      await traceMark("compaction.failed", { chatId, reason, status, attempt, errorBody: llmResult.errorBody || null, requestId, retryAfter, hint });
+      await recordCompactionFailure(chatId, reason, {
         trigger: "automatic",
         promptTokens: Number(input.estimatedPromptTokens) || null,
         tokenBudget: Number(input.tokenBudget) || null,
         tokenThreshold: Number(input.tokenThreshold) || null,
+        requestPromptTokens: Number(input.requestPromptTokens) || null,
+        requestTokenLimit: Number(input.requestTokenLimit) || null,
+        status,
+        message,
+        type,
+        code: providerErrorCode(parsed),
+        requestId,
+        retryAfter,
+        hint,
+        body: providerErrorBodyForRecord(parsed, llmResult.errorBody),
+        provider: input.requestProvider || null,
+        model: usedModel,
+        effort: input.requestEffort || null,
       });
       await setChatOngoing(chatId, false);
+      moo.events.publish({ kind: "compaction-end", chatId });
       // Don't iterate — the next prepare would see token-pressure still
       // over threshold and try to compact again forever.
       return { ok: true, value: { kind: "done" } };
     }
     const summary = (llmResult.content || "").trim();
     if (!summary) {
+      await traceMark("compaction.failed", { chatId, reason: "empty_stream_summary", attempt });
       await recordCompactionFailure(chatId, "provider returned an empty summary", {
         trigger: "automatic",
         promptTokens: Number(input.estimatedPromptTokens) || null,
         tokenBudget: Number(input.tokenBudget) || null,
         tokenThreshold: Number(input.tokenThreshold) || null,
+        requestPromptTokens: Number(input.requestPromptTokens) || null,
+        requestTokenLimit: Number(input.requestTokenLimit) || null,
       });
       await setChatOngoing(chatId, false);
+      moo.events.publish({ kind: "compaction-end", chatId });
       return { ok: true, value: { kind: "done" } };
     }
     const compactionTracking = {
@@ -755,17 +1100,17 @@ export async function stepHandleLlmCommand(input: Input) {
       promptTokens: Number(input.estimatedPromptTokens) || null,
       tokenBudget: Number(input.tokenBudget) || null,
       tokenThreshold: Number(input.tokenThreshold) || null,
+      requestPromptTokens: Number(input.requestPromptTokens) || null,
+      requestTokenLimit: Number(input.requestTokenLimit) || null,
     };
     const now = await moo.time.nowMs();
-    const previous = await moo.pointers.get(chatRefs(chatId).compaction);
-    const compactionHash = await moo.objects.putJSON({ kind: "agent:Compaction", value: {
-        summary,
-        throughAt: now,
-        at: now,
-        parent: previous ?? null,
-        ...compactionTracking,
-      } });
-    await moo.pointers.set(chatRefs(chatId).compaction, compactionHash);
+    await traceMark("compaction.summary.received", { chatId, chars: summary.length, attempt, usedModel });
+    const compactionHash = await persistCompactionLayer(chatId, {
+      summary,
+      throughAt: now,
+      at: now,
+      ...compactionTracking,
+    });
     await appendStep(chatId, {
       kind: "agent:Compaction",
       status: "agent:Done",
@@ -778,28 +1123,31 @@ export async function stepHandleLlmCommand(input: Input) {
         ...(compactionTracking.tokenThreshold != null ? [["agent:tokenThreshold", String(compactionTracking.tokenThreshold)] as [string, string]] : []),
       ],
     });
+    await traceMark("compaction.persisted", { chatId, compactionHash });
     const postMessages = await buildLLMMessages(chatId);
-    const postTokens = estimateTokens(postMessages, TOOLS);
+    const postContextTokens = estimateTokens(postMessages, TOOLS);
+    const postPressureTokens = await estimateCompactionPromptTokens(chatId, postMessages);
     const budget = Number(input.tokenBudget) || await contextBudget();
     const threshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(budget);
-    await recordLastContextTokens(chatId, postTokens);
-    moo.events.publish({
-      kind: "tokens",
-      chatId,
-      used: postTokens,
+    await recordLastContextTokens(chatId, postContextTokens, { compactionPromptTokens: postPressureTokens });
+    moo.events.publish(tokenPressureEvent(chatId, postPressureTokens, {
       budget,
       threshold,
-      fraction: budget > 0 ? postTokens / budget : 0,
+      source: "compaction",
       estimated: true,
       reset: true,
-    });
+    }));
+    await traceMark("compaction.post_context", { chatId, postContextTokens, postPressureTokens, budget, threshold });
+    moo.events.publish({ kind: "compaction-end", chatId });
     return { ok: true, value: { kind: "iterate", messages: null } };
   }
 
   // purpose === "step"
   if (!llmResult.ok) {
-    const retry = llmRetryDecision(llmResult, attempt, await currentLlmRetryPolicy());
+    const retry = llmRetryDecisionFromSchedule(llmResult, attempt, await currentLlmRetryPolicy());
+    await traceMark("llm.retry.decision", { chatId, attempt, retry: retry.retry, reason: retry.reason, delayMs: retry.delayMs, status: llmResult.status });
     if (retry.retry) {
+      await traceMark("llm.retry.scheduled", { chatId, attempt, nextAttempt: attempt + 1, reason: retry.reason, delayMs: retry.delayMs });
       return {
         ok: true,
         value: {
@@ -811,9 +1159,14 @@ export async function stepHandleLlmCommand(input: Input) {
         },
       };
     }
+    await traceMark("llm.provider_error.record", { chatId, attempt, status: llmResult.status, errorBody: llmResult.errorBody || null });
 
-    let parsed: any = null;
-    try { parsed = JSON.parse(llmResult.errorBody || ""); } catch {}
+    const parsed = parseProviderErrorBody(llmResult.errorBody);
+    const status = Number(llmResult.status) || 0;
+    const type = providerErrorType(parsed);
+    const requestId = providerErrorRequestId(parsed, llmResult.headers);
+    const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
+    const hint = anthropicSubscriptionRateLimitHint(input, status, type);
     await recordErrorStep(
       chatId,
       "provider",
@@ -822,33 +1175,44 @@ export async function stepHandleLlmCommand(input: Input) {
         status: llmResult.status,
         attempts: attempt,
         retryReason: retry.reason,
-        message:
-          parsed?.error?.message || `request failed with status ${llmResult.status}`,
-        type: parsed?.error?.type ?? null,
-        code: parsed?.error?.code ?? null,
-        body: parsed ?? llmResult.errorBody ?? "",
+        message: providerErrorMessage(parsed, status),
+        type,
+        code: providerErrorCode(parsed),
+        requestId,
+        retryAfter,
+        hint,
+        body: providerErrorBodyForRecord(parsed, llmResult.errorBody),
       },
       usedModel,
       input.requestEffort,
     );
     await setChatOngoing(chatId, false);
+    await traceMark("llm.provider_error.done", { chatId, attempt, status: llmResult.status, usedModel });
     return { ok: true, value: { kind: "done" } };
   }
 
-  if (!messages) messages = await buildLLMMessages(chatId);
+  if (!messages) messages = await traceSpan("llm.rebuild_messages", { chatId, reason: "missing_carried_messages" }, () => buildLLMMessages(chatId));
 
   if (Array.isArray(llmResult.toolCalls) && llmResult.toolCalls.length > 0) {
+    await traceMark("llm.tool_calls", {
+      chatId,
+      count: llmResult.toolCalls.length,
+      toolCalls: llmResult.toolCalls,
+      names: llmResult.toolCalls.map((tc: any) => tc?.function?.name ?? null),
+    });
     // Persist any preamble text the model emitted alongside its tool calls so
     // the streaming "draft" bubble has a real Reply step to land into. Without
     // this the UI clears the draft on draft-end and the preamble vanishes.
     const preamble = (llmResult.content || "").trim();
     if (preamble) {
+      await traceMark("llm.tool_preamble", { chatId, preamble, usedModel });
       await reply(
         chatId,
         preamble,
         usedModel,
         input.requestEffort,
-        Number.isFinite(thoughtDurationMs) ? thoughtDurationMs : null,
+        Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null,
+        draftId,
       );
     }
     messages.push({
@@ -856,9 +1220,10 @@ export async function stepHandleLlmCommand(input: Input) {
       content: llmResult.content || null,
       tool_calls: llmResult.toolCalls,
     });
+    await traceMark("llm.assistant_tool_message", { chatId, messages: messages.length, content: llmResult.content || "", toolCalls: llmResult.toolCalls });
     return await stepContinueToolCallsCommand({
       chatId,
-      state: { messages, thoughtDurationMs: input.thoughtDurationMs },
+      state: { messages, thoughtDurationNs: input.thoughtDurationNs },
       toolCalls: llmResult.toolCalls,
       usedModel,
       requestEffort: input.requestEffort,
@@ -866,14 +1231,29 @@ export async function stepHandleLlmCommand(input: Input) {
   }
 
   const text = (llmResult.content || "").trim();
+  await traceMark("llm.final_reply", { chatId, chars: text.length, usedModel, thoughtDurationNs: Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null });
   await reply(
     chatId,
     text || "(no response)",
     usedModel,
     input.requestEffort,
-    Number.isFinite(thoughtDurationMs) ? thoughtDurationMs : null,
+    Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null,
+    draftId,
   );
+  const postReplyMessages = await traceSpan("compaction.post_reply_estimate", { chatId }, () => buildLLMMessages(chatId));
+  const postReplyPressureTokens = await traceSpan("compaction.post_reply_pressure", { chatId, messages: postReplyMessages.length }, () => estimateCompactionPromptTokens(chatId, postReplyMessages));
+  await recordLastCompactionPromptTokens(chatId, postReplyPressureTokens);
+  const pressureBudget = Number(input.tokenBudget) || await contextBudget();
+  const pressureThreshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(pressureBudget);
+  moo.events.publish(tokenPressureEvent(chatId, postReplyPressureTokens, {
+    budget: pressureBudget,
+    threshold: pressureThreshold,
+    source: "compaction",
+    estimated: true,
+  }));
+  await traceMark("compaction.post_reply_pressure.recorded", { chatId, postReplyPressureTokens, budget: pressureBudget, threshold: pressureThreshold });
   await setChatOngoing(chatId, false);
+  await traceMark("llm.final_reply.done", { chatId, usedModel });
   return { ok: true, value: { kind: "done" } };
 }
 

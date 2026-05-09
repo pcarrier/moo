@@ -1,14 +1,80 @@
 import type { DiffStats, FileDiffItem, MemoryDiffItem, MemoryFactChange, TimelineItem } from "./api";
 
 export function normalizeDiffPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const raw = String(path || "").trim();
+  if (!raw) return "";
+  const normalized = normalizePathSegments(raw).replace(/\/+$/, "");
+  return normalized === "." ? "" : normalized;
 }
 
 export function sameDiffPath(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = normalizeDiffPath(a || "");
   const right = normalizeDiffPath(b || "");
   if (!left || !right) return false;
-  return left === right || left.endsWith("/" + right) || right.endsWith("/" + left);
+  if (left === right) return true;
+  const leftAbsolute = isAbsoluteDiffPath(left);
+  const rightAbsolute = isAbsoluteDiffPath(right);
+  if (leftAbsolute === rightAbsolute) return false;
+  const absolute = leftAbsolute ? left : right;
+  const relative = leftAbsolute ? right : left;
+  return absolute.endsWith("/" + relative);
+}
+
+export function sameDiffPathInRoot(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  root: string | null | undefined,
+): boolean {
+  const rootPath = normalizedOptionalDiffPath(root);
+  if (!rootPath) return sameDiffPath(a, b);
+  const left = diffPathKeys(a, rootPath);
+  const right = diffPathKeys(b, rootPath);
+  for (const key of left) if (right.has(key)) return true;
+  return false;
+}
+
+function diffPathKeys(path: string | null | undefined, root: string): Set<string> {
+  const normalized = normalizeDiffPath(String(path || ""));
+  const keys = new Set<string>();
+  if (!normalized) return keys;
+  const absolute = isAbsoluteDiffPath(normalized);
+  keys.add((absolute ? "abs:" : "rel:") + normalized);
+  if (absolute) {
+    if (pathWithinRoot(normalized, root)) {
+      const relative = relativePathWithinRoot(root, normalized);
+      if (relative) keys.add("rel:" + relative);
+    }
+  } else {
+    const absolutePath = normalizeDiffPath(joinPath(root, normalized));
+    if (absolutePath) keys.add("abs:" + absolutePath);
+  }
+  return keys;
+}
+
+function normalizedOptionalDiffPath(path: string | null | undefined): string | null {
+  const normalized = normalizeDiffPath(String(path || ""));
+  return normalized || null;
+}
+
+function isAbsoluteDiffPath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:\//.test(path);
+}
+
+function pathWithinRoot(path: string, root: string): boolean {
+  const normalizedRoot = normalizeDiffPath(root).replace(/\/+$/, "") || "/";
+  const normalizedPath = normalizeDiffPath(path).replace(/\/+$/, "") || "/";
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot.replace(/\/+$/, "") + "/");
+}
+
+function relativePathWithinRoot(root: string, path: string): string {
+  const normalizedRoot = normalizeDiffPath(root).replace(/\/+$/, "") || "/";
+  const normalizedPath = normalizeDiffPath(path);
+  if (normalizedRoot === "/") return normalizedPath.replace(/^\/+/, "");
+  return normalizedPath.slice(normalizedRoot.length).replace(/^\/+/, "");
+}
+
+function joinPath(base: string, child: string): string {
+  return base.replace(/\/+$/, "") + "/" + child.replace(/^\/+/, "");
 }
 
 
@@ -100,7 +166,14 @@ function concatenateMemoryDiffs(items: MemoryDiffItem[]): string {
   return items.map((item) => item.diff.trimEnd()).filter(Boolean).join("\n");
 }
 
-export function mergedFileDiffs(items: TimelineItem[] | FileDiffItem[]): FileDiffItem[] {
+export type MergedFileDiffItem = FileDiffItem & { items?: FileDiffItem[] };
+
+export function hasFileDiffBeforeSnapshot(item: FileDiffItem): boolean {
+  return Object.prototype.hasOwnProperty.call(item, "before")
+    && (typeof item.before === "string" || item.before === null);
+}
+
+export function mergedFileDiffs(items: TimelineItem[] | FileDiffItem[]): MergedFileDiffItem[] {
   // Group by normalized path in O(N) using a Map. The previous implementation
   // scanned existing groups for each item via sameDiffPath, making the
   // "Total diff" panel O(N^2) over the number of file diffs in the timeline
@@ -139,9 +212,8 @@ export function mergedFileDiffs(items: TimelineItem[] | FileDiffItem[]): FileDif
 // concatenating the recorded per-step diffs instead.
 const SYNTHETIC_DIFF_MAX_BYTES = 1 << 20;
 
-export function mergeFileDiffItems(items: FileDiffItem[]): FileDiffItem {
+export function mergeFileDiffItems(items: FileDiffItem[]): MergedFileDiffItem {
   if (items.length === 0) throw new Error("cannot merge an empty diff list");
-  if (items.length === 1) return items[0]!;
 
   const ordered = [...items].sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
   const first = ordered[0]!;
@@ -149,29 +221,46 @@ export function mergeFileDiffItems(items: FileDiffItem[]): FileDiffItem {
   const path = last.path || first.path;
   const before = first.before;
   const after = last.after;
-  const hasBeforeSnapshot = Object.prototype.hasOwnProperty.call(first, "before");
-  const hasAfterSnapshot = Object.prototype.hasOwnProperty.call(last, "after");
+  const hasBeforeSnapshot = hasFileDiffBeforeSnapshot(first);
+  const hasAfterSnapshot = Object.prototype.hasOwnProperty.call(last, "after")
+    && (typeof after === "string" || after === null);
   const beforeSize = typeof before === "string" ? before.length : 0;
   const afterSize = typeof after === "string" ? after.length : 0;
   const tooLargeForSynthetic = beforeSize + afterSize > SYNTHETIC_DIFF_MAX_BYTES;
-  const synthetic = !tooLargeForSynthetic
-    && hasBeforeSnapshot && hasAfterSnapshot && typeof after === "string"
-    ? unifiedDiff(path, before ?? null, after)
+  const concatenated = concatenateDiffs(ordered);
+  // Some recorded patch text has historically carried a deletion header
+  // (`+++ /dev/null`) even though the hydrated payload still has a real
+  // post-change snapshot. Trust the snapshots once both ends are present so a
+  // lightly modified file is not rendered as a complete deletion in the
+  // sidebar.
+  const shouldPreferSynthetic = hasBeforeSnapshot && hasAfterSnapshot
+    && !tooLargeForSynthetic
+    && (after !== null || !looksLikeDeletionDiff(concatenated));
+  const synthetic = shouldPreferSynthetic
+    ? unifiedDiff(path, before ?? null, after ?? "", after !== null)
     : null;
-  const diff = synthetic || concatenateDiffs(ordered);
-  return {
+  const diff = synthetic || concatenated;
+  const merged: MergedFileDiffItem = {
     ...last,
     id: "merged:" + normalizeDiffPath(path),
     path,
     diff,
     stats: diffStats(diff),
-    before,
-    after,
+    items: ordered,
   };
+  delete merged.before;
+  delete merged.after;
+  if (hasBeforeSnapshot) merged.before = before;
+  if (hasAfterSnapshot) merged.after = after;
+  return merged;
 }
 
 function concatenateDiffs(items: FileDiffItem[]): string {
   return items.map((item) => item.diff.trimEnd()).filter(Boolean).join("\n");
+}
+
+function looksLikeDeletionDiff(diff: string): boolean {
+  return /^\+\+\+ \/dev\/null(?:\t.*)?$/m.test(diff);
 }
 
 export function diffStats(diff: string): DiffStats {
@@ -186,12 +275,17 @@ export function diffStats(diff: string): DiffStats {
   return { added, removed, lines };
 }
 
-function unifiedDiff(path: string, before: string | null, after: string): string {
+export function unifiedFileDiff(path: string, before: string | null, after: string): string {
+  return unifiedDiff(path, before, after);
+}
+
+function unifiedDiff(path: string, before: string | null, after: string, afterExists = true): string {
   const oldLines = splitContentLines(before ?? "");
   const newLines = splitContentLines(after);
   const ops = patienceLineDiff(oldLines, newLines);
   const from = before == null ? "/dev/null" : "a/" + path;
-  const header = ["diff --git a/" + path + " b/" + path, "--- " + from, "+++ b/" + path];
+  const to = afterExists ? "b/" + path : "/dev/null";
+  const header = ["--- " + from, "+++ " + to];
   const body = unifiedDiffBody(ops, DIFF_CONTEXT_LINES);
   if (body.added === 0 && body.removed === 0) return header.join("\n");
   return [...header, ...body.lines].join("\n");
@@ -478,11 +572,23 @@ const DIFF_DISPLAY_COLLAPSE_MIN = 14;
 
 export function diffDisplaySections(diff: string, snapshot?: string | null): DiffDisplaySection[] {
   const lines = diff.split("\n");
-  if (typeof snapshot === "string") {
+  if (typeof snapshot === "string" && isSingleUnifiedFilePatch(lines)) {
     const sections = diffDisplaySectionsWithSnapshotContext(lines, snapshot);
     if (sections) return sections;
   }
   return collapsedDiffLineSections(lines);
+}
+
+function isSingleUnifiedFilePatch(lines: string[]): boolean {
+  let fileHeaderCount = 0;
+  let oldPathHeaderCount = 0;
+  let newPathHeaderCount = 0;
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) fileHeaderCount++;
+    else if (line.startsWith("--- ")) oldPathHeaderCount++;
+    else if (line.startsWith("+++ ")) newPathHeaderCount++;
+  }
+  return fileHeaderCount <= 1 && oldPathHeaderCount <= 1 && newPathHeaderCount <= 1;
 }
 
 function diffDisplaySectionsWithSnapshotContext(lines: string[], after: string): DiffDisplaySection[] | null {
@@ -537,7 +643,7 @@ function diffDisplaySectionsWithSnapshotContext(lines: string[], after: string):
   if (lastNewEnd < afterLines.length) {
     sections.push(collapsedSnapshotSection(afterLines.slice(lastNewEnd), {
       expandFrom: "start",
-      controlsPosition: "before",
+      controlsPosition: "after",
       location: "below",
     }));
   }
@@ -610,3 +716,35 @@ function isCollapsibleContextLine(line: string): boolean {
   return line.startsWith(" ") || line === "";
 }
 
+
+function normalizePathSegments(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const absolute = normalized.startsWith("/");
+  const prefixMatch = normalized.match(/^[A-Za-z]:\//);
+  const prefix = prefixMatch
+    ? prefixMatch[0].replace(/\/$/, "")
+    : absolute
+      ? "/"
+      : "";
+  const rest = prefixMatch
+    ? normalized.slice(prefixMatch[0].length)
+    : absolute
+      ? normalized.slice(1)
+      : normalized;
+  const parts: string[] = [];
+  for (const part of rest.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length && parts[parts.length - 1] !== "..") {
+        parts.pop();
+      } else if (!prefix) {
+        parts.push(part);
+      }
+      continue;
+    }
+    parts.push(part);
+  }
+  if (prefix === "/") return "/" + parts.join("/");
+  if (prefix) return prefix + (parts.length ? "/" + parts.join("/") : "");
+  return parts.join("/") || ".";
+}

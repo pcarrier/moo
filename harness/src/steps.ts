@@ -1,3 +1,4 @@
+import * as host from "./host_ops";
 import type { AppendStepArgs, Quad, StepClass } from "./types";
 import { assertFactObjects, chatRefs } from "./lib";
 
@@ -18,48 +19,48 @@ export function stepClass(kind: string): StepClass {
 }
 
 function touchChat(chatId: string): void {
-  const c = chatRefs(chatId);
-  if (!__op_ref_get(c.createdAt)) {
-    __op_ref_set(c.createdAt, String(__op_now()));
+  const refs = chatRefs(chatId);
+  if (!host.getRef(refs.createdAt)) {
+    host.setRef(refs.createdAt, String(host.now()));
   }
-  __op_ref_set(c.lastAt, String(__op_now()));
+  host.setRef(refs.lastAt, String(host.now()));
 }
 
 export async function ensureRun(chatId: string): Promise<string> {
-  const c = chatRefs(chatId);
-  let runId = __op_ref_get(c.run);
+  const refs = chatRefs(chatId);
+  let runId = host.getRef(refs.run);
   if (!runId) {
-    runId = __op_id("run");
-    __op_ref_set(c.run, runId);
+    runId = host.newId("run");
+    host.setRef(refs.run, runId);
   }
   return runId;
 }
 
 export async function appendStep(chatId: string, args: AppendStepArgs): Promise<AppendedStep> {
-  const c = chatRefs(chatId);
+  const refs = chatRefs(chatId);
   touchChat(chatId);
   const runId = await ensureRun(chatId);
-  const stepId = __op_id("step");
-  const previous = __op_ref_get(c.head);
-  const now = args.at ?? __op_now();
+  const stepId = host.newId("step");
+  const previous = host.getRef(refs.head);
+  const now = args.at ?? host.now();
   const adds: Quad[] = [
-    [c.graph, runId, "rdf:type", "agent:Run"],
-    [c.graph, runId, "agent:chat", c.graph],
-    [c.graph, stepId, "rdf:type", "agent:Step"],
-    [c.graph, stepId, "rdf:type", stepClass(args.kind)],
-    [c.graph, stepId, "agent:createdBy", "agent:moo"],
-    [c.graph, stepId, "agent:run", runId],
-    [c.graph, stepId, "agent:kind", args.kind],
-    [c.graph, stepId, "agent:status", args.status],
-    [c.graph, stepId, "agent:createdAt", String(now)],
+    [refs.graph, runId, "rdf:type", "agent:Run"],
+    [refs.graph, runId, "agent:chat", refs.graph],
+    [refs.graph, stepId, "rdf:type", "agent:Step"],
+    [refs.graph, stepId, "rdf:type", stepClass(args.kind)],
+    [refs.graph, stepId, "agent:createdBy", "agent:moo"],
+    [refs.graph, stepId, "agent:run", runId],
+    [refs.graph, stepId, "agent:kind", args.kind],
+    [refs.graph, stepId, "agent:status", args.status],
+    [refs.graph, stepId, "agent:createdAt", String(now)],
   ];
-  if (previous) adds.push([c.graph, stepId, "agent:parent", previous]);
-  if (args.payloadHash) adds.push([c.graph, stepId, "agent:payload", args.payloadHash]);
+  if (previous) adds.push([refs.graph, stepId, "agent:parent", previous]);
+  if (args.payloadHash) adds.push([refs.graph, stepId, "agent:payload", args.payloadHash]);
   for (const [predicate, object] of args.extras || []) {
-    adds.push([c.graph, stepId, predicate, object]);
+    adds.push([refs.graph, stepId, predicate, object]);
   }
   assertFactObjects(adds);
-  __op_facts_swap(c.facts, EMPTY_JSON_ARRAY, JSON.stringify(adds));
-  __op_ref_set(c.head, stepId);
+  host.swapFacts(refs.facts, EMPTY_JSON_ARRAY, JSON.stringify(adds));
+  host.setRef(refs.head, stepId);
   return { runId, stepId, previous, now };
 }

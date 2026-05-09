@@ -1,0 +1,67 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+const stateSource = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
+
+describe("chat timeline LRU cache", () => {
+  test("caches snapshot describe results even after switching away", () => {
+    const snapshotBlockStart = stateSource.indexOf(`const r = await retryChatLoad(
+        () => api.chat.describeSnapshot(id, limit)`);
+    expect(snapshotBlockStart).toBeGreaterThanOrEqual(0);
+    const snapshotBlockEnd = stateSource.indexOf("} else {", snapshotBlockStart);
+    const snapshotBlock = stateSource.slice(snapshotBlockStart, snapshotBlockEnd);
+
+    expect(snapshotBlock).toContain("cacheDescribeSnapshot(id, r.value, limit);");
+    expect(snapshotBlock.indexOf("cacheDescribeSnapshot(id, r.value, limit);")).toBeLessThan(
+      snapshotBlock.indexOf("if (chatId() !== id) return;"),
+    );
+  });
+
+  test("caches incremental describe results even after switching away", () => {
+    const incrementalBlockStart = stateSource.indexOf(`const r = await retryChatLoad(
+          () =>
+            api.chat.describeUpdate`);
+    expect(incrementalBlockStart).toBeGreaterThanOrEqual(0);
+    const incrementalBlockEnd = stateSource.indexOf(`const r = await retryChatLoad(
+        () => api.chat.describeSnapshot`, incrementalBlockStart);
+    const incrementalBlock = stateSource.slice(incrementalBlockStart, incrementalBlockEnd);
+
+    expect(incrementalBlock).toContain("if (r.ok) cacheDescribeUpdate(id, r.value);");
+    expect(incrementalBlock.indexOf("if (r.ok) cacheDescribeUpdate(id, r.value);")).toBeLessThan(
+      incrementalBlock.indexOf("if (chatId() !== id) return;"),
+    );
+  });
+  test("keeps cached pages available after chat facts change", () => {
+    const invalidateStart = stateSource.indexOf("function invalidateChatCache(");
+    expect(invalidateStart).toBeGreaterThanOrEqual(0);
+    const invalidateEnd = stateSource.indexOf("function compact", invalidateStart);
+    const invalidateBlock = stateSource.slice(invalidateStart, invalidateEnd);
+
+    expect(invalidateBlock).toContain("delete next.checkpoint;");
+    expect(invalidateBlock).toContain("Keep cached");
+    expect(invalidateBlock).not.toContain("delete next.overview;");
+    expect(invalidateBlock).not.toContain("delete next.timelinePages;");
+    expect(invalidateBlock).not.toContain("delete next.trailPages;");
+    expect(invalidateBlock).not.toContain("delete next.activeTimelineKey;");
+    expect(invalidateBlock).not.toContain("delete next.activeTrailKey;");
+  });
+
+  test("restores stale cached timelines during chat switches", () => {
+    const selectStart = stateSource.indexOf("async function selectChat(");
+    expect(selectStart).toBeGreaterThanOrEqual(0);
+    const selectEnd = stateSource.indexOf("function olderTimelineLoadCount", selectStart);
+    const selectBlock = stateSource.slice(selectStart, selectEnd);
+
+    expect(selectBlock).toContain(
+      "const restored = restoreCachedChat(id, summary, { allowStale: true });",
+    );
+
+    const routeStart = stateSource.indexOf("async function openUiInstanceFromRoute");
+    expect(routeStart).toBeGreaterThanOrEqual(0);
+    const routeEnd = stateSource.indexOf("// -- chat lifecycle", routeStart);
+    const routeBlock = stateSource.slice(routeStart, routeEnd);
+
+    expect(routeBlock).toContain("const restored = restoreCachedChat(resolved.chatId, summary, {");
+    expect(routeBlock).toContain("allowStale: true,");
+  });
+});

@@ -2,11 +2,29 @@ import type { ObjectInput, Quad } from "./types";
 
 const MAX_FACT_OBJECT_BYTES = 2048;
 const HASH_RE = /^(sha256:)?[a-f0-9]{64}$/i;
+export const JSON_POINTER_PREFIX = "json:";
+
+export function isSha256Hash(value: unknown): boolean {
+  return typeof value === "string" && HASH_RE.test(value);
+}
+
+export function encodeJsonPointer(value: unknown): string {
+  return JSON_POINTER_PREFIX + (JSON.stringify(value) ?? "null");
+}
+
+export function decodeJsonPointer<T = unknown>(target: string | null | undefined): T | null {
+  if (typeof target !== "string" || !target.startsWith(JSON_POINTER_PREFIX)) return null;
+  try {
+    return JSON.parse(target.slice(JSON_POINTER_PREFIX.length)) as T;
+  } catch (_) {
+    return null;
+  }
+}
 
 export function assertFactObject(object: string): void {
   if (typeof object !== "string") return;
   if (object.length <= MAX_FACT_OBJECT_BYTES) return;
-  if (HASH_RE.test(object)) return;
+  if (isSha256Hash(object)) return;
   throw new Error(
     `fact object is ${object.length} bytes; store large payloads with moo.objects.put and assert the hash instead`,
   );
@@ -121,7 +139,9 @@ export function chatRefs(chatId: string) {
     compaction: `chat/${chatId}/compaction`,
     usage: `chat/${chatId}/usage`,
     model: `chat/${chatId}/model`,
+    provider: `chat/${chatId}/provider`,
     effort: `chat/${chatId}/effort`,
+    startBranch: `chat/${chatId}/start-branch`,
   };
 }
 

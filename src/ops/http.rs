@@ -7,6 +7,7 @@ use std::time::Duration;
 use rusty_v8 as v8;
 use serde_json::{Map, Value};
 
+use crate::ops::v8util::{required_args, set_object_str, set_object_value, set_return_str};
 use crate::runtime::{install_fn, throw};
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
@@ -30,11 +31,12 @@ fn op_http_fetch(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 2 {
-        throw(
-            scope,
-            "http_fetch requires (method, url, [headersJson], [body], [timeoutMs])",
-        );
+    if !required_args(
+        scope,
+        &args,
+        2,
+        "http_fetch requires (method, url, [headersJson], [body], [timeoutMs])",
+    ) {
         return;
     }
     let method = args.get(0).to_rust_string_lossy(scope).to_uppercase();
@@ -118,22 +120,10 @@ fn op_http_fetch(
     };
 
     let obj = v8::Object::new(scope);
-    if let Some(k) = v8::String::new(scope, "status") {
-        let v = v8::Number::new(scope, status as f64);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let (Some(k), Some(v)) = (
-        v8::String::new(scope, "headers"),
-        v8::String::new(scope, &response_headers),
-    ) {
-        obj.set(scope, k.into(), v.into());
-    }
-    if let (Some(k), Some(v)) = (
-        v8::String::new(scope, "body"),
-        v8::String::new(scope, &body_text),
-    ) {
-        obj.set(scope, k.into(), v.into());
-    }
+    let status_value = v8::Number::new(scope, status as f64);
+    set_object_value(scope, obj, "status", status_value.into());
+    set_object_str(scope, obj, "headers", &response_headers);
+    set_object_str(scope, obj, "body", &body_text);
     rv.set(obj.into());
 }
 
@@ -169,11 +159,12 @@ fn op_http_stream_open(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 2 {
-        throw(
-            scope,
-            "http_stream_open requires (method, url, [headers], [body], [timeoutMs])",
-        );
+    if !required_args(
+        scope,
+        &args,
+        2,
+        "http_stream_open requires (method, url, [headers], [body], [timeoutMs])",
+    ) {
         return;
     }
     let method = args.get(0).to_rust_string_lossy(scope).to_uppercase();
@@ -251,20 +242,11 @@ fn op_http_stream_open(
     STREAMS.with(|s| s.borrow_mut().insert(id, reader));
 
     let obj = v8::Object::new(scope);
-    if let Some(k) = v8::String::new(scope, "handle") {
-        let v = v8::Number::new(scope, id as f64);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let Some(k) = v8::String::new(scope, "status") {
-        let v = v8::Number::new(scope, status as f64);
-        obj.set(scope, k.into(), v.into());
-    }
-    if let (Some(k), Some(v)) = (
-        v8::String::new(scope, "headers"),
-        v8::String::new(scope, &response_headers),
-    ) {
-        obj.set(scope, k.into(), v.into());
-    }
+    let handle_value = v8::Number::new(scope, id as f64);
+    set_object_value(scope, obj, "handle", handle_value.into());
+    let status_value = v8::Number::new(scope, status as f64);
+    set_object_value(scope, obj, "status", status_value.into());
+    set_object_str(scope, obj, "headers", &response_headers);
     rv.set(obj.into());
 }
 
@@ -273,8 +255,7 @@ fn op_http_stream_next(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    if args.length() < 1 {
-        throw(scope, "http_stream_next requires (handle)");
+    if !required_args(scope, &args, 1, "http_stream_next requires (handle)") {
         return;
     }
     let handle = args
@@ -296,9 +277,7 @@ fn op_http_stream_next(
         Ok(0) => rv.set(v8::null(scope).into()),
         Ok(n) => {
             let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-            if let Some(s) = v8::String::new(scope, &text) {
-                rv.set(s.into());
-            }
+            set_return_str(scope, &mut rv, &text);
         }
         Err(e) => throw(scope, &format!("http_stream_next: {e}")),
     }

@@ -1,8 +1,10 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 
-import { RightSidebarToggle } from "./Sidebar";
 import type { Bag } from "./state";
 import { type Triple } from "./api";
+import { ControlField, EmptyState, PageBody, PageHeader, PageToolbar, StatPill, ToolbarSection } from "./PageChrome";
+import { LoadingDots } from "./LoadingDots";
+import { RefreshIcon } from "./icons";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
 const SHA256_RE = /sha256:[a-f0-9]{64}/gi;
@@ -61,7 +63,7 @@ type CategoryWithGraphs = {
 // styled when focused.
 export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const { bag } = props;
-  let scrollEl: HTMLDivElement | undefined;
+  let scrollEl: HTMLElement | undefined;
 
   const [search, setSearch] = createSignal("");
   const [page, setPage] = createSignal(1);
@@ -217,11 +219,6 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setSearch("");
     bag.showFacts(null, graph);
   };
-  const closeGraph = () => {
-    setSearch("");
-    bag.showFacts(null, null);
-  };
-
   const scrollToFocus = () => {
     const id = bag.focusedSubject();
     if (!id || !scrollEl) return;
@@ -245,78 +242,55 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   });
 
   return (
-    <section class="main">
-      <header class="conv-header facts-header">
-        <div class="facts-header-main">
-          <button
-            class="header-icon-button"
-            title="toggle sidebar"
-            aria-label="toggle sidebar"
-            onClick={props.onToggleSidebar}
-          >
-            ☰
-          </button>
-          <button
-            class="header-icon-button facts-back"
-            title={selectedGraph() ? "back to graph list" : "back to chat"}
-            onClick={() => (selectedGraph() ? closeGraph() : bag.showChat())}
-          >
-            ←
-          </button>
-          <div class="facts-title-block">
-            <strong class="facts-title">
-              <Show when={selectedGraph()} fallback="facts">
-                facts <span class="facts-crumb">/ {selectedGraphLabel()}</span>
-              </Show>
-            </strong>
-          </div>
-          <div class="facts-summary" aria-label="facts summary">
-            <Show
-              when={selectedGraph()}
-              fallback={
-                <>
-                  <span class="facts-stat-pill">
-                    <strong>{search().trim() ? filteredGraphCount() : totalGraphs()}</strong>
-                    <span>{search().trim() ? "matching graphs" : "graphs"}</span>
-                  </span>
-                  <span class="facts-stat-pill">
-                    <strong>{graphCategories().reduce((sum, c) => sum + c.factCount, 0)}</strong>
-                    <span>facts</span>
-                  </span>
-                  <span class="facts-stat-pill">
-                    <strong>{totalPredicates()}</strong>
-                    <span>predicates</span>
-                  </span>
-                </>
-              }
-            >
-              <span class="facts-stat-pill">
-                <strong>{filteredFacts()}</strong>
-                <span>{search().trim() ? "matching facts" : "facts"}</span>
-              </span>
-              <span class="facts-stat-pill">
-                <strong>{filteredSubjects()}</strong>
-                <span>{search().trim() ? "matching subjects" : "subjects"}</span>
-              </span>
-            </Show>
-          </div>
-          <RightSidebarToggle bag={bag} />
-        </div>
+    <section class="main conversation-main memory-view facts-view">
+      <PageHeader
+        bag={bag}
+        class="memory-header facts-header"
+        title={selectedGraph() ? "Facts / " + selectedGraphLabel() : "Facts"}
+        onToggleSidebar={props.onToggleSidebar}
+        showRightSidebarToggle
+      />
 
-        <div class="facts-toolbar">
-          <label class="facts-search facts-control">
-            <span>Search</span>
+      <PageToolbar class="memory-toolbar facts-toolbar">
+        <ToolbarSection class="facts-summary" ariaLabel="summary">
+          <Show
+            when={selectedGraph()}
+            fallback={
+              <>
+                <Show
+                  when={bag.graphSummariesLoaded()}
+                  fallback={
+                    <>
+                      <StatPill value="loading" label={search().trim() ? "matching graphs" : "graphs"} />
+                      <StatPill value="loading" label="facts" />
+                      <StatPill value={totalPredicates()} label="predicates" />
+                    </>
+                  }
+                >
+                  <StatPill value={search().trim() ? filteredGraphCount() : totalGraphs()} label={search().trim() ? "matching graphs" : "graphs"} />
+                  <StatPill value={graphCategories().reduce((sum, c) => sum + c.factCount, 0)} label="facts" />
+                  <StatPill value={totalPredicates()} label="predicates" />
+                </Show>
+              </>
+            }
+          >
+            <StatPill value={filteredFacts()} label={search().trim() ? "matching facts" : "facts"} />
+            <StatPill value={filteredSubjects()} label={search().trim() ? "matching subjects" : "subjects"} />
+          </Show>
+        </ToolbarSection>
+
+        <div class="facts-filterbar">
+          <ControlField class="facts-search" label="Search">
             <input
               type="search"
               placeholder={selectedGraph() ? "subject, predicate, object…" : "graph…"}
               value={search()}
               onInput={(event) => setSearch(event.currentTarget.value)}
             />
-          </label>
+          </ControlField>
 
           <div class="facts-actions">
-            <label class="facts-control facts-removed-mode">
-              <span>Removed</span>
+            <ControlField class="facts-removed-mode" label="Removed">
               <select
                 value={bag.triplesRemovedMode()}
                 onChange={(event) => {
@@ -329,11 +303,10 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 <option value="include">include</option>
                 <option value="only">only</option>
               </select>
-            </label>
+            </ControlField>
 
             <Show when={selectedGraph()}>
-              <label class="facts-control facts-page-size">
-                <span>Per page</span>
+              <ControlField class="facts-page-size" label="Per page">
                 <select
                   value={pageSize()}
                   onChange={(event) => setPageSize(Number(event.currentTarget.value))}
@@ -342,7 +315,7 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                     {(size) => <option value={size}>{size}</option>}
                   </For>
                 </select>
-              </label>
+              </ControlField>
               <div class="facts-pager" aria-label="facts pagination">
                 <button
                   type="button"
@@ -369,24 +342,36 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
             </Show>
           </div>
         </div>
-      </header>
+      </PageToolbar>
+
       <div class="memory-main">
-      <Show when={selectedGraph() && bag.triplesTruncated()}>
+      <Show when={selectedGraph() && bag.triplesLoaded() && bag.triplesTruncated()}>
         <div class="facts-limit-note">
-          Showing the first {bag.triplesLimit() ?? bag.triples().length} facts in this graph to keep the browser responsive. Use search to narrow the view.
+          Showing {bag.triples().length} of {bag.triplesTotal() ?? "many"} facts in this graph to keep the browser responsive. Use search to narrow the view.
         </div>
       </Show>
-      <main class="timeline turtle" ref={scrollEl}>
+      <PageBody class="turtle" ref={(el) => { scrollEl = el; }}>
         <Show
           when={selectedGraph()}
           fallback={
             <Show
               when={totalGraphs() > 0}
-              fallback={<Show when={bag.graphSummariesLoaded()}><div class="empty">no graphs yet</div></Show>}
+              fallback={
+                <Show
+                  when={bag.graphSummariesLoaded()}
+                  fallback={
+                    <div class="facts-loading-centered">
+                      <LoadingDots label="loading facts" />
+                    </div>
+                  }
+                >
+                  <EmptyState>no graphs yet</EmptyState>
+                </Show>
+              }
             >
               <Show
                 when={filteredGraphCount() > 0}
-                fallback={<div class="empty">no graphs match <code>{search()}</code></div>}
+                fallback={<EmptyState>no graphs match <code>{search()}</code></EmptyState>}
               >
                 <For each={filteredGraphCategories()}>
                   {(category) => (
@@ -441,11 +426,20 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
           <Show
             when={visibleCategories().length > 0}
             fallback={
-              <div class="empty">
-                <Show when={search().trim()} fallback={<>this graph is empty</>}>
-                  no facts match <code>{search()}</code>
-                </Show>
-              </div>
+              <Show
+                when={bag.triplesLoaded()}
+                fallback={
+                  <div class="facts-loading-centered">
+                    <LoadingDots label="loading facts" />
+                  </div>
+                }
+              >
+                <div class="empty">
+                  <Show when={search().trim()} fallback={<>this graph is empty</>}>
+                    no facts match <code>{search()}</code>
+                  </Show>
+                </div>
+              </Show>
             }
           >
             <For each={visibleCategories()}>
@@ -494,7 +488,7 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
             </For>
           </Show>
         </Show>
-      </main>
+      </PageBody>
       </div>
     </section>
   );
@@ -563,6 +557,35 @@ function isSha256Value(value: string): boolean {
   return /^sha256:[a-f0-9]{64}$/i.test(value.trim());
 }
 
+type PointerJsonPreview = { label: string; title: string };
+
+function summarizePointerJson(value: unknown, depth = 0): string {
+  if (value == null) return String(value);
+  if (typeof value === "string") return JSON.stringify(value.length > 32 ? value.slice(0, 32) + "…" : value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return depth > 0 ? `[${value.length}]` : `[${value.slice(0, 3).map((item) => summarizePointerJson(item, depth + 1)).join(", ")}${value.length > 3 ? ", …" : ""}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (depth > 0) return `{${entries.length}}`;
+    return `{ ${entries.slice(0, 3).map(([key, item]) => `${key}: ${summarizePointerJson(item, depth + 1)}`).join(", ")}${entries.length > 3 ? ", …" : ""} }`;
+  }
+  return String(value);
+}
+
+function pointerJsonPreview(target: string): PointerJsonPreview | null {
+  if (!target.startsWith("json:")) return null;
+  const raw = target.slice("json:".length);
+  try {
+    const value = JSON.parse(raw);
+    return {
+      label: `json:${summarizePointerJson(value)}`,
+      title: JSON.stringify(value, null, 2),
+    };
+  } catch {
+    return { label: target.length > 160 ? target.slice(0, 160) + "…" : target, title: target };
+  }
+}
+
 function PointerTree(props: {
   node: PointerTreeNode;
   bag: Bag;
@@ -596,12 +619,32 @@ function PointerTarget(props: { target: string; bag: Bag }) {
     // request to open the object preview.
     event.preventDefault();
     event.stopPropagation();
+    if (props.target.startsWith("json:")) {
+      props.bag.openJsonPreviewInSidebar(props.target);
+      return;
+    }
     void props.bag.openStorePreviewInSidebar(props.target);
   };
   return (
     <Show
       when={isSha256Value(props.target)}
-      fallback={<code class="pointer-target">{props.target}</code>}
+      fallback={
+        <Show
+          when={pointerJsonPreview(props.target)}
+          fallback={<code class="pointer-target">{props.target}</code>}
+        >
+          {(preview) => (
+            <button
+              type="button"
+              class="store-link pointer-target pointer-target-link pointer-target-json"
+              onClick={open}
+              title={`${preview().title}\n\nopen JSON in sidebar`}
+            >
+              {preview().label}
+            </button>
+          )}
+        </Show>
+      }
     >
       <button type="button" class="store-link pointer-target pointer-target-link" onClick={open} title="open object in right sidebar">
         {props.target}
@@ -645,7 +688,6 @@ function PointerTreeItem(props: {
       class="pointer-row"
       classList={{ "is-branch": hasChildren(), "is-leaf": !hasChildren(), "has-target": hasTarget() }}
       style={{ "--pointer-depth": String(props.depth) }}
-      title={props.node.path}
     >
       <div class="pointer-row-main">
         <div class="pointer-name-block">
@@ -653,7 +695,6 @@ function PointerTreeItem(props: {
             <span class="pointer-disclosure" aria-hidden="true" />
           </Show>
           <code class="pointer-name">{props.node.name}</code>
-          <code class="pointer-path">{props.node.path}</code>
         </div>
         <div class="pointer-value-cell">
           <Show
@@ -674,8 +715,8 @@ function PointerTreeItem(props: {
             <button
               type="button"
               class="icon-btn pointer-remove"
-              title={`delete pointer ${props.node.path}`}
-              aria-label={`delete pointer ${props.node.path}`}
+              title="delete pointer"
+              aria-label={`delete pointer ${props.node.name}`}
               onClick={deleteExact}
             >
               ×
@@ -685,8 +726,8 @@ function PointerTreeItem(props: {
             <button
               type="button"
               class="icon-btn pointer-remove pointer-remove-tree"
-              title={`delete pointer hierarchy ${props.node.path}`}
-              aria-label={`delete pointer hierarchy ${props.node.path}`}
+              title="delete pointer hierarchy"
+              aria-label={`delete pointer hierarchy ${props.node.name}`}
               onClick={deleteHierarchy}
             >
               ⨯/
@@ -741,61 +782,68 @@ export function PointersView(props: { bag: Bag; onToggleSidebar?: () => void }) 
 
   return (
     <div class="main conversation-main memory-view facts-view pointers-view">
-      <header class="conv-header facts-header pointers-header">
-        <div class="facts-header-main pointers-header-main">
-          <button class="header-icon-button" title="toggle sidebar" aria-label="toggle sidebar" onClick={props.onToggleSidebar}>☰</button>
-          <button class="header-icon-button facts-back" title="back to chat" aria-label="back to chat" onClick={() => bag.showChat()}>←</button>
-          <div class="facts-title-block pointers-title-block">
-            <strong class="facts-title">pointers</strong>
-            <span class="pointers-subtitle">mutable names → content targets</span>
-          </div>
-          <div class="facts-summary pointers-summary" aria-label="pointers summary">
-            <span class="facts-stat-pill"><strong>{isSearching() ? visibleCount() : totalCount()}</strong><span>{isSearching() ? "matches" : "pointers"}</span></span>
-            <span class="facts-stat-pill"><strong>{rootGroups()}</strong><span>groups</span></span>
-          </div>
-          <RightSidebarToggle bag={bag} />
-        </div>
-        <div class="facts-toolbar pointers-toolbar">
-          <label class="facts-search facts-control pointers-search">
-            <span>Search</span>
+      <PageHeader
+        bag={bag}
+        class="memory-header facts-header pointers-header"
+        title="Pointers"
+        onToggleSidebar={props.onToggleSidebar}
+        showRightSidebarToggle
+      />
+      <PageToolbar class="memory-toolbar facts-toolbar pointers-toolbar">
+          <ToolbarSection class="facts-summary pointers-summary" ariaLabel="summary">
+            <Show
+              when={bag.pointersLoaded()}
+              fallback={<StatPill value="loading" label={isSearching() ? "matches" : "pointers"} />}
+            >
+              <StatPill value={isSearching() ? visibleCount() : totalCount()} label={isSearching() ? "matches" : "pointers"} />
+            </Show>
+            <StatPill value={rootGroups()} label="groups" />
+          </ToolbarSection>
+          <ControlField class="facts-search pointers-search" label="Search">
             <input type="search" placeholder="name, prefix, hash, or target…" value={search()} onInput={(event) => setSearch(event.currentTarget.value)} />
-          </label>
+          </ControlField>
           <div class="pointers-toolbar-actions">
             <Show when={isSearching()}>
               <button type="button" class="secondary small" onClick={() => setSearch("")}>clear</button>
             </Show>
-            <button type="button" class="secondary small" onClick={() => void bag.refreshPointers()}>refresh</button>
+            <button type="button" class="secondary small icon-button" title="refresh pointers" aria-label="refresh pointers" onClick={() => void bag.refreshPointers()}><RefreshIcon /></button>
           </div>
-        </div>
-      </header>
+      </PageToolbar>
       <div class="memory-main">
-        <main class="timeline turtle">
-          <section class="turtle-category memory-pointers-section">
-            <header class="turtle-category-head pointers-list-head">
-              <div>
-                <strong>{isSearching() ? "Matches" : "Pointer groups"}</strong>
-                <small>{isSearching() ? "expanded results matching the current search" : "slash-delimited namespaces; open a group to inspect children"}</small>
+        <PageBody class="turtle">
+          <Show
+            when={bag.pointersLoaded()}
+            fallback={
+              <div class="facts-loading-centered">
+                <LoadingDots label="loading pointers" />
               </div>
-              <span>{visibleCount()} pointer{visibleCount() === 1 ? "" : "s"}</span>
-            </header>
-            <Show
-              when={visibleCount() > 0}
-              fallback={
-                <Show when={bag.pointersLoaded()} fallback={<div class="empty pointer-empty">loading pointers…</div>}>
-                  <div class="empty pointer-empty">{isSearching() ? "no matching pointers" : "no pointers yet"}</div>
-                </Show>
-              }
-            >
-              <PointerTree
-                node={tree()}
-                bag={bag}
-                expandAll={search().trim().length > 0}
-                expanded={expandedPointers}
-                setExpanded={setExpandedPointers}
-              />
-            </Show>
-          </section>
-        </main>
+            }
+          >
+            <section class="turtle-category memory-pointers-section">
+              <header class="turtle-category-head pointers-list-head">
+                <div>
+                  <strong>{isSearching() ? "Matches" : "Pointer groups"}</strong>
+                  <small>{isSearching() ? "expanded results matching the current search" : "slash-delimited namespaces; open a group to inspect children"}</small>
+                </div>
+                <span>{visibleCount()} pointer{visibleCount() === 1 ? "" : "s"}</span>
+              </header>
+              <Show
+                when={visibleCount() > 0}
+                fallback={
+                  <EmptyState class="pointer-empty">{isSearching() ? "no matching pointers" : "no pointers yet"}</EmptyState>
+                }
+              >
+                <PointerTree
+                  node={tree()}
+                  bag={bag}
+                  expandAll={search().trim().length > 0}
+                  expanded={expandedPointers}
+                  setExpanded={setExpandedPointers}
+                />
+              </Show>
+            </section>
+          </Show>
+        </PageBody>
       </div>
     </div>
   );

@@ -1,0 +1,370 @@
+/* Turtle and RDF fact editing views. */
+
+/* -- turtle view -------------------------------------------------------- */
+
+.facts-view {
+  min-inline-size: 0;
+}
+
+.memory-header {
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.memory-header .page-header-actions {
+  display: none;
+}
+
+.page-toolbar.memory-toolbar,
+.memory-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, max-content) minmax(18rem, 1fr);
+  grid-template-areas: "back stats filters";
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 97%, var(--fg));
+  flex: 0 0 auto;
+  min-inline-size: 0;
+}
+
+.facts-back {
+  grid-area: back;
+}
+
+.facts-summary,
+.facts-filterbar,
+.facts-actions,
+.facts-control,
+.control-field.facts-search,
+.control-field.facts-removed-mode,
+.control-field.facts-page-size,
+.control-field.pointers-search,
+.facts-pager,
+.facts-stat-pill,
+.stat-pill {
+  display: flex;
+  align-items: center;
+}
+
+.facts-summary {
+  grid-area: stats;
+  gap: 0.45rem;
+  min-inline-size: 0;
+  flex-wrap: wrap;
+}
+
+.facts-filterbar {
+  grid-area: filters;
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) auto;
+  align-items: center;
+  justify-self: stretch;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+
+.facts-actions {
+  gap: 0.65rem;
+  min-inline-size: max-content;
+}
+
+.facts-control,
+.control-field.facts-search,
+.control-field.facts-removed-mode,
+.control-field.facts-page-size,
+.control-field.pointers-search {
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.82em;
+  min-inline-size: 0;
+}
+
+.facts-control > span,
+.control-field.facts-search > span,
+.control-field.facts-removed-mode > span,
+.control-field.facts-page-size > span,
+.control-field.pointers-search > span {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.facts-stat-pill,
+.stat-pill {
+  gap: 0.35em;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  padding: 0.35rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.78em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.facts-stat-pill strong,
+.stat-pill strong {
+  color: var(--fg);
+  font-size: 1em;
+}
+
+.facts-search {
+  inline-size: 100%;
+}
+
+.facts-search input,
+.facts-page-size select,
+.facts-removed-mode select {
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0.38em 0.5em;
+  font: inherit;
+  line-height: 1.2;
+}
+
+.facts-search input {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.facts-search input:focus,
+.facts-page-size select:focus,
+.facts-removed-mode select:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.facts-pager {
+  gap: 0.35em;
+  color: var(--muted);
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+
+.facts-pager span {
+  min-inline-size: 3.6em;
+  text-align: center;
+}
+
+.facts-limit-note {
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 86rem) {
+  .memory-toolbar {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "back stats"
+      "filters filters";
+  }
+}
+
+@media (max-width: 48rem) {
+  .memory-toolbar {
+    grid-template-columns: 1fr;
+    grid-template-areas: "back" "stats" "filters";
+    align-items: stretch;
+  }
+
+  .facts-summary,
+  .facts-actions {
+    justify-content: flex-start;
+  }
+
+  .facts-filterbar {
+    grid-template-columns: 1fr;
+  }
+
+  .facts-actions {
+    flex-wrap: wrap;
+    min-inline-size: 0;
+  }
+
+  .facts-control,
+  .control-field.facts-search,
+  .control-field.facts-removed-mode,
+  .control-field.facts-page-size,
+  .control-field.pointers-search {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .facts-removed-mode,
+  .facts-page-size {
+    flex: 1 1 10rem;
+  }
+
+  .facts-removed-mode select,
+  .facts-page-size select {
+    inline-size: 100%;
+  }
+
+  .facts-pager {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .facts-pager .icon-btn {
+    flex: 0 0 2.75rem;
+  }
+}
+.turtle {
+  font-size: 0.9em;
+}
+
+.turtle-prefixes {
+  margin: 0 0 1em;
+  padding: 0.6em 0.85em;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 0;
+  white-space: pre-wrap;
+  color: var(--muted);
+}
+
+.turtle-category + .turtle-category {
+  margin-top: 1.4em;
+}
+
+.turtle-category-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1em;
+  margin: 0 0 0.5em;
+  padding: 0 0.15em 0.35em;
+  border-bottom: 1px solid var(--line);
+}
+
+.turtle-category-head div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+}
+
+.turtle-category-head strong {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.78em;
+}
+
+.turtle-category-head small,
+.turtle-category-head span,
+.turtle-graph {
+  color: var(--muted);
+  font-size: 0.78em;
+}
+
+.turtle-graph {
+  margin-bottom: 0.35em;
+  font-family: var(--font-mono);
+}
+
+.turtle-block {
+  margin: 0;
+  padding: 0.6em 0.85em;
+  border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--button-bg);
+  cursor: pointer;
+  scroll-margin-top: 1em;
+  position: relative;
+}
+
+.turtle-block + .turtle-block {
+  margin-top: 0.55em;
+}
+
+.turtle-block:hover {
+  border-color: var(--line-strong);
+}
+
+.turtle-block.focused {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.turtle-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.turtle-subject-action {
+  position: absolute;
+  top: 0.35em;
+  right: 0.45em;
+  opacity: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82em;
+  padding: 0.1em 0.45em;
+  border-radius: 0;
+  z-index: 1;
+}
+
+.turtle-block:hover .turtle-subject-action,
+.turtle-subject-action:focus-visible {
+  opacity: 0.9;
+}
+
+.turtle-subject-action:hover {
+  opacity: 1;
+  background: var(--bubble-error);
+  color: var(--fg);
+}
+
+.turtle-line {
+  display: block;
+  position: relative;
+  padding-right: 1.8em;
+}
+
+.turtle-line.is-removed {
+  opacity: 0.72;
+}
+
+.turtle-row-action {
+  position: absolute;
+  right: 0;
+  top: 0;
+  opacity: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  padding: 0 0.25em;
+}
+
+.turtle-line:hover .turtle-row-action,
+.turtle-row-action:focus-visible {
+  opacity: 1;
+}
+
+.turtle-row-action:hover {
+  color: var(--danger, #d14);
+}
+
+.turtle-line.is-removed .turtle-row-action:hover {
+  color: var(--accent);
+}

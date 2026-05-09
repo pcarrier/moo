@@ -1,21 +1,25 @@
+import { Effect, ok } from "../core/effect";
 import { moo } from "../moo";
 import type { Input } from "./_shared";
 
-export async function vocabularyCommand() {
-  const predicates = await moo.vocab.list();
-  return { ok: true, value: { predicates } };
+export function vocabularyCommand() {
+  return Effect.tryPromise(() => moo.vocab.list(), "vocabulary list failed")
+    .map((predicates) => ok({ predicates }));
 }
 
-export async function vocabDefineCommand(input: Input) {
+export function vocabDefineCommand(input: Input) {
   if (!input.name) {
-    return { ok: false, error: { message: "vocab-define requires name" } };
+    return Effect.fail({ message: "vocab-define requires name" });
   }
-  await moo.vocab.define(input.name, {
-    description: input.description || undefined,
-    example: input.example || undefined,
-    label: input.label || undefined,
-  });
-  return { ok: true, value: { name: input.name } };
+  const name = String(input.name);
+  return Effect.tryPromise(
+    () => moo.vocab.define(name, {
+      description: input.description || undefined,
+      example: input.example || undefined,
+      label: input.label || undefined,
+    }),
+    "vocabulary define failed",
+  ).as(ok({ name }));
 }
 
 // -- schema introspection -------------------------------------------------

@@ -13,15 +13,31 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
 use crate::broadcast::{self, Filter};
 use crate::pool::Pool;
 use crate::server::BundleProvider;
-use crate::{driver, host, settings};
+use crate::{driver, host, settings, util};
 
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const WS_IDLE_TICK: Duration = Duration::from_millis(500);
+
+enum WsRecv<T> {
+    Item(T),
+    Idle,
+    Closed,
+}
+
+fn recv_ws_tick<T>(rx: &mpsc::Receiver<T>) -> WsRecv<T> {
+    match rx.recv_timeout(WS_IDLE_TICK) {
+        Ok(item) => WsRecv::Item(item),
+        Err(RecvTimeoutError::Timeout) => WsRecv::Idle,
+        Err(RecvTimeoutError::Disconnected) => WsRecv::Closed,
+    }
+}
 
 pub fn handle(
     mut stream: TcpStream,
@@ -29,6 +45,7 @@ pub fn handle(
     pool: Arc<Pool>,
     bundle: BundleProvider,
     db: String,
+    base_url: Option<String>,
 ) -> std::io::Result<()> {
     let accept = compute_accept(sec_key);
     let response = format!(
@@ -57,18 +74,18 @@ pub fn handle(
         let alive = alive.clone();
         thread::spawn(move || {
             while alive.load(std::sync::atomic::Ordering::Relaxed) {
-                match bcast_rx.recv_timeout(Duration::from_millis(500)) {
-                    Ok(msg) => {
+                match recv_ws_tick(&bcast_rx) {
+                    WsRecv::Item(msg) => {
                         if writer_tx.send(msg).is_err() {
                             break;
                         }
                     }
-                    Err(RecvTimeoutError::Timeout) => {
+                    WsRecv::Idle => {
                         if writer_tx.send(r#"{"kind":"ping"}"#.to_string()).is_err() {
                             break;
                         }
                     }
-                    Err(RecvTimeoutError::Disconnected) => break,
+                    WsRecv::Closed => break,
                 }
             }
         });
@@ -83,6 +100,7 @@ pub fn handle(
         let writer_tx = writer_tx.clone();
         let pool = pool.clone();
         let bundle = bundle.clone();
+        let base_url = base_url.clone();
         thread::spawn(move || {
             let mut s = read_clone;
             loop {
@@ -115,14 +133,37 @@ pub fn handle(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
+                            let payload = payload.clone();
+                            let command = command_from_payload(&payload);
+                            let run_inline = no_host_builtin_command(command);
                             let writer_tx = writer_tx.clone();
                             let pool = pool.clone();
                             let bundle = bundle.clone();
-                            let payload = payload.clone();
                             let db = db.clone();
-                            thread::spawn(move || {
-                                run_command(payload, id, pool, bundle, writer_tx, db);
-                            });
+                            let base_url = base_url.clone();
+                            let run = move || {
+                                let id_for_error = id.clone();
+                                let writer_tx_for_error = writer_tx.clone();
+                                let result = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(move || {
+                                        run_command(
+                                            payload, id, pool, bundle, writer_tx, db, base_url,
+                                        )
+                                    }),
+                                );
+                                if result.is_err() {
+                                    send_run_result(
+                                        &writer_tx_for_error,
+                                        &id_for_error,
+                                        json!({ "ok": false, "error": { "message": "command worker panicked" } }),
+                                    );
+                                }
+                            };
+                            if run_inline {
+                                run();
+                            } else {
+                                thread::spawn(run);
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -136,14 +177,14 @@ pub fn handle(
     // Writer loop: drains the merged channel and writes frames. Exit when
     // the reader closes (alive=false) or the writer side errors.
     while alive.load(std::sync::atomic::Ordering::Relaxed) {
-        match writer_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(msg) => {
+        match recv_ws_tick(&writer_rx) {
+            WsRecv::Item(msg) => {
                 if write_text_frame(&mut stream, msg.as_bytes()).is_err() {
                     break;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+            WsRecv::Idle => continue,
+            WsRecv::Closed => break,
         }
     }
     Ok(())
@@ -156,39 +197,310 @@ fn run_command(
     bundle: BundleProvider,
     writer_tx: mpsc::Sender<String>,
     db: String,
+    base_url: Option<String>,
 ) {
-    match command_from_payload(&payload) {
-        "v8-stats" => {
-            let frame = json!({
-                "kind": "run-result",
-                "id": id,
-                "result": crate::pool::v8_stats_json(),
-            });
-            let _ = writer_tx.send(frame.to_string());
-            return;
-        }
-        "v8-settings-get" => {
-            let frame = json!({ "kind": "run-result", "id": id, "result": v8_settings_get(&db) });
-            let _ = writer_tx.send(frame.to_string());
-            return;
-        }
-        "v8-settings-save" => {
-            let frame = json!({ "kind": "run-result", "id": id, "result": v8_settings_save(&db, &payload) });
-            let _ = writer_tx.send(frame.to_string());
-            return;
-        }
-        _ => {}
+    let command = command_from_payload(&payload);
+
+    // Observability snapshots are process-local and do not need the per-request
+    // host/db context. Return them before host initialization so polling the V8
+    // panel does not contend with normal command setup.
+    if no_host_builtin_command(command)
+        && let Some(result) = builtin_command_result(command, &db, &payload)
+    {
+        send_run_result(&writer_tx, &id, result);
+        return;
     }
+
+    let install_result = if settings_command(command) {
+        Ok(())
+    } else if db_only_command(command) {
+        host::install_db(&db)
+    } else {
+        host::install(&db)
+    };
+    if let Err(e) = install_result {
+        send_run_result(
+            &writer_tx,
+            &id,
+            json!({
+                "ok": false,
+                "error": format!("host init: {e}"),
+            }),
+        );
+        return;
+    }
+
+    if let Some(result) = builtin_command_result(command, &db, &payload) {
+        send_run_result(&writer_tx, &id, result);
+        return;
+    }
+
     let source = bundle();
+    let payload = payload_with_base_url(payload, base_url.as_deref());
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
     apply_driver_actions(&result_value, &pool, source);
+    send_run_result(&writer_tx, &id, result_value);
+}
 
+fn builtin_command_result(command: &str, db: &str, payload: &Value) -> Option<Value> {
+    Some(match command {
+        "v8-stats" => crate::pool::v8_stats_json(),
+        "v8-settings-get" => v8_settings_get(db),
+        "v8-settings-save" => v8_settings_save(db, payload),
+        "trace-config-get" => trace_config_get(db),
+        "trace-config-save" => trace_config_save(db, payload),
+        "trace-config-test" => trace_config_test(db, payload),
+        "llm-auth-get" => llm_auth_get(db),
+        "llm-auth-save" => llm_auth_save(db, payload),
+        "trace-frontend" => trace_frontend(payload),
+        "trace-chats" => trace_chats(db, payload),
+        "trace-roots" => trace_roots(db, payload),
+        "trace-node" => trace_node(db, payload),
+        "trace-subtree" => trace_subtree_command(db, payload),
+        "trace-events" => trace_events_command(db, payload),
+        "trace-search" => trace_search(db, payload),
+        "trace-failed" => trace_failed(db, payload),
+        "trace-chat-tree" => trace_chat_tree(db, payload),
+        "pointers" => pointers_command(db, payload),
+        "graph-summaries" => graph_summaries_command(db, payload),
+        _ => return None,
+    })
+}
+
+fn send_run_result(writer_tx: &mpsc::Sender<String>, id: &str, result: Value) {
     let frame = json!({
         "kind": "run-result",
         "id": id,
-        "result": result_value,
+        "result": result,
     });
     let _ = writer_tx.send(frame.to_string());
+}
+fn payload_with_base_url(mut payload: Value, base_url: Option<&str>) -> Value {
+    let Some(base_url) = base_url.filter(|s| !s.is_empty()) else {
+        return payload;
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("serverBaseUrl".to_string())
+            .or_insert_with(|| Value::String(base_url.to_string()));
+    }
+    payload
+}
+
+fn ok_value(value: Value) -> Value {
+    json!({ "ok": true, "value": value })
+}
+
+fn err_value(message: impl ToString) -> Value {
+    json!({ "ok": false, "error": { "message": message.to_string() } })
+}
+
+fn escape_like(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn pointers_command(db: &str, payload: &Value) -> Value {
+    let prefix = payload.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
+    let result: Result<Value, String> = with_settings_connection(db, |conn| {
+        let mut pointers = Vec::new();
+        if prefix.is_empty() {
+            let mut stmt = conn
+                .prepare("select name, target from refs order by name")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (name, target) = row.map_err(|e| e.to_string())?;
+                if !name.trim().is_empty() && !name.contains("[object Promise]") {
+                    pointers.push(json!([name, target]));
+                }
+            }
+        } else {
+            let pattern = format!("{}%", escape_like(prefix));
+            let mut stmt = conn
+                .prepare(
+                    "select name, target from refs where name like ?1 escape '\\' order by name",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![pattern], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (name, target) = row.map_err(|e| e.to_string())?;
+                if !name.trim().is_empty() && !name.contains("[object Promise]") {
+                    pointers.push(json!([name, target]));
+                }
+            }
+        }
+        Ok(json!({ "pointers": pointers }))
+    })
+    .and_then(|inner| inner);
+    match result {
+        Ok(value) => ok_value(value),
+        Err(err) => err_value(err),
+    }
+}
+
+#[derive(Default)]
+struct GraphSummaryAccumulator {
+    facts: usize,
+    subjects: std::collections::BTreeSet<String>,
+}
+
+fn graph_summaries_command(db: &str, payload: &Value) -> Value {
+    let removed = payload
+        .get("removed")
+        .and_then(|v| v.as_str())
+        .unwrap_or("exclude");
+    let removed_mode = if removed == "include" || removed == "only" {
+        removed
+    } else {
+        "exclude"
+    };
+    let project = payload.get("project");
+    let result: Result<Value, String> = with_settings_connection(db, |conn| {
+        let mut summaries: std::collections::BTreeMap<String, GraphSummaryAccumulator> = std::collections::BTreeMap::new();
+        let mut add = |graph: String, subject: String| {
+            let entry = summaries.entry(graph).or_default();
+            entry.facts += 1;
+            entry.subjects.insert(subject);
+        };
+
+        if project.is_some() {
+            let (store, graph) = project_store_and_graph(project);
+            if removed_mode != "only" {
+                let mut stmt = conn
+                    .prepare("select graph, subject from quads where ref_name = ?1 and graph = ?2")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![store, graph], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                    .map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (g, s) = row.map_err(|e| e.to_string())?;
+                    add(g, s);
+                }
+            }
+            if removed_mode != "exclude" {
+                let mut stmt = conn
+                    .prepare(
+                        "select l.graph, l.subject
+                           from fact_log l
+                          where l.ref_name = ?1 and l.graph = ?2 and l.action = 'remove'
+                            and not exists (
+                              select 1 from quads q
+                               where q.ref_name = l.ref_name and q.graph = l.graph
+                                 and q.subject = l.subject and q.predicate = l.predicate and q.object = l.object
+                            )",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![store, graph], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                    .map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (g, s) = row.map_err(|e| e.to_string())?;
+                    add(g, s);
+                }
+            }
+        } else {
+            if removed_mode != "exclude" {
+                let mut seen = std::collections::BTreeSet::new();
+                let mut stmt = conn
+                    .prepare(
+                        "select l.graph, l.subject, l.predicate, l.object
+                           from fact_log l
+                          where l.action = 'remove'
+                            and not exists (
+                              select 1 from quads q
+                               where q.ref_name = l.ref_name and q.graph = l.graph
+                                 and q.subject = l.subject and q.predicate = l.predicate and q.object = l.object
+                            )
+                          order by l.ref_name, l.graph, l.subject, l.predicate, l.object, l.id",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
+                    .map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (g, s, p, o) = row.map_err(|e| e.to_string())?;
+                    let key = format!("{g}\0{s}\0{p}\0{o}");
+                    if seen.insert(key) {
+                        add(g, s);
+                    }
+                }
+            }
+            if removed_mode != "only" {
+                let mut seen = std::collections::BTreeSet::new();
+                let mut stmt = conn
+                    .prepare("select graph, subject, predicate, object from quads order by ref_name, graph, subject, predicate, object")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
+                    .map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (g, s, p, o) = row.map_err(|e| e.to_string())?;
+                    let key = format!("{g}\0{s}\0{p}\0{o}");
+                    if seen.insert(key) {
+                        add(g, s);
+                    }
+                }
+            }
+        }
+
+        let graphs: Vec<Value> = summaries
+            .into_iter()
+            .map(|(graph, summary)| json!([graph, summary.facts, summary.subjects.len()]))
+            .collect();
+        Ok(json!({ "graphs": graphs }))
+    })
+    .and_then(|inner| inner);
+    match result {
+        Ok(value) => ok_value(value),
+        Err(err) => err_value(err),
+    }
+}
+
+fn project_store_and_graph(project: Option<&Value>) -> (String, String) {
+    match project {
+        Some(Value::Bool(false)) => ("memory/facts".to_string(), "memory:facts".to_string()),
+        Some(Value::String(s)) if s.is_empty() => {
+            ("memory/facts".to_string(), "memory:facts".to_string())
+        }
+        Some(Value::String(s)) => {
+            let encoded = percent_encode_project(s);
+            (
+                format!("memory/project/{encoded}/facts"),
+                format!("memory:project/{encoded}"),
+            )
+        }
+        _ => ("memory/facts".to_string(), "memory:facts".to_string()),
+    }
+}
+
+fn percent_encode_project(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.bytes() {
+        let ch = b as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+            out.push(ch);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn v8_settings_payload(stored: crate::pool::V8RuntimeSettings) -> Value {
@@ -199,19 +511,29 @@ fn v8_settings_payload(stored: crate::pool::V8RuntimeSettings) -> Value {
     })
 }
 
+fn with_settings_connection<R>(
+    db: &str,
+    f: impl FnOnce(&rusqlite::Connection) -> R,
+) -> Result<R, String> {
+    let conn = host::open_settings_db(db)?;
+    Ok(f(&conn))
+}
+
 fn v8_settings_get(db: &str) -> Value {
-    let result = host::open_db(db).and_then(|conn| {
-        if let Some(raw) = settings::get(&conn, settings::V8_CONFIG_KEY)? {
-            let parsed = serde_json::from_str::<crate::pool::V8RuntimeSettings>(&raw)
-                .map_err(|e| e.to_string())?;
-            Ok(crate::pool::normalize_v8_runtime_settings(parsed))
-        } else if let Some(env) = settings::get(&conn, settings::V8_ENV_KEY)? {
-            crate::pool::apply_v8_env_text(&env);
-            Ok(crate::pool::effective_v8_runtime_settings())
-        } else {
-            Ok(crate::pool::default_v8_runtime_settings())
-        }
-    });
+    let result: Result<crate::pool::V8RuntimeSettings, String> =
+        with_settings_connection(db, |conn| {
+            if let Some(raw) = settings::get(conn, settings::V8_CONFIG_KEY)? {
+                let parsed = serde_json::from_str::<crate::pool::V8RuntimeSettings>(&raw)
+                    .map_err(|e| e.to_string())?;
+                Ok(crate::pool::normalize_v8_runtime_settings(parsed))
+            } else if let Some(env) = settings::get(conn, settings::V8_ENV_KEY)? {
+                crate::pool::apply_v8_env_text(&env);
+                Ok(crate::pool::effective_v8_runtime_settings())
+            } else {
+                Ok(crate::pool::default_v8_runtime_settings())
+            }
+        })
+        .and_then(|inner| inner);
     match result {
         Ok(stored) => json!({ "ok": true, "value": v8_settings_payload(stored) }),
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
@@ -230,17 +552,846 @@ fn v8_settings_save(db: &str, payload: &Value) -> Value {
         Ok(serialized) => serialized,
         Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
     };
-    let result = host::open_db(db).and_then(|conn| {
-        settings::set(&conn, settings::V8_CONFIG_KEY, &serialized)?;
-        let _ = settings::clear(&conn, settings::V8_ENV_KEY);
+    let result: Result<(), String> = with_settings_connection(db, |conn| {
+        settings::set(conn, settings::V8_CONFIG_KEY, &serialized)?;
+        let _ = settings::clear(conn, settings::V8_ENV_KEY);
         Ok(())
-    });
+    })
+    .and_then(|inner| inner);
     match result {
         Ok(()) => {
             crate::pool::apply_v8_runtime_settings(&parsed);
             json!({ "ok": true, "value": v8_settings_payload(parsed) })
         }
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn trace_config_get(db: &str) -> Value {
+    let result: Result<settings::TraceConfig, String> =
+        with_settings_connection(db, host::trace_config_from_conn).and_then(|inner| inner);
+    match result {
+        Ok(config) => {
+            let defaults = settings::default_trace_config();
+            json!({ "ok": true, "value": {
+                "enabled": host::tracing_enabled(),
+                "config": config,
+                "defaults": defaults,
+                "note": "Trace configuration applied immediately. Environment overrides: MOO_TRACE_ENABLED, MOO_CLICKHOUSE_URL, MOO_CLICKHOUSE_DATABASE, MOO_CLICKHOUSE_TABLE_PREFIX, MOO_CLICKHOUSE_USER, MOO_CLICKHOUSE_PASSWORD.",
+            }})
+        }
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn no_host_builtin_command(command: &str) -> bool {
+    matches!(command, "v8-stats" | "trace-frontend")
+}
+
+fn settings_command(command: &str) -> bool {
+    matches!(
+        command,
+        "v8-settings-get"
+            | "v8-settings-save"
+            | "trace-config-get"
+            | "trace-config-save"
+            | "trace-config-test"
+            | "llm-auth-get"
+            | "llm-auth-save"
+            | "llm-auth-oauth-start"
+            | "llm-auth-oauth-complete"
+            | "llm-auth-oauth-device-start"
+            | "llm-auth-oauth-device-poll"
+            | "llm-auth-oauth-logout"
+    )
+}
+
+fn db_only_command(command: &str) -> bool {
+    matches!(command, "")
+}
+
+fn trace_config_save(db: &str, payload: &Value) -> Value {
+    let Some(value) = payload.get("config") else {
+        return json!({ "ok": false, "error": { "message": "missing trace config" } });
+    };
+    let parsed = match serde_json::from_value::<settings::TraceConfig>(value.clone()) {
+        Ok(config) => settings::normalize_trace_config(config),
+        Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
+    };
+    let serialized = match serde_json::to_string(&parsed) {
+        Ok(serialized) => serialized,
+        Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
+    };
+    let result: Result<(), String> = with_settings_connection(db, |conn| {
+        settings::set(conn, settings::TRACE_CONFIG_KEY, &serialized)?;
+        Ok(())
+    })
+    .and_then(|inner| inner)
+    .and_then(|()| host::apply_trace_config(&parsed));
+    match result {
+        Ok(()) => json!({ "ok": true, "value": {
+            "enabled": host::tracing_enabled(),
+            "config": parsed,
+            "defaults": settings::default_trace_config(),
+            "note": "Trace configuration applied immediately. Environment overrides: MOO_TRACE_ENABLED, MOO_CLICKHOUSE_URL, MOO_CLICKHOUSE_DATABASE, MOO_CLICKHOUSE_TABLE_PREFIX, MOO_CLICKHOUSE_USER, MOO_CLICKHOUSE_PASSWORD.",
+        }}),
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn trace_config_test(_db: &str, payload: &Value) -> Value {
+    let Some(value) = payload.get("config") else {
+        return json!({ "ok": false, "error": { "message": "missing trace config" } });
+    };
+    let parsed = match serde_json::from_value::<settings::TraceConfig>(value.clone()) {
+        Ok(config) => settings::normalize_trace_config(config),
+        Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
+    };
+    if !parsed.enabled {
+        return json!({ "ok": true, "value": { "message": "ClickHouse tracing is disabled. These draft settings have not been saved and no ClickHouse connection was attempted." } });
+    }
+    match host::test_trace_config(&parsed) {
+        Ok(()) => {
+            json!({ "ok": true, "value": { "message": "ClickHouse configuration OK. These draft settings have not been saved yet." } })
+        }
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+const LLM_AUTH_SETTINGS_REF: &str = "settings";
+const LLM_AUTH_SETTINGS_KIND: &str = "llm:AuthSettings";
+const LLM_PROVIDERS: [&str; 4] = ["openai", "anthropic", "qwen", "xai"];
+
+fn clamp_i64(value: Option<i64>, fallback: i64, min: i64, max: i64) -> i64 {
+    value.unwrap_or(fallback).clamp(min, max)
+}
+
+fn value_i64(value: Option<&Value>) -> Option<i64> {
+    value.and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|n| n.floor() as i64)))
+}
+
+fn normalize_retry_policy(input: Option<&Value>) -> Value {
+    let obj = input.and_then(Value::as_object);
+    json!({
+        "maxAttempts": clamp_i64(obj.and_then(|o| value_i64(o.get("maxAttempts"))), 3, 1, 20),
+        "baseDelayMs": clamp_i64(obj.and_then(|o| value_i64(o.get("baseDelayMs"))), 750, 0, 60_000),
+        "maxDelayMs": clamp_i64(obj.and_then(|o| value_i64(o.get("maxDelayMs"))), 8_000, 0, 10 * 60_000),
+        "jitterMs": clamp_i64(obj.and_then(|o| value_i64(o.get("jitterMs"))), 250, 0, 60_000),
+        "maxRetryAfterMs": clamp_i64(obj.and_then(|o| value_i64(o.get("maxRetryAfterMs"))), 30 * 60_000, 0, 60 * 60_000),
+    })
+}
+
+fn normalize_compaction_settings(input: Option<&Value>) -> Value {
+    let obj = input.and_then(Value::as_object);
+    json!({ "thresholdPercent": clamp_i64(obj.and_then(|o| value_i64(o.get("thresholdPercent"))), 75, 1, 100) })
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_llm_auth_mode<'a>(id: &str, requested: &'a str) -> &'a str {
+    if requested == "apiKey"
+        || (id == "openai" && requested == "oauth")
+        || (id == "anthropic" && requested == "subscription")
+    {
+        requested
+    } else {
+        "env"
+    }
+}
+
+fn normalize_llm_provider(raw: Option<&Value>, id: &str) -> Value {
+    let obj = raw.and_then(Value::as_object);
+    let requested = obj
+        .and_then(|o| o.get("authMode"))
+        .and_then(Value::as_str)
+        .unwrap_or("env");
+    let auth_mode = normalize_llm_auth_mode(id, requested);
+    json!({
+        "authMode": auth_mode,
+        "apiKey": non_empty_string(obj.and_then(|o| o.get("apiKey"))),
+        "accessToken": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("accessToken"))) } else { None },
+        "refreshToken": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("refreshToken"))) } else { None },
+        "expiresAt": if id == "openai" { value_i64(obj.and_then(|o| o.get("expiresAt"))) } else { None },
+        "oauthSubject": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("oauthSubject"))) } else { None },
+        "oauthAccountId": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("oauthAccountId"))) } else { None },
+        "baseUrl": non_empty_string(obj.and_then(|o| o.get("baseUrl"))),
+    })
+}
+
+fn normalize_llm_auth_settings(raw: &Value) -> Value {
+    let providers_raw = raw.get("providers");
+    let mut providers = serde_json::Map::new();
+    for id in LLM_PROVIDERS {
+        providers.insert(
+            id.to_string(),
+            normalize_llm_provider(providers_raw.and_then(|p| p.get(id)), id),
+        );
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("providers".to_string(), Value::Object(providers));
+    out.insert(
+        "compaction".to_string(),
+        normalize_compaction_settings(raw.get("compaction")),
+    );
+    out.insert(
+        "retries".to_string(),
+        normalize_retry_policy(raw.get("retries")),
+    );
+    if let Some(updated_at) = value_i64(raw.get("updatedAt")) {
+        out.insert("updatedAt".to_string(), json!(updated_at));
+    }
+    Value::Object(out)
+}
+
+fn read_llm_auth_settings_conn(conn: &Connection) -> Result<Value, String> {
+    let target: Option<String> = conn
+        .query_row(
+            "select target from refs where name = ?1",
+            params![LLM_AUTH_SETTINGS_REF],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(target) = target else {
+        return Ok(normalize_llm_auth_settings(&json!({})));
+    };
+    let raw = if let Some(json_target) = target.strip_prefix("json:") {
+        serde_json::from_str::<Value>(json_target).map_err(|e| e.to_string())?
+    } else {
+        let bytes: Option<Vec<u8>> = conn
+            .query_row(
+                "select bytes from objects where hash = ?1",
+                params![target],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(bytes) = bytes else {
+            return Ok(normalize_llm_auth_settings(&json!({})));
+        };
+        serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string())?
+    };
+    Ok(normalize_llm_auth_settings(&raw))
+}
+
+fn redact_provider(provider: &Value) -> Value {
+    let mut out = provider.as_object().cloned().unwrap_or_default();
+    let api_key = provider
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let redacted = api_key.map(|key| {
+        let suffix_rev: String = key.chars().rev().take(4).collect();
+        let suffix: String = suffix_rev.chars().rev().collect();
+        format!("••••{suffix}")
+    });
+    out.insert(
+        "apiKey".to_string(),
+        redacted.map(Value::String).unwrap_or(Value::Null),
+    );
+    let has_access = provider
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .is_some();
+    let has_refresh = provider
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .is_some();
+    out.insert(
+        "accessToken".to_string(),
+        if has_access {
+            json!("present")
+        } else {
+            Value::Null
+        },
+    );
+    out.insert(
+        "refreshToken".to_string(),
+        if has_refresh {
+            json!("present")
+        } else {
+            Value::Null
+        },
+    );
+    out.insert("hasApiKey".to_string(), json!(api_key.is_some()));
+    out.insert("hasAccessToken".to_string(), json!(has_access));
+    out.insert("hasRefreshToken".to_string(), json!(has_refresh));
+    Value::Object(out)
+}
+
+fn redact_llm_auth_settings(settings: &Value) -> Value {
+    let mut out = settings.as_object().cloned().unwrap_or_default();
+    let providers_raw = settings.get("providers");
+    let mut providers = serde_json::Map::new();
+    for id in LLM_PROVIDERS {
+        providers.insert(
+            id.to_string(),
+            redact_provider(
+                providers_raw
+                    .and_then(|p| p.get(id))
+                    .unwrap_or(&Value::Null),
+            ),
+        );
+    }
+    out.insert("providers".to_string(), Value::Object(providers));
+    Value::Object(out)
+}
+
+fn apply_llm_provider_input(current: &Value, id: &str, input: Option<&Value>) -> Value {
+    let Some(input_obj) = input.and_then(Value::as_object) else {
+        return current.clone();
+    };
+    let mode_raw = input_obj
+        .get("authMode")
+        .and_then(Value::as_str)
+        .or_else(|| current.get("authMode").and_then(Value::as_str))
+        .unwrap_or("env");
+    let auth_mode = normalize_llm_auth_mode(id, mode_raw);
+    let mut next = current.as_object().cloned().unwrap_or_default();
+    next.insert("authMode".to_string(), json!(auth_mode));
+    if let Some(api_key) = input_obj
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|s| !s.starts_with("••••"))
+    {
+        next.insert(
+            "apiKey".to_string(),
+            non_empty_string(Some(&Value::String(api_key.to_string())))
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        );
+    }
+    if let Some(base_url) = input_obj.get("baseUrl").and_then(Value::as_str) {
+        next.insert(
+            "baseUrl".to_string(),
+            non_empty_string(Some(&Value::String(base_url.to_string())))
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        );
+    }
+    if id != "openai"
+        || input_obj.get("clearOAuth").and_then(Value::as_bool) == Some(true)
+        || auth_mode != "oauth"
+    {
+        next.insert("accessToken".to_string(), Value::Null);
+        next.insert("refreshToken".to_string(), Value::Null);
+        next.insert("expiresAt".to_string(), Value::Null);
+        next.insert("oauthSubject".to_string(), Value::Null);
+    }
+    normalize_llm_provider(Some(&Value::Object(next)), id)
+}
+
+fn write_llm_auth_settings_conn(conn: &mut Connection, mut next: Value) -> Result<Value, String> {
+    if let Some(obj) = next.as_object_mut() {
+        obj.insert("updatedAt".to_string(), json!(util::now_ms()));
+    }
+    let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+    let hash = util::sha256_object_hash(LLM_AUTH_SETTINGS_KIND, &bytes);
+    let now = util::now_ms();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "insert or ignore into objects(hash, kind, bytes, created_at) values (?1, ?2, ?3, ?4)",
+        params![&hash, LLM_AUTH_SETTINGS_KIND, &bytes, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let old_target: Option<String> = tx
+        .query_row(
+            "select target from refs where name = ?1",
+            params![LLM_AUTH_SETTINGS_REF],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    tx.execute("insert into refs(name, target, updated_at) values (?1, ?2, ?3) on conflict(name) do update set target = excluded.target, updated_at = excluded.updated_at", params![LLM_AUTH_SETTINGS_REF, &hash, now]).map_err(|e| e.to_string())?;
+    if old_target.as_deref() != Some(hash.as_str()) {
+        tx.execute(
+            "insert into ref_log(name, old_target, new_target, created_at) values (?1, ?2, ?3, ?4)",
+            params![LLM_AUTH_SETTINGS_REF, old_target, &hash, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
+fn llm_auth_get(db: &str) -> Value {
+    let result: Result<Value, String> = (|| {
+        let conn = host::open_settings_db(db)?;
+        Ok(json!({ "settings": redact_llm_auth_settings(&read_llm_auth_settings_conn(&conn)?) }))
+    })();
+    match result {
+        Ok(value) => json!({ "ok": true, "value": value }),
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn llm_auth_save(db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let mut conn = host::open_settings_db(db)?;
+        let current = read_llm_auth_settings_conn(&conn)?;
+        let current_providers = current
+            .get("providers")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut providers = serde_json::Map::new();
+        for id in LLM_PROVIDERS {
+            providers.insert(
+                id.to_string(),
+                apply_llm_provider_input(
+                    current_providers.get(id).unwrap_or(&Value::Null),
+                    id,
+                    payload.get(id),
+                ),
+            );
+        }
+        let settings = json!({
+            "providers": providers,
+            "compaction": if payload.get("compaction").and_then(Value::as_object).is_some() { normalize_compaction_settings(payload.get("compaction")) } else { current.get("compaction").cloned().unwrap_or_else(|| normalize_compaction_settings(None)) },
+            "retries": if payload.get("retries").and_then(Value::as_object).is_some() { normalize_retry_policy(payload.get("retries")) } else { current.get("retries").cloned().unwrap_or_else(|| normalize_retry_policy(None)) },
+        });
+        let saved = write_llm_auth_settings_conn(&mut conn, settings)?;
+        Ok(json!({ "settings": redact_llm_auth_settings(&saved) }))
+    })();
+    match result {
+        Ok(value) => json!({ "ok": true, "value": value }),
+        Err(message) => json!({ "ok": false, "error": { "message": message } }),
+    }
+}
+
+fn trace_error(message: impl Into<String>) -> Value {
+    json!({ "ok": false, "error": { "message": message.into() } })
+}
+
+fn trace_ok(value: Value) -> Value {
+    json!({ "ok": true, "value": value })
+}
+
+fn trace_payload<'a>(payload: &'a Value, key: &str) -> Option<&'a Value> {
+    payload
+        .get(key)
+        .or_else(|| payload.get("input").and_then(|v| v.get(key)))
+}
+
+fn trace_string(payload: &Value, key: &str) -> Result<Option<String>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        _ => Err(format!("{key} must be a string")),
+    }
+}
+
+fn trace_required_string(payload: &Value, key: &str) -> Result<String, String> {
+    trace_string(payload, key)?.ok_or_else(|| format!("{key} is required"))
+}
+
+fn trace_i64(payload: &Value, key: &str) -> Result<Option<i64>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .ok_or_else(|| format!("{key} must be an integer"))
+            .map(Some),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("{key} must be an integer")),
+        _ => Err(format!("{key} must be a number")),
+    }
+}
+
+fn trace_ns(
+    payload: &Value,
+    ns_key: &str,
+    us_key: &str,
+    ms_key: &str,
+) -> Result<Option<i64>, String> {
+    if let Some(ns) = trace_i64(payload, ns_key)? {
+        return Ok(Some(ns));
+    }
+    if let Some(us) = trace_i64(payload, us_key)? {
+        return Ok(Some(us.saturating_mul(1_000)));
+    }
+    if let Some(ms) = trace_i64(payload, ms_key)? {
+        return Ok(Some(ms.saturating_mul(1_000_000)));
+    }
+    Ok(None)
+}
+
+fn trace_bool(payload: &Value, key: &str) -> Result<Option<bool>, String> {
+    match trace_payload(payload, key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        _ => Err(format!("{key} must be a boolean")),
+    }
+}
+
+fn trace_limit(payload: &Value, default: i64, max: i64) -> Result<i64, String> {
+    Ok(trace_i64(payload, "limit")?
+        .unwrap_or(default)
+        .clamp(1, max))
+}
+
+fn trace_depth(payload: &Value, default: i32, max: i32) -> Result<i32, String> {
+    Ok(trace_i64(payload, "maxDepth")?
+        .unwrap_or(default as i64)
+        .clamp(0, max as i64) as i32)
+}
+
+fn trace_object_to_json(hash: Option<&str>) -> Value {
+    let Some(hash) = hash else {
+        return Value::Null;
+    };
+    match host::get_object(hash) {
+        Ok(Some((kind, bytes))) => {
+            let content = String::from_utf8_lossy(&bytes).to_string();
+            json!({
+                "kind": kind,
+                "content": content,
+                "bytesBase64": B64.encode(&bytes),
+                "size": bytes.len(),
+            })
+        }
+        _ => Value::Null,
+    }
+}
+
+fn trace_row_to_json(row: &host::TraceRow) -> Value {
+    trace_row_to_json_with_objects(row, false)
+}
+
+fn trace_row_to_json_with_objects(row: &host::TraceRow, include_objects: bool) -> Value {
+    let data_json = row
+        .data_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    let mut value = json!({
+        "id": row.id,
+        "parentId": row.parent_id,
+        "chatId": row.chat_id,
+        "runId": row.run_id,
+        "kind": row.kind,
+        "name": row.name,
+        "depth": row.depth,
+        "seq": row.seq,
+        "status": row.status,
+        "t0Ns": row.started_ns,
+        "t1Ns": row.ended_ns,
+        "t0Us": row.started_ns / 1_000,
+        "t1Us": row.ended_ns.map(|ns| ns / 1_000),
+        "inputHash": row.input_hash,
+        "outputHash": row.output_hash,
+        "errorHash": row.error_hash,
+        "invokedFromStepId": row.invoked_from_step_id,
+        "dataJson": data_json,
+        "dataHash": row.data_hash,
+    });
+    if include_objects && let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "inputObject".to_string(),
+            trace_object_to_json(row.input_hash.as_deref()),
+        );
+        obj.insert(
+            "outputObject".to_string(),
+            trace_object_to_json(row.output_hash.as_deref()),
+        );
+        obj.insert(
+            "errorObject".to_string(),
+            trace_object_to_json(row.error_hash.as_deref()),
+        );
+    }
+    value
+}
+
+fn trace_event_to_json(row: &host::TraceEventRow) -> Value {
+    json!({
+        "id": row.id,
+        "spanId": row.span_id,
+        "tsNs": row.ts_ns,
+        "tsUs": row.ts_ns / 1_000,
+        "level": row.level,
+        "message": row.message,
+        "dataHash": row.data_hash,
+    })
+}
+
+fn trace_rows_json(rows: Vec<host::TraceRow>) -> Vec<Value> {
+    rows.iter().map(trace_row_to_json).collect()
+}
+
+fn trace_events_json(rows: Vec<host::TraceEventRow>) -> Vec<Value> {
+    rows.iter().map(trace_event_to_json).collect()
+}
+
+fn trace_ancestors_for_node(id: &str) -> Result<Vec<host::TraceRow>, String> {
+    let mut ancestors = host::trace_ancestors(id)?;
+    if ancestors.last().map(|row| row.id.as_str()) == Some(id) {
+        ancestors.pop();
+    }
+    Ok(ancestors)
+}
+
+fn trace_frontend(payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let command = trace_required_string(payload, "name")?;
+        let status = trace_string(payload, "status")?.unwrap_or_else(|| "ok".to_string());
+        if !matches!(status.as_str(), "ok" | "error" | "cancelled" | "timeout") {
+            return Err("status must be ok, error, cancelled, or timeout".to_string());
+        }
+        let started_ns = trace_i64(payload, "startedNs")?.unwrap_or_else(util::now_ns);
+        let ended_ns = trace_i64(payload, "endedNs")?
+            .unwrap_or(started_ns)
+            .max(started_ns);
+        let route = trace_string(payload, "route")?;
+        let rpc_duration_ms = trace_i64(payload, "rpcDurationMs")?.unwrap_or(0).max(0);
+        let data = json!({
+            "scope": "global",
+            "source": "frontend",
+            "command": command,
+            "route": route,
+            "frontendDurationMs": ended_ns.saturating_sub(started_ns) / 1_000_000,
+            "rpcDurationMs": rpc_duration_ms,
+            "status": status,
+            "error": trace_string(payload, "error")?,
+        });
+        let data_json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
+        let id = util::random_id("fronttrace");
+        host::trace_open(host::TraceOpenParams {
+            id: &id,
+            parent_id: None,
+            chat_id: None,
+            run_id: None,
+            kind: "frontend",
+            name: &command,
+            started_ns,
+            input_hash: None,
+            invoked_from_step_id: None,
+            data_json: Some(&data_json),
+        })?;
+        host::trace_finish(
+            &id,
+            ended_ns.max(started_ns),
+            &status,
+            None,
+            None,
+            Some(&data_json),
+        )?;
+        Ok(json!({ "id": id }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_chats(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
+        Ok(json!({ "chats": trace_rows_json(host::trace_chat_roots(limit, before_ns)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_roots(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 100, 500)?;
+        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
+        let query = trace_string(payload, "query")?;
+        let started_after_ns = trace_ns(
+            payload,
+            "startedAfterNs",
+            "startedAfterUs",
+            "startedAfterMs",
+        )?;
+        let started_before_ns = trace_ns(
+            payload,
+            "startedBeforeNs",
+            "startedBeforeUs",
+            "startedBeforeMs",
+        )?;
+        let min_duration_ns = trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?;
+        let max_duration_ns = trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?;
+        let kind = trace_string(payload, "kind")?;
+        let status = trace_string(payload, "status")?;
+        let scope = trace_string(payload, "scope")?;
+        Ok(
+            json!({ "roots": trace_rows_json(host::trace_roots(host::TraceSearch {
+                query,
+                kind,
+                status,
+                scope,
+                limit,
+                before_ns,
+                started_after_ns,
+                started_before_ns,
+                min_duration_ns,
+                max_duration_ns,
+                ..Default::default()
+            })?) }),
+        )
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_node(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let id = trace_required_string(payload, "id")?;
+        let node = host::trace_get(&id)?.ok_or_else(|| format!("trace node not found: {id}"))?;
+        let children = host::trace_children(Some(&id), None)?;
+        let ancestors = trace_ancestors_for_node(&id)?;
+        let events = host::trace_events(&id, 1000, None)?;
+        Ok(json!({
+            "node": trace_row_to_json_with_objects(&node, true),
+            "children": trace_rows_json(children),
+            "ancestors": trace_rows_json(ancestors),
+            "events": trace_events_json(events),
+        }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_subtree_command(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let id = trace_required_string(payload, "id")?;
+        let max_depth = trace_depth(payload, 4, 10)?;
+        Ok(json!({ "nodes": trace_rows_json(host::trace_subtree(&id, max_depth)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_events_command(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let span_id = trace_required_string(payload, "spanId")?;
+        let limit = trace_limit(payload, 200, 1000)?;
+        let before_ns = trace_i64(payload, "beforeUs")?.map(|us| us.saturating_mul(1_000));
+        Ok(json!({ "events": trace_events_json(host::trace_events(&span_id, limit, before_ns)?) }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_search(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let query = host::TraceSearch {
+            query: trace_string(payload, "query")?,
+            kind: trace_string(payload, "kind")?,
+            status: trace_string(payload, "status")?,
+            chat_id: trace_string(payload, "chatId")?,
+            run_id: trace_string(payload, "runId")?,
+            scope: trace_string(payload, "scope")?,
+            has_error: trace_bool(payload, "hasError")?.unwrap_or(false),
+            limit,
+            before_ns: trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?,
+            started_after_ns: trace_ns(
+                payload,
+                "startedAfterNs",
+                "startedAfterUs",
+                "startedAfterMs",
+            )?,
+            started_before_ns: trace_ns(
+                payload,
+                "startedBeforeNs",
+                "startedBeforeUs",
+                "startedBeforeMs",
+            )?,
+            min_duration_ns: trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?,
+            max_duration_ns: trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?,
+            roots_only: false,
+        };
+        let nodes = host::trace_search(query)?;
+        let mut hits = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let ancestors = trace_ancestors_for_node(&node.id)?;
+            hits.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+        }
+        Ok(json!({ "hits": hits }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_failed(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let limit = trace_limit(payload, 50, 200)?;
+        let chat_id = trace_string(payload, "chatId")?;
+        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
+        let started_after_ns = trace_ns(
+            payload,
+            "startedAfterNs",
+            "startedAfterUs",
+            "startedAfterMs",
+        )?;
+        let started_before_ns = trace_ns(
+            payload,
+            "startedBeforeNs",
+            "startedBeforeUs",
+            "startedBeforeMs",
+        )?;
+        let min_duration_ns = trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?;
+        let max_duration_ns = trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?;
+        let nodes = host::trace_failed(
+            limit,
+            chat_id.as_deref(),
+            before_ns,
+            started_after_ns,
+            started_before_ns,
+            min_duration_ns,
+            max_duration_ns,
+        )?;
+        let mut failures = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let ancestors = trace_ancestors_for_node(&node.id)?;
+            failures.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+        }
+        Ok(json!({ "failures": failures }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
+    }
+}
+
+fn trace_chat_tree(_db: &str, payload: &Value) -> Value {
+    let result: Result<Value, String> = (|| {
+        let chat_id = trace_required_string(payload, "chatId")?;
+        let max_depth = trace_depth(payload, 6, 10)?;
+        let (root, nodes) = host::trace_chat_tree(&chat_id, max_depth)?;
+        Ok(json!({
+            "root": root.as_ref().map(trace_row_to_json),
+            "nodes": trace_rows_json(nodes),
+        }))
+    })();
+    match result {
+        Ok(value) => trace_ok(value),
+        Err(message) => trace_error(message),
     }
 }
 
@@ -455,5 +1606,187 @@ mod tests {
             text,
             r#"{"run":{"command":"step","chatId":"c","message":"hi"}}"#
         );
+    }
+
+    #[test]
+    fn payload_with_base_url_adds_server_base_url() {
+        assert_eq!(
+            payload_with_base_url(
+                json!({ "command": "mcp-oauth-start" }),
+                Some("http://100.126.83.89:5173")
+            ),
+            json!({ "command": "mcp-oauth-start", "serverBaseUrl": "http://100.126.83.89:5173" })
+        );
+    }
+
+    #[test]
+    fn payload_with_base_url_preserves_explicit_value() {
+        assert_eq!(
+            payload_with_base_url(
+                json!({ "serverBaseUrl": "http://explicit" }),
+                Some("http://configured")
+            ),
+            json!({ "serverBaseUrl": "http://explicit" })
+        );
+    }
+
+    #[test]
+    fn trace_config_test_disabled_does_not_require_clickhouse() {
+        let result = trace_config_test(
+            ":memory:",
+            &json!({
+                "config": {
+                    "enabled": false,
+                    "clickhouseUrl": "http://127.0.0.1:1",
+                    "clickhouseDatabase": "default",
+                    "clickhouseTablePrefix": "moo_",
+                    "clickhouseUser": null,
+                    "clickhousePassword": null
+                }
+            }),
+        );
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let message = result
+            .get("value")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(message.contains("no ClickHouse connection was attempted"));
+    }
+
+    #[test]
+    fn trace_config_test_enabled_validates_clickhouse() {
+        let result = trace_config_test(
+            ":memory:",
+            &json!({
+                "config": {
+                    "enabled": true,
+                    "clickhouseUrl": "http://127.0.0.1:1",
+                    "clickhouseDatabase": "default",
+                    "clickhouseTablePrefix": "moo_",
+                    "clickhouseUser": null,
+                    "clickhousePassword": null
+                }
+            }),
+        );
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
+        let message = result
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(!message.is_empty());
+    }
+
+    #[test]
+    fn trace_config_save_enabled_validates_clickhouse() {
+        let _guard = host::TEST_DB_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "moo-ws-trace-config-{}",
+            crate::util::random_id("test")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("store.sqlite");
+        host::install_fresh(db_path.to_str().unwrap()).unwrap();
+
+        let result = trace_config_save(
+            ":memory:",
+            &json!({
+                "config": {
+                    "enabled": true,
+                    "clickhouseUrl": "http://127.0.0.1:1",
+                    "clickhouseDatabase": "default",
+                    "clickhouseTablePrefix": "moo_",
+                    "clickhouseUser": null,
+                    "clickhousePassword": null
+                }
+            }),
+        );
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
+        let message = result
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(!message.is_empty());
+    }
+
+    #[test]
+    fn llm_auth_get_save_uses_settings_db_directly() {
+        let _guard = host::TEST_DB_LOCK.lock().unwrap();
+        let db_path_buf = std::env::temp_dir().join(format!(
+            "moo-llm-auth-settings-{}-{}.db",
+            std::process::id(),
+            util::now_ms()
+        ));
+        let db_path = db_path_buf.to_str().unwrap();
+
+        let initial = llm_auth_get(db_path);
+        assert_eq!(initial["ok"], true);
+        assert_eq!(
+            initial["value"]["settings"]["providers"]["openai"]["authMode"],
+            "env"
+        );
+
+        let saved = llm_auth_save(
+            db_path,
+            &json!({
+                "openai": { "authMode": "apiKey", "apiKey": "sk-test-1234", "baseUrl": " https://example.test/v1/ " },
+                "anthropic": { "authMode": "oauth", "apiKey": "anthropic-key" },
+                "compaction": { "thresholdPercent": 250 },
+                "retries": { "maxAttempts": 0, "baseDelayMs": 42 },
+            }),
+        );
+        assert_eq!(saved["ok"], true);
+        let settings = &saved["value"]["settings"];
+        assert_eq!(settings["providers"]["openai"]["authMode"], "apiKey");
+        assert_eq!(settings["providers"]["openai"]["apiKey"], "••••1234");
+        assert_eq!(settings["providers"]["openai"]["hasApiKey"], true);
+        assert_eq!(
+            settings["providers"]["openai"]["baseUrl"],
+            "https://example.test/v1/"
+        );
+        assert_eq!(settings["providers"]["anthropic"]["authMode"], "env");
+
+        let saved = llm_auth_save(
+            db_path,
+            &json!({
+                "anthropic": { "authMode": "subscription", "apiKey": "sk-ant-oat01-test" },
+            }),
+        );
+        assert_eq!(saved["ok"], true);
+        let settings = &saved["value"]["settings"];
+        assert_eq!(
+            settings["providers"]["anthropic"]["authMode"],
+            "subscription"
+        );
+        assert_eq!(settings["providers"]["anthropic"]["apiKey"], "••••test");
+        assert_eq!(settings["providers"]["anthropic"]["hasApiKey"], true);
+
+        assert_eq!(settings["compaction"]["thresholdPercent"], 100);
+        assert_eq!(settings["retries"]["maxAttempts"], 1);
+        assert_eq!(settings["retries"]["baseDelayMs"], 42);
+
+        let loaded = llm_auth_get(db_path);
+        assert_eq!(loaded["value"]["settings"], *settings);
+        let _ = std::fs::remove_file(&db_path_buf);
+    }
+
+    #[test]
+    fn settings_commands_bypass_full_host_install() {
+        assert!(settings_command("trace-config-get"));
+        assert!(settings_command("trace-config-save"));
+        assert!(settings_command("trace-config-test"));
+        assert!(settings_command("v8-settings-get"));
+        assert!(settings_command("v8-settings-save"));
+        assert!(settings_command("llm-auth-get"));
+        assert!(settings_command("llm-auth-save"));
+        assert!(settings_command("llm-auth-oauth-start"));
+        assert!(settings_command("llm-auth-oauth-complete"));
+        assert!(settings_command("llm-auth-oauth-device-start"));
+        assert!(settings_command("llm-auth-oauth-device-poll"));
+        assert!(settings_command("llm-auth-oauth-logout"));
+        assert!(!settings_command("v8-stats"));
+        assert!(!db_only_command("v8-settings-get"));
     }
 }

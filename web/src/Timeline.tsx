@@ -1,28 +1,102 @@
-import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
-import { anchorFromEventTarget, renderMarkdown, renderMarkdownInline, renderUserMessage, repoFilePathFromHref } from "./markdown";
-import { escapeHtml, formatHjson, formatJsonTextForView, highlightAuto } from "./syntax";
+import {
+  For,
+  Index,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  untrack,
+} from "solid-js";
+import { createMutable } from "solid-js/store";
+import {
+  anchorFromEventTarget,
+  renderMarkdown,
+  renderMarkdownInline,
+  renderUserMessage,
+  repoFilePathFromHref,
+} from "./markdown";
+import {
+  formatHjson,
+  formatHjsonTextForView,
+  highlightAuto,
+  highlightMarkdownCode,
+  maybeFormatHjsonTextForView,
+} from "./syntax";
 import { collapseHome } from "./paths";
 import { DiffView } from "./DiffView";
+import { diffStats } from "./diffs";
+import { LoadingDots } from "./LoadingDots";
+import { CompactIcon } from "./icons";
+import { ChatTerminals } from "./TerminalView";
+import {
+  compareTimelineItems,
+  dismissedTimelineEntryAt,
+  dismissedTimelineEntryKey,
+  formatThinkingElapsed,
+  formatThoughtDuration,
+  insertTimelineItemChronologically,
+  isCancelledTimelineItem,
+  isRunningToolTimelineItem,
+  isTerminalStepStatus,
+  replyDraftKey,
+  sameDismissedTimelineEntries,
+  timelineAnchorKey,
+  timelineExpansionKey,
+  timelineItemKey,
+  timelineJumpKeys,
+  timelineRenderEntries,
+  type DismissedTimelineEntry,
+  type TimelineRenderEntry,
+} from "./timeline/utils";
+import {
+  PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY,
+  PATH_AUTOCOMPLETE_LIMIT,
+  cachedPathAutocompleteList,
+  cachedPathAutocompleteSearch,
+  cachedPathAutocompleteSnapshot,
+  findPathAutocompleteContext,
+  formatPathAutocompleteKind,
+  mergePathAutocompleteSuggestions,
+  pathAutocompleteKey,
+  pathAutocompleteSearchSuggestions,
+  pathAutocompleteSuggestions,
+  type AutocompleteMode,
+  type PathAutocompleteContext,
+  type PathAutocompleteSnapshot,
+  type PathAutocompleteSuggestion,
+} from "./timeline/autocomplete";
+import { shouldApplyComposerAutocompleteKey } from "./timeline/composerKeys";
+import { displayDiffStats, formatByteCount, formatRunJSArgs, normalizeRunJS, parseRunJS, shortHash, type ParsedRunJS } from "./timeline/format";
 
-import type {
-  Bag,
-} from "./state";
+import type { Bag, DismissedReply } from "./state";
 import { absoluteTime, displayChatId } from "./state";
-import { ChatAppLauncher } from "./ChatApps";
-import { RightSidebarToggle } from "./Sidebar";
-import { api, type ChatAutocompleteSuggestion, type FsEntry, type FsSearchEntry } from "./api";
+import { LeftSidebarToggle, RightSidebarToggle } from "./HeaderControls";
+import {
+  api,
+  type ChatAutocompleteSuggestion,
+  type FsEntry,
+  type FsSearchEntry,
+} from "./api";
 import type {
   ChoiceSpec,
   FormField,
   FormSpec,
+  BlobAddItem,
+  DiffStats,
   ImageAttachment,
   FileDiffItem,
   MemoryDiffItem,
+  TodoDiffItem,
+  AgentTodo,
+  TodoDiffChange,
   InputItem,
   InputResponseItem,
   LogItem,
   StepItem,
   TimelineItem,
+  UiApp,
 } from "./api";
 
 type PlayPromptMode = "restart" | "resume" | null;
@@ -34,72 +108,123 @@ type TimelineExpansionStore = {
   setShown: (key: string, shown: number) => void;
 };
 
+const COPY_FEEDBACK_MS = 1600;
+const OLDER_HISTORY_SCROLL_THRESHOLD_EM = 8;
+const LAYOUT_SCROLL_STICKY_GRACE_MS = 600;
+const USER_SCROLL_INTENT_GRACE_MS = 900;
 
-function timelineExpansionKey(item: TimelineItem): string {
-  if (item.type === "step") return `step:${item.step}`;
-  if (item.type === "input") return `input:${item.requestId}`;
-  if (item.type === "input-response") return `input-response:${item.responseId}`;
-  if (item.type === "log") return `log:${item.id}`;
-  if (item.type === "trail") return `trail:${item.id}`;
-  if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-  return `file-diff:${item.id}`;
-}
-
-function timelineItemKey(item: TimelineItem): string {
-  if (item.type === "step") return `step:${item.step}`;
-  if (item.type === "input") return `input:${item.requestId}`;
-  if (item.type === "input-response") return `input-response:${item.responseId}`;
-  if (item.type === "log") return `log:${item.id}`;
-  if (item.type === "trail") return `trail:${item.id}`;
-  if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-  return `file-diff:${item.id}`;
-}
-
-function timelineJumpKeys(item: TimelineItem): string[] {
-  const keys = [timelineItemKey(item)];
-  if ((item.type === "file-diff" || item.type === "memory-diff") && item.step) {
-    keys.push(`step:${item.step}`);
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back to the legacy selection-based path below. Some browsers expose
+      // navigator.clipboard but reject writes outside secure contexts.
+    }
   }
-  return keys;
-}
 
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.insetBlockStart = "-1000px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
 
-function formatThoughtDuration(ms: number): string {
-  const seconds = Math.max(0, ms / 1000);
-  if (seconds < 10) return `${seconds.toFixed(1)}s`;
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remaining = Math.round(seconds % 60);
-  return `${minutes}m ${remaining}s`;
-}
-
-function formatThinkingElapsed(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const seconds = totalSeconds % 60;
-  const minutes = Math.floor(totalSeconds / 60) % 60;
-  const hours = Math.floor(totalSeconds / 3600);
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  const selection = document.getSelection();
+  const ranges: Range[] = [];
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i += 1)
+      ranges.push(selection.getRangeAt(i));
   }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+
+  textarea.focus();
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("copy command rejected");
+  } finally {
+    textarea.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+  }
 }
 
-export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenSidebar?: () => void }) {
+function HeaderAppList(props: {
+  apps: UiApp[];
+  openUiId: string | null | undefined;
+  onOpen: (id: string) => void;
+  onOpenCode: (id: string) => void;
+}) {
+  const count = () => props.apps.length;
+  return (
+    <Show when={count() > 0}>
+      <nav class="timeline-header-apps" aria-label="Timeline apps">
+        <span class="timeline-header-apps-label">Apps</span>
+        <For each={props.apps}>
+          {(app) => (
+            <span class="timeline-header-app-group">
+              <button
+                type="button"
+                class="timeline-header-app"
+                classList={{ active: props.openUiId === app.id }}
+                title={app.description || `Open ${app.title || app.id}`}
+                onClick={() => props.onOpen(app.id)}
+              >
+                <span class="app-icon">{app.icon || "▣"}</span>
+                <span class="timeline-header-app-title">
+                  {app.title || app.id}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="timeline-header-app-code"
+                title={`Open code for ${app.title || app.id}`}
+                aria-label={`Open code for ${app.title || app.id}`}
+                onClick={() => props.onOpenCode(app.id)}
+              >
+                code
+              </button>
+            </span>
+          )}
+        </For>
+      </nav>
+    </Show>
+  );
+}
+
+export function Timeline(props: {
+  bag: Bag;
+  onToggleSidebar: () => void;
+  onOpenSidebar?: () => void;
+}) {
   const { bag, onToggleSidebar } = props;
-  const [lightboxImage, setLightboxImage] = createSignal<ImageAttachment | null>(null);
-  const openLightbox = (attachment: ImageAttachment) => setLightboxImage(attachment);
+  const [lightboxImage, setLightboxImage] =
+    createSignal<ImageAttachment | null>(null);
+  const openLightbox = (attachment: ImageAttachment) =>
+    setLightboxImage(attachment);
   const closeLightbox = () => setLightboxImage(null);
 
   const handleLightboxKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && lightboxImage()) closeLightbox();
+    if (e.key !== "Escape" || !lightboxImage()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeLightbox();
   };
-  onMount(() => window.addEventListener("keydown", handleLightboxKeyDown));
-  onCleanup(() => window.removeEventListener("keydown", handleLightboxKeyDown));
+  onMount(() => window.addEventListener("keydown", handleLightboxKeyDown, true));
+  onCleanup(() => window.removeEventListener("keydown", handleLightboxKeyDown, true));
 
   const handleMarkdownClick = (e: MouseEvent) => {
     const anchor = anchorFromEventTarget(e.target);
     if (!anchor || !timelineEl?.contains(anchor)) return;
     const href = anchor.getAttribute("href") || "";
+    if (href === "/settings") {
+      e.preventDefault();
+      bag.showSettings();
+      return;
+    }
     const path = repoFilePathFromHref(href);
     if (!path) return;
     e.preventDefault();
@@ -113,10 +238,13 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
   const [thinkingNow, setThinkingNow] = createSignal(Date.now());
   let thinkingTimer: number | undefined;
   createEffect(() => {
-    if (bag.thinking()) {
+    if (bag.thinking() || bag.compacting()) {
       setThinkingNow(Date.now());
       if (thinkingTimer === undefined) {
-        thinkingTimer = window.setInterval(() => setThinkingNow(Date.now()), 1000);
+        thinkingTimer = window.setInterval(
+          () => setThinkingNow(Date.now()),
+          1000,
+        );
       }
     } else if (thinkingTimer !== undefined) {
       window.clearInterval(thinkingTimer);
@@ -125,13 +253,17 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
   });
   onCleanup(() => {
     if (thinkingTimer !== undefined) window.clearInterval(thinkingTimer);
-    if (timelineJumpHighlightTimer !== undefined) window.clearTimeout(timelineJumpHighlightTimer);
+    if (timelineJumpHighlightTimer !== undefined)
+      window.clearTimeout(timelineJumpHighlightTimer);
   });
 
   const thinkingElapsed = createMemo(() => {
     const startedAt = bag.thinkingStartedAt();
-    return startedAt === null ? "0:00" : formatThinkingElapsed(thinkingNow() - startedAt);
+    return startedAt === null
+      ? "0:00"
+      : formatThinkingElapsed(thinkingNow() - startedAt);
   });
+  const activeWaitLabel = () => (bag.compacting() ? "Compacting…" : "Thinking…");
 
   // Keep the scroll position stable across timeline refreshes. If the user is
   // at the bottom, new content sticks to the bottom. If they have scrolled up,
@@ -141,6 +273,10 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
   let scrollAnchor: { key: string; offset: number } | null = null;
   let restoreFrame: number | undefined;
   const timelineAnchorSelector = "[data-timeline-key]";
+  let lastChatId: string | null | undefined;
+  let lastTimelineClientHeight = 0;
+  let stickyLayoutScrollUntil = 0;
+  let userScrollIntentUntil = 0;
   const isAtBottom = () => {
     if (!timelineEl) return true;
     const slack = parseFloat(getComputedStyle(timelineEl).fontSize) * 3;
@@ -149,13 +285,50 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
       timelineEl.scrollHeight - slack
     );
   };
+  const rememberTimelineClientHeight = () => {
+    if (timelineEl) lastTimelineClientHeight = timelineEl.clientHeight;
+  };
   const scrollToBottom = () => {
     if (!timelineEl) return;
     timelineEl.scrollTop = timelineEl.scrollHeight;
+    rememberTimelineClientHeight();
+  };
+  const hasRecentUserScrollIntent = () =>
+    Date.now() <= userScrollIntentUntil;
+  const markUserScrollIntent = () => {
+    userScrollIntentUntil = Date.now() + USER_SCROLL_INTENT_GRACE_MS;
+  };
+  const isLikelyLayoutScroll = () => {
+    if (!timelineEl) return false;
+    return (
+      Date.now() <= stickyLayoutScrollUntil ||
+      Math.abs(timelineEl.clientHeight - lastTimelineClientHeight) > 1
+    );
+  };
+  const resetScrollForChatChange = () => {
+    stuck = true;
+    scrollAnchor = null;
+    stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
+    queueMicrotask(() => {
+      scrollToBottom();
+      requestAnimationFrame(scrollToBottom);
+    });
+  };
+  const isNearTop = () => {
+    if (!timelineEl) return false;
+    const threshold =
+      parseFloat(getComputedStyle(timelineEl).fontSize) *
+      OLDER_HISTORY_SCROLL_THRESHOLD_EM;
+    return timelineEl.scrollTop <= threshold;
+  };
+  const maybeLoadOlderTimeline = () => {
+    if (isNearTop() && bag.hiddenTimelineItems() > 0) void bag.loadOlderTimeline();
   };
   const anchorElements = () =>
     timelineEl
-      ? Array.from(timelineEl.querySelectorAll<HTMLElement>(timelineAnchorSelector))
+      ? Array.from(
+          timelineEl.querySelectorAll<HTMLElement>(timelineAnchorSelector),
+        )
       : [];
   const findAnchorElement = (key: string) => {
     if (!timelineEl) return null;
@@ -167,7 +340,9 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
         `[data-timeline-key="${(window as any).CSS && (CSS as any).escape ? (CSS as any).escape(key) : key.replace(/["\\\\]/g, (c) => "\\\\" + c)}"]`,
       );
     } catch {
-      return anchorElements().find((el) => el.dataset.timelineKey === key) ?? null;
+      return (
+        anchorElements().find((el) => el.dataset.timelineKey === key) ?? null
+      );
     }
   };
   const captureScrollAnchor = () => {
@@ -201,30 +376,43 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
     const nextOffset = el.getBoundingClientRect().top - containerTop;
     timelineEl.scrollTop += nextOffset - scrollAnchor.offset;
   };
+  const notePotentialLayoutScroll = () => {
+    if (stuck)
+      stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
+    scheduleScrollRestore();
+  };
   const scheduleScrollRestore = () => {
     if (restoreFrame !== undefined) return;
     restoreFrame = requestAnimationFrame(() => {
       restoreFrame = undefined;
       restoreScrollAnchor();
+      rememberTimelineClientHeight();
       if (!stuck) captureScrollAnchor();
     });
   };
   const clearTimelineJumpHighlights = () => {
     if (!timelineEl) return;
-    for (const el of timelineEl.querySelectorAll<HTMLElement>(".timeline-jump-highlight")) {
+    for (const el of timelineEl.querySelectorAll<HTMLElement>(
+      ".timeline-jump-highlight",
+    )) {
       el.classList.remove("timeline-jump-highlight");
     }
   };
   const highlightTimelineJump = (el: HTMLElement) => {
     clearTimelineJumpHighlights();
     el.classList.add("timeline-jump-highlight");
-    if (timelineJumpHighlightTimer !== undefined) window.clearTimeout(timelineJumpHighlightTimer);
+    if (timelineJumpHighlightTimer !== undefined)
+      window.clearTimeout(timelineJumpHighlightTimer);
     timelineJumpHighlightTimer = window.setTimeout(() => {
       timelineJumpHighlightTimer = undefined;
       el.classList.remove("timeline-jump-highlight");
     }, 1800);
   };
-  const findTimelineJumpElement = (target: { key?: string; at?: number; id?: string }) => {
+  const findTimelineJumpElement = (target: {
+    key?: string;
+    at?: number;
+    id?: string;
+  }) => {
     if (!timelineEl) return null;
     if (target.key) {
       const byKey = findAnchorElement(target.key);
@@ -237,9 +425,18 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
     }
     const at = Number(target.at);
     if (Number.isFinite(at)) {
-      const candidates = bag.timeline()
-        .filter((item) => item.type !== "trail" && Number.isFinite(Number((item as { at?: number }).at)))
-        .sort((a, b) => Math.abs(Number((a as { at?: number }).at) - at) - Math.abs(Number((b as { at?: number }).at) - at));
+      const candidates = bag
+        .timeline()
+        .filter(
+          (item) =>
+            item.type !== "trail" &&
+            Number.isFinite(Number((item as { at?: number }).at)),
+        )
+        .sort(
+          (a, b) =>
+            Math.abs(Number((a as { at?: number }).at) - at) -
+            Math.abs(Number((b as { at?: number }).at) - at),
+        );
       for (const item of candidates) {
         for (const key of timelineJumpKeys(item)) {
           const el = findAnchorElement(key);
@@ -249,13 +446,56 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
     }
     return null;
   };
+  createEffect(() => {
+    const id = bag.chatId();
+    if (id === lastChatId) return;
+    lastChatId = id;
+    resetScrollForChatChange();
+  });
+
   onMount(() => {
     const handleScroll = () => {
-      stuck = isAtBottom();
-      if (!stuck) captureScrollAnchor();
+      if (isAtBottom()) {
+        stuck = true;
+        scrollAnchor = null;
+      } else if (
+        stuck &&
+        !hasRecentUserScrollIntent() &&
+        isLikelyLayoutScroll()
+      ) {
+        stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
+        scheduleScrollRestore();
+      } else {
+        stuck = false;
+        captureScrollAnchor();
+      }
+      rememberTimelineClientHeight();
+      maybeLoadOlderTimeline();
+    };
+    const handleScrollIntentKey = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        ![
+          "ArrowDown",
+          "ArrowUp",
+          "End",
+          "Home",
+          "PageDown",
+          "PageUp",
+          " ",
+        ].includes(event.key)
+      )
+        return;
+      markUserScrollIntent();
     };
     timelineEl?.addEventListener("scroll", handleScroll, { passive: true });
-    const mutationObserver = new MutationObserver(scheduleScrollRestore);
+    timelineEl?.addEventListener("wheel", markUserScrollIntent, { passive: true });
+    timelineEl?.addEventListener("touchstart", markUserScrollIntent, { passive: true });
+    timelineEl?.addEventListener("pointerdown", markUserScrollIntent);
+    timelineEl?.addEventListener("keydown", handleScrollIntentKey);
+    const mutationObserver = new MutationObserver((records) => {
+      scheduleScrollRestore();
+    });
     if (timelineEl) {
       mutationObserver.observe(timelineEl, {
         childList: true,
@@ -263,7 +503,7 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
         subtree: true,
       });
     }
-    const resizeObserver = new ResizeObserver(scheduleScrollRestore);
+    const resizeObserver = new ResizeObserver(notePotentialLayoutScroll);
     // Track which anchors we currently observe so each MutationObserver tick
     // does an incremental diff (O(changed)) instead of disconnecting and
     // reattaching every anchor (which made initial render of long chats
@@ -304,10 +544,16 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
     // item) into one rAF-scheduled reconciliation rather than one per
     // mutation record.
     const targetObserver = new MutationObserver(scheduleRefreshResizeTargets);
-    if (timelineEl) targetObserver.observe(timelineEl, { childList: true, subtree: true });
+    if (timelineEl)
+      targetObserver.observe(timelineEl, { childList: true, subtree: true });
     scrollToBottom();
+    rememberTimelineClientHeight();
     onCleanup(() => {
       timelineEl?.removeEventListener("scroll", handleScroll);
+      timelineEl?.removeEventListener("wheel", markUserScrollIntent);
+      timelineEl?.removeEventListener("touchstart", markUserScrollIntent);
+      timelineEl?.removeEventListener("pointerdown", markUserScrollIntent);
+      timelineEl?.removeEventListener("keydown", handleScrollIntentKey);
       mutationObserver.disconnect();
       targetObserver.disconnect();
       resizeObserver.disconnect();
@@ -346,135 +592,288 @@ export function Timeline(props: { bag: Bag; onToggleSidebar: () => void; onOpenS
     }
   });
 
-  const visibleTimeline = createMemo(() => bag.timeline().filter((item) => item.type !== "trail"));
+  const draftReplyProxies = new Map<string, StepItem>();
+  const draftProxyFor = (draftId: string): StepItem => {
+    let item = draftReplyProxies.get(draftId);
+    if (!item) {
+      item = createMutable<StepItem>({
+        type: "step",
+        step: `draft:${draftId}` as StepItem["step"],
+        kind: "agent:Reply",
+        status: "agent:Running",
+        at: Date.now(),
+        text: "",
+        draftId,
+      });
+      draftReplyProxies.set(draftId, item);
+    }
+    return item;
+  };
+  const syncDraftProxy = (target: StepItem, source: StepItem) => {
+    target.step = source.step;
+    target.kind = source.kind;
+    target.status = source.status;
+    target.at = source.at;
+    target.text = source.text;
+    target.model = source.model;
+    target.effort = source.effort;
+    target.thoughtDurationNs = source.thoughtDurationNs;
+    target.draftId = source.draftId;
+  };
+  const syncActiveDraftProxy = (
+    target: StepItem,
+    draft: { draftId: string; content: string; at: number },
+  ) => {
+    target.step = `draft:${draft.draftId}` as StepItem["step"];
+    target.kind = "agent:Reply";
+    target.status = "agent:Running";
+    target.at = Number(draft.at) || Date.now();
+    target.text = draft.content;
+    target.draftId = draft.draftId;
+  };
+
+  const visibleTimeline = createMemo(() => {
+    const draft = bag.draftReply();
+    const rows = bag
+      .timeline()
+      .filter((item) => item.type !== "trail")
+      .map((item) => {
+        if (
+          item.type !== "step" ||
+          item.kind !== "agent:Reply" ||
+          !item.draftId
+        )
+          return item;
+        const proxy = draftReplyProxies.get(item.draftId);
+        if (!proxy) return item;
+        syncDraftProxy(proxy, item);
+        return proxy;
+      });
+    if (!draft || draft.chatId !== bag.chatId() || !draft.content) return rows;
+    if (
+      rows.some(
+        (item) =>
+          item.type === "step" &&
+          item.kind === "agent:Reply" &&
+          item.draftId === draft.draftId,
+      )
+    ) {
+      return rows;
+    }
+    const proxy = draftProxyFor(draft.draftId);
+    syncActiveDraftProxy(proxy, draft);
+    return insertTimelineItemChronologically(rows, proxy);
+  });
+  const visibleDismissedReplies = createMemo(() => {
+    const id = bag.chatId();
+    if (!id) return [];
+    return bag
+      .dismissedReplies()
+      .filter((reply) => reply.chatId === id && reply.content.trim());
+  });
+  const renderEntryCache = new Map<string, TimelineRenderEntry>();
+  const renderedTimeline = createMemo(() =>
+    timelineRenderEntries(
+      visibleTimeline(),
+      visibleDismissedReplies(),
+      renderEntryCache,
+    ),
+  );
+  const hasRunningToolRow = createMemo(() =>
+    visibleTimeline().some(isRunningToolTimelineItem),
+  );
+  const hasStreamingReply = () =>
+    Boolean(
+      bag.draftReply()?.chatId === bag.chatId() && bag.draftReply()?.content,
+    );
+  const showStandaloneThinking = () =>
+    (bag.thinking() || bag.compacting()) && !hasStreamingReply() && !hasRunningToolRow();
   const currentChat = () => bag.currentChatSummary();
-  const emptyTitle = () => (bag.currentChatTitle() || (bag.chatId() ? displayChatId(bag.chatId()) : "")).trim();
-  const hasOnlyTrail = () => !!bag.chatId() && bag.timeline().length > 0 && visibleTimeline().length === 0;
+  const emptyTitle = () =>
+    (
+      bag.currentChatTitle() ||
+      (bag.chatId() ? displayChatId(bag.chatId()) : "")
+    ).trim();
+  const chatReady = () => bag.loadedChatId() === bag.chatId();
+  const chatLoading = () => !!bag.chatId() && !chatReady();
+  const hasOnlyTrail = () =>
+    !!bag.chatId() &&
+    bag.timeline().length > 0 &&
+    visibleTimeline().length === 0;
   return (
     <div class="chat-shell">
-    <section class="main conversation-main">
-      <header class="conv-header">
-        <button class="header-icon-button" title="toggle sidebar" onClick={onToggleSidebar}>
-          ☰
-        </button>
-        <ParentChatLink bag={bag} />
-        <ModelPicker bag={bag} />
-        <div class="conv-token-slot">
-          <TokenBar tokens={bag.tokens} />
-        </div>
-        <RightSidebarToggle bag={bag} />
-      </header>
-      <ChatAppLauncher bag={bag} />
-      <main class="timeline" ref={timelineEl} onClick={handleMarkdownClick}>
-        <Show
-          when={bag.loadedChatId() === bag.chatId()}
-          fallback={
-            <div class="empty">
-              <div class="thinking-dots">
-                <span class="dot" />
-                <span class="dot" />
-                <span class="dot" />
-              </div>
-            </div>
-          }
+      <section class="main conversation-main">
+        <header
+          class="conv-header"
+          classList={{ "chat-loading": chatLoading() }}
         >
+          <LeftSidebarToggle onToggleSidebar={onToggleSidebar} />
+          <ParentChatLink bag={bag} />
+          <h1 class="page-title chat-page-title">{emptyTitle() || "Chat"}</h1>
+          <Show when={!chatLoading()}>
+            <ModelPicker bag={bag} />
+            <div class="conv-token-slot">
+              <TokenBar tokens={bag.tokens} onCompact={bag.compactChat} disabled={() => !bag.chatId() || bag.thinking()} compacting={bag.compacting} />
+            </div>
+          </Show>
+          <RightSidebarToggle bag={bag} />
+        </header>
+        <Show when={!chatLoading()}>
+          <HeaderAppList
+            apps={bag.chatUiApps()}
+            openUiId={bag.openUiId()}
+            onOpen={(id) => bag.openUi(id)}
+            onOpenCode={(id) => bag.openAppCodeInSidebar(id)}
+          />
+        </Show>
+        <Show when={bag.chatId()}>
+          {(chatId) => (
+            <ChatTerminals
+              chatId={chatId()}
+              worktreePath={bag.currentChatWorktreePath()}
+              notify={bag.notify}
+            />
+          )}
+        </Show>
+        <main class="timeline" ref={timelineEl} onClick={handleMarkdownClick}>
           <Show
-            when={bag.chatId()}
+            when={chatReady()}
             fallback={
               <div class="empty">
-                no chats yet — start a new chat from the sidebar
+                <LoadingDots class="thinking-dots" label="loading chat" />
               </div>
             }
           >
             <Show
-              when={
-                visibleTimeline().length > 0 ||
-                bag.thinking() ||
-                bag.draftReply() != null
-              }
+              when={bag.chatId()}
               fallback={
                 <div class="empty">
-                  <Show when={hasOnlyTrail()} fallback={<>nothing yet — try <code>/help</code></>}>
-                    <div class="empty-title">{emptyTitle() || "This chat"}</div>
-                    <div>No conversation messages yet.</div>
-                    <Show when={currentChat()?.hidden}>
-                      <div>This is a hidden child chat. Use the back link in the header to return to its parent.</div>
+                  no chats yet — start a new chat from the sidebar
+                </div>
+              }
+            >
+              <Show
+                when={
+                  visibleTimeline().length > 0 ||
+                  visibleDismissedReplies().length > 0 ||
+                  showStandaloneThinking() ||
+                  bag.draftReply() != null
+                }
+                fallback={
+                  <div class="empty">
+                    <Show
+                      when={hasOnlyTrail()}
+                      fallback={
+                        <>
+                          nothing yet — send a message to get started
+                        </>
+                      }
+                    >
+                      <div class="empty-title">
+                        {emptyTitle() || "This chat"}
+                      </div>
+                      <div>No conversation messages yet.</div>
+                      <Show when={currentChat()?.hidden}>
+                        <div>
+                          This is a hidden child chat. Use the back link in the
+                          header to return to its parent.
+                        </div>
+                      </Show>
+                      <div>
+                        Open the trail sidebar to see title and summary entries.
+                      </div>
                     </Show>
-                    <div>Open the trail sidebar to see title and summary entries.</div>
-                  </Show>
-                </div>
-              }
-            >
-            <Show when={bag.hiddenTimelineItems() > 0}>
-              <button
-                type="button"
-                class="load-older"
-                onClick={() => bag.loadOlderTimeline()}
+                  </div>
+                }
               >
-                Load {bag.olderTimelineLoadCount()} older items · {bag.hiddenTimelineItems()} hidden
-              </button>
+                <Show when={bag.hiddenTimelineItems() > 0}>
+                  <Show when={bag.olderTimelineLoading()}>
+                    <div class="history-loading">
+                      <LoadingDots
+                        class="history-loading-dots"
+                        label="loading older history"
+                      />
+                    </div>
+                  </Show>
+                </Show>
+                <For each={renderedTimeline()}>
+                  {(entry) =>
+                    entry.kind === "dismissed" ? (
+                      <DismissedBlock
+                        group={entry}
+                        bag={bag}
+                        onOpenImage={openLightbox}
+                      />
+                    ) : (
+                      <Item
+                        item={entry.item}
+                        bag={bag}
+                        onOpenImage={openLightbox}
+                      />
+                    )
+                  }
+                </For>
+                <Show when={showStandaloneThinking()}>
+                  <div class="step thinking" data-timeline-key="thinking">
+                    <LoadingDots
+                      class="thinking-dots"
+                      label={bag.compacting() ? "compacting" : "thinking"}
+                    />
+                    <div class="meta">{activeWaitLabel()} {thinkingElapsed()}</div>
+                  </div>
+                </Show>
+                <Show when={bag.timelineRefreshing() && !showStandaloneThinking()}>
+                  <div class="history-loading history-loading-bottom">
+                    <LoadingDots
+                      class="history-loading-dots"
+                      label="loading chat updates"
+                    />
+                  </div>
+                </Show>
+              </Show>
             </Show>
-            <For each={visibleTimeline()}>{(item) => <Item item={item} bag={bag} onOpenImage={openLightbox} />}</For>
-            <Show when={bag.draftReply()?.chatId === bag.chatId() && bag.draftReply()?.content}>
-              <div class="step reply draft" data-timeline-key="draft-reply">
-                <div class="meta">streaming…</div>
-                <div
-                  class="body markdown"
-                  innerHTML={renderMarkdown(bag.draftReply()!.content)}
-                />
-              </div>
-            </Show>
-            <Show
-              when={
-                bag.thinking() &&
-                !(bag.draftReply()?.chatId === bag.chatId() && bag.draftReply()?.content)
+          </Show>
+        </main>
+        <Show when={lightboxImage()}>
+          {(att) => (
+            <div
+              class="image-lightbox-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-label={
+                att().name ? `Image preview: ${att().name}` : "Image preview"
               }
-            >
-              <div class="step thinking" data-timeline-key="thinking">
-                <div class="meta">Thinking… {thinkingElapsed()}</div>
-                <div class="thinking-dots">
-                  <span class="dot" />
-                  <span class="dot" />
-                  <span class="dot" />
-                </div>
-              </div>
-            </Show>
-          </Show>
-          </Show>
-        </Show>
-      </main>
-      <Show when={lightboxImage()}>
-        {(att) => (
-          <div
-            class="image-lightbox-backdrop"
-            role="dialog"
-            aria-modal="true"
-            aria-label={att().name ? `Image preview: ${att().name}` : "Image preview"}
-            onClick={closeLightbox}
-          >
-            <button
-              type="button"
-              class="image-lightbox-close"
-              aria-label="close image preview"
               onClick={closeLightbox}
             >
-              ×
-            </button>
-            <img
-              class="image-lightbox-image"
-              src={att().dataUrl}
-              alt={att().name || "image"}
-              onClick={(e) => e.stopPropagation()}
-            />
-            <Show when={att().name}>
-              <div class="image-lightbox-caption" onClick={(e) => e.stopPropagation()}>{att().name}</div>
-            </Show>
-          </div>
-        )}
-      </Show>
-      <PendingList bag={bag} onOpenImage={openLightbox} />
-      <InputBar bag={bag} />
-    </section>
+              <button
+                type="button"
+                class="image-lightbox-close"
+                aria-label="close image preview"
+                onClick={closeLightbox}
+              >
+                ×
+              </button>
+              <img
+                class="image-lightbox-image"
+                src={att().dataUrl}
+                alt={att().name || "image"}
+                onClick={(e) => e.stopPropagation()}
+              />
+              <Show when={att().name}>
+                <div
+                  class="image-lightbox-caption"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {att().name}
+                </div>
+              </Show>
+            </div>
+          )}
+        </Show>
+        <OngoingTodos todos={bag.todos()} />
+        <PendingList bag={bag} onOpenImage={openLightbox} />
+        <InputBar bag={bag} onOpenImage={openLightbox} />
+      </section>
     </div>
   );
 }
@@ -489,7 +888,8 @@ const readImageAttachment = (file: File) =>
         dataUrl: String(reader.result),
         name: file.name || "pasted image",
       });
-    reader.onerror = () => reject(reader.error || new Error("failed to read image"));
+    reader.onerror = () =>
+      reject(reader.error || new Error("failed to read image"));
     reader.readAsDataURL(file);
   });
 
@@ -499,7 +899,85 @@ const imageAttachmentsFromFiles = async (files: File[]) => {
   return Promise.all(images.map(readImageAttachment));
 };
 
-function PendingList(props: { bag: Bag; onOpenImage: (attachment: ImageAttachment) => void }) {
+function todoPriorityLabel(priority?: AgentTodo["priority"]) {
+  return priority || "normal";
+}
+
+function TodoMetaBubbles(props: { item: AgentTodo }) {
+  const priority = () => todoPriorityLabel(props.item.priority);
+  return (
+    <span class="todo-bubbles" aria-label="TODO metadata">
+      <span class="todo-bubble todo-status-bubble">{props.item.status}</span>
+      <Show when={priority() !== "normal"}>
+        <span class="todo-bubble todo-priority-bubble">{priority()}</span>
+      </Show>
+    </span>
+  );
+}
+
+function TodoMarkdownInline(props: { content: string; className?: string }) {
+  const className = () =>
+    (props.className ? props.className + " " : "") + "markdown todo-markdown-inline";
+  const html = () => renderMarkdownInline(props.content.replace(/\n+/g, " "));
+  return <span class={className()} innerHTML={html()} />;
+}
+
+function TodoMarkdownBlock(props: { content: string; className?: string }) {
+  const className = () =>
+    (props.className ? props.className + " " : "") + "markdown todo-markdown-block";
+  return <div class={className()} innerHTML={renderMarkdown(props.content)} />;
+}
+
+function TodoNote(props: { item: AgentTodo; className: string }) {
+  const note = () => props.item.note || "";
+  return (
+    <Show when={note()}>
+      <TodoMarkdownBlock className={`${props.className} todo-note`} content={note()} />
+    </Show>
+  );
+}
+
+function OngoingTodos(props: { todos: AgentTodo[] }) {
+  const [showDone, setShowDone] = createSignal(false);
+  const items = () => props.todos.filter((item) => item.status !== "dropped");
+  const doneItems = () => items().filter((item) => item.status === "done");
+  const visibleItems = () => (showDone() ? items() : items().filter((item) => item.status !== "done"));
+  const label = (item: AgentTodo) => `${item.id}. ${item.text}`;
+  return (
+    <Show when={items().length > 0}>
+      <section class="ongoing-todos" classList={{ "only-done": !showDone() && visibleItems().length === 0 && doneItems().length > 0 }} aria-label="ongoing TODOs">
+        <Show when={doneItems().length > 0}>
+          <button
+            type="button"
+            class="ongoing-todos-toggle"
+            aria-expanded={showDone()}
+            onClick={() => setShowDone((value) => !value)}
+          >
+            {showDone() ? "Hide" : "Show"} {doneItems().length} done
+          </button>
+        </Show>
+        <ul class="ongoing-todos-list">
+          <For each={visibleItems()}>
+            {(item) => (
+              <li class="ongoing-todo" classList={{ [`todo-${item.status}`]: true }}>
+                <div class="ongoing-todo-line">
+                  <TodoMarkdownInline className="ongoing-todo-text" content={label(item)} />
+                  <TodoMetaBubbles item={item} />
+                </div>
+                <TodoNote item={item} className="ongoing-todo-details" />
+              </li>
+            )}
+          </For>
+        </ul>
+      </section>
+    </Show>
+  );
+}
+
+function PendingList(props: {
+  bag: Bag;
+  onOpenImage: (attachment: ImageAttachment) => void;
+}) {
   const { bag, onOpenImage } = props;
   // Only show pending items that belong to the current chat. Items queued
   // for other chats keep draining in the background but stay out of the
@@ -509,7 +987,9 @@ function PendingList(props: { bag: Bag; onOpenImage: (attachment: ImageAttachmen
     <Show when={visible().length > 0}>
       <ul class="pending-list">
         <Index each={visible()}>
-          {(item) => <PendingItem item={item} bag={bag} onOpenImage={onOpenImage} />}
+          {(item) => (
+            <PendingItem item={item} bag={bag} onOpenImage={onOpenImage} />
+          )}
         </Index>
       </ul>
     </Show>
@@ -523,6 +1003,8 @@ function PendingItem(props: {
 }) {
   let inputEl: HTMLTextAreaElement | undefined;
   let fileInput: HTMLInputElement | undefined;
+  let blurTimer: number | null = null;
+  const [autocompleteEnabled, setAutocompleteEnabled] = createSignal(false);
   const addImages = async (files: File[]) => {
     const next = await imageAttachmentsFromFiles(files);
     props.bag.addPendingAttachments(props.item().id, next);
@@ -545,6 +1027,39 @@ function PendingItem(props: {
     props.item().text;
     queueMicrotask(autosize);
   });
+  const focusMessageInput = () => inputEl?.focus({ preventScroll: true });
+  const autocomplete = createComposerAutocomplete({
+    value: () => props.item().text,
+    setValue: (value) => props.bag.editPending(props.item().id, value),
+    cursorFromInput: () => inputEl?.selectionStart,
+    setSelectionRange: (start, end) => inputEl?.setSelectionRange(start, end),
+    currentChatWorktreePath: () => props.bag.currentChatWorktreePath(),
+    autosize,
+    focus: focusMessageInput,
+    enabled: autocompleteEnabled,
+  });
+  const beginEditing = () => {
+    if (blurTimer !== null) {
+      window.clearTimeout(blurTimer);
+      blurTimer = null;
+    }
+    setAutocompleteEnabled(true);
+    props.bag.beginPendingEdit(props.item().id);
+  };
+  const finishEditingSoon = () => {
+    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    blurTimer = window.setTimeout(() => {
+      blurTimer = null;
+      setAutocompleteEnabled(false);
+      autocomplete.closeAutocomplete();
+      props.bag.endPendingEdit(props.item().id);
+    }, 120);
+  };
+  onCleanup(() => {
+    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    setAutocompleteEnabled(false);
+    props.bag.endPendingEdit(props.item().id);
+  });
   return (
     <li class="pending-item">
       <Show when={props.item().attachments?.length}>
@@ -552,16 +1067,28 @@ function PendingItem(props: {
           <Index each={props.item().attachments || []}>
             {(attachment, i) => (
               <div class="attachment-thumb">
-                <button type="button" class="attachment-thumb-open" onClick={() => props.onOpenImage(attachment())} title={attachment().name || "open image"}>
-                  <img src={attachment().dataUrl} alt={attachment().name || "attachment"} />
+                <button
+                  type="button"
+                  class="attachment-thumb-open"
+                  onClick={() => props.onOpenImage(attachment())}
+                  title={attachment().name || "open image"}
+                >
+                  <img
+                    src={attachment().dataUrl}
+                    alt={attachment().name || "attachment"}
+                  />
                 </button>
                 <button
                   type="button"
                   class="attachment-remove"
                   title="remove image"
                   aria-label="remove image"
-                  onClick={() => props.bag.removePendingAttachment(props.item().id, i)}
-                >×</button>
+                  onClick={() =>
+                    props.bag.removePendingAttachment(props.item().id, i)
+                  }
+                >
+                  ×
+                </button>
               </div>
             )}
           </Index>
@@ -577,18 +1104,38 @@ function PendingItem(props: {
         >
           +
         </button>
-        <input ref={(e) => (fileInput = e)} class="attachment-file-input" type="file" accept="image/*" multiple onChange={handleFilePick} />
+        <input
+          ref={(e) => (fileInput = e)}
+          class="attachment-file-input"
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFilePick}
+        />
         <div class="composer-field">
+          <AutocompleteDropdown autocomplete={autocomplete} />
           <textarea
-            ref={inputEl}
+            ref={(el) => (inputEl = el)}
             class="message-input pending-input"
             rows={1}
             autocomplete="off"
             value={props.item().text}
             onInput={(e) => {
+              beginEditing();
               props.bag.editPending(props.item().id, e.currentTarget.value);
+              autocomplete.updateComposerCursor();
               autosize();
             }}
+            onKeyDown={(e) => autocomplete.handleAutocompleteKey(e)}
+            onKeyUp={autocomplete.updateComposerCursor}
+            onClick={autocomplete.updateComposerCursor}
+            onSelect={autocomplete.updateComposerCursor}
+            onFocus={() => {
+              beginEditing();
+              autocomplete.updateComposerCursor();
+              autocomplete.openAutocomplete();
+            }}
+            onBlur={finishEditingSoon}
             aria-label="queued message"
           />
         </div>
@@ -606,7 +1153,9 @@ function PendingItem(props: {
   );
 }
 
-function formatAutocompleteChat(suggestion: ChatAutocompleteSuggestion): string {
+function formatAutocompleteChat(
+  suggestion: ChatAutocompleteSuggestion,
+): string {
   const title = suggestion.chatTitle?.trim();
   return title || suggestion.chatId;
 }
@@ -615,229 +1164,399 @@ function formatAutocompleteTime(ms: number): string {
   return absoluteTime(ms);
 }
 
-type AutocompleteMode = "chat" | "path";
+type ComposerAutocomplete = ReturnType<typeof createComposerAutocomplete>;
 
-const PATH_AUTOCOMPLETE_LIMIT = 24;
-const PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY = 2;
-
-type PathAutocompleteContext = {
-  start: number;
-  end: number;
-  basePath: string;
-  query: string;
-  dirPrefix: string;
-  namePrefix: string;
-  listDir: string;
+type ComposerAutocompleteOptions = {
+  value: () => string;
+  setValue: (value: string) => void;
+  cursorFromInput: () => number | undefined;
+  setSelectionRange: (start: number, end: number) => void;
+  currentChatWorktreePath: () => string | null | undefined;
+  autosize: () => void;
+  focus: () => void;
+  enabled?: () => boolean;
 };
 
-type PathAutocompleteSuggestion = {
-  name: string;
-  path: string;
-  kind: string;
-  size: number;
-  mtime: number;
-};
+function createComposerAutocomplete(options: ComposerAutocompleteOptions) {
+  const [composerCursor, setComposerCursor] = createSignal(0);
+  const [autocompleteOpen, setAutocompleteOpen] = createSignal(false);
+  const [autocompleteMode, setAutocompleteMode] =
+    createSignal<AutocompleteMode>("chat");
+  const [autocompleteLoading, setAutocompleteLoading] = createSignal(false);
+  const [autocompleteSuggestions, setAutocompleteSuggestions] = createSignal<
+    ChatAutocompleteSuggestion[]
+  >([]);
+  const [pathSnapshot, setPathSnapshot] =
+    createSignal<PathAutocompleteSnapshot | null>(null);
+  const [autocompleteActive, setAutocompleteActive] = createSignal(0);
+  const [chatAutocompleteSuppressedFor, setChatAutocompleteSuppressedFor] =
+    createSignal<string | null>(null);
+  const [
+    pathAutocompleteSuppressedFuzzyFor,
+    setPathAutocompleteSuppressedFuzzyFor,
+  ] = createSignal<string | null>(null);
+  let autocompleteRequestSeq = 0;
+  const chatAutocompleteCache = new Map<string, ChatAutocompleteSuggestion[]>();
 
-type PathAutocompleteSnapshot = {
-  key: string;
-  suggestions: PathAutocompleteSuggestion[];
-  loading: boolean;
-  interactive: boolean;
-};
+  const autocompleteQuery = () => options.value().trim();
+  const pathAutocompleteContext = createMemo(() =>
+    findPathAutocompleteContext(
+      options.value(),
+      composerCursor(),
+      options.currentChatWorktreePath(),
+    ),
+  );
+  const pathSuggestions = () => pathSnapshot()?.suggestions ?? [];
+  const activeAutocompleteCount = () =>
+    autocompleteMode() === "path"
+      ? pathSuggestions().length
+      : autocompleteSuggestions().length;
+  const pathAutocompleteInteractive = () =>
+    pathSnapshot()?.interactive ?? false;
+  const showAutocomplete = () => {
+    if (!autocompleteOpen()) return false;
+    if (autocompleteMode() === "path") return activeAutocompleteCount() > 0;
+    return activeAutocompleteCount() > 0;
+  };
+  const openAutocomplete = () => setAutocompleteOpen(true);
+  const closeAutocomplete = () => setAutocompleteOpen(false);
+  const updateComposerCursor = () => {
+    const value = options.value();
+    setComposerCursor(options.cursorFromInput() ?? value.length);
+  };
+  const applyAutocomplete = (suggestion: ChatAutocompleteSuggestion) => {
+    options.setValue(suggestion.text);
+    setComposerCursor(suggestion.text.length);
+    setAutocompleteOpen(false);
+    queueMicrotask(() => {
+      options.autosize();
+      options.focus();
+      options.setSelectionRange(suggestion.text.length, suggestion.text.length);
+    });
+  };
+  const applyPathAutocomplete = (
+    suggestion: PathAutocompleteSuggestion | undefined,
+  ) => {
+    const context = pathAutocompleteContext();
+    const snapshot = pathSnapshot();
+    if (
+      !context ||
+      !suggestion ||
+      !snapshot?.interactive ||
+      snapshot.key !== pathAutocompleteKey(context)
+    )
+      return;
+    const current = options.value();
+    const isDir = suggestion.kind === "dir";
+    const replacement = "@" + suggestion.path + (isDir ? "" : " ");
+    const next =
+      current.slice(0, context.start) +
+      replacement +
+      current.slice(context.end);
+    const nextContext = isDir
+      ? findPathAutocompleteContext(
+          next,
+          context.start + replacement.length,
+          context.basePath,
+        )
+      : null;
+    setPathAutocompleteSuppressedFuzzyFor(
+      nextContext ? pathAutocompleteKey(nextContext) : null,
+    );
+    const cursor = context.start + replacement.length;
+    options.setValue(next);
+    setComposerCursor(cursor);
+    setAutocompleteOpen(false);
+    if (!isDir) setChatAutocompleteSuppressedFor(next);
+    queueMicrotask(() => {
+      options.autosize();
+      options.focus();
+      options.setSelectionRange(cursor, cursor);
+    });
+  };
+  const handleAutocompleteKey = (e: KeyboardEvent): boolean => {
+    const mode = autocompleteMode();
+    const count = activeAutocompleteCount();
+    const pathContextActive = mode === "path" && autocompleteOpen();
+    if (pathContextActive && e.key === "Tab") {
+      e.preventDefault();
+      if (e.repeat || count === 0 || !pathAutocompleteInteractive())
+        return true;
+      const suggestions = pathSuggestions();
+      applyPathAutocomplete(
+        suggestions[autocompleteActive()] || suggestions[0],
+      );
+      return true;
+    }
+    if (
+      autocompleteOpen() &&
+      count > 0 &&
+      (mode !== "path" || pathAutocompleteInteractive())
+    ) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAutocompleteActive((i) => (i + 1) % count);
+        return true;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAutocompleteActive((i) => (i - 1 + count) % count);
+        return true;
+      }
+      if (shouldApplyComposerAutocompleteKey(e)) {
+        e.preventDefault();
+        if (e.repeat) return true;
+        if (mode === "path") {
+          const suggestions = pathSuggestions();
+          applyPathAutocomplete(
+            suggestions[autocompleteActive()] || suggestions[0],
+          );
+        } else {
+          const suggestions = autocompleteSuggestions();
+          applyAutocomplete(
+            suggestions[autocompleteActive()] || suggestions[0],
+          );
+        }
+        return true;
+      }
+    }
+    if (e.key === "Escape" && showAutocomplete()) {
+      e.preventDefault();
+      closeAutocomplete();
+      return true;
+    }
+    return false;
+  };
 
-const PATH_TOKEN_BOUNDARIES = "([{\"'`";
+  createEffect(() => {
+    const enabled = options.enabled?.() ?? true;
+    const seq = ++autocompleteRequestSeq;
+    if (!enabled) {
+      closeAutocomplete();
+      setAutocompleteLoading(false);
+      setAutocompleteSuggestions([]);
+      setPathSnapshot(null);
+      return;
+    }
+    const context = pathAutocompleteContext();
+    const query = autocompleteQuery();
+    setAutocompleteActive(0);
 
-function isPathTokenBoundary(value: string): boolean {
-  return value === "" || /\s/.test(value) || PATH_TOKEN_BOUNDARIES.includes(value);
-}
+    if (context) {
+      const key = pathAutocompleteKey(context);
+      setAutocompleteMode("path");
+      setAutocompleteSuggestions([]);
+      openAutocomplete();
 
-function findPathAutocompleteContext(
-  text: string,
-  cursor: number,
-  basePath: string | null | undefined,
-): PathAutocompleteContext | null {
-  if (!basePath) return null;
-  const safeCursor = Math.max(0, Math.min(cursor, text.length));
-  let at = safeCursor > 0 ? text.lastIndexOf("@", safeCursor - 1) : -1;
-  while (at >= 0) {
-    const hasBoundary = isPathTokenBoundary(at === 0 ? "" : text[at - 1] || "");
-    const rawBeforeCursor = text.slice(at + 1, safeCursor);
-    if (hasBoundary && !/\s/.test(rawBeforeCursor)) break;
-    at = at > 0 ? text.lastIndexOf("@", at - 1) : -1;
-  }
-  if (at < 0) return null;
+      const cached = cachedPathAutocompleteSnapshot(context);
+      if (cached) {
+        setPathSnapshot(cached);
+      } else {
+        setPathSnapshot((previous) =>
+          previous?.key === key
+            ? previous
+            : { key, suggestions: [], loading: true, interactive: false },
+        );
+      }
+      setAutocompleteLoading(false);
 
-  const rawBeforeCursor = text.slice(at + 1, safeCursor);
-  if (/\s/.test(rawBeforeCursor)) return null;
+      const timer = window.setTimeout(async () => {
+        const directEntries = await cachedPathAutocompleteList(context.listDir);
+        if (seq !== autocompleteRequestSeq) return;
 
-  let end = safeCursor;
-  while (end < text.length && !/\s/.test(text[end] || "")) end += 1;
+        const direct = pathAutocompleteSuggestions(
+          context,
+          directEntries,
+          PATH_AUTOCOMPLETE_LIMIT,
+        );
+        const suppressFuzzy =
+          untrack(pathAutocompleteSuppressedFuzzyFor) === key;
+        const willSearch =
+          !context.absolute &&
+          !suppressFuzzy &&
+          context.query.length >= PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY;
+        setPathSnapshot({
+          key,
+          suggestions: direct,
+          loading: willSearch,
+          interactive: true,
+        });
 
-  const lastSlash = rawBeforeCursor.lastIndexOf("/");
-  const dirPrefix = lastSlash >= 0 ? rawBeforeCursor.slice(0, lastSlash + 1) : "";
-  const namePrefix = lastSlash >= 0 ? rawBeforeCursor.slice(lastSlash + 1) : rawBeforeCursor;
-  const relativeDir = dirPrefix.replace(/^\/+/, "").replace(/\/+$/, "");
-  const base = basePath.replace(/\/+$/, "");
-  const listDir = relativeDir ? base + "/" + relativeDir : base || "/";
+        if (!willSearch) return;
 
-  return { start: at, end, basePath: base, query: rawBeforeCursor.replace(/^\/+/, ""), dirPrefix, namePrefix, listDir };
-}
+        const fuzzyEntries = await cachedPathAutocompleteSearch(
+          context.basePath,
+          context.query,
+          PATH_AUTOCOMPLETE_LIMIT,
+        );
+        if (seq !== autocompleteRequestSeq) return;
+        const fuzzy = pathAutocompleteSearchSuggestions(fuzzyEntries);
+        const suggestions = mergePathAutocompleteSuggestions(
+          direct,
+          fuzzy,
+          PATH_AUTOCOMPLETE_LIMIT,
+        );
+        setPathSnapshot({
+          key,
+          suggestions,
+          loading: false,
+          interactive: true,
+        });
+      }, 30);
+      onCleanup(() => window.clearTimeout(timer));
+      return;
+    }
 
-function pathAutocompleteKey(context: PathAutocompleteContext): string {
-  return [context.basePath, context.listDir, context.dirPrefix, context.namePrefix, context.query].join("\0");
-}
+    setPathSnapshot(null);
+    if (
+      query.length === 0 ||
+      chatAutocompleteSuppressedFor() === options.value()
+    ) {
+      closeAutocomplete();
+      setAutocompleteLoading(false);
+      setAutocompleteSuggestions([]);
+      return;
+    }
+    setAutocompleteMode("chat");
+    openAutocomplete();
+    const cached = chatAutocompleteCache.get(query.toLowerCase());
+    if (cached) {
+      setAutocompleteSuggestions(cached);
+      setAutocompleteLoading(false);
+    } else {
+      setAutocompleteLoading(true);
+    }
+    if (cached) return;
 
-function pathAutocompleteRank(name: string, prefix: string): number {
-  if (!prefix) return 2;
-  const lowerName = name.toLowerCase();
-  const lowerPrefix = prefix.toLowerCase();
-  if (lowerName === lowerPrefix) return 5;
-  if (lowerName.startsWith(lowerPrefix)) return 4;
-  if (lowerName.includes(lowerPrefix)) return 2;
-  return 0;
-}
+    const timer = window.setTimeout(async () => {
+      const r = await api.chat.autocomplete(query, 12);
+      if (seq !== autocompleteRequestSeq) return;
+      if (r.ok) {
+        chatAutocompleteCache.set(query.toLowerCase(), r.value.suggestions);
+        setAutocompleteSuggestions(r.value.suggestions);
+      } else {
+        setAutocompleteSuggestions([]);
+      }
+      setAutocompleteLoading(false);
+    }, 20);
+    onCleanup(() => window.clearTimeout(timer));
+  });
 
-function pathAutocompleteSuggestions(
-  context: PathAutocompleteContext,
-  entries: FsEntry[],
-  limit: number,
-): PathAutocompleteSuggestion[] {
-  const prefix = context.namePrefix;
-  return entries
-    .filter((entry) => isPathAutocompleteEntry(entry))
-    .filter((entry) => prefix.startsWith(".") || !entry.name.startsWith("."))
-    .map((entry) => ({ entry, rank: pathAutocompleteRank(entry.name, prefix) }))
-    .filter(({ rank }) => rank > 0)
-    .sort((a, b) => {
-      const ak = a.entry.kind === "dir" ? 0 : 1;
-      const bk = b.entry.kind === "dir" ? 0 : 1;
-      if (ak !== bk) return ak - bk;
-      if (a.rank !== b.rank) return b.rank - a.rank;
-      return a.entry.name.localeCompare(b.entry.name, undefined, { sensitivity: "base" });
-    })
-    .slice(0, limit)
-    .map(({ entry }) => pathAutocompleteSuggestionFromEntry(context.dirPrefix + entry.name, entry));
-}
-
-function isPathAutocompleteEntry(entry: unknown): entry is FsEntry {
-  return Boolean(entry && typeof entry === "object" && typeof (entry as FsEntry).name === "string");
-}
-
-function pathAutocompleteSuggestionFromEntry(path: string, entry: FsEntry): PathAutocompleteSuggestion {
-  const cleanPath = typeof path === "string" ? path : entry.name;
-  const kind = typeof entry.kind === "string" ? entry.kind : "unknown";
-  const isDir = kind === "dir";
   return {
-    name: entry.name,
-    path: cleanPath.replace(/^\/+/, "") + (isDir && !cleanPath.endsWith("/") ? "/" : ""),
-    kind,
-    size: typeof entry.size === "number" && Number.isFinite(entry.size) ? entry.size : 0,
-    mtime: typeof entry.mtime === "number" && Number.isFinite(entry.mtime) ? entry.mtime : 0,
+    autocompleteMode,
+    autocompleteLoading,
+    autocompleteSuggestions,
+    pathSuggestions,
+    autocompleteActive,
+    setAutocompleteActive,
+    showAutocomplete,
+    openAutocomplete,
+    closeAutocomplete,
+    updateComposerCursor,
+    applyAutocomplete,
+    applyPathAutocomplete,
+    handleAutocompleteKey,
   };
 }
 
-function pathAutocompleteSearchSuggestions(entries: FsSearchEntry[]): PathAutocompleteSuggestion[] {
-  return entries
-    .filter((entry) => isPathAutocompleteEntry(entry) && typeof entry.relativePath === "string")
-    .map((entry) => pathAutocompleteSuggestionFromEntry(entry.relativePath, entry));
+function AutocompleteDropdown(props: { autocomplete: ComposerAutocomplete }) {
+  const autocomplete = props.autocomplete;
+  return (
+    <Show when={autocomplete.showAutocomplete()}>
+      <div
+        class="autocomplete-dropdown"
+        role="listbox"
+        aria-label={
+          autocomplete.autocompleteMode() === "path"
+            ? "path suggestions"
+            : "chat input suggestions"
+        }
+      >
+        <Show
+          when={autocomplete.autocompleteMode() !== "path"}
+          fallback={
+            <For each={autocomplete.pathSuggestions()}>
+              {(suggestion, i) => (
+                <button
+                  type="button"
+                  classList={{
+                    "autocomplete-option": true,
+                    active: i() === autocomplete.autocompleteActive(),
+                  }}
+                  role="option"
+                  aria-selected={i() === autocomplete.autocompleteActive()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseMove={() => autocomplete.setAutocompleteActive(i())}
+                  onClick={() => autocomplete.applyPathAutocomplete(suggestion)}
+                  title={"@" + suggestion.path}
+                >
+                  <span class="autocomplete-path-row">
+                    <span class="autocomplete-path-kind" aria-hidden="true">
+                      {suggestion.kind === "dir" ? "▸" : "•"}
+                    </span>
+                    <span class="autocomplete-text autocomplete-path">
+                      @{suggestion.path}
+                    </span>
+                  </span>
+                  <span class="autocomplete-meta">
+                    {formatPathAutocompleteKind(suggestion)}
+                  </span>
+                </button>
+              )}
+            </For>
+          }
+        >
+          <Show
+            when={
+              !autocomplete.autocompleteLoading() ||
+              autocomplete.autocompleteSuggestions().length > 0
+            }
+            fallback={null}
+          >
+            <Show
+              when={autocomplete.autocompleteSuggestions().length > 0}
+              fallback={
+                <div class="autocomplete-empty">No matching chat messages</div>
+              }
+            >
+              <For each={autocomplete.autocompleteSuggestions()}>
+                {(suggestion, i) => (
+                  <button
+                    type="button"
+                    classList={{
+                      "autocomplete-option": true,
+                      active: i() === autocomplete.autocompleteActive(),
+                    }}
+                    role="option"
+                    aria-selected={i() === autocomplete.autocompleteActive()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseMove={() => autocomplete.setAutocompleteActive(i())}
+                    onClick={() => autocomplete.applyAutocomplete(suggestion)}
+                    title={suggestion.text}
+                  >
+                    <span class="autocomplete-text">{suggestion.text}</span>
+                    <span class="autocomplete-meta">
+                      {formatAutocompleteChat(suggestion)}
+                      <Show when={formatAutocompleteTime(suggestion.at)}>
+                        {" "}
+                        · {formatAutocompleteTime(suggestion.at)}
+                      </Show>
+                    </span>
+                  </button>
+                )}
+              </For>
+            </Show>
+          </Show>
+        </Show>
+      </div>
+    </Show>
+  );
 }
 
-function mergePathAutocompleteSuggestions(
-  direct: PathAutocompleteSuggestion[],
-  fuzzy: PathAutocompleteSuggestion[],
-  limit: number,
-): PathAutocompleteSuggestion[] {
-  const seen = new Set<string>();
-  const merged: PathAutocompleteSuggestion[] = [];
-  for (const suggestion of [...direct, ...fuzzy]) {
-    const key = suggestion.path.replace(/\/+$/, "") || suggestion.path;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(suggestion);
-    if (merged.length >= limit) break;
-  }
-  return merged;
-}
-
-function formatPathAutocompleteKind(suggestion: PathAutocompleteSuggestion): string {
-  if (suggestion.kind === "dir") return "directory";
-  if (suggestion.kind === "file") return "file";
-  return suggestion.kind || "path";
-}
-
-type CachedPromise<T> = { promise: Promise<T>; value?: T };
-
-const pathAutocompleteListCache = new Map<string, CachedPromise<FsEntry[]>>();
-const pathAutocompleteSearchCache = new Map<string, CachedPromise<FsSearchEntry[]>>();
-
-function cachedPathAutocompleteListValue(path: string): FsEntry[] | undefined {
-  return pathAutocompleteListCache.get(path)?.value;
-}
-
-function cachedPathAutocompleteSearchValue(basePath: string, query: string, limit: number): FsSearchEntry[] | undefined {
-  return pathAutocompleteSearchCache.get(basePath + "\0" + query + "\0" + limit)?.value;
-}
-
-async function cachedPathAutocompleteList(path: string): Promise<FsEntry[]> {
-  let cached = pathAutocompleteListCache.get(path);
-  if (!cached) {
-    const promise = api.fs.list(path)
-      .then((result) => (result.ok && Array.isArray(result.value.entries) ? result.value.entries : []))
-      .catch(() => []);
-    cached = { promise };
-    pathAutocompleteListCache.set(path, cached);
-    promise.then(
-      (value) => {
-        cached.value = value;
-      },
-      () => {
-        if (pathAutocompleteListCache.get(path) === cached) pathAutocompleteListCache.delete(path);
-      },
-    );
-  }
-  return cached.promise;
-}
-
-async function cachedPathAutocompleteSearch(basePath: string, query: string, limit: number): Promise<FsSearchEntry[]> {
-  const key = basePath + "\0" + query + "\0" + limit;
-  let cached = pathAutocompleteSearchCache.get(key);
-  if (!cached) {
-    const promise = api.fs.search(basePath, query, limit)
-      .then((result) => (result.ok && Array.isArray(result.value.entries) ? result.value.entries : []))
-      .catch(() => []);
-    cached = { promise };
-    pathAutocompleteSearchCache.set(key, cached);
-    promise.then(
-      (value) => {
-        cached.value = value;
-      },
-      () => {
-        if (pathAutocompleteSearchCache.get(key) === cached) pathAutocompleteSearchCache.delete(key);
-      },
-    );
-  }
-  return cached.promise;
-}
-
-function cachedPathAutocompleteSnapshot(context: PathAutocompleteContext): PathAutocompleteSnapshot | null {
-  const directEntries = cachedPathAutocompleteListValue(context.listDir);
-  if (!directEntries) return null;
-  const direct = pathAutocompleteSuggestions(context, directEntries, PATH_AUTOCOMPLETE_LIMIT);
-  const fuzzyEntries =
-    context.query.length >= PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY
-      ? cachedPathAutocompleteSearchValue(context.basePath, context.query, PATH_AUTOCOMPLETE_LIMIT)
-      : undefined;
-  const fuzzy = fuzzyEntries ? pathAutocompleteSearchSuggestions(fuzzyEntries) : [];
-  const suggestions = mergePathAutocompleteSuggestions(direct, fuzzy, PATH_AUTOCOMPLETE_LIMIT);
-  return {
-    key: pathAutocompleteKey(context),
-    suggestions,
-    loading: context.query.length >= PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY && !fuzzyEntries,
-    interactive: true,
-  };
-}
-
-function InputBar(props: { bag: Bag }) {
+function InputBar(props: {
+  bag: Bag;
+  onOpenImage: (attachment: ImageAttachment) => void;
+}) {
   const { bag } = props;
   let inputEl: HTMLTextAreaElement | undefined;
   let fileInput: HTMLInputElement | undefined;
@@ -849,70 +1568,8 @@ function InputBar(props: { bag: Bag }) {
     inputEl?.focus({ preventScroll: true });
   };
   const [attachments, setAttachments] = createSignal<ImageAttachment[]>([]);
-  const [composerCursor, setComposerCursor] = createSignal(0);
-  const [autocompleteOpen, setAutocompleteOpen] = createSignal(false);
-  const [autocompleteMode, setAutocompleteMode] = createSignal<AutocompleteMode>("chat");
-  const [playPromptMode, setPlayPromptMode] = createSignal<PlayPromptMode>(null);
-  const [autocompleteLoading, setAutocompleteLoading] = createSignal(false);
-  const [autocompleteSuggestions, setAutocompleteSuggestions] = createSignal<ChatAutocompleteSuggestion[]>([]);
-  const [pathSnapshot, setPathSnapshot] = createSignal<PathAutocompleteSnapshot | null>(null);
-  const [autocompleteActive, setAutocompleteActive] = createSignal(0);
-  const [chatAutocompleteSuppressedFor, setChatAutocompleteSuppressedFor] = createSignal<string | null>(null);
-  const [pathAutocompleteSuppressedFuzzyFor, setPathAutocompleteSuppressedFuzzyFor] = createSignal<string | null>(null);
-  let autocompleteRequestSeq = 0;
-  const chatAutocompleteCache = new Map<string, ChatAutocompleteSuggestion[]>();
-
-  const autocompleteQuery = () => bag.wipText().trim();
-  const pathAutocompleteContext = createMemo(() =>
-    findPathAutocompleteContext(bag.wipText(), composerCursor(), bag.currentChatWorktreePath()),
-  );
-  const pathSuggestions = () => pathSnapshot()?.suggestions ?? [];
-  const activeAutocompleteCount = () =>
-    autocompleteMode() === "path" ? pathSuggestions().length : autocompleteSuggestions().length;
-  const pathAutocompleteInteractive = () => pathSnapshot()?.interactive ?? false;
-  const showAutocomplete = () => {
-    if (!autocompleteOpen()) return false;
-    if (autocompleteMode() === "path") return activeAutocompleteCount() > 0;
-    return activeAutocompleteCount() > 0;
-  };
-  const openAutocomplete = () => setAutocompleteOpen(true);
-  const closeAutocomplete = () => setAutocompleteOpen(false);
-  const updateComposerCursor = () => {
-    const value = inputEl?.value ?? bag.wipText();
-    setComposerCursor(inputEl?.selectionStart ?? value.length);
-  };
-  const applyAutocomplete = (suggestion: ChatAutocompleteSuggestion) => {
-    bag.setWipText(suggestion.text);
-    setComposerCursor(suggestion.text.length);
-    setAutocompleteOpen(false);
-    queueMicrotask(() => {
-      autosize();
-      focusMessageInput();
-      inputEl?.setSelectionRange(suggestion.text.length, suggestion.text.length);
-    });
-  };
-  const applyPathAutocomplete = (suggestion: PathAutocompleteSuggestion | undefined) => {
-    const context = pathAutocompleteContext();
-    const snapshot = pathSnapshot();
-    if (!context || !suggestion || !snapshot?.interactive || snapshot.key !== pathAutocompleteKey(context)) return;
-    const current = bag.wipText();
-    const isDir = suggestion.kind === "dir";
-    const replacement = "@" + suggestion.path + (isDir ? "" : " ");
-    const next = current.slice(0, context.start) + replacement + current.slice(context.end);
-    const nextContext = isDir ? findPathAutocompleteContext(next, context.start + replacement.length, context.basePath) : null;
-    setPathAutocompleteSuppressedFuzzyFor(nextContext ? pathAutocompleteKey(nextContext) : null);
-    const cursor = context.start + replacement.length;
-    bag.setWipText(next);
-    setComposerCursor(cursor);
-    setAutocompleteOpen(false);
-    if (!isDir) setChatAutocompleteSuppressedFor(next);
-    queueMicrotask(() => {
-      autosize();
-      focusMessageInput();
-      inputEl?.setSelectionRange(cursor, cursor);
-    });
-  };
-
+  const [playPromptMode, setPlayPromptMode] =
+    createSignal<PlayPromptMode>(null);
   const addImages = async (files: File[]) => {
     const next = await imageAttachmentsFromFiles(files);
     if (!next.length) return;
@@ -943,7 +1600,7 @@ function InputBar(props: { bag: Bag }) {
   };
   const offerPlayPrompt = (mode: Exclude<PlayPromptMode, null>) => {
     if (disabled() || bag.thinking()) return;
-    closeAutocomplete();
+    autocomplete.closeAutocomplete();
     if (restartPromptTimer !== null) window.clearTimeout(restartPromptTimer);
     setPlayPromptMode(mode);
     restartPromptTimer = window.setTimeout(() => {
@@ -954,19 +1611,22 @@ function InputBar(props: { bag: Bag }) {
   const offerRestart = () => offerPlayPrompt("restart");
   const offerResume = () => offerPlayPrompt("resume");
   const playPromptOpen = () => playPromptMode() !== null && !bag.thinking();
-  const playPromptTitle = () => (playPromptMode() === "resume" ? "resume agent" : "restart chat");
-  const runPlayPrompt = async () => {
+  const playPromptTitle = () =>
+    playPromptMode() === "resume" ? "resume agent" : "restart chat";
+  const runPlayPrompt = async (
+    fallbackMode?: Exclude<PlayPromptMode, null>,
+  ) => {
     if (bag.thinking()) {
       closeRestartPrompt();
       return;
     }
     const mode = playPromptMode();
     closeRestartPrompt();
-    if (!mode) {
+    if (!mode && !fallbackMode) {
       focusMessageInput();
       return;
     }
-    if (mode === "resume") await bag.resumeAgent();
+    if ((mode ?? fallbackMode) === "resume") await bag.resumeAgent();
     else await bag.createChat(bag.currentChatPath() ?? undefined);
     focusMessageInput();
   };
@@ -989,48 +1649,19 @@ function InputBar(props: { bag: Bag }) {
     inputEl.style.height = next + "px";
     inputEl.style.overflowY = inputEl.scrollHeight > max ? "auto" : "hidden";
   };
+  const autocomplete = createComposerAutocomplete({
+    value: () => bag.wipText(),
+    setValue: bag.setWipText,
+    cursorFromInput: () => inputEl?.selectionStart,
+    setSelectionRange: (start, end) => inputEl?.setSelectionRange(start, end),
+    currentChatWorktreePath: () => bag.currentChatWorktreePath(),
+    autosize,
+    focus: focusMessageInput,
+  });
   // Cmd+Enter (or Ctrl+Enter) submits. Plain Enter inserts a newline.
   const handleKey = (e: KeyboardEvent) => {
-    const mode = autocompleteMode();
-    const count = activeAutocompleteCount();
-    const pathContextActive = mode === "path" && autocompleteOpen();
-    if (pathContextActive && e.key === "Tab") {
-      e.preventDefault();
-      if (e.repeat || count === 0 || !pathAutocompleteInteractive()) return;
-      const suggestions = pathSuggestions();
-      applyPathAutocomplete(suggestions[autocompleteActive()] || suggestions[0]);
-      return;
-    }
-    if (autocompleteOpen() && count > 0 && (mode !== "path" || pathAutocompleteInteractive())) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setAutocompleteActive((i) => (i + 1) % count);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setAutocompleteActive((i) => (i - 1 + count) % count);
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.shiftKey)) {
-        e.preventDefault();
-        if (e.repeat) return;
-        if (mode === "path") {
-          const suggestions = pathSuggestions();
-          applyPathAutocomplete(suggestions[autocompleteActive()] || suggestions[0]);
-        } else {
-          const suggestions = autocompleteSuggestions();
-          applyAutocomplete(suggestions[autocompleteActive()] || suggestions[0]);
-        }
-        return;
-      }
-    }
+    if (autocomplete.handleAutocompleteKey(e)) return;
     if (e.key === "Escape") {
-      if (showAutocomplete()) {
-        e.preventDefault();
-        closeAutocomplete();
-        return;
-      }
       if (!e.isComposing && !bag.thinking()) {
         e.preventDefault();
         offerRestart();
@@ -1042,6 +1673,7 @@ function InputBar(props: { bag: Bag }) {
       submit();
     }
   };
+
   createEffect(() => {
     bag.wipText();
     queueMicrotask(autosize);
@@ -1060,78 +1692,7 @@ function InputBar(props: { bag: Bag }) {
   onCleanup(() => {
     if (restartPromptTimer !== null) window.clearTimeout(restartPromptTimer);
   });
-  createEffect(() => {
-    const context = pathAutocompleteContext();
-    const query = autocompleteQuery();
-    const seq = ++autocompleteRequestSeq;
-    setAutocompleteActive(0);
 
-    if (context) {
-      const key = pathAutocompleteKey(context);
-      setAutocompleteMode("path");
-      setAutocompleteSuggestions([]);
-      openAutocomplete();
-
-      const cached = cachedPathAutocompleteSnapshot(context);
-      if (cached) {
-        setPathSnapshot(cached);
-      } else {
-        setPathSnapshot((previous) => (previous?.key === key ? previous : { key, suggestions: [], loading: true, interactive: false }));
-      }
-      setAutocompleteLoading(false);
-
-      const timer = window.setTimeout(async () => {
-        const directEntries = await cachedPathAutocompleteList(context.listDir);
-        if (seq !== autocompleteRequestSeq) return;
-
-        const direct = pathAutocompleteSuggestions(context, directEntries, PATH_AUTOCOMPLETE_LIMIT);
-        const suppressFuzzy = untrack(pathAutocompleteSuppressedFuzzyFor) === key;
-        const willSearch = !suppressFuzzy && context.query.length >= PATH_AUTOCOMPLETE_FUZZY_MIN_QUERY;
-        setPathSnapshot({ key, suggestions: direct, loading: willSearch, interactive: true });
-
-        if (!willSearch) return;
-
-        // Whole-worktree fuzzy search can be expensive; it augments the already
-        // rendered directory matches without reopening or clearing the popup.
-        const fuzzyEntries = await cachedPathAutocompleteSearch(context.basePath, context.query, PATH_AUTOCOMPLETE_LIMIT);
-        if (seq !== autocompleteRequestSeq) return;
-        const fuzzy = pathAutocompleteSearchSuggestions(fuzzyEntries);
-        const suggestions = mergePathAutocompleteSuggestions(direct, fuzzy, PATH_AUTOCOMPLETE_LIMIT);
-        setPathSnapshot({ key, suggestions, loading: false, interactive: true });
-      }, 30);
-      onCleanup(() => window.clearTimeout(timer));
-      return;
-    }
-
-    setPathSnapshot(null);
-    if (query.length === 0 || chatAutocompleteSuppressedFor() === bag.wipText()) {
-      closeAutocomplete();
-      setAutocompleteLoading(false);
-      setAutocompleteSuggestions([]);
-      return;
-    }
-    setAutocompleteMode("chat");
-    openAutocomplete();
-    const cached = chatAutocompleteCache.get(query.toLowerCase());
-    if (cached) {
-      setAutocompleteSuggestions(cached);
-      setAutocompleteLoading(false);
-    } else {
-      setAutocompleteLoading(true);
-    }
-    const timer = window.setTimeout(async () => {
-      const r = await api.chat.autocomplete(query, 12);
-      if (seq !== autocompleteRequestSeq) return;
-      if (r.ok) {
-        if (r.value.suggestions.length) chatAutocompleteCache.set(query.toLowerCase(), r.value.suggestions);
-        setAutocompleteSuggestions(r.value.suggestions);
-      } else {
-        setAutocompleteSuggestions([]);
-      }
-      setAutocompleteLoading(false);
-    }, cached ? 0 : 20);
-    onCleanup(() => window.clearTimeout(timer));
-  });
   createEffect(() => {
     bag.chatFocusRequest();
     if (bag.view() !== "chat") return;
@@ -1151,13 +1712,22 @@ function InputBar(props: { bag: Bag }) {
           <For each={attachments()}>
             {(att, i) => (
               <div class="attachment-thumb">
-                <img src={att.dataUrl} alt={att.name || "image"} />
+                <button
+                  type="button"
+                  class="attachment-thumb-open"
+                  onClick={() => props.onOpenImage(att)}
+                  title={att.name || "open image"}
+                >
+                  <img src={att.dataUrl} alt={att.name || "image"} />
+                </button>
                 <button
                   type="button"
                   class="attachment-remove"
                   title="remove image"
                   onClick={() =>
-                    setAttachments(attachments().filter((_, idx) => idx !== i()))
+                    setAttachments(
+                      attachments().filter((_, idx) => idx !== i()),
+                    )
                   }
                 >
                   ×
@@ -1188,101 +1758,36 @@ function InputBar(props: { bag: Bag }) {
           disabled={disabled()}
         />
         <div class="composer-field">
-          <Show when={showAutocomplete()}>
-            <div
-              class="autocomplete-dropdown"
-              role="listbox"
-              aria-label={autocompleteMode() === "path" ? "path suggestions" : "chat input suggestions"}
-            >
-              <Show
-                when={autocompleteMode() !== "path"}
-                fallback={
-                  <For each={pathSuggestions()}>
-                    {(suggestion, i) => (
-                      <button
-                        type="button"
-                        classList={{
-                          "autocomplete-option": true,
-                          active: i() === autocompleteActive(),
-                        }}
-                        role="option"
-                        aria-selected={i() === autocompleteActive()}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onMouseEnter={() => setAutocompleteActive(i())}
-                        onClick={() => applyPathAutocomplete(suggestion)}
-                        title={"@" + suggestion.path}
-                      >
-                        <span class="autocomplete-path-row">
-                          <span class="autocomplete-path-kind" aria-hidden="true">
-                            {suggestion.kind === "dir" ? "▸" : "•"}
-                          </span>
-                          <span class="autocomplete-text autocomplete-path">@{suggestion.path}</span>
-                        </span>
-                        <span class="autocomplete-meta">{formatPathAutocompleteKind(suggestion)}</span>
-                      </button>
-                    )}
-                  </For>
-                }
-              >
-                <Show
-                  when={!autocompleteLoading() || autocompleteSuggestions().length > 0}
-                  fallback={null}
-                >
-                  <Show
-                    when={autocompleteSuggestions().length > 0}
-                    fallback={<div class="autocomplete-empty">No matching chat messages</div>}
-                  >
-                    <For each={autocompleteSuggestions()}>
-                      {(suggestion, i) => (
-                        <button
-                          type="button"
-                          classList={{
-                            "autocomplete-option": true,
-                            active: i() === autocompleteActive(),
-                          }}
-                          role="option"
-                          aria-selected={i() === autocompleteActive()}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onMouseEnter={() => setAutocompleteActive(i())}
-                          onClick={() => applyAutocomplete(suggestion)}
-                          title={suggestion.text}
-                        >
-                          <span class="autocomplete-text">{suggestion.text}</span>
-                          <span class="autocomplete-meta">
-                            {formatAutocompleteChat(suggestion)}
-                            <Show when={formatAutocompleteTime(suggestion.at)}> · {formatAutocompleteTime(suggestion.at)}</Show>
-                          </span>
-                        </button>
-                      )}
-                    </For>
-                  </Show>
-                </Show>
-              </Show>
-            </div>
-          </Show>
+          <AutocompleteDropdown autocomplete={autocomplete} />
           <textarea
             ref={inputEl}
             id="message"
             class="message-input"
             rows={1}
-            placeholder={disabled() ? "start a new chat to send a message" : 'say something or "/help"'}
+            placeholder={
+              disabled()
+                ? "start a new chat to send a message"
+                : "say something"
+            }
             autocomplete="off"
             value={bag.wipText()}
             onInput={(e) => {
               bag.setWipText(e.currentTarget.value);
-              setComposerCursor(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
+              autocomplete.updateComposerCursor();
             }}
             disabled={disabled()}
             onKeyDown={handleKey}
-            onKeyUp={updateComposerCursor}
-            onClick={updateComposerCursor}
-            onSelect={updateComposerCursor}
+            onKeyUp={autocomplete.updateComposerCursor}
+            onClick={autocomplete.updateComposerCursor}
+            onSelect={autocomplete.updateComposerCursor}
             onPaste={handlePaste}
             onFocus={() => {
-              updateComposerCursor();
-              openAutocomplete();
+              autocomplete.updateComposerCursor();
+              autocomplete.openAutocomplete();
             }}
-            onBlur={() => window.setTimeout(closeAutocomplete, 120)}
+            onBlur={() =>
+              window.setTimeout(autocomplete.closeAutocomplete, 120)
+            }
           />
         </div>
         <button
@@ -1301,7 +1806,19 @@ function InputBar(props: { bag: Bag }) {
             title={playPromptTitle()}
             aria-label={playPromptTitle()}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={runPlayPrompt}
+            onClick={() => void runPlayPrompt()}
+          >
+            ▶
+          </button>
+        </Show>
+        <Show when={bag.canResumeAgent() && !playPromptOpen()}>
+          <button
+            type="button"
+            class="restart-btn"
+            title="resume agent"
+            aria-label="resume agent"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => runPlayPrompt("resume")}
           >
             ▶
           </button>
@@ -1322,10 +1839,87 @@ function InputBar(props: { bag: Bag }) {
   );
 }
 
+function dismissedEntryLabel(entry: DismissedTimelineEntry): string {
+  if (entry.kind === "draft") return "partial reply";
+  return displayStepKind(entry.item.kind).toLowerCase();
+}
 
-function Item(props: { item: TimelineItem; bag: Bag; onOpenImage: (attachment: ImageAttachment) => void }) {
+function DismissedDraft(props: { reply: DismissedReply }) {
+  return (
+    <div
+      class="step reply draft dismissed-draft"
+      data-timeline-key={`draft:${props.reply.id}`}
+    >
+      <div class="meta">partial reply · cancelled</div>
+      <div
+        class="body markdown"
+        innerHTML={renderMarkdown(props.reply.content)}
+      />
+    </div>
+  );
+}
+
+function DismissedBlock(props: {
+  group: Extract<TimelineRenderEntry, { kind: "dismissed" }>;
+  bag: Bag;
+  onOpenImage: (attachment: ImageAttachment) => void;
+}) {
   const expansion = () => props.bag.expansionStore();
-  const key = () => timelineItemKey(props.item);
+  const key = () => props.group.id;
+  const open = () => expansion().isOpen(key());
+  const setOpen = (next: boolean) => expansion().setOpen(key(), next);
+  const count = () => props.group.entries.length;
+  const labels = () => {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const entry of props.group.entries) {
+      const label = dismissedEntryLabel(entry);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      parts.push(label);
+    }
+    return parts.join(", ");
+  };
+  return (
+    <details
+      class="dismissed-block"
+      data-timeline-key={key()}
+      open={open()}
+      onToggle={(ev) => setOpen(ev.currentTarget.open)}
+    >
+      <summary>
+        <span class="dismissed-title">Dismissed</span>
+        <span class="dismissed-meta">
+          {count()} {count() === 1 ? "item" : "items"} · {labels()} ·{" "}
+          <time>{absoluteTime(props.group.at)}</time>
+        </span>
+      </summary>
+      <div class="dismissed-body">
+        <For each={props.group.entries}>
+          {(entry) =>
+            entry.kind === "draft" ? (
+              <DismissedDraft reply={entry.reply} />
+            ) : (
+              <Item
+                item={entry.item}
+                bag={props.bag}
+                onOpenImage={props.onOpenImage}
+              />
+            )
+          }
+        </For>
+      </div>
+    </details>
+  );
+}
+
+function Item(props: {
+  item: TimelineItem;
+  bag: Bag;
+  onOpenImage: (attachment: ImageAttachment) => void;
+}) {
+  const expansion = () => props.bag.expansionStore();
+  const key = () => timelineAnchorKey(props.item);
   return (
     <Show
       when={props.item.type === "input-response"}
@@ -1334,49 +1928,147 @@ function Item(props: { item: TimelineItem; bag: Bag; onOpenImage: (attachment: I
           when={props.item.type === "input"}
           fallback={
             <Show
-              when={props.item.type === "file-diff" || props.item.type === "memory-diff"}
+              when={
+                props.item.type === "file-diff" ||
+                props.item.type === "todo-diff" ||
+                props.item.type === "memory-diff"
+              }
               fallback={
                 <Show
-                  when={props.item.type === "log"}
-                  fallback={<Step item={props.item as StepItem} bag={props.bag} expansion={expansion()} timelineKey={key()} onOpenImage={props.onOpenImage} />}
+                  when={props.item.type === "blob-add"}
+                  fallback={
+                    <Show
+                      when={props.item.type === "log"}
+                      fallback={
+                        <Step
+                          item={props.item as StepItem}
+                          bag={props.bag}
+                          expansion={expansion()}
+                          timelineKey={key()}
+                          onOpenImage={props.onOpenImage}
+                        />
+                      }
+                    >
+                      <Log
+                        item={props.item as LogItem}
+                        bag={props.bag}
+                        timelineKey={key()}
+                      />
+                    </Show>
+                  }
                 >
-                  <Log item={props.item as LogItem} timelineKey={key()} />
+                  <BlobAdd
+                    item={props.item as BlobAddItem}
+                    bag={props.bag}
+                    timelineKey={key()}
+                  />
                 </Show>
               }
             >
-              <DiffItem item={props.item as FileDiffItem | MemoryDiffItem} bag={props.bag} expansion={expansion()} timelineKey={key()} />
+              <DiffItem
+                item={props.item as FileDiffItem | MemoryDiffItem | TodoDiffItem}
+                bag={props.bag}
+                expansion={expansion()}
+                timelineKey={key()}
+              />
             </Show>
           }
         >
-          <Input item={props.item as InputItem} bag={props.bag} timelineKey={key()} />
+          <Input
+            item={props.item as InputItem}
+            bag={props.bag}
+            timelineKey={key()}
+          />
         </Show>
       }
     >
-      <InputResponse item={props.item as InputResponseItem} timelineKey={key()} />
+      <InputResponse
+        item={props.item as InputResponseItem}
+        timelineKey={key()}
+      />
     </Show>
   );
 }
 
-function Log(props: { item: LogItem; timelineKey: string }) {
+function logSummary(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized) return "(empty log)";
+  return normalized.length > 180 ? normalized.slice(0, 179) + "…" : normalized;
+}
+
+function Log(props: { item: LogItem; bag: Bag; timelineKey: string }) {
+  const open = () => props.bag.openLogPreviewInSidebar(props.item);
   return (
-    <div class="step log" data-timeline-key={props.timelineKey}>
-      <div class="meta">log</div>
-      <pre class="body log-message">{props.item.message}</pre>
+    <div class="step log collapsed-log" data-timeline-key={props.timelineKey}>
+      <button
+        type="button"
+        class="log-open"
+        onClick={open}
+        title="open moo.log in sidebar"
+        aria-label="open moo.log in sidebar"
+      >
+        <span class="meta log-kind">log</span>
+        <span class="log-summary">{logSummary(props.item.message)}</span>
+        <span class="log-open-hint">open</span>
+      </button>
       <StepFooter item={props.item} />
     </div>
   );
 }
 
-function DiffItem(props: { item: FileDiffItem | MemoryDiffItem; bag: Bag; expansion: TimelineExpansionStore; timelineKey: string }) {
-  const stats = createMemo(() => displayDiffStats(props.item));
-  const key = () => timelineExpansionKey(props.item);
+function BlobAdd(props: { item: BlobAddItem; bag: Bag; timelineKey: string }) {
+  const open = () => props.bag.openStorePreviewInSidebar(props.item.hash);
+  const meta = () =>
+    `${formatByteCount(props.item.size)} · ${props.item.encoding || "object"}`;
+  return (
+    <div class="step file-diff blob-add" data-timeline-key={props.timelineKey}>
+      <button
+        type="button"
+        class="blob-add-summary"
+        onClick={open}
+        title="Open object preview"
+      >
+        <span class="file-diff-label">blob add</span>
+        <span class="file-diff-path">
+          · {props.item.objectKind || "object"}
+        </span>
+        <code class="blob-add-hash">{shortHash(props.item.hash)}</code>
+        <span class="file-diff-summary">{meta()}</span>
+      </button>
+    </div>
+  );
+}
+
+function DiffItem(props: {
+  item: FileDiffItem | MemoryDiffItem | TodoDiffItem;
+  bag: Bag;
+  expansion: TimelineExpansionStore;
+  timelineKey: string;
+}) {
+  if (props.item.type === "todo-diff") {
+    if (!Array.isArray(props.item.changes) || props.item.changes.length === 0) {
+      return null;
+    }
+    return (
+      <div class="step todo-diff" data-timeline-key={props.timelineKey}>
+        <div class="todo-diff-body" role="log" aria-label="TODO changes">
+          <TodoDiffBody item={props.item} />
+        </div>
+      </div>
+    );
+  }
+
+  const item = props.item as FileDiffItem | MemoryDiffItem;
+  const key = () => timelineExpansionKey(item);
   const open = () => props.expansion.isOpen(key());
   const setOpen = (next: boolean) => props.expansion.setOpen(key(), next);
-  const isMemory = () => props.item.type === "memory-diff";
-  const label = () => isMemory() ? "memory diff" : "file diff";
-  const detail = () => isMemory()
-    ? `· ${(props.item as MemoryDiffItem).graph}`
-    : `· ${collapseHome(props.item.path)}`;
+  const isMemory = () => item.type === "memory-diff";
+  const stats = () => item.stats ?? diffStats(item.diff || "");
+  const label = () => (isMemory() ? "memory diff" : "file diff");
+  const detail = () =>
+    isMemory()
+      ? `· ${(item as MemoryDiffItem).graph}`
+      : `· ${collapseHome((item as FileDiffItem).path)}`;
   const installSummaryClick = (summary: HTMLElement) => {
     const onClick = (ev: MouseEvent) => {
       if (isMemory()) return;
@@ -1385,7 +2077,7 @@ function DiffItem(props: { item: FileDiffItem | MemoryDiffItem; bag: Bag; expans
       // paths, leaving file diffs expandable but not opening their sidebar tab.
       ev.preventDefault();
       ev.stopPropagation();
-      props.bag.openDiffInSidebar(props.item as FileDiffItem);
+      props.bag.openDiffInSidebar(item as FileDiffItem);
     };
     summary.addEventListener("click", onClick);
     onCleanup(() => summary.removeEventListener("click", onClick));
@@ -1400,24 +2092,78 @@ function DiffItem(props: { item: FileDiffItem | MemoryDiffItem; bag: Bag; expans
       <summary ref={installSummaryClick}>
         <span class="file-diff-label">{label()}</span>
         <span class="file-diff-path">{detail()}</span>
-        <span class="file-diff-summary">
-          <span class="file-diff-added">+{stats().added}</span>
-          <span class="file-diff-removed">−{stats().removed}</span>
-          <span>({stats().lines})</span>
-        </span>
+        <Show when={stats()}>
+          {(summary) => (
+            <span class="file-diff-summary">
+              <span class="file-diff-added">+{summary().added}</span>
+              <span class="file-diff-removed">−{summary().removed}</span>
+              <span>({summary().lines})</span>
+            </span>
+          )}
+        </Show>
       </summary>
-      <div class="file-diff-body" role="log" aria-label={`Diff for ${collapseHome(props.item.path)}`}>
-        <DiffView
-          diff={props.item.diff}
-          snapshot={props.item.after}
-          path={props.item.path}
-          onOpenStore={(hash) => void props.bag.openStorePreviewInSidebar(hash)}
-          expansion={props.expansion}
-          expansionKeyPrefix={key()}
-        />
-      </div>
+      <Show when={open()}>
+        <div
+          class="file-diff-body"
+          role="log"
+          aria-label={`Diff for ${collapseHome(item.path)}`}
+        >
+          <DiffView
+            diff={item.diff}
+            snapshot={item.after}
+            path={item.path}
+            onOpenStore={(hash) =>
+              void props.bag.openStorePreviewInSidebar(hash)
+            }
+            expansion={props.expansion}
+            expansionKeyPrefix={key()}
+          />
+        </div>
+      </Show>
       <StepFooter item={props.item} />
     </details>
+  );
+}
+
+function todoLabel(item: AgentTodo) {
+  return `${item.id}. ${item.text}`;
+}
+
+function todoChangeText(change: TodoDiffChange) {
+  const item = change.kind === "removed" ? change.before : change.after;
+  if (item.status === "dropped") return "X";
+  if (item.status === "blocked") return "!";
+  if (item.status === "done") return "-";
+  if (change.kind === "added") return "+";
+  return "~";
+}
+
+function TodoDiffBody(props: { item: TodoDiffItem }) {
+  const changes = () => props.item.changes || [];
+  return (
+    <ul class="todo-diff-list" aria-label="TODO changes">
+      <For each={changes()}>
+        {(change) => {
+          const item = () => change.kind === "removed" ? change.before : change.kind === "added" ? change.after : change.after;
+          const previous = () => change.kind === "updated" ? change.before : undefined;
+          return (
+            <li class="todo-diff-change" classList={{ [`todo-change-${change.kind}`]: true, [`todo-status-${item().status}`]: true }}>
+              <span class="todo-diff-main">
+                <span class="todo-diff-action">{todoChangeText(change)}</span>
+                <TodoMarkdownInline className="todo-diff-text" content={todoLabel(item())} />
+                <TodoMetaBubbles item={item()} />
+              </span>
+              <TodoNote item={item()} className="todo-diff-details" />
+              <Show when={previous() && previous()!.text !== item().text}>
+                <div class="todo-diff-previous">
+                  <TodoMarkdownInline className="todo-diff-previous-text" content={`was: ${todoLabel(previous()!)}`} />
+                </div>
+              </Show>
+            </li>
+          );
+        }}
+      </For>
+    </ul>
   );
 }
 
@@ -1427,38 +2173,82 @@ function displayStepKind(kind: string): string {
   return kind.replace(/^agent:/, "");
 }
 
-function Step(props: { item: StepItem; bag: Bag; expansion: TimelineExpansionStore; timelineKey: string; onOpenImage: (attachment: ImageAttachment) => void }) {
-  const cls = createMemo(() => {
-    const item = props.item;
-    let c =
-      "step " +
-      item.kind
-        .replace(/^agent:/, "")
-        .replace(/([a-z])([A-Z])/g, "$1-$2")
-        .toLowerCase();
-    if (item.status === "agent:Failed") c += " failed";
-    if (item.kind === "agent:UserInput" && item.deletedAt) c += " message-hidden";
-    return c;
-  });
+function activeReplyStatusLabel(item: StepItem, compacting: boolean): string {
+  if (item.text.trim()) return "Streaming…";
+  return compacting ? "Compacting…" : "Thinking…";
+}
 
+function stepClass(item: StepItem): string {
+  let c =
+    "step " +
+    item.kind
+      .replace(/^agent:/, "")
+      .replace(/([a-z])([A-Z])/g, "$1-$2")
+      .toLowerCase();
+  if (item.status === "agent:Failed") c += " failed";
+  if (item.status === "agent:Cancelled") c += " cancelled";
+  if (item.kind === "agent:Reply" && item.status !== "agent:Done") c += " draft";
+  if (item.kind === "agent:UserInput" && item.deletedAt) c += " message-hidden";
+  return c;
+}
+
+function showStandardStepMeta(item: StepItem): boolean {
   // RunJS owns its own header (label is the headline), so suppress the
-  // generic meta line for it.
-  const showStandardMeta = () => props.item.kind !== "agent:RunJS";
+  // generic meta line for it. Subagent has a richer custom header too.
+  return item.kind !== "agent:RunJS" && item.kind !== "agent:Subagent";
+}
+
+function stepMetaLabel(item: StepItem, compacting: boolean): string {
+  if (item.kind === "agent:Reply" && !isTerminalStepStatus(item.status)) {
+    return activeReplyStatusLabel(item, compacting);
+  }
+  return displayStepKind(item.kind);
+}
+
+function stepMetaSuffix(item: StepItem): string {
+  if (item.status === "agent:Failed") return " · failed";
+  if (item.status === "agent:Cancelled") return " · cancelled";
+  if (item.kind === "agent:UserInput" && item.deletedAt) return " · hidden";
+  return "";
+}
+
+function showStandardStepFooter(item: StepItem): boolean {
+  return (
+    item.kind !== "agent:RunJS" &&
+    item.kind !== "agent:Subagent" &&
+    !(item.kind === "agent:Reply" && item.status !== "agent:Done")
+  );
+}
+
+function Step(props: {
+  item: StepItem;
+  bag: Bag;
+  expansion: TimelineExpansionStore;
+  timelineKey: string;
+  onOpenImage: (attachment: ImageAttachment) => void;
+}) {
+  const cls = createMemo(() => stepClass(props.item));
+  const showStandardMeta = () => showStandardStepMeta(props.item);
   return (
     <div class={cls()} data-timeline-key={props.timelineKey}>
       <Show when={showStandardMeta()}>
         <div class="meta">
-          {displayStepKind(props.item.kind)}
-          {props.item.status === "agent:Failed" ? " · failed" : ""}
-          {props.item.kind === "agent:UserInput" && props.item.deletedAt ? " · hidden from LLM" : ""}
+          {stepMetaLabel(props.item, props.bag.compacting())}
+          {stepMetaSuffix(props.item)}
         </div>
       </Show>
       <Show when={props.item.kind === "agent:Reply" && props.item.text}>
-        <div class="body markdown" innerHTML={renderMarkdown(props.item.text)} />
+        <div
+          class="body markdown"
+          innerHTML={renderMarkdown(props.item.text)}
+        />
       </Show>
       <Show when={props.item.kind === "agent:UserInput"}>
         <Show when={props.item.text}>
-          <div class="body" innerHTML={renderUserMessage(props.item.text)} />
+          <div
+            class="body markdown"
+            innerHTML={renderUserMessage(props.item.text)}
+          />
         </Show>
         <Show when={props.item.attachments?.length}>
           <div class="timeline-attachments">
@@ -1468,7 +2258,9 @@ function Step(props: { item: StepItem; bag: Bag; expansion: TimelineExpansionSto
                   type="button"
                   class="timeline-attachment"
                   title={att.name || "image"}
-                  aria-label={att.name ? `open image ${att.name}` : "open image"}
+                  aria-label={
+                    att.name ? `open image ${att.name}` : "open image"
+                  }
                   onClick={() => props.onOpenImage(att)}
                 >
                   <img src={att.dataUrl} alt={att.name || "image"} />
@@ -1482,10 +2274,18 @@ function Step(props: { item: StepItem; bag: Bag; expansion: TimelineExpansionSto
         <ShellBody item={props.item} expansion={props.expansion} />
       </Show>
       <Show when={props.item.kind === "agent:RunJS"}>
-        <RunJSBody item={props.item} bag={props.bag} expansion={props.expansion} />
+        <RunJSBody
+          item={props.item}
+          bag={props.bag}
+          expansion={props.expansion}
+        />
       </Show>
       <Show when={props.item.kind === "agent:Subagent"}>
-        <SubagentBody item={props.item} bag={props.bag} />
+        <SubagentBody
+          item={props.item}
+          bag={props.bag}
+          expansion={props.expansion}
+        />
       </Show>
       <Show when={props.item.kind === "agent:Error"}>
         <ErrorBody item={props.item} />
@@ -1503,7 +2303,7 @@ function Step(props: { item: StepItem; bag: Bag; expansion: TimelineExpansionSto
           <div class="body">{props.item.text}</div>
         </Show>
       </Show>
-      <Show when={props.item.kind !== "agent:RunJS"}>
+      <Show when={showStandardStepFooter(props.item)}>
         <StepFooter item={props.item} bag={props.bag} />
       </Show>
     </div>
@@ -1528,12 +2328,13 @@ function ParentChatLink(props: { bag: Bag }) {
   const label = () => {
     const p = parent();
     if (!p) return "";
-    return (p.title?.trim() || displayChatId(p.chatId));
+    return p.title?.trim() || displayChatId(p.chatId);
   };
   const onClick = (ev: MouseEvent) => {
     const p = parent();
     if (!p) return;
-    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0)
+      return;
     ev.preventDefault();
     ev.stopPropagation();
     void props.bag.selectChat(p.chatId);
@@ -1548,7 +2349,9 @@ function ParentChatLink(props: { bag: Bag }) {
           aria-label={`back to parent chat ${label()}`}
           onClick={onClick}
         >
-          <span class="parent-chat-arrow" aria-hidden="true">↩</span>
+          <span class="parent-chat-arrow" aria-hidden="true">
+            ↩
+          </span>
           <span class="parent-chat-title">{label()}</span>
         </a>
       )}
@@ -1556,50 +2359,118 @@ function ParentChatLink(props: { bag: Bag }) {
   );
 }
 
-function SubagentBody(props: { item: StepItem; bag: Bag }) {
+function SubagentBody(props: {
+  item: StepItem;
+  bag: Bag;
+  expansion: TimelineExpansionStore;
+}) {
   const info = () => props.item.subagent || {};
   const result = () => info().result || null;
-  const output = () => result()?.output ?? result()?.text;
-  const childHref = () => info().childChatId ? `/chat/${encodeURIComponent(info().childChatId || "")}` : "#";
+  const output = () => result()?.text || result()?.error || "";
+  const childHref = () =>
+    info().childChatId
+      ? `/chat/${encodeURIComponent(info().childChatId || "")}`
+      : "#";
   const onChildClick = (ev: MouseEvent) => {
     const id = info().childChatId;
     if (!id) return;
-    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0)
+      return;
     ev.preventDefault();
     ev.stopPropagation();
     void props.bag.selectChat(id);
   };
+  const key = () => timelineExpansionKey(props.item);
+  const open = () => props.expansion.isOpen(key());
+  const setOpen = (next: boolean) => props.expansion.setOpen(key(), next);
+  const label = () => info().label || "Subagent";
+  const task = () => info().task || "";
+  const statusText = () => result()?.status || props.item.status;
+  const duration = () =>
+    typeof result()?.durationNs === "number" ? (result()?.durationNs || 0) / 1_000_000 : null;
   return (
-    <div class="body subagent-body">
-      <div class="subagent-head">
-        <strong>{info().label || "Subagent"}</strong>
-        <Show when={info().childChatId}>
-          <a class="subagent-link" href={childHref()} onClick={onChildClick}>open child chat</a>
+    <details
+      class="runjs-step subagent-step"
+      open={open()}
+      onToggle={(ev) => setOpen(ev.currentTarget.open)}
+    >
+      <summary>
+        <Show when={props.item.status === "agent:Running"}>
+          <LoadingDots class="runjs-loading" label="running" />
         </Show>
-      </div>
-      <Show when={info().task}>
-        <div class="subagent-task">{info().task}</div>
-      </Show>
-      <Show when={result()}>
-        <div class="subagent-result">
-          <span class="subagent-status">{result()?.status || props.item.status}</span>
-          <Show when={typeof result()?.durationMs === "number"}>
-            <span> · {formatThoughtDuration(result()?.durationMs || 0)}</span>
+        <RunJSMarkdown class="runjs-label" content={label()} inline />
+        <Show when={task()}>
+          <span class="runjs-desc-inline">
+            <span class="runjs-desc-separator" aria-hidden="true">
+              ·
+            </span>
+            <RunJSMarkdown class="runjs-desc-text" content={task()} inline />
+          </span>
+        </Show>
+      </summary>
+      <Show when={open()}>
+        <div class="runjs-body subagent-body">
+          <Show when={task()}>
+            <RunJSMarkdown
+              class="runjs-desc-full subagent-task"
+              content={task()}
+            />
+          </Show>
+          <Show when={info().childChatId || result()}>
+            <div class="subagent-result">
+              <Show when={result()}>
+                <span class="subagent-status">{statusText()}</span>
+                <Show when={duration() !== null}>
+                  <span> · {formatThoughtDuration(duration() || 0)}</span>
+                </Show>
+              </Show>
+              <Show when={info().childChatId}>
+                <span class="subagent-link-part">
+                  <Show when={result()}>
+                    <span class="subagent-separator" aria-hidden="true">
+                      {" "}
+                      ·{" "}
+                    </span>
+                  </Show>
+                  <a
+                    class="subagent-link"
+                    href={childHref()}
+                    onClick={onChildClick}
+                  >
+                    open child chat
+                  </a>
+                </span>
+              </Show>
+            </div>
           </Show>
           <Show when={result()?.error}>
-            <pre class="subagent-error">{result()?.error}</pre>
+            <RunJSBlock
+              label="Error"
+              klass="runjs-out runjs-error subagent-error"
+              content={result()?.error || ""}
+            />
           </Show>
           <Show when={output()}>
-            <div class="markdown" innerHTML={renderMarkdown(output() || "")} />
+            <div
+              class="markdown subagent-output"
+              innerHTML={renderMarkdown(output() || "")}
+            />
           </Show>
         </div>
       </Show>
-    </div>
+      <StepFooter
+        item={props.item}
+        bag={props.bag}
+        durationNs={duration() ?? undefined}
+      />
+    </details>
   );
 }
 
 function CompactionBody(props: { item: StepItem }) {
-  const summary = createMemo(() => compactionSummaryText(props.item.text || ""));
+  const summary = createMemo(() =>
+    compactionSummaryText(props.item.text || ""),
+  );
   return (
     <details class="compaction-summary">
       <summary>
@@ -1607,77 +2478,215 @@ function CompactionBody(props: { item: StepItem }) {
         <time>{absoluteTime(props.item.at)}</time>
       </summary>
       <Show when={summary()}>
-        <div
-          class="body markdown"
-          innerHTML={renderMarkdown(summary())}
-        />
+        <div class="body markdown" innerHTML={renderMarkdown(summary())} />
       </Show>
     </details>
   );
 }
 
-type StepFooterItem = StepItem | FileDiffItem | MemoryDiffItem | LogItem;
+type StepFooterItem =
+  | StepItem
+  | FileDiffItem
+  | TodoDiffItem
+  | MemoryDiffItem
+  | BlobAddItem
+  | LogItem;
 
 function isStepItem(item: StepFooterItem): item is StepItem {
   return item.type === "step";
 }
 
-function StepFooter(props: { item: StepFooterItem; bag?: Bag; durationMs?: number }) {
-  const step = () => isStepItem(props.item) ? props.item : null;
+function StepFooter(props: {
+  item: StepFooterItem;
+  bag?: Bag;
+  durationNs?: number;
+}) {
+  const step = () => (isStepItem(props.item) ? props.item : null);
   const effort = () => step()?.effort || null;
   const showForkControl = () => !!step() && !!props.bag;
-  const showVisibilityControl = () => step()?.kind === "agent:UserInput" && !!props.bag;
+  const copyableMessageText = () => {
+    const item = step();
+    if (
+      !item ||
+      (item.kind !== "agent:Reply" && item.kind !== "agent:UserInput")
+    )
+      return null;
+    return item.text || null;
+  };
+  const [copyState, setCopyState] = createSignal<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const [forkPending, setForkPending] = createSignal(false);
+  const [visibilityPending, setVisibilityPending] = createSignal(false);
+  const forkChatHere = async () => {
+    const target = step();
+    if (!target || !props.bag || forkPending()) return;
+    setForkPending(true);
+    try {
+      await props.bag.forkChatAtStep(target.step);
+    } finally {
+      setForkPending(false);
+    }
+  };
+  let copyResetTimer: number | null = null;
+  const resetCopyFeedbackSoon = () => {
+    if (copyResetTimer !== null) window.clearTimeout(copyResetTimer);
+    copyResetTimer = window.setTimeout(() => {
+      copyResetTimer = null;
+      setCopyState("idle");
+    }, COPY_FEEDBACK_MS);
+  };
+  const copyRawMessage = async () => {
+    const text = copyableMessageText();
+    if (!text) return;
+    try {
+      await writeClipboardText(text);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+    resetCopyFeedbackSoon();
+  };
+  onCleanup(() => {
+    if (copyResetTimer !== null) window.clearTimeout(copyResetTimer);
+  });
+  const toggleMessageVisibility = async () => {
+    const target = step();
+    if (!target || !props.bag || visibilityPending()) return;
+    setVisibilityPending(true);
+    try {
+      if (target.deletedAt) {
+        await props.bag.restoreMessage(target.step);
+      } else {
+        await props.bag.deleteMessage(target.step);
+      }
+    } finally {
+      setVisibilityPending(false);
+    }
+  };
+  const showVisibilityControl = () =>
+    step()?.kind === "agent:UserInput" && !!props.bag;
   return (
     <footer class="step-footer">
-      <time class="step-time">{absoluteTime(props.item.at)}</time>
-      <Show when={typeof props.durationMs === "number"}>
-        <span class="step-duration">{props.durationMs}ms</span>
-      </Show>
-      <Show
-        when={
-          step()?.kind === "agent:Reply" &&
-          typeof step()?.thoughtDurationMs === "number"
-        }
-      >
-        <span class="step-thought">
-          Thought for {formatThoughtDuration(step()!.thoughtDurationMs!)}
-        </span>
-      </Show>
+      <span class="step-time-group">
+        <time class="step-time">{absoluteTime(props.item.at)}</time>
+        <Show when={typeof props.durationNs === "number"}>
+          <span class="step-duration">{Math.round((props.durationNs ?? 0) / 1_000_000)}ms</span>
+        </Show>
+        <Show
+          when={
+            step()?.kind === "agent:Reply" &&
+            typeof step()?.thoughtDurationNs === "number"
+          }
+        >
+          <span class="step-thought">
+            ({formatThoughtDuration(step()!.thoughtDurationNs! / 1_000_000)})
+          </span>
+        </Show>
+      </span>
       <Show when={step()?.model}>
-        <span class="step-model" title={step()!.model}>
-          {step()!.model}
+        <span class="step-footer-part">
+          <span class="step-footer-separator" aria-hidden="true">
+            ·
+          </span>
+          <span class="step-model-group">
+            <span class="step-model" title={step()!.model}>
+              {step()!.model}
+            </span>
+            <Show when={effort()}>
+              <span class="step-effort" title="reasoning effort">
+                ({effort()})
+              </span>
+            </Show>
+          </span>
         </span>
       </Show>
-      <Show when={effort()}>
-        <span class="step-effort" title="reasoning effort">
-          effort {effort()}
+      <Show when={!step()?.model && effort()}>
+        <span class="step-footer-part">
+          <span class="step-footer-separator" aria-hidden="true">
+            ·
+          </span>
+          <span class="step-effort" title="reasoning effort">
+            ({effort()})
+          </span>
+        </span>
+      </Show>
+      <Show when={copyableMessageText()}>
+        <span class="step-footer-part">
+          <span class="step-footer-separator" aria-hidden="true">
+            ·
+          </span>
+          <button
+            type="button"
+            class="step-action-btn message-copy-btn"
+            title="copy raw markdown"
+            aria-label="copy raw markdown"
+            onClick={() => void copyRawMessage()}
+          >
+            <span class="step-action-label">
+              {copyState() === "copied"
+                ? "copied"
+                : copyState() === "failed"
+                  ? "copy failed"
+                  : "copy"}
+            </span>
+          </button>
         </span>
       </Show>
       <Show when={showForkControl()}>
-        <button
-          type="button"
-          class="step-action-btn"
-          title="fork this chat at this point in the timeline"
-          onClick={() => props.bag!.forkChatAtStep(step()!.step)}
-        >
-          fork here
-        </button>
+        <span class="step-footer-part">
+          <span class="step-footer-separator" aria-hidden="true">
+            ·
+          </span>
+          <button
+            type="button"
+            class="step-action-btn"
+            title={
+              forkPending()
+                ? "forking chat…"
+                : "fork this chat at this point in the timeline"
+            }
+            disabled={forkPending()}
+            onClick={() => void forkChatHere()}
+          >
+            <span class="step-action-label">
+              {forkPending() ? "forking…" : "fork here"}
+            </span>
+          </button>
+        </span>
       </Show>
       <Show when={showVisibilityControl()}>
-        <button
-          type="button"
-          class="step-action-btn message-visibility-btn"
-          title={step()!.deletedAt ? "send this user message to future LLM prompts again" : "hide this user message from future LLM prompts"}
-          onClick={() => step()!.deletedAt ? props.bag!.restoreMessage(step()!.step) : props.bag!.deleteMessage(step()!.step)}
-        >
-          {step()!.deletedAt ? "restore" : "hide from LLM"}
-        </button>
+        <span class="step-footer-part">
+          <span class="step-footer-separator" aria-hidden="true">
+            ·
+          </span>
+          <button
+            type="button"
+            class="step-action-btn message-visibility-btn"
+            title={
+              visibilityPending()
+                ? "updating message visibility…"
+                : step()!.deletedAt
+                ? "send this user message to future LLM prompts again"
+                : "hide this user message from future LLM prompts"
+            }
+            disabled={visibilityPending()}
+            onClick={() => void toggleMessageVisibility()}
+          >
+            <span class="step-action-label">
+              {visibilityPending() ? "updating…" : step()!.deletedAt ? "restore" : "hide"}
+            </span>
+          </button>
+        </span>
       </Show>
     </footer>
   );
 }
 
-function ShellBody(props: { item: StepItem; expansion: TimelineExpansionStore }) {
+function ShellBody(props: {
+  item: StepItem;
+  expansion: TimelineExpansionStore;
+}) {
   const lines = () => props.item.text.split("\n");
   const cmd = () => lines().find((l) => l.startsWith("$ ")) || "";
   const tail = () => lines().find((l) => l.startsWith("(exit ")) || "";
@@ -1705,18 +2714,141 @@ function ShellBody(props: { item: StepItem; expansion: TimelineExpansionStore })
   );
 }
 
-function RunJSBody(props: { item: StepItem; bag: Bag; expansion: TimelineExpansionStore }) {
+function parseStoreObjectJSON(object: unknown): unknown {
+  if (!object || typeof object !== "object") return null;
+  const storeObject = object as { content?: unknown; text?: unknown; value?: unknown };
+  if (storeObject.value !== undefined) return storeObject.value;
+  const content =
+    typeof storeObject.content === "string"
+      ? storeObject.content
+      : typeof storeObject.text === "string"
+        ? storeObject.text
+        : null;
+  if (content == null) return null;
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: number | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer != null) window.clearTimeout(timer);
+  }
+}
+
+function runJSResultFromObject(
+  result: unknown,
+): Pick<NonNullable<StepItem["runjs"]>, "result" | "error" | "durationNs"> {
+  const r =
+    result && typeof result === "object"
+      ? (result as Record<string, unknown>)
+      : {};
+  return {
+    result: typeof r.value === "string" ? r.value : null,
+    error: typeof r.error === "string" ? r.error : null,
+    durationNs: typeof r.durationNs === "number" ? r.durationNs : undefined,
+  };
+}
+
+function RunJSBody(props: {
+  item: StepItem;
+  bag: Bag;
+  expansion: TimelineExpansionStore;
+}) {
   // Prefer structured runJS data from the timeline API. parseRunJS is only
   // retained for historical timeline entries and older exported payloads.
   //
   // Default render is a single line: "<title> · <desc>           <time>".
   // Click expands to reveal the full description (when long) plus the
   // code and result fold rows.
-  const parsed = createMemo(() => props.item.runjs ? normalizeRunJS(props.item.runjs) : parseRunJS(props.item.text));
+  const [hydratedResultByHash, setHydratedResultByHash] = createSignal<Record<
+    string,
+    Pick<NonNullable<StepItem["runjs"]>, "result" | "error" | "durationNs">
+  >>({});
+  const [hydratingHash, setHydratingHash] = createSignal<string | null>(null);
+  const [hydrateErrorByHash, setHydrateErrorByHash] = createSignal<Record<string, string>>({});
+  const resultHash = () => props.item.resultHash ?? null;
+  const hydratedResult = () => {
+    const hash = resultHash();
+    return hash ? hydratedResultByHash()[hash] ?? null : null;
+  };
+  const hydrateError = () => {
+    const hash = resultHash();
+    return hash ? hydrateErrorByHash()[hash] ?? null : null;
+  };
+  const ensureHydrated = async () => {
+    if (!props.item.lazyRunjsResult) return;
+    const hash = resultHash();
+    if (!hash) return;
+    if (hydratedResultByHash()[hash] || hydratingHash() === hash) return;
+    setHydratingHash(hash);
+    setHydrateErrorByHash((errors) => {
+      const { [hash]: _removed, ...rest } = errors;
+      return rest;
+    });
+    try {
+      const object = await withTimeout(
+        api.objects.get(hash as any),
+        30_000,
+        "Timed out loading result",
+      );
+      if (!object.ok) {
+        setHydrateErrorByHash((errors) => ({
+          ...errors,
+          [hash]: object.error?.message || "Failed to load result",
+        }));
+        return;
+      }
+      if (!object.value.object) {
+        setHydrateErrorByHash((errors) => ({
+          ...errors,
+          [hash]: "Result object not found",
+        }));
+        return;
+      }
+      const loaded = runJSResultFromObject(
+        parseStoreObjectJSON(object.value.object),
+      );
+      setHydratedResultByHash((results) => ({ ...results, [hash]: loaded }));
+    } catch (err) {
+      setHydrateErrorByHash((errors) => ({
+        ...errors,
+        [hash]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setHydratingHash((current) => (current === hash ? null : current));
+    }
+  };
+  const currentRunJS = () => {
+    const loaded = hydratedResult();
+    if (!props.item.runjs || !loaded) return props.item.runjs;
+    return { ...props.item.runjs, ...loaded };
+  };
+  const parsed = createMemo(() =>
+    currentRunJS()
+      ? normalizeRunJS(currentRunJS()!)
+      : parseRunJS(props.item.text),
+  );
 
   const key = () => timelineExpansionKey(props.item);
   const open = () => props.expansion.isOpen(key());
-  const setOpen = (next: boolean) => props.expansion.setOpen(key(), next);
+  const setOpen = (next: boolean) => {
+    props.expansion.setOpen(key(), next);
+    if (next) void ensureHydrated();
+  };
+  createEffect(() => {
+    if (open()) void ensureHydrated();
+  });
 
   return (
     <details
@@ -1726,42 +2858,104 @@ function RunJSBody(props: { item: StepItem; bag: Bag; expansion: TimelineExpansi
     >
       <summary>
         <Show when={props.item.status === "agent:Running"}>
-          <span class="runjs-loading" aria-label="running" role="status">
-            <span /><span /><span />
-          </span>
+          <LoadingDots class="runjs-loading" label="running" />
         </Show>
-        <RunJSMarkdown class="runjs-label" content={parsed().label || "(unlabeled)"} inline />
+        <RunJSMarkdown
+          class="runjs-label"
+          content={parsed().label || "(unlabeled)"}
+          inline
+        />
         <Show when={parsed().description}>
           <span class="runjs-desc-inline">
-            <span class="runjs-desc-separator" aria-hidden="true">·</span>
-            <RunJSMarkdown class="runjs-desc-text" content={parsed().description} inline />
+            <span class="runjs-desc-separator" aria-hidden="true">
+              ·
+            </span>
+            <RunJSMarkdown
+              class="runjs-desc-text"
+              content={parsed().description}
+              inline
+            />
           </span>
         </Show>
       </summary>
-      <div class="runjs-body">
-        <Show when={parsed().description}>
-          <RunJSMarkdown class="runjs-desc-full" content={parsed().description} />
-        </Show>
-        <Show when={parsed().hasArgs}>
-          <RunJSBlock label="Args" klass="runjs-args" content={parsed().args} />
-        </Show>
-        <Show when={parsed().code}>
-          <RunJSBlock label="Code" klass="runjs-code" content={parsed().code} />
-        </Show>
-        <Show when={parsed().result}>
-          <RunJSBlock label="Result" klass="runjs-out" content={parsed().result} />
-        </Show>
-        <Show when={parsed().error}>
-          <RunJSBlock label="Error" klass="runjs-out runjs-error" content={parsed().error} />
-        </Show>
-      </div>
-      <StepFooter item={props.item} bag={props.bag} durationMs={parsed().durationMs} />
+      <Show when={open()}>
+        <div class="runjs-body">
+          <Show when={parsed().description}>
+            <RunJSMarkdown
+              class="runjs-desc-full"
+              content={parsed().description}
+            />
+          </Show>
+          <Show when={parsed().code}>
+            <RunJSBlock
+              label="Code"
+              klass="runjs-code"
+              content={parsed().code}
+              language="js"
+            />
+          </Show>
+          <Show when={parsed().hasArgs}>
+            <RunJSBlock
+              label="Args"
+              klass="runjs-args"
+              content={parsed().args}
+            />
+          </Show>
+          <Show
+            when={
+props.item.lazyRunjsResult
+                && !!resultHash()
+                && hydratingHash() === resultHash()
+                && !hydratedResult()
+                && !hydrateError()
+            }
+          >
+            <section class="runjs-block" aria-label="Loading result">
+              <div class="runjs-block-label">Result</div>
+              <div class="runjs-out runjs-loading-result">
+                <LoadingDots label="loading result" />
+              </div>
+            </section>
+          </Show>
+          <Show when={parsed().hasResult}>
+            <RunJSBlock
+              label="Result"
+              klass="runjs-out"
+              content={parsed().result}
+            />
+          </Show>
+          <Show when={parsed().error}>
+            <RunJSBlock
+              label="Error"
+              klass="runjs-out runjs-error"
+              content={parsed().error}
+            />
+          </Show>
+          <Show when={hydrateError()}>
+            <RunJSBlock
+              label="Error"
+              klass="runjs-out runjs-error"
+              content={hydrateError()!}
+            />
+          </Show>
+        </div>
+      </Show>
+      <StepFooter
+        item={props.item}
+        bag={props.bag}
+        durationNs={parsed().durationNs}
+      />
     </details>
   );
 }
 
-function RunJSMarkdown(props: { class?: string; content: string; inline?: boolean }) {
-  const cls = () => (props.class ? props.class + " " : "") + "markdown runjs-markdown";
+function RunJSMarkdown(props: {
+  class?: string;
+  content: string;
+  inline?: boolean;
+}) {
+  const cls = () =>
+    (props.class ? props.class + " " : "") + "markdown runjs-markdown";
   const html = () =>
     props.inline
       ? renderMarkdownInline(props.content.replace(/\n+/g, " "))
@@ -1773,113 +2967,24 @@ function RunJSMarkdown(props: { class?: string; content: string; inline?: boolea
   );
 }
 
-function RunJSBlock(props: { label: string; klass: string; content: string }) {
+function RunJSBlock(props: {
+  label: string;
+  klass: string;
+  content: string;
+  language?: string;
+}) {
+  const html = () =>
+    props.language
+      ? highlightMarkdownCode(props.content, props.language)
+      : highlightAuto(props.content);
   return (
     <section class="runjs-block" aria-label={props.label}>
       <div class="runjs-block-label">{props.label}</div>
-      <pre class={props.klass} innerHTML={highlightAuto(props.content)} />
+      <pre class={props.klass} innerHTML={html()} />
     </section>
   );
 }
 
-type ParsedRunJS = {
-  label: string;
-  description: string;
-  args: string;
-  hasArgs: boolean;
-  code: string;
-  result: string;
-  error: string;
-  durationMs?: number;
-};
-
-function normalizeRunJS(runjs: NonNullable<StepItem["runjs"]>): ParsedRunJS {
-  const hasArgs = Object.prototype.hasOwnProperty.call(runjs, "args");
-  return {
-    label: cleanRunJSLabel(String(runjs.label ?? "")),
-    description: String(runjs.description ?? "").trim(),
-    args: hasArgs ? formatRunJSArgs(runjs.args) : "",
-    hasArgs,
-    code: String(runjs.code ?? "").trim(),
-    result: String(runjs.result ?? "").trim(),
-    error: String(runjs.error ?? "").trim(),
-    durationMs: typeof runjs.durationMs === "number" ? runjs.durationMs : undefined,
-  };
-}
-
-function parseRunJS(text: string): ParsedRunJS {
-  const lines = text.split("\n");
-  let label = "";
-  let description = "";
-  const codeBuf: string[] = [];
-  const resultBuf: string[] = [];
-  const errorBuf: string[] = [];
-  let mode: "header" | "code" | "result" | "error" = "header";
-
-  for (const line of lines) {
-    if (line.startsWith("@@label ")) {
-      label = line.slice("@@label ".length);
-      continue;
-    }
-    if (line.startsWith("@@desc ")) {
-      description = line.slice("@@desc ".length);
-      continue;
-    }
-    if (line === "@@code") {
-      mode = "code";
-      continue;
-    }
-    if (line.startsWith("→ ") || line.startsWith("→")) {
-      mode = "result";
-      resultBuf.push(line.replace(/^→ ?/, ""));
-      continue;
-    }
-    if (/^error:?\s*/i.test(line)) {
-      mode = "error";
-      errorBuf.push(line.replace(/^error:?\s*/i, ""));
-      continue;
-    }
-    if (mode === "header") {
-      // Backward-compat for older steps written before sentinel prefixes:
-      // first line is label (with trailing colon), rest is code until arrow.
-      if (!label) {
-        label = line.replace(/:$/, "");
-        mode = "code";
-        continue;
-      }
-    }
-    if (mode === "code") codeBuf.push(line);
-    else if (mode === "result") resultBuf.push(line);
-    else if (mode === "error") errorBuf.push(line);
-  }
-
-  return {
-    label: cleanRunJSLabel(label),
-    description: description.trim(),
-    args: "",
-    hasArgs: false,
-    code: codeBuf.join("\n").trim(),
-    result: resultBuf.join("\n").trim(),
-    error: errorBuf.join("\n").trim(),
-  };
-}
-
-function cleanRunJSLabel(label: string): string {
-  return label.replace(/^\s*\[code\]\s*:?[ \t]*/i, "").trim();
-}
-
-function formatRunJSArgs(args: unknown): string {
-  if (typeof args === "undefined") return "undefined";
-  try {
-    return formatHjson(args);
-  } catch {
-    return String(args);
-  }
-}
-
-// Long preformatted blocks fold into a <details> with a one-line summary so
-// the timeline stays scannable; short blocks render inline. JSON-shaped
-// content gets light syntax highlighting.
 function CollapsibleBlock(props: {
   klass: string;
   content: string;
@@ -1888,16 +2993,7 @@ function CollapsibleBlock(props: {
 }) {
   const lines = () => props.content.split("\n");
   const long = () => lines().length > 12 || props.content.length > 600;
-  const isJson = () => /^[\s]*[\[{]/.test(props.content);
-  const isTurtle = () =>
-    /^@prefix\b/m.test(props.content) ||
-    /^[A-Za-z][\w:-]*\s+(a|[A-Za-z][\w:-]*)\s/m.test(props.content);
-
-  const highlighted = (): string => {
-    if (isJson()) return highlightJson(formatJsonTextForView(props.content));
-    if (isTurtle()) return highlightTurtle(props.content);
-    return escapeHtml(props.content);
-  };
+  const highlighted = (): string => highlightAuto(props.content);
 
   return (
     <Show
@@ -1907,7 +3003,9 @@ function CollapsibleBlock(props: {
       <details
         class={"collapsible " + props.klass}
         open={props.expansion.isOpen(props.expansionKey)}
-        onToggle={(ev) => props.expansion.setOpen(props.expansionKey, ev.currentTarget.open)}
+        onToggle={(ev) =>
+          props.expansion.setOpen(props.expansionKey, ev.currentTarget.open)
+        }
       >
         <summary>
           <span class="summary-head">{firstNonEmpty(lines())}</span>
@@ -1920,19 +3018,6 @@ function CollapsibleBlock(props: {
     </Show>
   );
 }
-
-function displayDiffStats(item: { diff?: string; stats?: DiffStats; before?: string; after?: string }): DiffStats {
-  const lines = item.diff ? item.diff.split("\n").length : 0;
-  if (item.stats) {
-    return {
-      added: Number(item.stats.added) || 0,
-      removed: Number(item.stats.removed) || 0,
-      lines: Number(item.stats.lines) || lines,
-    };
-  }
-  return { added: 0, removed: 0, lines };
-}
-
 
 function firstNonEmpty(lines: string[]): string {
   for (const l of lines) {
@@ -1952,7 +3037,9 @@ function ModelPicker(props: { bag: Bag }) {
       ? structured
       : (modelInfo?.models ?? []).map((id) => ({
           id,
-          provider: id.includes(":") ? id.slice(0, id.indexOf(":")) : modelInfo?.provider ?? "",
+          provider: id.includes(":")
+            ? id.slice(0, id.indexOf(":"))
+            : (modelInfo?.provider ?? ""),
           model: id.includes(":") ? id.slice(id.indexOf(":") + 1) : id,
           label: id,
         }));
@@ -1960,7 +3047,8 @@ function ModelPicker(props: { bag: Bag }) {
     const currentId = modelInfo?.selectedModelId ?? modelInfo?.effectiveModelId;
     const ordered: typeof models = [];
     for (const m of bag.modelMru()) {
-      const option = byId.get(m) ?? models.find((candidate) => candidate.model === m);
+      const option =
+        byId.get(m) ?? models.find((candidate) => candidate.model === m);
       if (option) ordered.push(option);
     }
     if (currentId) {
@@ -1984,13 +3072,20 @@ function ModelPicker(props: { bag: Bag }) {
   const selectedModelValue = () => {
     const modelInfo = info();
     if (!modelInfo) return "";
-    return modelInfo.selectedModelId ?? modelInfo.effectiveModelId ?? modelInfo.selectedModel ?? "";
+    return (
+      modelInfo.selectedModelId ??
+      modelInfo.effectiveModelId ??
+      modelInfo.selectedModel ??
+      ""
+    );
   };
-  const effortSupported = () => Boolean(info()?.effortSupported && (info()?.efforts?.length ?? 0) > 0);
+  const effortSupported = () =>
+    Boolean(info()?.effortSupported && (info()?.efforts?.length ?? 0) > 0);
   const effortTitle = () => {
     if (!info()) return "reasoning effort";
     if (info()?.provider === "openai") return "OpenAI reasoning effort";
-    if (info()?.provider === "anthropic" && effortSupported()) return "Anthropic thinking effort";
+    if (info()?.provider === "anthropic" && effortSupported())
+      return "Anthropic thinking effort";
     return "effort is only sent to providers/models that support it";
   };
   return (
@@ -2012,7 +3107,11 @@ function ModelPicker(props: { bag: Bag }) {
           title={effortTitle()}
           onChange={(e) => selectEffort(e.currentTarget.value)}
         >
-          <option value="__default">{info()?.defaultEffort ? `default (${info()?.defaultEffort})` : "default"}</option>
+          <option value="__default">
+            {info()?.defaultEffort
+              ? `default (${info()?.defaultEffort})`
+              : "default"}
+          </option>
           <For each={info()?.efforts ?? []}>
             {(effort) => <option value={effort}>{effort}</option>}
           </For>
@@ -2022,12 +3121,31 @@ function ModelPicker(props: { bag: Bag }) {
   );
 }
 
+function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const n = Math.max(0, Math.trunc(value));
+  if (n >= 1_000_000)
+    return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000)
+    return `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return n.toLocaleString();
+}
 function TokenBar(props: {
-  tokens: () => { used: number; budget: number; threshold: number; fraction: number } | null;
+  tokens: () => {
+    used: number;
+    budget: number;
+    threshold: number;
+    fraction: number;
+    source?: string;
+    estimated?: boolean;
+  } | null;
+  onCompact: () => void;
+  disabled: () => boolean;
+  compacting: () => boolean;
 }) {
   const currentTokens = () => props.tokens();
   const safeTokens = () =>
-    currentTokens() ?? { used: 0, budget: 0, threshold: 0, fraction: 0 };
+    currentTokens() ?? { used: 0, budget: 0, threshold: 0, fraction: 0, source: undefined, estimated: undefined };
   const safeBudget = () => Math.max(0, safeTokens().budget);
   const pct = () => {
     if (safeBudget() <= 0) return 0;
@@ -2042,13 +3160,6 @@ function TokenBar(props: {
     if (safeBudget() <= 0) return 0;
     return Math.min(100, Math.max(0, (tokens.threshold / safeBudget()) * 100));
   };
-  const formatCount = (value: number) => {
-    if (!Number.isFinite(value)) return "0";
-    const n = Math.max(0, Math.trunc(value));
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1).replace(/\.0$/, "")}k`;
-    return n.toLocaleString();
-  };
   const cls = () => {
     const tokens = safeTokens();
     return (
@@ -2057,10 +3168,16 @@ function TokenBar(props: {
       (safeBudget() > 0 && tokens.used >= tokens.threshold ? " over" : "")
     );
   };
+  const sourceLabel = () => {
+    const source = safeTokens().source;
+    if (source === "compaction") return "compaction prompt estimate";
+    if (source === "context") return "last LLM context";
+    return "token usage";
+  };
   const title = () => {
     const tokens = safeTokens();
     if (!currentTokens()) return "token usage loading";
-    return `${tokens.used.toLocaleString()} / ${tokens.budget.toLocaleString()} tokens · compaction at ${tokens.threshold.toLocaleString()}`;
+    return `${tokens.used.toLocaleString()} / ${tokens.budget.toLocaleString()} tokens (${sourceLabel()}) · compaction at ${tokens.threshold.toLocaleString()}`;
   };
   return (
     <div class={cls()} title={title()} aria-label={title()}>
@@ -2068,7 +3185,7 @@ function TokenBar(props: {
         <span>tokens</span>
         <strong>
           {currentTokens()
-            ? `${formatCount(safeTokens().used)} / ${formatCount(safeTokens().budget)}`
+            ? `${formatTokenCount(safeTokens().used)} / ${formatTokenCount(safeTokens().budget)}`
             : "—"}
         </strong>
       </div>
@@ -2076,20 +3193,146 @@ function TokenBar(props: {
         <span class="token-fill" style={{ width: pct() + "%" }} />
         <span class="token-mark" style={{ left: thresholdPct() + "%" }} />
       </div>
+      <button
+        type="button"
+        class="token-compact-button"
+        title={props.compacting() ? "Compacting older turns…" : "Compact older turns into a summary"}
+        aria-label={props.compacting() ? "Compacting older turns" : "Compact older turns"}
+        disabled={props.disabled()}
+        onClick={props.onCompact}
+      >
+        <CompactIcon class="token-compact-icon" />
+      </button>
     </div>
   );
 }
 
+function compactErrorDetail(detail: unknown): string {
+  if (!detail || typeof detail !== "object") return "";
+  const d = detail as Record<string, any>;
+  const parts = [
+    typeof d.reason === "string" ? d.reason : "",
+    typeof d.error === "string" ? d.error : "",
+    typeof d.message === "string" ? d.message : "",
+    typeof d.body?.error?.message === "string" ? d.body.error.message : "",
+    typeof d.body?.message === "string" ? d.body.message : "",
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length) return parts[0];
+  try {
+    const text = JSON.stringify(detail, null, 2).trim();
+    return text === "{}" ? "" : text;
+  } catch {
+    return String(detail ?? "").trim();
+  }
+}
+
+function compactionErrorDetail(item: StepItem): Record<string, any> | null {
+  const error = item.error as Record<string, any> | undefined;
+  const detail = error?.detail as Record<string, any> | undefined;
+  if (detail?.phase === "compaction" || detail?.source === "compaction") return detail;
+  if (error?.phase === "compaction" || error?.kind === "compaction") return error;
+  return null;
+}
+
+function compactionTrigger(detail: Record<string, any>): "manual" | "automatic" {
+  return detail.trigger === "manual" ? "manual" : "automatic";
+}
+
+function compactionTriggerTitle(detail: Record<string, any>): string {
+  return compactionTrigger(detail) === "manual" ? "Manual" : "Automatic";
+}
+
+function compactionFailureIntro(detail: Record<string, any>): string {
+  const status = Number(detail.status ?? 0) || 0;
+  const reason = typeof detail.reason === "string" ? detail.reason : "";
+  const trigger = compactionTrigger(detail);
+  if (status >= 400) return `The model provider rejected the ${trigger} compaction request.`;
+  if ((status >= 200 && status < 300) || /stream/i.test(reason)) {
+    return `The model provider returned a stream error after accepting the ${trigger} compaction request.`;
+  }
+  return `${compactionTriggerTitle(detail)} compaction failed before the conversation could be summarized.`;
+}
+
+function errorDiagnosticLines(detail: Record<string, any> | undefined | null): string {
+  if (!detail) return "";
+  return [
+    typeof detail.hint === "string" && detail.hint.trim() ? detail.hint.trim() : "",
+    typeof detail.requestId === "string" && detail.requestId.trim() ? `Request ID: ${detail.requestId.trim()}` : "",
+    typeof detail.retryAfter === "string" && detail.retryAfter.trim() ? `Retry after: ${detail.retryAfter.trim()}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function CompactionErrorBody(props: { item: StepItem; detail: Record<string, any> }) {
+  const message = () => String(props.detail.message || props.detail.reason || "").trim();
+  const diagnostics = () => errorDiagnosticLines(props.detail);
+  const technicalDetails = () => formatErrorPayloadForView(props.item.error);
+  const tokenDetails = () => {
+    const prompt = Number(props.detail.promptTokens ?? 0) || 0;
+    const requestPrompt = Number(props.detail.requestPromptTokens ?? 0) || 0;
+    const requestLimit = Number(props.detail.requestTokenLimit ?? 0) || 0;
+    const budget = Number(props.detail.tokenBudget ?? 0) || 0;
+    const threshold = Number(props.detail.tokenThreshold ?? 0) || 0;
+    if (!prompt && !requestPrompt && !requestLimit && !budget && !threshold) return "";
+    const hasFittedRequest = requestPrompt > 0 && (!prompt || requestPrompt !== prompt);
+    return [
+      prompt ? `${formatTokenCount(prompt)} ${hasFittedRequest ? "transcript" : "prompt"} tokens` : "",
+      hasFittedRequest ? `${formatTokenCount(requestPrompt)} request tokens` : "",
+      requestLimit ? `${formatTokenCount(requestLimit)} request cap` : "",
+      budget ? `${formatTokenCount(budget)} token budget` : "",
+      threshold ? `compaction at ${formatTokenCount(threshold)}` : "",
+    ].filter(Boolean).join(" · ");
+  };
+  return (
+    <>
+      <div class="error-head">
+        <span class="error-icon">!</span>
+        <strong>{compactionTriggerTitle(props.detail)} compaction failed</strong>
+      </div>
+      <div class="error-body">
+        {compactionFailureIntro(props.detail)} Your chat is intact, but no reply was generated. {compactionTrigger(props.detail) === "manual" ? "Try switching to a larger-context model, lowering reasoning effort, or reducing retained history." : <>Try compacting from the token bar, switch to a larger-context model, or reduce retained history.</>}
+      </div>
+      <Show when={message()}>
+        <div class="error-body">Provider message: {message()}</div>
+      </Show>
+      <Show when={diagnostics()}>
+        <div class="error-body error-diagnostics">{diagnostics()}</div>
+      </Show>
+      <Show when={tokenDetails()}>
+        <div class="error-body">{tokenDetails()}</div>
+      </Show>
+      <Show when={technicalDetails()}>
+        <details class="error-payload">
+          <summary>Technical details</summary>
+          <pre innerHTML={highlightErrorPayloadForView(technicalDetails())} />
+        </details>
+      </Show>
+    </>
+  );
+}
+
 function ErrorBody(props: { item: StepItem }) {
-  const lines = () => props.item.text.split("\n");
+  const text = () => props.item.text || "";
+  const lines = () => text().split("\n");
   const head = () => lines()[0] || "error";
   const detail = () => props.item.error?.detail;
-  const message = () => String(detail()?.message ?? lines().slice(1).join("\n") ?? "").trim();
+  const compaction = () => compactionErrorDetail(props.item);
+  const message = () =>
+    String(
+      (detail()?.message ?? lines().slice(1).join("\n")) ||
+        compactErrorDetail(detail() ?? props.item.error) ||
+        "No error details recorded.",
+    ).trim();
+  const diagnostics = () => errorDiagnosticLines(detail() as Record<string, any> | undefined | null);
   const payloadText = () => formatErrorPayloadForView(detail()?.body);
   const showPayload = () => {
     const payload = payloadText();
     return payload && payload !== message();
   };
+  if (compaction()) {
+    return <CompactionErrorBody item={props.item} detail={compaction()!} />;
+  }
   return (
     <>
       <div class="error-head">
@@ -2099,14 +3342,22 @@ function ErrorBody(props: { item: StepItem }) {
       <Show when={message()}>
         <div class="error-body">{message()}</div>
       </Show>
+      <Show when={diagnostics()}>
+        <div class="error-body error-diagnostics">{diagnostics()}</div>
+      </Show>
       <Show when={showPayload()}>
         <details class="error-payload" open>
           <summary>Response payload</summary>
-          <pre>{payloadText()}</pre>
+          <pre innerHTML={highlightErrorPayloadForView(payloadText())} />
         </details>
       </Show>
     </>
   );
+}
+
+function highlightErrorPayloadForView(body: unknown): string {
+  const text = typeof body === "string" ? body : formatErrorPayloadForView(body);
+  return text ? highlightAuto(text) : "";
 }
 
 function formatErrorPayloadForView(body: unknown): string {
@@ -2114,14 +3365,11 @@ function formatErrorPayloadForView(body: unknown): string {
   if (typeof body === "string") {
     const trimmed = body.trim();
     if (!trimmed) return "";
-    try {
-      return JSON.stringify(JSON.parse(trimmed), null, 2);
-    } catch {
-      return trimmed;
-    }
+    const formatted = formatHjsonTextForView(trimmed);
+    return formatted === trimmed ? trimmed : formatted;
   }
   try {
-    return JSON.stringify(body, null, 2);
+    return formatHjson(body);
   } catch {
     return String(body);
   }
@@ -2129,8 +3377,21 @@ function formatErrorPayloadForView(body: unknown): string {
 
 function Input(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   return (
-    <Show when={props.item.kind === "ui:Form"} fallback={<ChoiceUi item={props.item} bag={props.bag} timelineKey={props.timelineKey} />}>
-      <FormUi item={props.item} bag={props.bag} timelineKey={props.timelineKey} />
+    <Show
+      when={props.item.kind === "ui:Form"}
+      fallback={
+        <ChoiceUi
+          item={props.item}
+          bag={props.bag}
+          timelineKey={props.timelineKey}
+        />
+      }
+    >
+      <FormUi
+        item={props.item}
+        bag={props.bag}
+        timelineKey={props.timelineKey}
+      />
     </Show>
   );
 }
@@ -2153,9 +3414,14 @@ function FormUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   };
   const answered = () => props.item.status !== "ui:Pending";
   const response = () => props.item.response;
-  const cancelled = () => props.item.status === "ui:Cancelled" || !!response()?.cancelled;
+  const cancelled = () =>
+    props.item.status === "ui:Cancelled" || !!response()?.cancelled;
   return (
-    <div class="input form" data-timeline-key={props.timelineKey} classList={{ answered: !!answered() }}>
+    <div
+      class="input form"
+      data-timeline-key={props.timelineKey}
+      classList={{ answered: !!answered() }}
+    >
       <div class="input-meta">
         {absoluteTime(props.item.at)} · form
         <Show when={answered()}>
@@ -2167,7 +3433,11 @@ function FormUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
       </Show>
       <Show
         when={!answered()}
-        fallback={<div class="answer-summary input-deferred-answer">{cancelled() ? "cancelled below" : "answered below"}</div>}
+        fallback={
+          <div class="answer-summary input-deferred-answer">
+            {cancelled() ? "cancelled below" : "answered below"}
+          </div>
+        }
       >
         <form ref={formEl} class="input-fields" onSubmit={handleSubmit}>
           <For each={spec().fields}>{(f) => <FieldRow field={f} />}</For>
@@ -2175,7 +3445,11 @@ function FormUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
             <button class="primary" type="submit">
               {spec().submitLabel || "submit"}
             </button>
-            <button type="button" class="secondary" onClick={() => props.bag.cancelForm(props.item.requestId)}>
+            <button
+              type="button"
+              class="secondary"
+              onClick={() => props.bag.cancelForm(props.item.requestId)}
+            >
               cancel
             </button>
           </div>
@@ -2185,9 +3459,17 @@ function FormUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   );
 }
 
-function InputResponse(props: { item: InputResponseItem; timelineKey: string }) {
+function InputResponse(props: {
+  item: InputResponseItem;
+  timelineKey: string;
+}) {
   return (
-    <Show when={props.item.kind === "ui:Form"} fallback={<ChoiceResponse item={props.item} timelineKey={props.timelineKey} />}>
+    <Show
+      when={props.item.kind === "ui:Form"}
+      fallback={
+        <ChoiceResponse item={props.item} timelineKey={props.timelineKey} />
+      }
+    >
       <FormResponse item={props.item} timelineKey={props.timelineKey} />
     </Show>
   );
@@ -2200,13 +3482,20 @@ function FormResponse(props: { item: InputResponseItem; timelineKey: string }) {
   return (
     <div class="input response form" data-timeline-key={props.timelineKey}>
       <div class="input-meta">
-        {absoluteTime(props.item.at)} · {cancelled() ? "cancelled" : "answered"} form
+        {absoluteTime(props.item.at)} · {cancelled() ? "cancelled" : "answered"}{" "}
+        form
       </div>
       <Show when={spec()?.title}>
         <div class="input-title">{spec()!.title}</div>
       </Show>
-      <Show when={!cancelled()} fallback={<div class="answer-summary cancelled">cancelled</div>}>
-        <Show when={spec()} fallback={<RawAnswerSummary values={response().values || {}} />}>
+      <Show
+        when={!cancelled()}
+        fallback={<div class="answer-summary cancelled">cancelled</div>}
+      >
+        <Show
+          when={spec()}
+          fallback={<RawAnswerSummary values={response().values || {}} />}
+        >
           {(s) => <AnswerSummary spec={s()} values={response().values || {}} />}
         </Show>
       </Show>
@@ -2214,7 +3503,10 @@ function FormResponse(props: { item: InputResponseItem; timelineKey: string }) {
   );
 }
 
-function ChoiceResponse(props: { item: InputResponseItem; timelineKey: string }) {
+function ChoiceResponse(props: {
+  item: InputResponseItem;
+  timelineKey: string;
+}) {
   const spec = () => props.item.spec as ChoiceSpec | null;
   const response = () => props.item.response;
   const cancelled = () => !!response().cancelled;
@@ -2224,13 +3516,16 @@ function ChoiceResponse(props: { item: InputResponseItem; timelineKey: string })
   return (
     <div class="input response choice" data-timeline-key={props.timelineKey}>
       <div class="input-meta">
-        {absoluteTime(props.item.at)} · {cancelled() ? "cancelled" : "answered"} choice
+        {absoluteTime(props.item.at)} · {cancelled() ? "cancelled" : "answered"}{" "}
+        choice
       </div>
       <Show when={spec()?.title}>
         <div class="input-title">{spec()!.title}</div>
       </Show>
       <div class="answer-summary">
-        <strong>{cancelled() ? "cancelled" : pickedItem()?.label || pickedId() || "—"}</strong>
+        <strong>
+          {cancelled() ? "cancelled" : pickedItem()?.label || pickedId() || "—"}
+        </strong>
       </div>
     </div>
   );
@@ -2309,19 +3604,15 @@ function FieldControl(props: { field: FormField }) {
     );
   }
   if (f.type === "boolean") {
-    return (
-      <input
-        type="checkbox"
-        name={f.name}
-        checked={!!f.default}
-      />
-    );
+    return <input type="checkbox" name={f.name} checked={!!f.default} />;
   }
   if (f.type === "select") {
     return (
       <select name={f.name} required={f.required}>
         <For each={f.options || []}>
-          {(opt) => <option value={optionValue(opt)}>{optionLabel(opt)}</option>}
+          {(opt) => (
+            <option value={optionValue(opt)}>{optionLabel(opt)}</option>
+          )}
         </For>
       </select>
     );
@@ -2370,12 +3661,17 @@ function ChoiceUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   const spec = () => props.item.spec as ChoiceSpec;
   const answered = () => props.item.status !== "ui:Pending";
   const response = () => props.item.response;
-  const cancelled = () => props.item.status === "ui:Cancelled" || !!response()?.cancelled;
+  const cancelled = () =>
+    props.item.status === "ui:Cancelled" || !!response()?.cancelled;
   const pickedId = () =>
     response()?.values?.id != null ? String(response()!.values.id) : null;
   const pickedItem = () => spec().items.find((i) => i.id === pickedId());
   return (
-    <div class="input choice" data-timeline-key={props.timelineKey} classList={{ answered: !!answered() }}>
+    <div
+      class="input choice"
+      data-timeline-key={props.timelineKey}
+      classList={{ answered: !!answered() }}
+    >
       <div class="input-meta">
         {absoluteTime(props.item.at)} · choice
         <Show when={answered()}>
@@ -2387,7 +3683,11 @@ function ChoiceUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
       </Show>
       <Show
         when={!answered()}
-        fallback={<div class="answer-summary input-deferred-answer">{cancelled() ? "cancelled below" : "answered below"}</div>}
+        fallback={
+          <div class="answer-summary input-deferred-answer">
+            {cancelled() ? "cancelled below" : "answered below"}
+          </div>
+        }
       >
         <div class="choices">
           <For each={spec().items}>
@@ -2410,7 +3710,11 @@ function ChoiceUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
             )}
           </For>
           <div class="input-actions">
-            <button type="button" class="secondary" onClick={() => props.bag.cancelForm(props.item.requestId)}>
+            <button
+              type="button"
+              class="secondary"
+              onClick={() => props.bag.cancelForm(props.item.requestId)}
+            >
               cancel
             </button>
           </div>

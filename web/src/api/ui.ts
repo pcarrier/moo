@@ -2,7 +2,7 @@ import type { ApiResult } from "./transport";
 import { callCommand } from "./contract";
 import type { ApiCommand, ApiCommandReq } from "./contract";
 import { optional } from "./utils";
-import type { ChatId, Sha256Hash, UiApp, UiBundle, UiId, UiInstance, UiInstanceId } from "./types";
+import type { ChatId, UiApp, UiBundle, UiId, UiInstance, UiInstanceId } from "./types";
 
 export type UiCommands =
   | ApiCommand<"ui-list", Record<string, never>, { apps: UiApp[] }>
@@ -11,8 +11,8 @@ export type UiCommands =
   | ApiCommand<"ui-chat", { chatId: ChatId }, { chatId: ChatId; apps: UiApp[]; instances: UiInstance[]; primaryUiId: string | null }>
   | ApiCommand<"ui-open", { chatId: ChatId; uiId: UiId; instanceId?: UiInstanceId | null }, { chatId: ChatId; uiId: UiId; instanceId: UiInstanceId }>
   | ApiCommand<"ui-close", { chatId: ChatId; uiId: UiId; instanceId?: UiInstanceId | null }, { chatId: ChatId; uiId: UiId; instanceId: UiInstanceId | null }>
-  | ApiCommand<"ui-state-get", { instanceId: UiInstanceId }, { instanceId: UiInstanceId; state: unknown; hash: Sha256Hash | null }>
-  | ApiCommand<"ui-state-set", { instanceId: UiInstanceId; state: unknown }, { instanceId: UiInstanceId; state: unknown; hash: Sha256Hash }>
+  | ApiCommand<"ui-state-get", { instanceId: UiInstanceId }, { instanceId: UiInstanceId; state: unknown; target: string | null }>
+  | ApiCommand<"ui-state-set", { instanceId: UiInstanceId; state: unknown }, { instanceId: UiInstanceId; state: unknown; target: string }>
   | ApiCommand<"ui-call", { uiId: UiId; instanceId: UiInstanceId | null; chatId: ChatId | null; name: string; input: unknown }, unknown>;
 
 export const uiApi = {

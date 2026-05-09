@@ -1,8 +1,8 @@
 import { callCommand } from "./contract";
 import type { ApiCommand } from "./contract";
 
-export type LlmProviderId = "openai" | "anthropic" | "qwen";
-export type LlmAuthMode = "env" | "apiKey" | "oauth";
+export type LlmProviderId = "openai" | "anthropic" | "qwen" | "xai";
+export type LlmAuthMode = "env" | "apiKey" | "oauth" | "subscription";
 
 export type LlmRetrySettings = {
   maxAttempts: number;

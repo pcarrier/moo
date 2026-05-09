@@ -10,6 +10,7 @@ pub mod proc;
 pub mod refs;
 pub mod sparql;
 pub mod store;
+mod v8util;
 
 pub fn install_all(scope: &mut v8::PinScope) -> Result<(), String> {
     misc::install(scope)?;

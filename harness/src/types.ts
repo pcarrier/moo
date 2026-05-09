@@ -1,3 +1,4 @@
+import type { UiAppBundle, UiAppManifest } from "../../shared/src/ui";
 export type Quad = [string, string, string, string]; // [graph, s, p, o]
 export type FactHistoryRow = [string, string, string, string, string, string]; // [graph, s, p, o, action, at]
 export type Triple = [string, string, string]; // [s, p, o]
@@ -62,21 +63,9 @@ export type UiChooseSpec = {
   items: UiChoiceItem[];
 };
 
-export type UiManifest = {
-  id: string;
-  title: string;
-  description?: string;
-  icon?: string;
-  entry?: string;
-  api?: Array<{ name: string; input?: unknown }>;
-};
+export type UiManifest = UiAppManifest;
 
-export type UiBundle = {
-  html?: string;
-  css?: string;
-  js?: string;
-  files?: Record<string, string>;
-};
+export type UiBundle = UiAppBundle;
 
 export type UiRegisterAppArgs = {
   id?: string;
@@ -105,7 +94,7 @@ export type UiOpenAppResult = {
   chatId: string;
   uiId: string;
   instanceId: string;
-  stateHash: string | null;
+  stateTarget: string | null;
   stateRef: string;
   createdState: boolean;
   facts: FactMutationReceipt;
@@ -221,6 +210,8 @@ export type ChatRefs = {
   providerRef?: string;
   effort: string;
   effortRef?: string;
+  startBranch: string;
+  startBranchRef?: string;
 };
 
 export type StepKind =
@@ -232,6 +223,8 @@ export type StepKind =
   | "agent:ToolCall"
   | "agent:FileDiff"
   | "agent:MemoryDiff"
+  | "agent:TodoDiff"
+  | "agent:BlobAdd"
   | "agent:Tick"
   | "agent:Final"
   | "agent:Error"
@@ -258,7 +251,7 @@ export type SubagentSpec = {
   task: string;
   context?: string;
   expectedOutput?: string;
-  maxTurns?: number;
+  maxSteps?: number;
   timeoutMs?: number;
   model?: string;
   effort?: string;
@@ -270,7 +263,7 @@ export type SubagentResult = {
   childChatId: string;
   output: string;
   error?: string | null;
-  durationMs: number;
+  durationNs: number;
   usage?: unknown;
 };
 
@@ -278,20 +271,21 @@ export type ProcResult = {
   code: number;
   stdout: string;
   stderr: string;
-  durationMs: number;
+  durationNs: number;
   timedOut: boolean;
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
 };
 
 export type LLMProvider = {
-  name: "openai" | "qwen" | "anthropic";
+  name: "openai" | "qwen" | "anthropic" | "xai";
   apiKey: string | null;
   baseUrl: string;
   model: string;
   effort: string | null;
   keyEnvHint: string;
-  authMode?: "env" | "apiKey" | "oauth";
+  authMode?: "env" | "apiKey" | "oauth" | "subscription";
+  oauthAccountId?: string | null;
 };
 
 export type { Result } from "./core/result";
@@ -319,8 +313,101 @@ export class MooApiError extends Error {
 
 export type MooTry = <T>(fn: () => T | Promise<T>) => Promise<ApiResult<Awaited<T>>>;
 
+export type TraceStatus = "running" | "ok" | "error" | "cancelled" | "timeout";
+export type TraceKind = "trace" | "span" | "mark" | string;
+export type TraceRow = {
+  id: string;
+  traceId: string;
+  seq: number;
+  stepId: string | null;
+  kind: TraceKind;
+  name: string;
+  t0Ns: number;
+  t1Ns: number | null;
+  status: TraceStatus | string;
+  inputHash?: string | null;
+  outputHash?: string | null;
+  errorHash?: string | null;
+  dataHash?: string | null;
+  data: Record<string, unknown>;
+};
+export type TraceCurrent = { traceId: string; id: string; stepId: string | null; parentId: string };
+export type TraceTreeNode = TraceRow & { children: TraceTreeNode[] };
+export type TraceChat = { id: string; title: string | null };
+export type TraceErrorCategory =
+  | "runjs_compile"
+  | "patch_mismatch"
+  | "missing_file"
+  | "missing_tool"
+  | "proc_nonzero"
+  | "undefined_variable"
+  | "no_change"
+  | "timeout"
+  | "api_error"
+  | "unknown";
+export type TraceErrorInfo = { message: string; category: TraceErrorCategory; row: TraceRow };
+export type TraceRecentArgs = {
+  limit?: number;
+  includeChat?: boolean;
+  chatId?: string;
+  status?: TraceStatus | string;
+  kind?: TraceKind;
+  name?: string;
+  text?: string;
+  hasError?: boolean;
+};
+export type TraceSearchArgs = TraceRecentArgs & { includeEvents?: boolean };
+export type TraceFailedArgs = Omit<TraceSearchArgs, "hasError" | "status">;
+export type TraceSearchRow = TraceRow & {
+  chat?: TraceChat;
+  events?: TraceRow[];
+  errorSummary?: string;
+  category?: TraceErrorCategory;
+};
+export type TraceSummary = {
+  traceId: string;
+  status: string;
+  root: TraceRow | null;
+  chat?: TraceChat;
+  durationNs?: number;
+  error?: TraceErrorInfo;
+  errors: TraceErrorInfo[];
+  events?: TraceRow[];
+  counts?: { total: number; byKind: Array<{ name: string; count: number }>; byStatus: Array<{ name: string; count: number }>; byName: Array<{ name: string; count: number }> };
+  slowestSpans?: Array<{ row: TraceRow; durationNs: number }>;
+  criticalPath?: Array<{ row: TraceRow; durationNs: number | null }>;
+  waterfall?: Array<Record<string, unknown>>;
+  sideEffects?: TraceRow[];
+  causalLinks?: Array<Record<string, unknown>>;
+};
+export type TraceDiagnosisGroup = { category: TraceErrorCategory | string; count: number; examples?: TraceSearchRow[] };
+export type TraceDiagnosis = { total?: number; groups?: TraceDiagnosisGroup[]; recentFailures?: TraceSummary[]; slowRecent?: TraceSummary[]; slowestSpans?: Array<Record<string, unknown>>; sideEffects?: Array<Record<string, unknown>>; failureGroups?: TraceDiagnosisGroup[] };
+export type TraceDiagnostic = TraceDiagnosis;
+export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
+export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+export type TodoPriority = "high" | "normal" | "low";
+export type AgentTodo = { id: string; text: string; status: TodoStatus; priority?: TodoPriority; note?: string; createdAt: string; updatedAt: string };
+export type AgentTodoState = { version: 1; updatedAt: string; items: AgentTodo[] };
+export type TodoPatch = { add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>; update?: Array<{ id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
+
+export type MooTracesApi = {
+  current(): Promise<TraceCurrent | null>;
+  get(args?: { traceId?: string; stepId?: string }): Promise<TraceRow | null>;
+  events(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceRow[]>;
+  tree(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceTreeNode | null>;
+  recent(args?: TraceRecentArgs): Promise<TraceSearchRow[]>;
+  search(args?: TraceSearchArgs): Promise<TraceSearchRow[]>;
+  failed(args?: TraceFailedArgs): Promise<TraceSearchRow[]>;
+  summary(args?: { traceId?: string; stepId?: string; includeEvents?: boolean }): Promise<TraceSummary | null>;
+  diagnose(args?: TraceFailedArgs & { examplesPerGroup?: number }): Promise<TraceDiagnosis>;
+  errorOf(row: TraceRow): string | null;
+  errors(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceErrorInfo[]>;
+  mark(message: string, data?: Record<string, unknown>): Promise<string | null>;
+  span<T>(name: string, fn: () => T | Promise<T>): Promise<Awaited<T>>;
+  span<T>(name: string, data: TraceSpanOptions, fn: () => T | Promise<T>): Promise<Awaited<T>>;
+};
+
 export type MemoryFact = [string, string, ObjectInput] | { subject: string; predicate: string; object: ObjectInput };
-export type MemoryPatchGroup = { asserts?: MemoryFact[]; retracts?: MemoryFact[] };
 
 export type FactQuadInput = Quad | { graph: string; subject: string; predicate: string; object: ObjectInput };
 export type FactStoreArg = { store: string };
@@ -364,27 +451,6 @@ export type ValidateApi = {
 };
 
 
-export type FsPatchArgs = {
-  patch: string;
-  cwd?: string | null;
-  strip?: number | null;
-  dryRun?: boolean;
-};
-
-export type FsPatchFileResult = {
-  path: string;
-  beforeExists: boolean;
-  afterExists: boolean;
-  added: number;
-  removed: number;
-  hunks: number;
-};
-
-export type FsPatchReceipt = {
-  dryRun: boolean;
-  files: FsPatchFileResult[];
-};
-
 export type ProcRunArgs = {
   cmd: string;
   args?: string[];
@@ -407,7 +473,6 @@ export type WorkspaceScope = {
     canonical(path?: string): Promise<string>;
     exists(path?: string): Promise<boolean>;
     ensureDir(path?: string): Promise<void>;
-    patch(args: string | Omit<FsPatchArgs, "cwd">): Promise<FsPatchReceipt>;
   };
   proc: {
     run(args: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }): Promise<ProcResult>;
@@ -418,7 +483,6 @@ export type WorkspaceScope = {
 export type MemoryScope = {
   assert(args: { subject: string; predicate: string; object: ObjectInput } | { facts: MemoryFact[] }): Promise<void>;
   retract(args: { subject: string; predicate: string; object: ObjectInput } | { facts: MemoryFact[] }): Promise<void>;
-  patch(args: MemoryPatchGroup | { groups: MemoryPatchGroup[] }): Promise<void>;
   query(
     patterns: Array<[string, string, ObjectInput]>,
     opts?: { limit?: number },
@@ -442,6 +506,15 @@ export type Moo = {
     putJSON(args: { kind: string; value: unknown }): Promise<string>;
     getText(args: { hash: string }): Promise<{ kind: string; text: string } | null>;
     getJSON<V = unknown>(args: { hash: string }): Promise<{ kind: string; value: V } | null>;
+  };
+  todos: {
+    list(): Promise<AgentTodoState>;
+    add(args: { text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }): Promise<AgentTodo>;
+    update(args: { id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo>;
+    done(args: { id: string; note?: string }): Promise<AgentTodo>;
+    drop(args: { id: string; note?: string }): Promise<AgentTodo>;
+    patch(args: TodoPatch): Promise<AgentTodoState>;
+    clear(args?: { statuses?: TodoStatus[] }): Promise<AgentTodoState>;
   };
   pointers: {
     get(name: string): Promise<string | null>;
@@ -482,7 +555,6 @@ export type Moo = {
     canonical(path: string): Promise<string>;
     exists(path: string): Promise<boolean>;
     ensureDir(path: string): Promise<void>;
-    patch(args: string | FsPatchArgs): Promise<FsPatchReceipt>;
   };
   proc: {
     run(args: ProcRunArgs): Promise<ProcResult>;
@@ -515,12 +587,13 @@ export type Moo = {
   events: {
     publish(payload: unknown): void;
   };
+  traces: MooTracesApi;
   env: {
     get(name: string): Promise<string | null>;
     getMany(names: string[]): Promise<Record<string, string | null>>;
   };
   chat: {
-    refs(args: { chatId: string }): ChatRefs;
+    refs(args: { chatId: string }): Promise<ChatRefs>;
     scratch(chatId: string): Promise<string>;
     touch(chatId: string): Promise<void>;
     list(): Promise<
@@ -549,10 +622,10 @@ export type Moo = {
         childUsageIncluded?: number;
       }>
     >;
-    create(chatId?: string, path?: string | null): Promise<string>;
+    create(chatId?: string, path?: string | null, opts?: { branch?: string | null }): Promise<string>;
     remove(chatId: string): Promise<{ chatId: string; refsDeleted: number; quadsCleared: number }>;
-    setTitle(args: { chatId: string; title: string | null }): Promise<ChatTitleReceipt>;
-    recordSummary(args: { chatId: string; summary: string; title?: string | null }): Promise<ChatSummaryReceipt>;
+    setTitle(args: { chatId: string; title: string | null; manual?: boolean }): Promise<ChatTitleReceipt>;
+    recordSummary(args: { chatId?: string; summary: string; title: string }): Promise<ChatSummaryReceipt>;
     archive(chatId: string): Promise<number>;
     unarchive(chatId: string): Promise<null>;
   };

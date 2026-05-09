@@ -1,17 +1,17 @@
 version: "0.5"
 
-# process-compose -f process-compose.yaml
-#
-# Three processes glue the moo dev loop together:
+# Five processes glue the moo dev loop together:
 #
 #   harness  — bun build --watch on harness/src/*.ts → harness/dist/harness.js
+#   backend-build — compile the backend once before starting it.
 #   backend  — Rust agent server in --watch mode (rereads bundle per request).
-#              cargo-watch only restarts on src/*.rs changes.
+#   backend-watch — cargo-watch rebuilds on src/*.rs changes, then restarts
+#                   backend only if compilation succeeded.
 #   frontend — Vite dev server on :5173, proxying /api → backend on :7777
 #
 # Live-reload paths:
 #   * .ts in harness  → bun rebuilds bundle (~15ms) → next /api/run sees it
-#   * .rs in src      → cargo-watch rebuilds + restarts backend
+#   * .rs in src      → cargo-watch rebuilds, then restarts backend on success
 #   * .ts in web      → Vite HMR
 
 processes:
@@ -32,16 +32,35 @@ processes:
       install:
         condition: process_completed_successfully
 
-  backend:
-    description: "Rust agent server (cargo-watch + --watch live bundle)"
+  backend-build:
+    description: "Compile Rust agent server once before startup"
     working_dir: .
-    command: "cargo watch -w src -x 'run --profile profiling -- serve --port 7777 --host 127.0.0.1 --bind-cdp [::1]:9222 --watch --bundle harness/dist/harness.js'"
+    command: cargo build --profile profiling
     availability:
       restart: on_failure
       backoff_seconds: 1
     depends_on:
       install:
         condition: process_completed_successfully
+
+  backend:
+    description: "Rust agent server (--watch live bundle)"
+    working_dir: .
+    command: "./target/profiling/moo serve --port 7777 --host 127.0.0.1 --bind-cdp [::1]:9222 --watch --bundle harness/dist/harness.js $${MOO_ARGS:-}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 1
+    depends_on:
+      backend-build:
+        condition: process_completed_successfully
+
+  backend-watch:
+    description: "Rebuild Rust agent server and restart backend on success"
+    working_dir: .
+    command: "cargo watch -w src -s 'cargo build --profile profiling && process-compose -U process restart backend'"
+    depends_on:
+      backend:
+        condition: process_started
 
   frontend:
     description: "Vite dev server (port + proxy in vite.config.ts)"

@@ -1,3 +1,4 @@
+import * as host from "../host_ops";
 import { moo } from "../moo";
 import { Term } from "../types";
 import { readCompactionChain } from "../agent";
@@ -24,7 +25,7 @@ export async function objectGetCommand(input: Input) {
     return { ok: false, error: { message: "object-get requires sha256:<64-hex> hash" } };
   }
   const normalized = hash.toLowerCase();
-  const object = __op_object_get(normalized) ?? __op_object_get(normalized.slice("sha256:".length));
+  const object = host.getObject(normalized) ?? host.getObject(normalized.slice("sha256:".length));
   return { ok: true, value: { hash: normalized, object } };
 }
 
@@ -76,6 +77,16 @@ export type GraphSummaryRow = [string, number, number]; // [graph, facts, subjec
 
 export async function graphSummariesCommand(input: Input) {
   const removedMode = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
+  if (removedMode === "exclude") {
+    if (input.project !== undefined) {
+      const store = await projectMemoryStoreFor(input.project);
+      const graph = await projectMemoryGraphFor(input.project);
+      const graphs = JSON.parse(host.graphFactSummaries(store, graph)) as GraphSummaryRow[];
+      return { ok: true, value: { graphs } };
+    }
+    const graphs = JSON.parse(host.graphFactSummaries(null, null)) as GraphSummaryRow[];
+    return { ok: true, value: { graphs } };
+  }
   const summaries = new Map<string, { facts: number; subjects: Set<string> }>();
   const add = (graph: string, subject: string) => {
     let summary = summaries.get(graph);
@@ -147,12 +158,25 @@ export async function triplesCommand(input: Input) {
   const graph = typeof input.graph === "string" && input.graph.length > 0 ? input.graph : undefined;
   let total = 0;
   const pushTriple = (triples: Array<[string, string, string, string, string?, string?]>, row: [string, string, string, string, string?, string?]) => {
+    if (graph && row[0] !== graph) return;
     total += 1;
     if (!limit || triples.length < limit) triples.push(row);
   };
   if (input.project !== undefined) {
     const store = await projectMemoryStoreFor(input.project);
     const graph = await projectMemoryGraphFor(input.project);
+    if (removedMode === "exclude") {
+      const current = await moo.facts.match({ store, ...{
+        graph,
+        subject: input.subject ?? null,
+        predicate: input.predicate ?? null,
+        object: input.object ?? null,
+        limit,
+      } });
+      const triples = (current as Array<[string, string, string, string]>).map((row) => [row[0], row[1], row[2], row[3], "present", ""] as [string, string, string, string, string, string]);
+      const truncated = Boolean(limit && triples.length >= limit);
+      return { ok: true, value: { triples, truncated, limit: limit || undefined, total: truncated ? undefined : triples.length } };
+    }
     const current = await moo.facts.match({ store, ...{
       graph,
       subject: input.subject ?? null,
@@ -193,6 +217,27 @@ export async function triplesCommand(input: Input) {
   const stores = await allFactStores();
   const triples: Array<[string, string, string, string, string?, string?]> = [];
   const seen = new Set<string>();
+  if (removedMode === "exclude") {
+    for (const store of stores) {
+      if (limit && triples.length >= limit) break;
+      const current = await moo.facts.match({ store, ...{
+        graph: graph ?? null,
+        subject: input.subject ?? null,
+        predicate: input.predicate ?? null,
+        object: input.object ?? null,
+        limit: limit ? limit - triples.length : null,
+      } });
+      for (const row of current as Array<[string, string, string, string]>) {
+        const rowKey = row.join("\u0000");
+        const key = rowKey + "\u0000present";
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pushTriple(triples, [row[0], row[1], row[2], row[3], "present", ""]);
+      }
+    }
+    const truncated = Boolean(limit && triples.length >= limit);
+    return { ok: true, value: { triples, truncated, limit: limit || undefined, total: truncated ? undefined : triples.length } };
+  }
   for (const store of stores) {
     const current = await moo.facts.match({ store, ...{
       graph: graph ?? null,
@@ -295,15 +340,26 @@ export async function tripleRemoveCommand(input: Input) {
   const subject = String(input.subject);
   const predicate = String(input.predicate);
   const object = String(input.object);
-  const objectTerm = new Term(object);
 
   const stores = await allFactStores();
   let removed = 0;
   for (const store of stores) {
-    const existing = await moo.facts.match({ store, ...{ graph, subject, predicate, object: objectTerm, limit: 1 } });
+    const existing = await moo.facts.match({
+      store,
+      ...{ graph, subject, predicate, object: new Term(object) },
+    }) as Array<[string, string, string, string]>;
     if (existing.length === 0) continue;
-    await moo.facts.remove({ store, graph, subject, predicate, object: objectTerm });
-    removed++;
+    await moo.facts.swap({
+      store,
+      removes: existing.map((row) => ({
+        graph: row[0],
+        subject: row[1],
+        predicate: row[2],
+        object: new Term(row[3]),
+      })),
+      adds: [],
+    });
+    removed += existing.length;
   }
 
   return {
@@ -326,11 +382,19 @@ export async function subjectRemoveCommand(input: Input) {
   const stores = await allFactStores();
   let removed = 0;
   for (const store of stores) {
-    const existing = await moo.facts.match({ store, ...{ graph, subject } });
-    for (const row of existing as Array<[string, string, string, string]>) {
-      await moo.facts.remove({ store, graph: row[0], subject: row[1], predicate: row[2], object: new Term(row[3]) });
-      removed++;
-    }
+    const existing = await moo.facts.match({ store, ...{ graph, subject } }) as Array<[string, string, string, string]>;
+    if (existing.length === 0) continue;
+    await moo.facts.swap({
+      store,
+      removes: existing.map((row) => ({
+        graph: row[0],
+        subject: row[1],
+        predicate: row[2],
+        object: new Term(row[3]),
+      })),
+      adds: [],
+    });
+    removed += existing.length;
   }
 
   return {
@@ -370,13 +434,6 @@ export async function tripleRestoreCommand(input: Input) {
   };
 }
 
-
-export async function memoryPatchCommand(input: Input) {
-  const patch = input.patch ?? input;
-  const memory = memoryScopeFor(input);
-  await memory.patch(patch);
-  return { ok: true, value: { project: input.project ?? null } };
-}
 
 
 export async function retractCommand(input: Input) {

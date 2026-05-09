@@ -1,9 +1,13 @@
 import type { LLMProvider } from "./types";
 import { currentCompactionThresholdPercent, providerConfiguredCredential } from "./commands/llm_auth";
-import { moo, withMooChatContext, withMooRunJSContext } from "./moo";
+import { finishRunJSTraceRoot, moo, startRunJSTraceRoot, withMooChatContext, withMooRunJSContext } from "./moo";
 import { appendStep } from "./steps";
-import { chatRefs, parseArgv, truncate, maybeQuote } from "./lib";
-import { buildCompactionSummaryPromptMessages, buildSystemPrompt } from "./prompt";
+import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
+import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
+import { formatTodosForDynamicContext } from "./todos";
+import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, normalizeProvider as normalizeProviderName } from "./llm_models";
+export { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
+import { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 
 export { appendStep, ensureRun } from "./steps";
 
@@ -13,7 +17,7 @@ export const TOOLS = [
     function: {
       name: "runJS",
       description:
-        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `scratch`, and optional `args` are in scope. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
+        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
       parameters: {
         type: "object",
         properties: {
@@ -42,78 +46,8 @@ export const TOOLS = [
   },
 ];
 
-// Compact when the next prompt would consume more than half the model's
-// context window by default. Token count is a chars-÷-4 estimate; calibration
-// tuned to English-with-code prose.
-const DEFAULT_CONTEXT_TOKENS = 128_000;
-
-type ContextWindowRule = { pattern: RegExp; tokens: number };
-
-const OPENAI_CONTEXT_WINDOWS: ContextWindowRule[] = [
-  { pattern: /^gpt-5\.5(?:[.-]|$)/, tokens: 1_000_000 },
-  { pattern: /^gpt-5(?:[.-]|$)/, tokens: 400_000 },
-  { pattern: /^gpt-4\.1(?:[.-]|$)/, tokens: 1_000_000 },
-  { pattern: /^gpt-4o(?:[.-]|$)/, tokens: 128_000 },
-  { pattern: /^o3(?:[.-]|$)/, tokens: 200_000 },
-  { pattern: /^o4(?:[.-]|$)/, tokens: 200_000 },
-  { pattern: /^chatgpt-/, tokens: 128_000 },
-];
-
-const ANTHROPIC_CONTEXT_WINDOWS: ContextWindowRule[] = [
-  { pattern: /^claude-(?:opus|sonnet|haiku)-4(?:[.-]|$)/, tokens: 200_000 },
-  { pattern: /^claude-3[-.]7(?:[.-]|$)/, tokens: 200_000 },
-];
-
-const QWEN_CONTEXT_WINDOWS: ContextWindowRule[] = [
-  { pattern: /^qwen3(?:[.-]|$)/, tokens: 262_144 },
-  { pattern: /^qwen-(?:plus|max|turbo|flash)(?:[-.]|$)/, tokens: 131_072 },
-];
-
-function estimateTokenChars(value: any): number {
-  if (value == null) return 0;
-  if (typeof value === "string") return value.length;
-  if (typeof value === "number" || typeof value === "boolean") return String(value).length;
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + estimateTokenChars(item), 0);
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 0;
-  }
-}
-
-export function estimateTokens(messages: any[], tools?: any[] | null): number {
-  let total = 0;
-  for (const m of messages) {
-    // Chat providers count more than plain message text: structured content
-    // parts, tool-call JSON, tool results, names/ids, roles, and framing all
-    // contribute to prompt tokens. Keep this estimate conservative so the live
-    // header doesn't bounce between a low chars/4 guess and provider usage.
-    total += 16; // per-message framing
-    total += estimateTokenChars(m?.role);
-    total += estimateTokenChars(m?.name);
-    total += estimateTokenChars(m?.tool_call_id);
-    total += estimateTokenChars(m?.content);
-    total += estimateTokenChars(m?.tool_calls);
-  }
-  if (Array.isArray(tools) && tools.length) {
-    total += 32; // request/tool-list framing
-    total += estimateTokenChars(tools);
-  }
-  return Math.ceil(total / 4);
-}
-
-function contextBudgetFromRules(model: string | null | undefined, rules: ContextWindowRule[]): number | null {
-  const id = String(model ?? "").trim().toLowerCase();
-  if (!id) return null;
-  return rules.find(({ pattern }) => pattern.test(id))?.tokens ?? null;
-}
-
 export function modelContextBudget(provider: Pick<LLMProvider, "name" | "model"> | null | undefined): number {
-  if (!provider) return DEFAULT_CONTEXT_TOKENS;
-  if (provider.name === "openai") return contextBudgetFromRules(provider.model, OPENAI_CONTEXT_WINDOWS) ?? DEFAULT_CONTEXT_TOKENS;
-  if (provider.name === "anthropic") return contextBudgetFromRules(provider.model, ANTHROPIC_CONTEXT_WINDOWS) ?? DEFAULT_CONTEXT_TOKENS;
-  if (provider.name === "qwen") return contextBudgetFromRules(provider.model, QWEN_CONTEXT_WINDOWS) ?? DEFAULT_CONTEXT_TOKENS;
-  return DEFAULT_CONTEXT_TOKENS;
+  return modelContextWindow(normalizeProviderName(provider?.name), provider?.model);
 }
 
 export async function contextBudget(provider?: Pick<LLMProvider, "name" | "model"> | null): Promise<number> {
@@ -134,17 +68,67 @@ function modelExtras(model: string | null | undefined, effort?: string | null): 
   return extras;
 }
 
+type TraceMetadata = Record<string, unknown>;
+
+export function messagesForTrace(messages: any[] | null | undefined, tools?: any[] | null): TraceMetadata {
+  const list = Array.isArray(messages) ? messages : [];
+  return {
+    messages: list.length,
+    messageList: list,
+    tools: Array.isArray(tools) ? tools.length : 0,
+    toolList: Array.isArray(tools) ? tools : [],
+    estimatedTokens: estimateTokens(list, tools),
+  };
+}
+
+export function llmBodyForTrace(body: any): TraceMetadata {
+  return {
+    body,
+  };
+}
+
+export function toolCallForTrace(tc: any): TraceMetadata {
+  const rawArgs = String(tc?.function?.arguments ?? "");
+  let argumentsJson: unknown = null;
+  try {
+    const parsed = rawArgs ? JSON.parse(rawArgs) : null;
+    argumentsJson = parsed;
+  } catch {}
+  return {
+    toolCallId: tc?.id ?? null,
+    toolName: tc?.function?.name ?? null,
+    toolCall: tc,
+    argumentsText: rawArgs,
+    argumentsJson,
+  };
+}
+
+export async function traceMark(message: string, data: TraceMetadata = {}): Promise<void> {
+  try {
+    await moo.traces.mark(message, data);
+  } catch {
+    // Trace writes are observational only.
+  }
+}
+
+export async function traceSpan<T>(name: string, data: TraceMetadata, fn: () => T | Promise<T>): Promise<Awaited<T>> {
+  return await moo.traces.span(name, data, fn);
+}
+
 export async function reply(
   chatId: string,
   text: string,
   model?: string | null,
   effort?: string | null,
-  thoughtDurationMs?: number | null,
+  thoughtDurationNs?: number | null,
+  draftId?: string | null,
 ) {
   const payloadBody: any = { text, at: await moo.time.nowMs() };
-  if (Number.isFinite(thoughtDurationMs) && thoughtDurationMs! >= 0) {
-    payloadBody.thoughtDurationMs = Math.round(thoughtDurationMs!);
+  if (Number.isFinite(thoughtDurationNs) && thoughtDurationNs! >= 0) {
+    payloadBody.thoughtDurationNs = Math.round(thoughtDurationNs!);
   }
+  if (typeof draftId === "string" && draftId) payloadBody.draftId = draftId;
+  await traceMark("timeline.reply", { chatId, chars: text.length, hasThoughtDuration: Number.isFinite(thoughtDurationNs), model: model ?? null, effort: normalizeEffort(effort) ?? null });
   const payload = await moo.objects.putJSON({ kind: "agent:Reply", value: payloadBody });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Reply",
@@ -162,6 +146,7 @@ export async function recordErrorStep(
   model?: string | null,
   effort?: string | null,
 ) {
+  await traceMark("timeline.error", { chatId, kind, model: model ?? null, effort: normalizeEffort(effort) ?? null, detailKeys: detail && typeof detail === "object" ? Object.keys(detail).sort() : [] });
   const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: { kind, detail, at: await moo.time.nowMs() } });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Error",
@@ -174,17 +159,13 @@ export async function recordErrorStep(
 
 // -- provider --------------------------------------------------------------
 
-export function inferProviderForModel(model: string | null | undefined): "openai" | "qwen" | "anthropic" | null {
-  const id = String(model ?? "").trim().toLowerCase();
-  if (!id) return null;
-  if (id.startsWith("qwen")) return "qwen";
-  if (id.startsWith("claude")) return "anthropic";
-  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4") || id.startsWith("chatgpt-")) return "openai";
-  return null;
+export function inferProviderForModel(model: string | null | undefined): "openai" | "qwen" | "anthropic" | "xai" | null {
+  return inferProviderForModelId(model);
 }
 
 
 const CHAT_MODEL_PREDICATE = "ui:model";
+const CHAT_PROVIDER_PREDICATE = "ui:provider";
 const CHAT_EFFORT_PREDICATE = "ui:effortLevel";
 
 async function selectedChatFact(chatId: string, predicate: string): Promise<string | null> {
@@ -207,6 +188,10 @@ async function selectedModelForChat(chatId: string): Promise<string | null> {
 
 async function selectedEffortForChat(chatId: string): Promise<string | null> {
   return normalizeEffort(await selectedChatFact(chatId, CHAT_EFFORT_PREDICATE));
+}
+
+async function selectedProviderForChat(chatId: string): Promise<"openai" | "qwen" | "anthropic" | "xai" | null> {
+  return normalizeProviderName(await selectedChatFact(chatId, CHAT_PROVIDER_PREDICATE));
 }
 
 export function decodeSimpleTurtleString(value: string): string {
@@ -260,6 +245,13 @@ export function effortLevelsForProvider(provider: Pick<LLMProvider, "name" | "mo
 
 export function supportsEffort(provider: Pick<LLMProvider, "name" | "model">): boolean {
   return effortLevelsForProvider(provider).length > 0;
+}
+
+export function compactionProviderForRequest(provider: LLMProvider): LLMProvider {
+  const levels = effortLevelsForProvider(provider);
+  if (!levels.length) return { ...provider, effort: null };
+  const effort = ["minimal", "none", "low"].find((candidate) => levels.includes(candidate)) ?? null;
+  return { ...provider, effort };
 }
 
 function openaiEffortLevels(model: string | null | undefined): string[] {
@@ -358,8 +350,7 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
 
 export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[], tools: any[] | null) {
   if (provider.name === "anthropic") {
-    const stampedMessages = prefixUserMessagesWithTimestamps(messages);
-    const anthropic = toAnthropicMessages(stampedMessages);
+    const anthropic = toAnthropicMessages(messages);
     const body: Record<string, unknown> = {
       model: provider.model,
       max_tokens: anthropicMaxTokens(),
@@ -380,17 +371,19 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
       headers: llmProviderHeaders(provider),
       requestModel: provider.model || null,
       requestEffort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+      requestAuthMode: provider.authMode || null,
     };
   }
 
   const responsesApi = usesResponsesApi(provider);
   const outboundMessages = requiresFinalUserContinuation(provider) ? ensureEndsWithUserMessage(messages) : messages;
-  const safeMessages = prefixUserMessagesWithTimestamps(outboundMessages);
+  const responsesInput = responsesApi ? toResponsesInput(outboundMessages) : null;
+  const instructions = responsesApi ? extractInstructions(outboundMessages) : undefined;
   const body: Record<string, unknown> = responsesApi
-    ? { model: provider.model, input: toResponsesInput(safeMessages), stream: true }
+    ? { model: provider.model, input: responsesInput, stream: true, store: false, ...(instructions !== undefined ? { instructions } : {}) }
     : {
         model: provider.model,
-        messages: safeMessages,
+        messages: outboundMessages,
         stream: true,
         // Ask OpenAI-compatible endpoints to include token usage in the final
         // SSE chunk. Endpoints that ignore the option simply drop it.
@@ -409,6 +402,7 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
     headers: llmProviderHeaders(provider),
     requestModel: provider.model || null,
     requestEffort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+    requestAuthMode: provider.authMode || null,
   };
 }
 export function toResponsesTools(tools: any[] | null): any[] | null {
@@ -423,12 +417,22 @@ export function toResponsesTools(tools: any[] | null): any[] | null {
 
 export function llmProviderHeaders(provider: LLMProvider): Record<string, string> {
   if (provider.name === "anthropic") {
-    return {
-      "x-api-key": provider.apiKey || "",
-      "anthropic-version": "2023-06-01",
-    };
+    const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
+    if (provider.authMode === "subscription") {
+      headers.Authorization = "Bearer " + (provider.apiKey || "");
+      headers["anthropic-beta"] = "oauth-2025-04-20";
+    } else {
+      headers["x-api-key"] = provider.apiKey || "";
+    }
+    return headers;
   }
-  return { Authorization: "Bearer " + (provider.apiKey || "") };
+  const headers: Record<string, string> = { Authorization: "Bearer " + (provider.apiKey || "") };
+  if (provider.authMode === "oauth") {
+    if (provider.oauthAccountId) headers["ChatGPT-Account-ID"] = provider.oauthAccountId;
+    headers["User-Agent"] = "codex_cli_rs/0.1.0";
+    headers["originator"] = "codex_cli_rs";
+  }
+  return headers;
 }
 
 function anthropicMaxTokens(): number {
@@ -474,7 +478,7 @@ export function toAnthropicMessages(messages: any[]): { system: string; messages
   // assistant turn ("assistant message prefill"). Guarantee the conversation
   // ends with a user message by appending a no-op continuation when needed.
   if (out.length === 0 || out[out.length - 1]?.role === "assistant") {
-    out.push({ role: "user", content: prefixUserContentWithTimestamp("Continue.") });
+    out.push({ role: "user", content: "Continue." });
   }
   return { system: systemParts.join("\n\n"), messages: out };
 }
@@ -541,9 +545,17 @@ export function ensureEndsWithUserMessage<T extends { role?: string; tool_calls?
   return messages;
 }
 
+function extractInstructions(messages: any[]): string | undefined {
+  const systemMsgs = messages.filter((m) => m.role === "system");
+  if (!systemMsgs.length) return undefined;
+  return systemMsgs.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n\n");
+}
+
 export function toResponsesInput(messages: any[]): any[] {
+  const hasNonSystem = messages.some((m) => m.role !== "system");
   const input: any[] = [];
   for (const msg of messages) {
+    if (msg.role === "system" && hasNonSystem) continue;
     if (msg.role === "tool") {
       input.push({
         type: "function_call_output",
@@ -620,23 +632,22 @@ export function normalizeUsage(usage: any): RawUsage | null {
   return usage;
 }
 
-async function defaultProviderName(): Promise<"openai" | "qwen" | "anthropic"> {
+async function defaultProviderName(): Promise<"openai" | "qwen" | "anthropic" | "xai"> {
   if (await moo.env.get("OPENAI_MODEL")) return "openai";
   if (await moo.env.get("QWEN_MODEL")) return "qwen";
   if (await moo.env.get("ANTHROPIC_MODEL")) return "anthropic";
+  if (await moo.env.get("XAI_MODEL")) return "xai";
 
   if (await moo.env.get("OPENAI_API_KEY")) return "openai";
   if (await moo.env.get("ANTHROPIC_API_KEY")) return "anthropic";
   if ((await moo.env.get("QWEN_API_KEY")) || (await moo.env.get("DASHSCOPE_API_KEY"))) return "qwen";
+  if ((await moo.env.get("XAI_API_KEY")) || (await moo.env.get("GROK_API_KEY"))) return "xai";
   return "openai";
 }
 
 export async function resolveProvider(modelOverride?: string | null, effortOverride?: string | null, providerOverride?: string | null): Promise<LLMProvider> {
   const explicitProvider = String(providerOverride ?? "").trim().toLowerCase();
-  const which =
-    explicitProvider === "openai" || explicitProvider === "qwen" || explicitProvider === "anthropic"
-      ? explicitProvider
-      : inferProviderForModel(modelOverride) || (await defaultProviderName());
+  const which = normalizeProviderName(explicitProvider) || inferProviderForModel(modelOverride) || (await defaultProviderName());
   if (which === "anthropic") {
     const configured = await providerConfiguredCredential("anthropic");
     return { name: "anthropic", apiKey: configured.apiKey, baseUrl: configured.baseUrl, model: modelOverride || configured.model, effort: normalizeEffort(effortOverride) || (await defaultEffort()), keyEnvHint: configured.keyEnvHint, authMode: configured.authMode };
@@ -645,84 +656,131 @@ export async function resolveProvider(modelOverride?: string | null, effortOverr
     const configured = await providerConfiguredCredential("qwen");
     return { name: "qwen", apiKey: configured.apiKey, baseUrl: configured.baseUrl, model: modelOverride || configured.model, effort: null, keyEnvHint: configured.keyEnvHint, authMode: configured.authMode };
   }
+  if (which === "xai") {
+    const configured = await providerConfiguredCredential("xai");
+    return { name: "xai", apiKey: configured.apiKey, baseUrl: configured.baseUrl, model: modelOverride || configured.model, effort: null, keyEnvHint: configured.keyEnvHint, authMode: configured.authMode };
+  }
   const configuredOpenAI = await providerConfiguredCredential("openai");
-  return { name: "openai", apiKey: configuredOpenAI.apiKey, baseUrl: configuredOpenAI.baseUrl, model: modelOverride || configuredOpenAI.model, effort: normalizeEffort(effortOverride) || (await defaultEffort()), keyEnvHint: configuredOpenAI.keyEnvHint, authMode: configuredOpenAI.authMode };
+  return { name: "openai", apiKey: configuredOpenAI.apiKey, baseUrl: configuredOpenAI.baseUrl, model: modelOverride || configuredOpenAI.model, effort: normalizeEffort(effortOverride) || (await defaultEffort()), keyEnvHint: configuredOpenAI.keyEnvHint, authMode: configuredOpenAI.authMode, oauthAccountId: configuredOpenAI.oauthAccountId };
 }
 
-async function callChatCompletions(
+export function parseSseDataEvents(chunkState: { buffer: string }, chunk: string | null): string[] {
+  if (chunk != null) chunkState.buffer += chunk;
+  const out: string[] = [];
+  while (true) {
+    const normalized = chunkState.buffer.replace(/\r\n/g, "\n");
+    const idx = normalized.indexOf("\n\n");
+    if (idx < 0) break;
+    const block = normalized.slice(0, idx);
+    chunkState.buffer = normalized.slice(idx + 2);
+    const data = block.split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (data) out.push(data);
+  }
+  if (chunk == null && chunkState.buffer.trim()) {
+    const data = chunkState.buffer.replace(/\r\n/g, "\n").split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    chunkState.buffer = "";
+    if (data) out.push(data);
+  }
+  return out;
+}
+
+export function accumulateSummaryStreamEvent(state: { content: string; model: string | null; usage: any | null; error: any | null }, event: any, responsesApi: boolean) {
+  if (!event || typeof event !== "object") return;
+  if (event.error) {
+    state.error = event.error;
+    return;
+  }
+  if (typeof event.model === "string" && event.model) state.model = event.model;
+  if (event.usage) state.usage = normalizeUsage(event.usage) ?? event.usage;
+
+  if (event.type === "content_block_delta" && typeof event.delta?.text === "string") state.content += event.delta.text;
+  if (event.type === "message_start" && typeof event.message?.model === "string") state.model = event.message.model;
+  if (event.type === "message_delta" && event.usage) state.usage = normalizeUsage(event.usage) ?? event.usage;
+  if (event.type === "error") state.error = event.error ?? event;
+
+  if (responsesApi) {
+    if (typeof event.delta === "string" && (event.type === "response.output_text.delta" || event.type === "output_text.delta")) state.content += event.delta;
+    const response = event.response;
+    if (response && typeof response === "object") {
+      if (typeof response.model === "string") state.model = response.model;
+      if (response.usage) state.usage = normalizeUsage(response.usage) ?? response.usage;
+      if (event.type === "response.completed") {
+        const finalText = responseOutputText(response).trim();
+        if (finalText) state.content = finalText;
+      }
+      if (event.type === "response.failed" || event.type === "response.incomplete") state.error = response.error ?? response.incomplete_details ?? response;
+    }
+    return;
+  }
+
+  const choice = Array.isArray(event.choices) ? event.choices[0] : null;
+  if (typeof choice?.delta?.content === "string") state.content += choice.delta.content;
+  if (typeof choice?.message?.content === "string") state.content += choice.message.content;
+}
+
+async function callStreamingChatSummary(
   provider: LLMProvider,
   messages: any[],
   tools: any[] | null,
 ) {
-  const responsesApi = usesResponsesApi(provider);
-  const outboundMessages = requiresFinalUserContinuation(provider) ? ensureEndsWithUserMessage(messages) : messages;
-  const safeMessages = prefixUserMessagesWithTimestamps(outboundMessages);
-  const body: Record<string, unknown> = responsesApi
-    ? { model: provider.model, input: toResponsesInput(safeMessages) }
-    : { model: provider.model, messages: safeMessages };
-  applyEffort(provider, body, responsesApi);
-  if (tools && tools.length) {
-    if (responsesApi) body.tools = toResponsesTools(tools);
-    else body.tools = tools;
-    body.tool_choice = "auto";
-  }
-  if (provider.name === "anthropic") {
-    const stampedMessages = prefixUserMessagesWithTimestamps(messages);
-    const anthropic = toAnthropicMessages(stampedMessages);
-    const anthropicBody: Record<string, unknown> = {
-      model: provider.model,
-      max_tokens: anthropicMaxTokens(),
-      messages: anthropic.messages,
-    };
-    if (anthropic.system) anthropicBody.system = anthropic.system;
-    applyEffort(provider, anthropicBody);
-    const anthropicTools = toAnthropicTools(tools);
-    if (anthropicTools?.length) {
-      anthropicBody.tools = anthropicTools;
-      anthropicBody.tool_choice = { type: "auto" };
-    }
-    const resp = await moo.http.fetch({
-      method: "POST",
-      url: provider.baseUrl + "/messages",
-      headers: llmProviderHeaders(provider),
-      body: anthropicBody,
-    });
-    if (resp.status >= 400) return resp;
+  const request = buildStreamingLLMRequest(provider, messages, tools);
+  return await traceSpan("llm.stream.fetch", {
+    provider: provider.name,
+    model: provider.model,
+    effort: request.requestEffort,
+    url: request.url,
+    responsesApi: request.responsesApi,
+    ...messagesForTrace(messages, tools),
+    request: llmBodyForTrace(request.body),
+  }, async () => {
+    const stream = await moo.http.stream({ method: "POST", url: request.url, headers: request.headers, body: request.body });
+    const chunks: string[] = [];
+    const sse = { buffer: "" };
+    const state: { content: string; model: string | null; usage: any | null; error: any | null } = { content: "", model: null, usage: null, error: null };
     try {
-      const body = JSON.parse(resp.body);
+      while (true) {
+        const chunk = await stream.next();
+        if (chunk == null) break;
+        if (stream.status >= 400) {
+          chunks.push(chunk);
+          continue;
+        }
+        for (const data of parseSseDataEvents(sse, chunk)) {
+          if (data === "[DONE]") continue;
+          try {
+            accumulateSummaryStreamEvent(state, JSON.parse(data), !!request.responsesApi);
+          } catch {
+            // Ignore non-JSON SSE frames; providers sometimes send comments or diagnostics.
+          }
+        }
+      }
+      if (stream.status >= 400) return { status: stream.status, body: chunks.join(""), headers: stream.headers };
+      for (const data of parseSseDataEvents(sse, null)) {
+        if (data === "[DONE]") continue;
+        try { accumulateSummaryStreamEvent(state, JSON.parse(data), !!request.responsesApi); } catch { /* ignore */ }
+      }
+      if (state.error) return { status: stream.status || 500, body: JSON.stringify({ error: state.error }), headers: stream.headers };
       return {
-        ...resp,
+        status: stream.status,
+        headers: stream.headers,
         body: JSON.stringify({
-          model: body?.model || provider.model,
-          usage: normalizeUsage(body?.usage),
-          choices: [{ message: { content: anthropicOutputText(body) } }],
+          model: state.model || provider.model,
+          usage: normalizeUsage(state.usage),
+          choices: [{ message: { content: state.content } }],
         }),
       };
-    } catch {
-      return resp;
+    } finally {
+      await stream.close();
     }
-  }
-
-  const resp = await moo.http.fetch({
-    method: "POST",
-    url: provider.baseUrl + "/" + (responsesApi ? "responses" : "chat/completions"),
-    headers: llmProviderHeaders(provider),
-    body,
   });
-  if (!responsesApi || resp.status >= 400) return resp;
-  try {
-    const body = JSON.parse(resp.body);
-    return {
-      ...resp,
-      body: JSON.stringify({
-        model: body?.model || provider.model,
-        usage: normalizeUsage(body?.usage),
-        choices: [{ message: { content: responseOutputText(body) } }],
-      }),
-    };
-  } catch {
-    return resp;
-  }
 }
 
 // -- usage tracking -------------------------------------------------------
@@ -741,6 +799,14 @@ export type LlmStreamProgress = {
   estimatedPromptTokens: number;
   tokenBudget: number;
   tokenThreshold: number;
+  source?: string;
+  estimated?: boolean;
+  reset?: boolean;
+};
+
+export type LastTokenPressure = {
+  used: number;
+  source: "context" | "compaction" | "none";
 };
 
 export function llmStreamEventOptions(
@@ -757,7 +823,9 @@ export function llmStreamEventOptions(
       chatId,
       budget: tokenProgress.tokenBudget,
       threshold: tokenProgress.tokenThreshold,
-      estimated: true,
+      estimated: tokenProgress.estimated ?? true,
+      source: tokenProgress.source,
+      reset: tokenProgress.reset,
     };
   }
   return out;
@@ -773,6 +841,7 @@ function contextTokensFromUsage(usage: RawUsage | null | undefined): number | nu
 export async function tokenUsageEvent(chatId: string, usage: RawUsage | null | undefined, provider?: Pick<LLMProvider, "name" | "model"> | null) {
   const used = contextTokensFromUsage(usage);
   if (used == null) return null;
+  const estimated = usage?.estimated === true;
   const budget = await contextBudget(provider);
   const threshold = await compactionThresholdForBudget(budget);
   return {
@@ -783,6 +852,29 @@ export async function tokenUsageEvent(chatId: string, usage: RawUsage | null | u
     threshold,
     fraction: budget > 0 ? used / budget : 0,
     usage,
+    estimated,
+    source: "context",
+  };
+}
+
+export function tokenPressureEvent(
+  chatId: string,
+  used: number,
+  options: { budget: number; threshold: number; source?: "context" | "compaction"; estimated?: boolean; reset?: boolean },
+) {
+  const budget = Math.max(0, Math.floor(Number(options.budget) || 0));
+  const threshold = Math.max(0, Math.floor(Number(options.threshold) || 0));
+  const n = tokenCountOrZero(used);
+  return {
+    kind: "tokens",
+    chatId,
+    used: n,
+    budget,
+    threshold,
+    fraction: budget > 0 ? n / budget : 0,
+    source: options.source,
+    estimated: options.estimated,
+    reset: options.reset,
   };
 }
 
@@ -792,13 +884,36 @@ export type ChatUsage = {
   // to drive the header bar. The provider's number is far more accurate than
   // our chars/4 estimate (which misses tool schemas, array content, and images).
   lastContextTokens?: number;
+  // Most recent prompt size used by the automatic compaction trigger. This can
+  // exceed the provider request context because compaction includes persisted
+  // tool/file-diff payloads that are not all sent in the ordinary reply prompt.
+  lastCompactionPromptTokens?: number;
 };
+
+function normalizeChatUsage(value: unknown): ChatUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { models: {} };
+  const usage = value as Partial<ChatUsage>;
+  usage.models = usage.models && typeof usage.models === "object" && !Array.isArray(usage.models) ? usage.models : {};
+  return usage as ChatUsage;
+}
+
+function readChatUsageTarget(target: string | null): ChatUsage {
+  if (!target) return { models: {} };
+  const inline = decodeJsonPointer<ChatUsage>(target);
+  return inline && typeof inline === "object" && !Array.isArray(inline)
+    ? normalizeChatUsage(inline)
+    : { models: {} };
+}
+
+async function writeChatUsageTarget(ref: string, usage: ChatUsage): Promise<void> {
+  await moo.pointers.set(ref, encodeJsonPointer(usage));
+}
 
 export async function recordUsage(
   chatId: string,
   model: string | null,
   usage: RawUsage | null | undefined,
-  options: { updateLastContextTokens?: boolean } = {},
+  options: { updateLastContextTokens?: boolean; compactionPromptTokens?: number | null } = {},
 ): Promise<void> {
   if (!usage || !model) return;
   const promptTotal = Number(usage.prompt_tokens ?? 0);
@@ -807,43 +922,73 @@ export async function recordUsage(
   const output = Number(usage.completion_tokens ?? 0);
   if (!promptTotal && !cached && !cacheWrite && !output) return;
   const ref = chatRefs(chatId).usage;
-  const existingHash = await moo.pointers.get(ref);
-  const current: ChatUsage = existingHash
-    ? ((await moo.objects.getJSON<ChatUsage>({ hash: existingHash }))?.value ?? { models: {} })
-    : { models: {} };
-  const slot = current.models[model] ?? { input: 0, cachedInput: 0, cacheWriteInput: 0, output: 0 };
+  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const usageModel = modelLongContextUsageKey(model, promptTotal) || model;
+  const slot = current.models[usageModel] ?? { input: 0, cachedInput: 0, cacheWriteInput: 0, output: 0 };
   if (slot.cacheWriteInput == null) slot.cacheWriteInput = 0;
   // Keep `input` as regular, non-cache-read/write input so cost math stays additive.
   slot.input += Math.max(0, promptTotal - cached - cacheWrite);
   slot.cachedInput += Math.max(0, cached);
   slot.cacheWriteInput += Math.max(0, cacheWrite);
   slot.output += output;
-  current.models[model] = slot;
+  current.models[usageModel] = slot;
   const contextTotal = promptTotal + Math.max(0, output);
+  await traceMark("usage.record", {
+    chatId,
+    model: usageModel,
+    input: Math.max(0, promptTotal - cached - cacheWrite),
+    cachedInput: Math.max(0, cached),
+    cacheWriteInput: Math.max(0, cacheWrite),
+    output,
+  });
   if (options.updateLastContextTokens !== false && contextTotal > 0) current.lastContextTokens = contextTotal;
-  const next = await moo.objects.putJSON({ kind: "agent:Usage", value: current });
-  await moo.pointers.set(ref, next);
+  if (options.compactionPromptTokens != null) current.lastCompactionPromptTokens = tokenCountOrZero(options.compactionPromptTokens);
+  await writeChatUsageTarget(ref, current);
 }
 
-export async function recordLastContextTokens(chatId: string, tokens: number): Promise<void> {
-  const n = Math.max(0, Math.floor(Number(tokens) || 0));
+function tokenCountOrZero(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
+async function readChatUsage(chatId: string): Promise<{ ref: string; current: ChatUsage }> {
   const ref = chatRefs(chatId).usage;
-  const existingHash = await moo.pointers.get(ref);
-  const current: ChatUsage = existingHash
-    ? ((await moo.objects.getJSON<ChatUsage>({ hash: existingHash }))?.value ?? { models: {} })
-    : { models: {} };
-  current.models = current.models && typeof current.models === "object" ? current.models : {};
-  current.lastContextTokens = n;
-  const next = await moo.objects.putJSON({ kind: "agent:Usage", value: current });
-  await moo.pointers.set(ref, next);
+  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  return { ref, current };
+}
+
+export async function recordLastContextTokens(
+  chatId: string,
+  tokens: number,
+  options: { compactionPromptTokens?: number | null } = {},
+): Promise<void> {
+  const { ref, current } = await readChatUsage(chatId);
+  current.lastContextTokens = tokenCountOrZero(tokens);
+  if (options.compactionPromptTokens != null) current.lastCompactionPromptTokens = tokenCountOrZero(options.compactionPromptTokens);
+  await writeChatUsageTarget(ref, current);
+}
+
+export async function recordLastCompactionPromptTokens(chatId: string, tokens: number): Promise<void> {
+  const { ref, current } = await readChatUsage(chatId);
+  current.lastCompactionPromptTokens = tokenCountOrZero(tokens);
+  await writeChatUsageTarget(ref, current);
 }
 
 export async function readLastContextTokens(chatId: string): Promise<number> {
   const ref = chatRefs(chatId).usage;
-  const hash = await moo.pointers.get(ref);
-  if (!hash) return 0;
-  const obj = await moo.objects.getJSON<ChatUsage>({ hash: hash });
-  return Number(obj?.value?.lastContextTokens ?? 0);
+  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  return tokenCountOrZero(current.lastContextTokens ?? 0);
+}
+
+export async function readLastTokenPressure(chatId: string): Promise<LastTokenPressure> {
+  const ref = chatRefs(chatId).usage;
+  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const context = tokenCountOrZero(current.lastContextTokens ?? 0);
+  const compaction = tokenCountOrZero(current.lastCompactionPromptTokens ?? 0);
+  if (compaction > context) return { used: compaction, source: "compaction" };
+  if (context > 0) return { used: context, source: "context" };
+  if (compaction > 0) return { used: compaction, source: "compaction" };
+  return { used: 0, source: "none" };
 }
 
 export function estimateRawUsage(
@@ -863,24 +1008,59 @@ export function estimateRawUsage(
 
 // -- compaction ------------------------------------------------------------
 
+type CompactionPointerValue = {
+  summary?: string;
+  throughAt?: number;
+  at?: number;
+  parent?: string | null;
+  hash?: string | null;
+  trigger?: string | null;
+  promptTokens?: number | null;
+  tokenBudget?: number | null;
+  tokenThreshold?: number | null;
+};
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readCompactionPointerTarget(target: string | null): { target: string; hash: string; value: CompactionPointerValue } | null {
+  if (!target) return null;
+  const inline = decodeJsonPointer<CompactionPointerValue>(target);
+  if (!isObjectRecord(inline)) return null;
+  const hash = typeof inline.hash === "string" && inline.hash.trim() ? inline.hash.trim() : null;
+  if (!hash) return null;
+  return { target, hash, value: inline };
+}
+
+async function readCompactionLayerHash(hash: string | null | undefined): Promise<{ target: string; hash: string; value: CompactionPointerValue } | null> {
+  if (!hash || !moo.validate.hash(hash)) return null;
+  const obj = await moo.objects.getJSON<CompactionPointerValue>({ hash });
+  if (!isObjectRecord(obj?.value)) return null;
+  return { target: hash, hash, value: { ...obj.value, hash } };
+}
+
 async function readCompaction(chatId: string): Promise<{
   throughAt: number;
   summary: string | null;
   hash: string | null;
 }> {
-  const ref = chatRefs(chatId).compaction;
-  const hash = await moo.pointers.get(ref);
-  if (!hash) return { throughAt: 0, summary: null, hash: null };
-  const obj = await moo.objects.getJSON<{
-    throughAt?: number;
-    summary?: string;
-    parent?: string | null;
-  }>({ hash: hash });
+  const layer = readCompactionPointerTarget(await moo.pointers.get(chatRefs(chatId).compaction));
+  if (!layer) return { throughAt: 0, summary: null, hash: null };
   return {
-    throughAt: obj?.value?.throughAt ?? 0,
-    summary: obj?.value?.summary ?? null,
-    hash,
+    throughAt: layer.value.throughAt ?? 0,
+    summary: layer.value.summary ?? null,
+    hash: layer.hash,
   };
+}
+
+export async function persistCompactionLayer(chatId: string, layer: Omit<CompactionPointerValue, "parent" | "hash"> & { summary: string; throughAt: number; at: number }): Promise<string> {
+  const ref = chatRefs(chatId).compaction;
+  const parent = readCompactionPointerTarget(await moo.pointers.get(ref))?.hash ?? null;
+  const value: CompactionPointerValue = { ...layer, parent };
+  const hash = await moo.objects.putJSON({ kind: "agent:Compaction", value });
+  await moo.pointers.set(ref, encodeJsonPointer({ ...value, hash }));
+  return hash;
 }
 
 
@@ -911,33 +1091,22 @@ export async function readCompactionChain(chatId: string) {
     tokenBudget?: number | null;
     tokenThreshold?: number | null;
   }> = [];
-  let cursor: string | null = await moo.pointers.get(chatRefs(chatId).compaction);
+  let layer: { target: string; hash: string; value: CompactionPointerValue } | null = readCompactionPointerTarget(await moo.pointers.get(chatRefs(chatId).compaction));
   const seen = new Set<string>();
-  while (cursor && !seen.has(cursor)) {
-    seen.add(cursor);
-    const obj = await moo.objects.getJSON<{
-      summary?: string;
-      throughAt?: number;
-      at?: number;
-      parent?: string | null;
-      trigger?: string | null;
-      promptTokens?: number | null;
-      tokenBudget?: number | null;
-      tokenThreshold?: number | null;
-    }>({ hash: cursor });
-    if (!obj?.value) break;
+  while (layer && !seen.has(layer.hash)) {
+    seen.add(layer.hash);
     out.push({
-      hash: cursor,
-      summary: obj.value.summary || "",
-      throughAt: obj.value.throughAt || 0,
-      at: obj.value.at || 0,
-      parent: obj.value.parent ?? null,
-      trigger: obj.value.trigger ?? null,
-      promptTokens: obj.value.promptTokens ?? null,
-      tokenBudget: obj.value.tokenBudget ?? null,
-      tokenThreshold: obj.value.tokenThreshold ?? null,
+      hash: layer.hash,
+      summary: layer.value.summary || "",
+      throughAt: layer.value.throughAt || 0,
+      at: layer.value.at || 0,
+      parent: layer.value.parent ?? null,
+      trigger: layer.value.trigger ?? null,
+      promptTokens: layer.value.promptTokens ?? null,
+      tokenBudget: layer.value.tokenBudget ?? null,
+      tokenThreshold: layer.value.tokenThreshold ?? null,
     });
-    cursor = obj.value.parent ?? null;
+    layer = await readCompactionLayerHash(layer.value.parent);
   }
   return out;
 }
@@ -947,6 +1116,19 @@ export type CompactionTracking = {
   promptTokens?: number | null;
   tokenBudget?: number | null;
   tokenThreshold?: number | null;
+  status?: number | null;
+  message?: string | null;
+  type?: string | null;
+  code?: string | null;
+  requestId?: string | null;
+  retryAfter?: string | null;
+  hint?: string | null;
+  body?: unknown;
+  provider?: string | null;
+  requestPromptTokens?: number | null;
+  requestTokenLimit?: number | null;
+  model?: string | null;
+  effort?: string | null;
 };
 
 function compactionExtras(meta: CompactionTracking | undefined, model?: string | null, effort?: string | null): Array<[string, string]> {
@@ -959,95 +1141,260 @@ function compactionExtras(meta: CompactionTracking | undefined, model?: string |
   return extras;
 }
 
+function compactObject<T extends Record<string, unknown>>(value: T): T {
+  for (const key of Object.keys(value)) {
+    if ((value as Record<string, unknown>)[key] == null) delete (value as Record<string, unknown>)[key];
+  }
+  return value;
+}
+
 export async function recordCompactionFailure(chatId: string, reason: string, meta: CompactionTracking = {}): Promise<void> {
   const trigger = meta.trigger ?? "automatic";
-  const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: { phase: "compaction", reason, trigger, ...meta } });
+  const detail = compactObject({
+    source: "compaction",
+    phase: "compaction",
+    status: meta.status,
+    message: meta.message || reason,
+    type: meta.type,
+    code: meta.code,
+    requestId: meta.requestId,
+    retryAfter: meta.retryAfter,
+    hint: meta.hint,
+    body: meta.body,
+    provider: meta.provider,
+    model: meta.model,
+    effort: meta.effort,
+    trigger,
+    promptTokens: meta.promptTokens,
+    tokenBudget: meta.tokenBudget,
+    tokenThreshold: meta.tokenThreshold,
+    requestPromptTokens: meta.requestPromptTokens,
+    requestTokenLimit: meta.requestTokenLimit,
+  });
+  const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: compactObject({
+    kind: "compaction",
+    phase: "compaction",
+    reason,
+    trigger,
+    ...meta,
+    detail,
+    at: await moo.time.nowMs(),
+  }) });
   await appendStep(chatId, {
     kind: "agent:Error",
     status: "agent:Failed",
     payloadHash,
-    extras: [["agent:phase", "agent:Compaction"], ...compactionExtras({ ...meta, trigger })],
+    extras: [["agent:phase", "agent:Compaction"], ...compactionExtras({ ...meta, trigger }, meta.model, meta.effort)],
   });
 }
 
-export async function runCompaction(chatId: string, provider: LLMProvider, meta: CompactionTracking = {}): Promise<boolean> {
+function parseCompactionProviderErrorBody(raw: unknown): any {
+  if (raw == null) return null;
+  if (typeof raw !== "string") return raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch { return trimmed; }
+}
+
+function compactionProviderErrorMessage(parsed: any, status: number): string {
+  const candidates = [
+    parsed?.error?.message,
+    typeof parsed?.error === "string" ? parsed.error : "",
+    parsed?.message,
+    parsed?.detail?.message,
+    typeof parsed?.detail === "string" ? parsed.detail : "",
+    parsed?.details,
+    parsed?.error_description,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  if (typeof parsed === "string" && parsed.trim() && parsed.trim() !== "error") return parsed.trim();
+  if (status >= 400) return `request failed with HTTP ${status}`;
+  return "provider request failed";
+}
+
+function compactionProviderErrorType(parsed: any): string | null {
+  return parsed?.error?.type ?? parsed?.type ?? null;
+}
+
+function compactionProviderErrorCode(parsed: any): string | null {
+  return parsed?.error?.code ?? parsed?.code ?? null;
+}
+
+function providerErrorRequestId(parsed: any, headers: unknown): string | null {
+  return firstHeader(headers, "request-id", "x-request-id", "anthropic-request-id", "cf-ray")
+    || stringField(parsed?.request_id)
+    || stringField(parsed?.requestId)
+    || stringField(parsed?.error?.request_id)
+    || stringField(parsed?.error?.requestId);
+}
+
+function providerErrorRetryAfter(headers: unknown, parsed: any): string | null {
+  return firstHeader(headers, "retry-after", "x-ratelimit-reset", "anthropic-ratelimit-requests-reset")
+    || stringField(parsed?.retry_after)
+    || stringField(parsed?.retryAfter)
+    || stringField(parsed?.error?.retry_after)
+    || stringField(parsed?.error?.retryAfter);
+}
+
+function stringField(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function firstHeader(headers: unknown, ...names: string[]): string | null {
+  if (!headers || typeof headers !== "object") return null;
+  const map = headers as Record<string, unknown>;
+  for (const name of names) {
+    const direct = headerValue(map[name]);
+    if (direct) return direct;
+    const lower = name.toLowerCase();
+    const match = Object.keys(map).find((key) => key.toLowerCase() === lower);
+    if (match) {
+      const value = headerValue(map[match]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function headerValue(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const text = stringField(item);
+      if (text) return text;
+    }
+    return null;
+  }
+  return stringField(value);
+}
+
+function anthropicSubscriptionRateLimitHint(provider: Pick<LLMProvider, "name" | "authMode">, status: number, type: string | null): string | null {
+  if (status !== 429) return null;
+  if (provider.name !== "anthropic") return null;
+  if (provider.authMode !== "subscription") return null;
+  if (type && type !== "rate_limit_error") return null;
+  return "Anthropic subscription/OAuth tokens share Anthropic's Claude app rate limits. Wait for the reset window or switch this provider to an Anthropic API key for API quota.";
+}
+
+function compactionProviderErrorBodyForRecord(parsed: any, raw: unknown): any {
+  if (parsed != null) return parsed;
+  if (raw == null) return "";
+  return raw;
+}
+
+function hasCompactionTranscript(messages: any[]): boolean {
+  return messages.some((m) => {
+    if (m?.role === "system") return false;
+    const text = contentText(m?.content).trim();
+    return !!text;
+  });
+}
+
+export type CompactionResult = "compacted" | "empty" | "failed";
+
+export async function runCompaction(chatId: string, provider: LLMProvider, meta: CompactionTracking = {}): Promise<CompactionResult> {
+  const requestProvider = compactionProviderForRequest(provider);
   const messages = await buildCompactionMessages(chatId);
-  if (messages.length < 4) return false;
+  if (!hasCompactionTranscript(messages)) return "empty";
 
-  const summaryMessages = buildCompactionSummaryPromptMessages(messages);
+  const rawSummaryMessages = buildCompactionSummaryPromptMessages(messages);
+  const rawPromptTokens = estimateTokens(rawSummaryMessages);
+  const budget = meta.tokenBudget ?? await contextBudget(provider);
+  const threshold = meta.tokenThreshold ?? await compactionThresholdForBudget(budget);
+  const requestTokenLimit = compactionRequestTokenLimit(budget, threshold);
+  const summaryMessages = fitCompactionSummaryMessages(rawSummaryMessages, requestTokenLimit);
+  const requestPromptTokens = estimateTokens(summaryMessages);
+  const tracking: CompactionTracking = compactObject({
+    ...meta,
+    trigger: meta.trigger ?? "manual",
+    promptTokens: meta.promptTokens ?? rawPromptTokens,
+    tokenBudget: meta.tokenBudget ?? budget,
+    tokenThreshold: meta.tokenThreshold ?? threshold,
+    requestPromptTokens,
+    requestTokenLimit,
+    provider: meta.provider ?? requestProvider.name,
+    model: meta.model ?? requestProvider.model,
+    effort: meta.effort ?? requestProvider.effort,
+  });
+  await traceMark("compaction.request.prepared", {
+    chatId,
+    trigger: tracking.trigger,
+    rawPromptTokens,
+    requestPromptTokens,
+    requestTokenLimit,
+    tokenBudget: budget,
+    tokenThreshold: threshold,
+    requestEffort: requestProvider.effort,
+    truncated: requestPromptTokens < rawPromptTokens,
+  });
 
-  const resp = await callChatCompletions(provider, summaryMessages, null);
+  const resp = await callStreamingChatSummary(requestProvider, summaryMessages, null);
   if (resp.status >= 400) {
-    await recordCompactionFailure(chatId, `provider returned HTTP ${resp.status}`, meta);
-    return false;
+    const parsed = parseCompactionProviderErrorBody(resp.body);
+    await recordCompactionFailure(chatId, `provider returned HTTP ${resp.status}`, {
+      ...tracking,
+      status: resp.status,
+      message: compactionProviderErrorMessage(parsed, resp.status),
+      type: compactionProviderErrorType(parsed),
+      code: compactionProviderErrorCode(parsed),
+      requestId: providerErrorRequestId(parsed, resp.headers),
+      retryAfter: providerErrorRetryAfter(resp.headers, parsed),
+      hint: anthropicSubscriptionRateLimitHint(requestProvider, resp.status, compactionProviderErrorType(parsed)),
+      body: compactionProviderErrorBodyForRecord(parsed, resp.body),
+    });
+    return "failed";
   }
   let body: any;
   try {
     body = JSON.parse(resp.body);
   } catch {
-    await recordCompactionFailure(chatId, "provider returned invalid JSON", meta);
-    return false;
+    await recordCompactionFailure(chatId, "provider returned invalid JSON", tracking);
+    return "failed";
   }
   const summary: string | undefined = body?.choices?.[0]?.message?.content?.trim();
   if (!summary) {
-    await recordCompactionFailure(chatId, "provider returned an empty summary", meta);
-    return false;
+    await recordCompactionFailure(chatId, "provider returned an empty summary", tracking);
+    return "failed";
   }
-  await recordUsage(chatId, body?.model || provider.model, normalizeUsage(body?.usage) ?? estimateRawUsage(summaryMessages, summary));
+  await recordUsage(chatId, body?.model || requestProvider.model, normalizeUsage(body?.usage) ?? estimateRawUsage(summaryMessages, summary), { updateLastContextTokens: false });
 
   const now = await moo.time.nowMs();
-  const previous = await moo.pointers.get(chatRefs(chatId).compaction);
-  const compactionHash = await moo.objects.putJSON({ kind: "agent:Compaction", value: {
-      summary,
-      throughAt: now,
-      at: now,
-      parent: previous ?? null,
-      trigger: meta.trigger ?? "manual",
-      promptTokens: meta.promptTokens ?? null,
-      tokenBudget: meta.tokenBudget ?? null,
-      tokenThreshold: meta.tokenThreshold ?? null,
-    } });
-  await moo.pointers.set(chatRefs(chatId).compaction, compactionHash);
+  const compactionHash = await persistCompactionLayer(chatId, {
+    summary,
+    throughAt: now,
+    at: now,
+    trigger: tracking.trigger ?? "manual",
+    promptTokens: tracking.promptTokens ?? null,
+    tokenBudget: tracking.tokenBudget ?? null,
+    tokenThreshold: tracking.tokenThreshold ?? null,
+  });
   await appendStep(chatId, {
     kind: "agent:Compaction",
     status: "agent:Done",
     payloadHash: compactionHash,
-    extras: compactionExtras({ ...meta, trigger: meta.trigger ?? "manual" }, body?.model || provider.model, provider.effort),
+    extras: compactionExtras(tracking, body?.model || requestProvider.model, requestProvider.effort),
   });
-  return true;
+  const postMessages = await buildLLMMessages(chatId);
+  const postContextTokens = estimateTokens(postMessages, TOOLS);
+  const postPressureTokens = await estimateCompactionPromptTokens(chatId, postMessages);
+  await recordLastContextTokens(chatId, postContextTokens, { compactionPromptTokens: postPressureTokens });
+  moo.events.publish(tokenPressureEvent(chatId, postPressureTokens, {
+    budget,
+    threshold,
+    source: "compaction",
+    estimated: true,
+    reset: true,
+  }));
+  await traceMark("compaction.post_pressure", { chatId, postContextTokens, postPressureTokens, budget, threshold, trigger: tracking.trigger ?? "manual" });
+  return "compacted";
 }
+
 
 // -- messages --------------------------------------------------------------
 
-const USER_TIMESTAMP_PREFIX_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z\]\s/;
-
-function userTimestampPrefix(at?: number | string | null): string {
-  const n = typeof at === "number" ? at : (typeof at === "string" ? Number(at) : NaN);
-  const d = Number.isFinite(n) && n > 0 ? new Date(n) : new Date();
-  const fallback = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const iso = Number.isFinite(d.getTime()) ? d.toISOString().replace(/\.\d{3}Z$/, "Z") : fallback;
-  return "[" + iso + "] ";
-}
-
-function prefixUserTextWithTimestamp(text: string, at?: number | string | null): string {
-  if (!text || USER_TIMESTAMP_PREFIX_RE.test(text)) return text;
-  return userTimestampPrefix(at) + text;
-}
-
-export function prefixUserContentWithTimestamp(content: any, at?: number | string | null): any {
-  if (typeof content === "string") return prefixUserTextWithTimestamp(content, at);
-  if (!Array.isArray(content)) return content;
-  const idx = content.findIndex((part) => part?.type === "text" && typeof part.text === "string");
-  if (idx >= 0) {
-    return content.map((part, i) => i === idx ? { ...part, text: prefixUserTextWithTimestamp(part.text, at) } : part);
-  }
-  return [{ type: "text", text: userTimestampPrefix(at).trim() }, ...content];
-}
-
-export function prefixUserMessagesWithTimestamps<T extends { role?: string; content?: any }>(messages: T[], at?: number | string | null): T[] {
-  if (!Array.isArray(messages)) return messages;
-  return messages.map((msg) => msg?.role === "user" ? { ...msg, content: prefixUserContentWithTimestamp(msg.content ?? "", at) } : msg);
-}
 export async function buildLLMMessages(chatId: string): Promise<any[]> {
   const c = chatRefs(chatId);
   const compaction = await readCompaction(chatId);
@@ -1083,14 +1430,14 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
           at,
           role: "user",
           content: [
-            { type: "text", text: prefixUserTextWithTimestamp(text || "Please inspect this image.", at) },
+            { type: "text", text: text || "Please inspect this image." },
             ...attachments
               .filter((a: any) => a?.type === "image" && typeof a.dataUrl === "string")
               .map((a: any) => ({ type: "image_url", image_url: { url: a.dataUrl } })),
           ],
         });
       } else if (text) {
-        entries.push({ at, role: "user", content: prefixUserContentWithTimestamp(text, at) });
+        entries.push({ at, role: "user", content: text });
       }
     } else if (s["?kind"] === "agent:Reply") {
       const p = await loadPayloadJSON(c.facts, c.graph, s["?step"]!);
@@ -1111,10 +1458,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
     entries.push({
       at,
       role: "user",
-      content: prefixUserContentWithTimestamp(
-        cancelled ? `(cancelled ${title})` : `(answer to ${title}) ${formatHjson(values, "", 80)}`,
-        at,
-      ),
+      content: cancelled ? `(cancelled ${title})` : `(answer to ${title}) ${formatHjson(values, "", 80)}`,
     });
   }
 
@@ -1124,10 +1468,12 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
   if (compaction.summary && !summaryMayContainDeletedUserInput) {
     messages.push({
       role: "system",
-      content: `Summary of earlier conversation:\n${compaction.summary}`,
+      content: compactionContinuationSystemMessage(compaction.summary),
     });
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });
+  const todoContext = await formatTodosForDynamicContext(chatId);
+  if (todoContext) messages.push({ role: "system", content: todoContext });
   return messages;
 }
 
@@ -1154,14 +1500,14 @@ async function transcriptMessages(chatId: string, afterAt: number): Promise<any[
   for (const item of items) {
     const payload = await loadPayloadJSON(c.facts, c.graph, item.step);
     const result = await loadResultJSON(c.facts, c.graph, item.step);
-    const text = formatStep(item, payload, result);
+    const text = formatStepForCompaction(item, payload, result);
     if (!text) continue;
     const role = item.kind === "agent:UserInput" ? "user" : "assistant";
     const status = item.status ? ` · ${item.status.replace(/^agent:/, "")}` : "";
     const prefix = item.kind === "agent:UserInput" ? "" : `[${item.kind.replace(/^agent:/, "")}${status}]\n`;
     messages.push({
       role,
-      content: role === "user" ? prefixUserContentWithTimestamp(text, item.at) : prefix + text,
+      content: role === "user" ? text : prefix + text,
     });
   }
   return messages;
@@ -1173,7 +1519,7 @@ export async function buildCompactionMessages(chatId: string): Promise<any[]> {
   if (compaction.summary) {
     messages.push({
       role: "system",
-      content: `Summary of earlier conversation:\n${compaction.summary}`,
+      content: compactionContinuationSystemMessage(compaction.summary),
     });
   }
   messages.push(...await transcriptMessages(chatId, compaction.throughAt));
@@ -1223,9 +1569,9 @@ export async function loadResultJSON(
 // -- tool execution --------------------------------------------------------
 //
 // One tool is exposed to the LLM: runJS. The model sends JS code; the harness
-// evaluates it as the body of an async IIFE with `moo`, `chatId`, `scratch`, and optional `args` in scope.
+// evaluates it as the body of an async IIFE with `moo`, `chatId`, `repo`, `scratch`, and optional `args` in scope.
 
-function serializeToolValue(v: any): string {
+export function serializeToolValue(v: any): string {
   if (v === undefined) return "undefined";
   if (typeof v === "string") return v;
   try {
@@ -1235,7 +1581,7 @@ function serializeToolValue(v: any): string {
   }
 }
 
-// HJSON/JSON5-style formatter: unquoted keys when they're identifiers,
+// HJSON-style formatter: unquoted keys when they're identifiers,
 // braces on the same line as the first/last value, no whitespace padding for
 // short objects. Tries to fit each level on one line; spills onto multiple
 // indented lines when the single-line form would exceed `wrap`. Strings
@@ -1290,9 +1636,16 @@ function formatHjsonString(value: string, indent: string): string {
   if (normalized.endsWith("\n")) normalized = normalized.slice(0, -1);
   // Indent body and closing fence one level deeper than the key, so multiline
   // values sit visibly inside the value scope rather than at the key level.
+  // HJSON parsers dedent ordinary leading spaces inside ''' blocks; protect
+  // string-owned leading indentation with NBSPs while leaving structural
+  // indentation as regular spaces.
   const body = indent + "  ";
   const lines = normalized.split("\n");
-  return `'''\n${lines.map((l) => body + l).join("\n")}\n${body}'''`;
+  return `'''\n${lines.map((l) => body + protectHjsonMultilineIndent(l)).join("\n")}\n${body}'''`;
+}
+
+function protectHjsonMultilineIndent(line: string): string {
+  return line.replace(/^[ \t]+/, (prefix) => prefix.replace(/ /g, " ").replace(/\t/g, "  "));
 }
 
 async function toolRunJS(
@@ -1308,36 +1661,55 @@ async function toolRunJS(
   const runArgs = hasRunArgs ? toolArgs.args : undefined;
   const started = Date.now();
   const runJsStep = await startRunJSStep(chatId, code, label, description, runArgs, hasRunArgs, started, model, effort);
+  const trace = await startRunJSTraceRoot(runJsStep.stepId, {
+    chatId,
+    label: label || null,
+    description: description || null,
+    code,
+    args: runArgs ?? null,
+    argsProvided: hasRunArgs,
+    model: model || null,
+    effort: effort || null,
+  });
   if (!code.trim()) {
-    await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code");
+    const resultHash = await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code", started);
+    finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error: "missing code", status: "error" });
     return { toolText: "error: runJS requires `code`" };
   }
   let result: any = undefined;
   let error: string | null = null;
+  let serialized: string | null = null;
   try {
-    const fn = new Function(
-      "moo",
-      "chatId",
-      "scratch",
-      "args",
-      `return (async () => { ${code}\n})();`,
+    const fn = await moo.traces.span(
+      "v8.compile",
+      { code },
+      () => new Function(
+        "moo",
+        "chatId",
+        "repo",
+        "scratch",
+        "args",
+        `return (async () => { ${code}\n})();`,
+      ),
     );
+    const repo = (await moo.pointers.get(`chat/${chatId}/path`)) || ".";
     const scratch = await moo.chat.scratch(chatId);
     const depth = await subagentDepth(chatId);
     result = await withMooRunJSContext(chatId, runJsStep.stepId, depth, () =>
-      withMooChatContext(chatId, () => fn(moo, chatId, scratch, runArgs)),
+      withMooChatContext(chatId, () => moo.traces.span("runjs.user", () => fn(moo, chatId, repo, scratch, runArgs))),
     );
+    serialized = await moo.traces.span("runjs.stringify", { resultType: typeof result }, () => serializeToolValue(result));
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
-  const durationMs = Date.now() - started;
-  const serialized = error ? null : serializeToolValue(result);
-  await finishRunJSStep(
+  const resultHash = await finishRunJSStep(
     chatId,
     runJsStep.stepId,
-    error ? null : { value: serialized, durationMs },
+    error ? null : { value: serialized },
     error,
+    started,
   );
+  finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error, status: error ? "error" : "ok" });
   if (error) return { toolText: `error: ${error}` };
   return { toolText: truncate(serialized ?? "undefined", 4000) };
 }
@@ -1377,22 +1749,37 @@ async function startRunJSStep(
 async function finishRunJSStep(
   chatId: string,
   stepId: string,
-  result: { value: string; durationMs: number } | null,
+  result: { value: string } | null,
   error: string | null,
-) {
+  startedAt?: number,
+): Promise<string | null> {
   const c = chatRefs(chatId);
   const resultHash = result
     ? await moo.objects.putJSON({ kind: "agent:ToolResult", value: result })
     : error
       ? await moo.objects.putJSON({ kind: "agent:ToolResult", value: { error } })
       : null;
+  const endedAt = Date.now();
+  const status = error ? "agent:Failed" : "agent:Done";
+  const durationNs = typeof startedAt === "number" ? Math.max(0, endedAt - startedAt) * 1_000_000 : undefined;
   const statusRows = await moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:status" } });
   await moo.facts.update({ store: c.facts, fn: (txn) => {
     for (const [g, s, p, o] of statusRows) txn.remove({ graph: g, subject: s, predicate: p, object: o });
-    txn.add({ graph: c.graph, subject: stepId, predicate: "agent:status", object: error ? "agent:Failed" : "agent:Done" });
+    txn.add({ graph: c.graph, subject: stepId, predicate: "agent:status", object: status });
     if (resultHash) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:result", object: resultHash });
     if (error) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: error });
   } });
+  moo.events.publish({
+    kind: "runjs-step-finished",
+    chatId,
+    stepId,
+    status,
+    resultHash,
+    error,
+    at: endedAt,
+    durationNs,
+  });
+  return resultHash;
 }
 
 export async function hasPendingInput(chatId: string): Promise<boolean> {
@@ -1417,7 +1804,17 @@ export async function executeToolCall(
   } catch {
     args = {};
   }
-  if (name === "runJS") return toolRunJS(chatId, args, model, effort);
+  if (name === "runJS") {
+    return await traceSpan("tool.runJS", {
+      chatId,
+      model: model ?? null,
+      effort: normalizeEffort(effort) ?? null,
+      ...toolCallForTrace(tc),
+      label: args?.label ?? null,
+      description: args?.description ?? null,
+      args,
+    }, () => toolRunJS(chatId, args, model, effort));
+  }
   const started = Date.now();
   const unknown = await startRunJSStep(
     chatId,
@@ -1436,53 +1833,6 @@ export async function executeToolCall(
 
 export async function runToolCall(chatId: string, tc: any, model?: string | null, effort?: string | null): Promise<{ toolText: string }> {
   return executeToolCall(chatId, tc, model, effort);
-}
-
-// -- /slash commands -------------------------------------------------------
-
-export async function respondTo(chatId: string, message: string): Promise<boolean> {
-  if (message.startsWith("/run ")) {
-    const cmdline = message.slice(5).trim();
-    if (!cmdline) {
-      await reply(chatId, "usage: /run <cmd> [args...]");
-      return true;
-    }
-    await runShellAndRecord(chatId, cmdline);
-    return true;
-  }
-  if (message === "/compact") {
-    const provider = await resolveProvider(await selectedModelForChat(chatId), await selectedEffortForChat(chatId));
-    if (!provider.apiKey) {
-      await reply(chatId, `cannot compact: ${provider.keyEnvHint} not set`);
-      return true;
-    }
-    const did = await runCompaction(chatId, provider, { trigger: "manual" });
-    await reply(
-      chatId,
-      did ? "compacted older turns into a summary" : "nothing to compact yet",
-    );
-    return true;
-  }
-  if (message === "/help") {
-    await reply(
-      chatId,
-      [
-        "## Commands",
-        "",
-        "| Command | Description |",
-        "| --- | --- |",
-        "| `/run <cmd> [args]` | Run a shell command in this chat's scratch directory. |",
-        "| `/compact` | Summarise older turns into a synthetic system note. |",
-        "| MCP setup | Ask me to add an MCP server; I can save remote config, start OAuth, and verify tools. |",
-        "| `/help` | Show this help. |",
-        "",
-        "Type a normal non-slash message to talk to the LLM agent (needs the provider's API key).",
-      ].join("\n"),
-    );
-    return true;
-  }
-
-  return false;
 }
 
 export async function runShellAndRecord(
@@ -1525,6 +1875,14 @@ export async function runShellAndRecord(
 
 // -- timeline formatting (used by describe) --------------------------------
 
+function firstString(...values: any[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+  }
+  return "";
+}
+
 function formatErrorPayload(body: any): string {
   if (body == null || body === "") return "";
   if (typeof body === "string") return body.trim();
@@ -1532,6 +1890,89 @@ function formatErrorPayload(body: any): string {
     return JSON.stringify(body, null, 2).trim();
   } catch {
     return String(body).trim();
+  }
+}
+
+const COMPACTION_STEP_TEXT_LIMITS = {
+  userInput: 12_000,
+  reply: 12_000,
+  runJsCode: 8_000,
+  runJsResult: 8_000,
+  shellOutput: 12_000,
+  subagentOutput: 2_000,
+  errorPayload: 6_000,
+  generic: 12_000,
+};
+
+function stringifyCompactionValue(value: any): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function formatStepForCompaction(item: any, payload: any, result: any): string {
+  switch (item.kind) {
+    case "agent:UserInput":
+      return truncate(payload?.value?.message ?? "", COMPACTION_STEP_TEXT_LIMITS.userInput);
+    case "agent:Reply":
+      return truncate(payload?.value?.text ?? "", COMPACTION_STEP_TEXT_LIMITS.reply);
+    case "agent:RunJS": {
+      const code = truncate(payload?.value?.code ?? "", COMPACTION_STEP_TEXT_LIMITS.runJsCode);
+      const label = payload?.value?.label ?? "";
+      const description = payload?.value?.description ?? "";
+      const resultText = result?.value
+        ? truncate(stringifyCompactionValue(result.value), COMPACTION_STEP_TEXT_LIMITS.runJsResult)
+        : "";
+      const parts: string[] = [];
+      if (label) parts.push(`@@label ${label}`);
+      if (description) parts.push(`@@desc ${description}`);
+      if (code) parts.push("@@code", code);
+      if (resultText) parts.push(`@@result ${resultText}`);
+      return parts.join("\n");
+    }
+    case "agent:Subagent": {
+      const v = payload?.value || {};
+      const r = result?.value || null;
+      const output = r?.output ?? r?.text;
+      return [
+        v.label || "subagent",
+        v.childChatId ? `child chat: ${v.childChatId}` : "",
+        r?.status ? `status: ${r.status}` : "",
+        v.task || "",
+        output ? truncate(output, COMPACTION_STEP_TEXT_LIMITS.subagentOutput) : "",
+        r?.error ? `error: ${truncate(r.error, COMPACTION_STEP_TEXT_LIMITS.generic)}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    case "agent:ShellCommand": {
+      const cmd = payload?.value
+        ? `$ ${payload.value.cmd}${(payload.value.args || [])
+            .map((a: string) => " " + maybeQuote(a))
+            .join("")}`
+        : "";
+      const tail = result?.value
+        ? `(exit ${result.value.code} · ${Math.round(result.value.durationNs / 1_000_000)}ms${
+            result.value.timedOut ? " · timed out" : ""
+          })`
+        : "";
+      const out = result?.value
+        ? [
+            result.value.stdout?.trim() && truncate(result.value.stdout.trim(), COMPACTION_STEP_TEXT_LIMITS.shellOutput),
+            result.value.stderr?.trim() && truncate(result.value.stderr.trim(), COMPACTION_STEP_TEXT_LIMITS.shellOutput),
+            tail,
+          ].filter(Boolean).join("\n")
+        : "";
+      return [cmd, out].filter(Boolean).join("\n");
+    }
+    case "agent:Error": {
+      const formatted = formatStep(item, payload, result);
+      return truncate(formatted, COMPACTION_STEP_TEXT_LIMITS.errorPayload);
+    }
+    default:
+      return truncate(formatStep(item, payload, result), COMPACTION_STEP_TEXT_LIMITS.generic);
   }
 }
 
@@ -1555,7 +1996,7 @@ export function formatStep(item: any, payload: any, result: any): string {
         if (typeof result.value === "object" && result.value.error) {
           tail = `error: ${result.value.error}`;
         } else if (typeof result.value === "object" && "value" in result.value) {
-          tail = `→ ${result.value.value} (${result.value.durationMs}ms)`;
+          tail = `→ ${result.value.value}`;
         } else {
           tail = JSON.stringify(result.value);
         }
@@ -1590,7 +2031,7 @@ export function formatStep(item: any, payload: any, result: any): string {
             .join("")}`
         : "";
       const tail = result?.value
-        ? `(exit ${result.value.code} · ${result.value.durationMs}ms${
+        ? `(exit ${result.value.code} · ${Math.round(result.value.durationNs / 1_000_000)}ms${
             result.value.timedOut ? " · timed out" : ""
           })`
         : "";
@@ -1607,14 +2048,40 @@ export function formatStep(item: any, payload: any, result: any): string {
     }
     case "agent:Error": {
       const v = payload?.value || {};
-      const detail = v.detail || {};
-      const status = detail.status ? `HTTP ${detail.status}` : null;
-      const source = detail.source || v.kind || "error";
-      const head = [source, detail.model, status].filter(Boolean).join(" · ");
-      const message = detail.message || "";
-      const payloadText = formatErrorPayload(detail.body);
+      const detail = v.detail && typeof v.detail === "object" ? v.detail : {};
+      const rawStatus = detail.status ?? v.status;
+      const status = rawStatus ? `HTTP ${rawStatus}` : null;
+      const source = firstString(detail.source, v.kind, v.phase, detail.type, detail.code, "error");
+      const model = firstString(detail.model, v.model);
+      const head = [source, model, status].filter(Boolean).join(" · ");
+      const message = firstString(
+        detail.message,
+        detail.error?.message,
+        detail.body?.error?.message,
+        detail.body?.message,
+        v.message,
+        v.reason,
+        v.error?.message,
+        v.error,
+      );
+      const payloadText = formatErrorPayload(
+        detail.body ??
+          detail.payload ??
+          (Object.keys(detail).length ? detail : null) ??
+          (Object.keys(v).length ? v : null),
+      );
+      const detailBits = [
+        detail.type && `type: ${detail.type}`,
+        detail.code && `code: ${detail.code}`,
+        detail.requestId && `request id: ${detail.requestId}`,
+        detail.retryAfter && `retry after: ${detail.retryAfter}`,
+        v.trigger && `trigger: ${v.trigger}`,
+        v.retryReason && `retry: ${v.retryReason}`,
+      ].filter(Boolean).join("\n");
       const body = [
         message,
+        detail.hint,
+        detailBits,
         payloadText && payloadText !== String(message).trim() ? `payload:\n${payloadText}` : "",
       ].filter(Boolean).join("\n\n");
       return [head, body].filter(Boolean).join("\n");

@@ -1,48 +1,22 @@
-export type Result<T, E = ErrorInfo> = Ok<T> | Err<E>;
+export type { Err, ErrorInfo, Ok, Result } from "./effect";
+export { err, errorInfo, ok } from "./effect";
+import { Effect, errorInfo } from "./effect";
+import type { ErrorInfo, Result } from "./effect";
 
-export type Ok<T> = { ok: true; value: T };
-export type Err<E = ErrorInfo> = { ok: false; error: E };
-
-export type ErrorInfo = {
-  message: string;
-  stack?: string;
-  cause?: unknown;
-  [key: string]: unknown;
-};
-
-export const ok = <T>(value: T): Ok<T> => ({ ok: true, value });
-export const err = <E extends ErrorInfo | string>(error: E): Err<E extends string ? ErrorInfo : E> => ({
-  ok: false,
-  error: (typeof error === "string" ? { message: error } : error) as E extends string ? ErrorInfo : E,
-});
-
-export function errorInfo(error: unknown, fallback = "operation failed"): ErrorInfo {
-  if (error && typeof error === "object") {
-    const anyError = error as any;
-    return {
-      message: typeof anyError.message === "string" && anyError.message ? anyError.message : fallback,
-      ...(typeof anyError.stack === "string" ? { stack: anyError.stack } : {}),
-      ...(anyError.cause !== undefined ? { cause: anyError.cause } : {}),
-    };
-  }
-  if (typeof error === "string" && error) return { message: error };
-  return { message: fallback };
-}
-
-export function fromThrowable<T>(fn: () => T): Result<T> {
+export function fromThrowable<T>(operation: () => T): Result<T> {
+  let result!: Result<T>;
+  // Keep this synchronous for existing callers while sharing Effect's error
+  // normalization semantics.
   try {
-    return ok(fn());
+    result = { ok: true, value: operation() };
   } catch (e) {
-    return err(errorInfo(e));
+    result = { ok: false, error: errorInfo(e) };
   }
+  return result;
 }
 
 export async function fromPromise<T>(promise: Promise<T>, fallback?: string): Promise<Result<T>> {
-  try {
-    return ok(await promise);
-  } catch (e) {
-    return err(errorInfo(e, fallback));
-  }
+  return Effect.fromPromise(promise, fallback).runResult();
 }
 
 export function unwrap<T, E extends ErrorInfo>(result: Result<T, E>): T {

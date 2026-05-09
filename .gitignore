@@ -1,4 +1,5 @@
 *.log
+.env.local
 .process-compose/
 .vite/
 /.direnv/

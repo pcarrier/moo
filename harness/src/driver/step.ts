@@ -12,7 +12,7 @@ export type StepDriverState = Record<string, any> & {
 
 export type StepDriverEvent =
   | { type: "ToolResultReceived"; toolResult: any }
-  | { type: "LlmResultReceived"; llmResult: any; llmDurationMs?: number }
+  | { type: "LlmResultReceived"; llmResult: any; llmDurationNs?: number }
   | { type: "DriverAdvanced" }
   | { type: "ToolContinuationHandled"; handled: any }
   | { type: "LlmHandled"; handled: any }
@@ -22,7 +22,7 @@ export type StepDriverEvent =
 export type StepDriverEffect =
   | { type: "ContinueToolCalls"; input: any }
   | { type: "HandleLlm"; input: any }
-  | { type: "Start"; mode: "step" | "resume"; input: any }
+  | { type: "Start"; mode: "step" | "resume" | "compact"; input: any }
   | { type: "Prepare"; input: any }
   | { type: "Return"; value: any };
 
@@ -35,7 +35,7 @@ export function initialStepDriverState(input: any): StepDriverState {
 export function stepNextInputEvents(input: any, _state: StepDriverState): StepDriverEvent[] {
   const events: StepDriverEvent[] = [];
   if (input?.toolResult != null) events.push({ type: "ToolResultReceived", toolResult: input.toolResult });
-  if (input?.llmResult != null) events.push({ type: "LlmResultReceived", llmResult: input.llmResult, llmDurationMs: input.llmDurationMs });
+  if (input?.llmResult != null) events.push({ type: "LlmResultReceived", llmResult: input.llmResult, llmDurationNs: input.llmDurationNs });
   if (!events.length) events.push({ type: "DriverAdvanced" });
   return events;
 }
@@ -64,12 +64,12 @@ export function reduceStepDriverState(state: StepDriverState, event: StepDriverE
 
     case "LlmResultReceived": {
       const inflight = state.inflight || {};
-      const elapsed = Number(event.llmDurationMs) || 0;
-      const previousThought = Number(state.thoughtDurationMs) || 0;
-      const thoughtDurationMs = previousThought + (inflight.countThoughtDuration ? elapsed : 0);
+      const elapsedNs = Number(event.llmDurationNs) || 0;
+      const previousThoughtNs = Number(state.thoughtDurationNs) || 0;
+      const thoughtDurationNs = previousThoughtNs + (inflight.countThoughtDuration ? elapsedNs : 0);
       return {
         ...state,
-        thoughtDurationMs,
+        thoughtDurationNs,
         llmHandling: {
           chatId: state.chatId,
           attempt: Number(inflight.attempt ?? 1) || 1,
@@ -79,11 +79,14 @@ export function reduceStepDriverState(state: StepDriverState, event: StepDriverE
           estimatedPromptTokens: inflight.estimatedPromptTokens,
           tokenBudget: inflight.tokenBudget,
           tokenThreshold: inflight.tokenThreshold,
+          requestPromptTokens: inflight.requestPromptTokens,
+          requestTokenLimit: inflight.requestTokenLimit,
           llmResult: event.llmResult,
           requestProvider: inflight.requestProvider ?? state.provider?.name,
           requestModel: inflight.requestModel,
           requestEffort: inflight.requestEffort,
-          thoughtDurationMs,
+          requestAuthMode: inflight.requestAuthMode,
+          thoughtDurationNs,
         },
         phase: "handleLlm",
       };
@@ -118,7 +121,7 @@ export function reduceStepDriverState(state: StepDriverState, event: StepDriverE
               ...state,
               ...(handled.state || {}),
               provider: state.provider,
-              thoughtDurationMs: state.thoughtDurationMs,
+              thoughtDurationNs: state.thoughtDurationNs,
               inflight: null,
             }),
           },
@@ -143,7 +146,7 @@ export function reduceStepDriverState(state: StepDriverState, event: StepDriverE
         ...state,
         provider: started.provider,
         messages: null,
-        thoughtDurationMs: 0,
+        thoughtDurationNs: 0,
         retryAttempt: null,
         retryReason: null,
         retryDelayMs: null,
@@ -165,9 +168,12 @@ export function reduceStepDriverState(state: StepDriverState, event: StepDriverE
           estimatedPromptTokens: prepared.estimatedPromptTokens,
           tokenBudget: prepared.tokenBudget,
           tokenThreshold: prepared.tokenThreshold,
-          requestProvider: state.provider?.name,
+          requestPromptTokens: prepared.requestPromptTokens,
+          requestTokenLimit: prepared.requestTokenLimit,
+          requestProvider: prepared.requestProvider ?? state.provider?.name,
           requestModel: prepared.requestModel,
           requestEffort: prepared.requestEffort,
+          requestAuthMode: prepared.requestAuthMode ?? state.provider?.authMode,
           countThoughtDuration: !!prepared.countThoughtDuration,
           attempt: Number(prepared.attempt ?? state.retryAttempt ?? 1) || 1,
         },
@@ -206,13 +212,13 @@ export function planStepDriverEffects(state: StepDriverState): StepDriverEffect[
     case "handleLlm":
       return [{ type: "HandleLlm", input: state.llmHandling }];
     case "startLoop": {
-      const mode = state.mode === "resume" ? "resume" : "step";
+      const mode = state.mode === "resume" ? "resume" : state.mode === "compact" ? "compact" : "step";
       return [{
         type: "Start",
         mode,
-        input: mode === "resume"
-          ? { chatId: state.chatId }
-          : { chatId: state.chatId, message: state.message ?? "", attachments: state.attachments },
+        input: mode === "resume" || mode === "compact"
+          ? { chatId: state.chatId, mode }
+          : { chatId: state.chatId, mode, message: state.message ?? "", attachments: state.attachments },
       }];
     }
     case "prepare":

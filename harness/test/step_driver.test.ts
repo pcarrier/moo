@@ -12,7 +12,7 @@ describe("step driver", () => {
     let state = initialStepDriverState({ state: { chatId: "c1", mode: "step", message: "hi" } });
     for (const event of stepNextInputEvents({}, state)) state = reduceStepDriverState(state, event);
     expect(planStepDriverEffects(state)).toEqual([
-      { type: "Start", mode: "step", input: { chatId: "c1", message: "hi", attachments: undefined } },
+      { type: "Start", mode: "step", input: { chatId: "c1", mode: "step", message: "hi", attachments: undefined } },
     ]);
   });
 
@@ -20,7 +20,7 @@ describe("step driver", () => {
     let state = initialStepDriverState({ state: { chatId: "c1", mode: "resume" } });
     for (const event of stepNextInputEvents({}, state)) state = reduceStepDriverState(state, event);
     expect(planStepDriverEffects(state)).toEqual([
-      { type: "Start", mode: "resume", input: { chatId: "c1" } },
+      { type: "Start", mode: "resume", input: { chatId: "c1", mode: "resume" } },
     ]);
   });
 
@@ -35,14 +35,17 @@ describe("step driver", () => {
       tokenThreshold: 50,
       requestModel: "m",
       requestEffort: "low",
+      requestAuthMode: "subscription",
       url: "https://llm.test",
       headers: { authorization: "Bearer x" },
       body: { model: "m" },
       streamEvents: { draftEvent: { kind: "draft" } },
       countThoughtDuration: true,
     };
-    const state = reduceStepDriverState({ chatId: "c1", provider: { name: "openai" }, phase: "prepare" } as any, { type: "Prepared", prepared });
+    const state = reduceStepDriverState({ chatId: "c1", provider: { name: "anthropic", authMode: "subscription" }, phase: "prepare" } as any, { type: "Prepared", prepared });
     expect(planStepDriverEffects(state)).toEqual([{ type: "Return", value: expect.objectContaining({ kind: "llm", url: "https://llm.test" }) }]);
+    const handled = reduceStepDriverState(state as any, { type: "LlmResultReceived", llmResult: { ok: false, status: 429 }, llmDurationNs: 100 });
+    expect(handled.llmHandling).toEqual(expect.objectContaining({ requestProvider: "anthropic", requestAuthMode: "subscription" }));
   });
 
 
@@ -124,5 +127,21 @@ describe("llm retry policy", () => {
   test("does not retry permanent or exhausted failures", () => {
     expect(llmRetryDecision({ ok: false, status: 400 }, 1, policy).retry).toBe(false);
     expect(llmRetryDecision({ ok: false, status: 503 }, 3, policy)).toEqual({ retry: false, reason: "attempts-exhausted", delayMs: 0 });
+  });
+});
+
+
+describe("trace helpers", () => {
+  test("preserves trace payloads", async () => {
+    const { traceJsonValue } = await import("../src/moo");
+    const value: any = { text: "abc" };
+    value.self = value;
+    expect(traceJsonValue(value)).toEqual({ text: "abc", self: "[Circular]" });
+  });
+
+  test("keeps synchronous moo helpers synchronous under trace proxy", async () => {
+    const { moo } = await import("../src/moo");
+    expect(typeof moo.validate.pointerName("p")).toBe("boolean");
+    expect(String(moo.term.string("literal:value"))).toBe('"literal:value"');
   });
 });

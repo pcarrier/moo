@@ -35,10 +35,10 @@
       };
 
       webDepsHashes = {
-        "x86_64-linux" = "sha256-qFyY9cL61mLtqY97rhSMg/CQRpSVUlPLLiDmxWxEaeE=";
-        "aarch64-linux" = "sha256-2XvuqUYBC8z1c4JVgraMVEwnDbki1HP5ovSP//fnUoQ=";
-        "x86_64-darwin" = "sha256-tI9YnouVDBl81+QO6ySik+vQsxWit31h90CosSN3WCw=";
-        "aarch64-darwin" = "sha256-3I2HAyK0lI3uSehZ32abNnC2h+r/SOSABAj/E1A3ihw=";
+        "x86_64-linux" = "sha256-09yIXRZf9yisJlq+AVZcpycUzgSKkPMY7MvtYLBrx0A=";
+        "aarch64-linux" = "sha256-AyZx9i174w3fm7I7Tw7M3Esokj+EWyCSqCSLcHLyoBk=";
+        "x86_64-darwin" = "sha256-fBgmnPOM2lTK9XBlEx4VJiL32H5zOaFxNQ3b8KExvhM=";
+        "aarch64-darwin" = "sha256-sZdk3tx2TD6+LjTw08MnZ594mrpUUy2A8vvTxw872x4=";
       };
 
 
@@ -90,6 +90,7 @@
             };
             nativeBuildInputs = [ pkgs.bun pkgs.cacert ];
             dontConfigure = true;
+            dontFixup = true;
             buildPhase = ''
               runHook preBuild
               export HOME=$TMPDIR
@@ -129,11 +130,21 @@
           # Vite-built UI (HTML + asset chunks).  Build.rs inlines them.
           webDist = pkgs.stdenvNoCC.mkDerivation {
             name = "moo-web-dist";
-            src = lib.cleanSource ./web;
+            src = lib.cleanSourceWith {
+              src = ./.;
+              filter = path: type:
+                let
+                  rel = lib.removePrefix (toString ./. + "/") (toString path);
+                in
+                  rel == "tsconfig.base.json"
+                  || rel == "web"
+                  || lib.hasPrefix "web/" rel;
+            };
             nativeBuildInputs = [ pkgs.bun pkgs.nodejs ];
             dontConfigure = true;
             buildPhase = ''
               runHook preBuild
+              cd web
               cp -R ${webDeps}/node_modules node_modules
               chmod -R u+w node_modules
               patchShebangs node_modules
@@ -153,7 +164,7 @@
           commonArgs = {
             inherit src;
             pname = "moo";
-            version = "0.1.0";
+            version = "0.2.0";
             strictDeps = true;
             doCheck = false;
 
@@ -272,6 +283,7 @@
               pkgs.bun
               pkgs.cargo-watch
               pkgs.cargo-zigbuild
+              pkgs.duckdb
               pkgs.nodejs
               pkgs.pkg-config
               pkgs.process-compose

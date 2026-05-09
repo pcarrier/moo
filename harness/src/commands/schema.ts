@@ -1,20 +1,34 @@
+import { Effect, ok } from "../core/effect";
 import { moo } from "../moo";
 import type { Input } from "./_shared";
 
-export async function schemaCommand(input: Input) {
-  let stores: string[];
+export function schemaCommand(input: Input) {
+  return schemaStores(input)
+    .flatMap((stores) =>
+      Effect.forEachPar(stores, (store) =>
+        Effect.tryPromise(() => moo.facts.match({ store }), "fact match failed")
+          .map((quads) => ({ store, quads })),
+      ),
+    )
+    .map((matches) => ok(summarizeSchema(input, matches)));
+}
+
+function schemaStores(input: Input): Effect<string[]> {
   if (input.chatId) {
-    stores = [`chat/${input.chatId}/facts`];
-  } else {
-    const all = await moo.pointers.list("chat/");
+    return Effect.succeed([`chat/${input.chatId}/facts`]);
+  }
+  return Effect.tryPromise(() => moo.pointers.list("chat/"), "chat pointer list failed")
+    .map((all) => {
     const ids = new Set<string>();
     for (const name of all) {
       const parts = name.split("/");
       if (parts.length >= 2) ids.add(parts[1]!);
     }
-    stores = [...ids].map((cid) => `chat/${cid}/facts`);
-  }
+    return [...ids].map((cid) => `chat/${cid}/facts`);
+  });
+}
 
+function summarizeSchema(input: Input, matches: Array<{ store: string; quads: Array<[string, string, string, string]> }>) {
   const predicates = new Map<string, number>();
   const classes = new Map<string, number>();
   const graphs = new Map<string, number>();
@@ -22,8 +36,8 @@ export async function schemaCommand(input: Input) {
   const subjectClass = new Map<string, string>();
   let totalQuads = 0;
 
-  for (const store of stores) {
-    const all = await moo.facts.match({ store });
+  for (const { store, quads } of matches) {
+    const all = quads;
     for (const [g, s, p, o] of all) {
       totalQuads++;
       graphs.set(g, (graphs.get(g) || 0) + 1);
@@ -62,15 +76,13 @@ export async function schemaCommand(input: Input) {
     }));
 
   return {
-    ok: true,
-    value: {
-      scope: input.chatId ? `chat:${input.chatId}` : "(all chats)",
-      totalQuads,
-      graphs: sortByCountDesc(graphs),
-      classes: sortByCountDesc(classes),
-      predicates: sortByCountDesc(predicates),
-      classDetails,
-    },
+    scope: input.chatId ? `chat:${input.chatId}` : "(all chats)",
+    totalQuads,
+    graphs: sortByCountDesc(graphs),
+    classes: sortByCountDesc(classes),
+    predicates: sortByCountDesc(predicates),
+    classDetails,
   };
 }
+
 

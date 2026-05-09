@@ -1,5 +1,6 @@
 import { moo } from "../moo";
 import { chatRefs } from "../lib";
+import { Term } from "../types";
 import type { Input } from "./_shared";
 
 async function removeDeletedAt(store: string, graph: string, stepId: string, txn: any) {
@@ -8,7 +9,8 @@ async function removeDeletedAt(store: string, graph: string, stepId: string, txn
     subject: stepId,
     predicate: "agent:deletedAt",
   } });
-  for (const [g, s, p, o] of existing) txn.remove({ graph: g, subject: s, predicate: p, object: o });
+  // facts.match returns objects in encoded Turtle form; remove them exactly.
+  for (const [g, s, p, o] of existing) txn.remove({ graph: g, subject: s, predicate: p, object: new Term(o) });
 }
 
 async function requireUserInputStep(chatId: string, stepId: string) {

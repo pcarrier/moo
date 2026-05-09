@@ -1,0 +1,3 @@
+#!/bin/sh
+export PC_SOCKET_PATH="/tmp/moo-dev.sock"
+exec process-compose -U

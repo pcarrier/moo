@@ -4,12 +4,16 @@ use rusqlite::params_from_iter;
 use rusqlite::types::Value as SqlValue;
 use rusty_v8 as v8;
 use spargebra::algebra::{
-    Expression, Function, GraphPattern, OrderExpression, PropertyPathExpression,
+    AggregateExpression, AggregateFunction, Expression, Function, GraphPattern, OrderExpression,
+    PropertyPathExpression,
 };
-use spargebra::term::{Literal, NamedNode, NamedNodePattern, TermPattern, TriplePattern, Variable};
+use spargebra::term::{
+    GroundTerm, Literal, NamedNode, NamedNodePattern, TermPattern, TriplePattern, Variable,
+};
 use spargebra::{Query, SparqlParser};
 
-use crate::host::with_host;
+use crate::host::with_db;
+use crate::ops::v8util::{set_object_str, set_object_value};
 use crate::runtime::{install_fn, throw};
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
@@ -63,9 +67,10 @@ fn op_sparql_query(
     }
 }
 
+#[derive(Clone, Debug)]
 struct SelectRows {
     vars: Vec<String>,
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<Option<String>>>,
 }
 
 enum SparqlResult {
@@ -83,7 +88,9 @@ fn set_sparql_result(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, result:
             for (i, row) in rows.rows.iter().enumerate() {
                 let row_obj = v8::Object::new(scope);
                 for (key, value) in rows.vars.iter().zip(row) {
-                    set_object_str(scope, row_obj, key, value);
+                    if let Some(value) = value {
+                        set_object_str(scope, row_obj, key, value);
+                    }
                 }
                 arr.set_index(scope, i as u32, row_obj.into());
             }
@@ -109,23 +116,6 @@ fn set_sparql_result(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, result:
         }
     }
     rv.set(obj.into());
-}
-
-fn set_object_str(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, key: &str, value: &str) {
-    if let (Some(k), Some(v)) = (v8::String::new(scope, key), v8::String::new(scope, value)) {
-        obj.set(scope, k.into(), v.into());
-    }
-}
-
-fn set_object_value(
-    scope: &mut v8::PinScope,
-    obj: v8::Local<v8::Object>,
-    key: &str,
-    value: v8::Local<v8::Value>,
-) {
-    if let Some(k) = v8::String::new(scope, key) {
-        obj.set(scope, k.into(), value);
-    }
 }
 
 fn run_sparql(
@@ -320,12 +310,48 @@ struct Extension {
     expression: Expression,
 }
 
+#[derive(Clone, Debug)]
+struct OptionalPlan {
+    plan: Plan,
+    expression: Option<Expression>,
+}
+
+#[derive(Clone, Debug)]
+struct ValuesBlock {
+    variables: Vec<String>,
+    bindings: Vec<Vec<Option<String>>>,
+}
+
+#[derive(Clone, Debug)]
+struct MinusPlan {
+    plan: Plan,
+}
+
+#[derive(Clone, Debug, Default)]
+struct GroupPlan {
+    variables: Vec<String>,
+    aggregates: Vec<(String, AggregateExpression)>,
+    inner: Box<Plan>,
+}
+
+#[derive(Clone, Debug, Default)]
+enum PlanKind {
+    #[default]
+    Normal,
+    Union(Vec<Plan>),
+}
+
 #[derive(Clone, Debug, Default)]
 struct Plan {
+    kind: PlanKind,
     patterns: Vec<Pattern>,
+    optionals: Vec<OptionalPlan>,
+    values: Vec<ValuesBlock>,
+    minuses: Vec<MinusPlan>,
     extensions: Vec<Extension>,
     filters: Vec<Expression>,
     order: Vec<OrderExpression>,
+    group: Option<GroupPlan>,
     project_vars: Option<Vec<String>>,
     distinct: bool,
     limit: Option<i64>,
@@ -402,12 +428,27 @@ impl Plan {
                 self.order = expression.clone();
                 Ok(())
             }
-            GraphPattern::LeftJoin { .. } => Err(
-                "unsupported SPARQL algebra: OPTIONAL/LeftJoin is not yet compiled to SQLite"
-                    .to_string(),
-            ),
-            GraphPattern::Union { .. } => {
-                Err("unsupported SPARQL algebra: UNION is not yet compiled to SQLite".to_string())
+            GraphPattern::LeftJoin {
+                left,
+                right,
+                expression,
+            } => {
+                self.add_graph_pattern(left, graph.clone(), encoder)?;
+                let mut optional = Plan::default();
+                optional.add_graph_pattern(right, graph, encoder)?;
+                self.optionals.push(OptionalPlan {
+                    plan: optional,
+                    expression: expression.clone(),
+                });
+                Ok(())
+            }
+            GraphPattern::Union { left, right } => {
+                let mut left_plan = Plan::default();
+                left_plan.add_graph_pattern(left, graph.clone(), encoder)?;
+                let mut right_plan = Plan::default();
+                right_plan.add_graph_pattern(right, graph, encoder)?;
+                self.kind = PlanKind::Union(vec![left_plan, right_plan]);
+                Ok(())
             }
             GraphPattern::Extend {
                 inner,
@@ -421,16 +462,50 @@ impl Plan {
                 });
                 Ok(())
             }
-            GraphPattern::Minus { .. } => {
-                Err("unsupported SPARQL algebra: MINUS is not yet compiled to SQLite".to_string())
+            GraphPattern::Minus { left, right } => {
+                self.add_graph_pattern(left, graph.clone(), encoder)?;
+                let mut minus = Plan::default();
+                minus.add_graph_pattern(right, graph, encoder)?;
+                self.minuses.push(MinusPlan { plan: minus });
+                Ok(())
             }
-            GraphPattern::Values { .. } => {
-                Err("unsupported SPARQL algebra: VALUES is not yet compiled to SQLite".to_string())
+            GraphPattern::Values {
+                variables,
+                bindings,
+            } => {
+                self.values.push(ValuesBlock {
+                    variables: variables.iter().map(var_key).collect(),
+                    bindings: bindings
+                        .iter()
+                        .map(|row| {
+                            row.iter()
+                                .map(|term| {
+                                    term.as_ref()
+                                        .map(|term| ground_term_to_string(term, encoder))
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                });
+                Ok(())
             }
-            GraphPattern::Group { .. } => Err(
-                "unsupported SPARQL algebra: aggregates/GROUP BY are not yet compiled to SQLite"
-                    .to_string(),
-            ),
+            GraphPattern::Group {
+                inner,
+                variables,
+                aggregates,
+            } => {
+                let mut inner_plan = Plan::default();
+                inner_plan.add_graph_pattern(inner, graph, encoder)?;
+                self.group = Some(GroupPlan {
+                    variables: variables.iter().map(var_key).collect(),
+                    aggregates: aggregates
+                        .iter()
+                        .map(|(var, agg)| (var_key(var), agg.clone()))
+                        .collect(),
+                    inner: Box::new(inner_plan),
+                });
+                Ok(())
+            }
             GraphPattern::Service { .. } => Err(
                 "unsupported SPARQL algebra: SERVICE is not available in local facts".to_string(),
             ),
@@ -517,6 +592,21 @@ fn pattern_from_construct_template(
     })
 }
 
+fn ground_term_to_string(term: &GroundTerm, encoder: &TermEncoder) -> String {
+    match term {
+        GroundTerm::NamedNode(node) => encoder
+            .values_for_named_node(node)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| node.as_str().to_string()),
+        GroundTerm::Literal(literal) => encoder
+            .values_for_literal(literal)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| literal.to_string()),
+    }
+}
+
 fn term_from_named_node_pattern(pattern: &NamedNodePattern, encoder: &TermEncoder) -> PatternTerm {
     match pattern {
         NamedNodePattern::NamedNode(node) => {
@@ -582,6 +672,14 @@ fn quote_string_literal(value: &str) -> String {
 fn collect_vars(plan: &Plan) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
+    if let Some(group) = &plan.group {
+        for var in &group.variables {
+            push_visible_var(var, &mut seen, &mut out);
+        }
+        for (var, _) in &group.aggregates {
+            push_visible_var(var, &mut seen, &mut out);
+        }
+    }
     for p in &plan.patterns {
         for term in [
             p.graph.as_ref(),
@@ -595,6 +693,23 @@ fn collect_vars(plan: &Plan) -> Vec<String> {
             if let PatternTerm::Var(v) = term {
                 push_visible_var(v, &mut seen, &mut out);
             }
+        }
+    }
+    if let PlanKind::Union(branches) = &plan.kind {
+        for branch in branches {
+            for var in collect_vars(branch) {
+                push_visible_var(&var, &mut seen, &mut out);
+            }
+        }
+    }
+    for optional in &plan.optionals {
+        for var in collect_vars(&optional.plan) {
+            push_visible_var(&var, &mut seen, &mut out);
+        }
+    }
+    for values in &plan.values {
+        for var in &values.variables {
+            push_visible_var(var, &mut seen, &mut out);
         }
     }
     for extension in &plan.extensions {
@@ -612,6 +727,15 @@ fn push_visible_var(var: &str, seen: &mut HashSet<String>, out: &mut Vec<String>
     }
 }
 
+fn effective_limit(requested: Option<i64>, planned: Option<i64>) -> Option<i64> {
+    match (requested, planned) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 fn select_bindings(
     ref_name: &str,
     graph_filter: Option<&str>,
@@ -620,12 +744,7 @@ fn select_bindings(
     opt_limit: Option<i64>,
     encoder: &TermEncoder,
 ) -> Result<SelectRows, String> {
-    let limit = match (opt_limit, plan.limit) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    };
+    let limit = effective_limit(opt_limit, plan.limit);
     if limit == Some(0) {
         return Ok(SelectRows {
             vars: vars.to_vec(),
@@ -633,86 +752,26 @@ fn select_bindings(
         });
     }
 
-    let ordered = optimized_pattern_order(&plan.patterns, graph_filter.is_some());
+    if let PlanKind::Union(branches) = &plan.kind {
+        return select_union_bindings(
+            ref_name,
+            graph_filter,
+            plan,
+            branches,
+            vars,
+            opt_limit,
+            encoder,
+        );
+    }
+
     let mut sql_args = SqlBuilder::new();
-    let mut clauses = Vec::<String>::new();
-    let mut var_cols = HashMap::<String, String>::new();
-    let from = if ordered.is_empty() {
-        None
-    } else {
-        Some(
-            (0..ordered.len())
-                .map(|i| format!("quads q{i}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    };
-
-    for (alias_idx, pattern_idx) in ordered.iter().enumerate() {
-        let p = &plan.patterns[*pattern_idx];
-        let q = format!("q{alias_idx}");
-        sql_args.add_const(&mut clauses, &format!("{q}.ref_name"), ref_name);
-        match &p.graph {
-            Some(term) => {
-                let graph_col = format!("{q}.graph");
-                add_term(term, &graph_col, &mut var_cols, &mut clauses, &mut sql_args);
-                if let Some(g) = graph_filter {
-                    match term {
-                        PatternTerm::Const(c) if c.values.iter().any(|v| v == g) => {}
-                        PatternTerm::Const(_) => clauses.push("0".to_string()),
-                        PatternTerm::Var(_) => sql_args.add_const(&mut clauses, &graph_col, g),
-                    }
-                }
-            }
-            None => {
-                if let Some(g) = graph_filter {
-                    sql_args.add_const(&mut clauses, &format!("{q}.graph"), g);
-                }
-            }
-        }
-        add_term(
-            &p.subject,
-            &format!("{q}.subject"),
-            &mut var_cols,
-            &mut clauses,
-            &mut sql_args,
-        );
-        add_term(
-            &p.predicate,
-            &format!("{q}.predicate"),
-            &mut var_cols,
-            &mut clauses,
-            &mut sql_args,
-        );
-        add_term(
-            &p.object,
-            &format!("{q}.object"),
-            &mut var_cols,
-            &mut clauses,
-            &mut sql_args,
-        );
-    }
-
-    for extension in &plan.extensions {
-        if var_cols.contains_key(&extension.variable) {
-            return Err(format!(
-                "SPARQL BIND target is already bound in WHERE: {}",
-                extension.variable
-            ));
-        }
-        let compiled =
-            compile_value_expression(&extension.expression, &var_cols, &mut sql_args, encoder)?;
-        var_cols.insert(extension.variable.clone(), compiled);
-    }
-
-    for filter in &plan.filters {
-        clauses.push(compile_filter(filter, &var_cols, &mut sql_args, encoder)?);
-    }
+    let fragments = compile_plan_sql(ref_name, graph_filter, plan, &mut sql_args, encoder)?;
 
     let select_cols = vars
         .iter()
         .map(|v| {
-            var_cols
+            fragments
+                .var_cols
                 .get(v)
                 .cloned()
                 .ok_or_else(|| format!("SELECT variable is not bound in WHERE: {v}"))
@@ -728,16 +787,22 @@ fn select_bindings(
     } else {
         sql.push_str(&select_cols.join(", "));
     }
-    if let Some(from) = &from {
+    if fragments.from.is_empty() {
+        sql.push_str(" from (select 1) base");
+    } else {
         sql.push_str(" from ");
-        sql.push_str(from);
+        sql.push_str(&fragments.from.join(", "));
     }
-    if !clauses.is_empty() {
+    for join in fragments.joins {
+        sql.push(' ');
+        sql.push_str(&join);
+    }
+    if !fragments.clauses.is_empty() {
         sql.push_str(" where ");
-        sql.push_str(&clauses.join(" and "));
+        sql.push_str(&fragments.clauses.join(" and "));
     }
 
-    let order_cols = compile_order(&plan.order, &var_cols, &mut sql_args, encoder)?;
+    let order_cols = compile_order(&plan.order, &fragments.var_cols, &mut sql_args, encoder)?;
     if !order_cols.is_empty() {
         sql.push_str(" order by ");
         sql.push_str(&order_cols.join(", "));
@@ -754,13 +819,13 @@ fn select_bindings(
         sql.push_str(&sql_args.push_i64(n));
     }
 
-    with_host(|h| {
-        let mut stmt = h.db.prepare_cached(&sql).map_err(|e| e.to_string())?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map(params_from_iter(sql_args.vals.iter()), |r| {
                 let mut row = Vec::with_capacity(vars.len());
                 for i in 0..vars.len() {
-                    row.push(r.get::<_, String>(i)?);
+                    row.push(r.get::<_, Option<String>>(i)?);
                 }
                 Ok(row)
             })
@@ -773,6 +838,776 @@ fn select_bindings(
             rows,
         })
     })
+}
+
+fn select_union_bindings(
+    ref_name: &str,
+    graph_filter: Option<&str>,
+    plan: &Plan,
+    branches: &[Plan],
+    vars: &[String],
+    opt_limit: Option<i64>,
+    encoder: &TermEncoder,
+) -> Result<SelectRows, String> {
+    let mut rows = Vec::<Vec<Option<String>>>::new();
+    let mut seen = HashSet::new();
+    let mut branch_limit = None;
+    let final_limit = effective_limit(opt_limit, plan.limit);
+    if let Some(limit) = final_limit {
+        branch_limit = plan.offset.map(|offset| limit.saturating_add(offset));
+    }
+
+    for branch in branches {
+        let branch_vars = collect_vars(branch);
+        let branch_rows = select_bindings(
+            ref_name,
+            graph_filter,
+            branch,
+            &branch_vars,
+            branch_limit,
+            encoder,
+        )?;
+        for row in branch_rows.rows {
+            let mapped = vars
+                .iter()
+                .map(|var| {
+                    branch_rows
+                        .vars
+                        .iter()
+                        .position(|candidate| candidate == var)
+                        .and_then(|idx| row.get(idx).cloned())
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            if !plan.distinct || seen.insert(mapped.clone()) {
+                rows.push(mapped);
+            }
+        }
+    }
+
+    for order in &plan.order {
+        if !matches!(
+            order,
+            OrderExpression::Asc(Expression::Variable(_))
+                | OrderExpression::Desc(Expression::Variable(_))
+        ) {
+            return Err(
+                "unsupported SPARQL UNION ORDER BY: only variables are supported".to_string(),
+            );
+        }
+    }
+    for order in plan.order.iter().rev() {
+        match order {
+            OrderExpression::Asc(Expression::Variable(var)) => {
+                let key = var_key(var);
+                if let Some(idx) = vars.iter().position(|candidate| candidate == &key) {
+                    rows.sort_by(|a, b| a[idx].cmp(&b[idx]));
+                }
+            }
+            OrderExpression::Desc(Expression::Variable(var)) => {
+                let key = var_key(var);
+                if let Some(idx) = vars.iter().position(|candidate| candidate == &key) {
+                    rows.sort_by(|a, b| b[idx].cmp(&a[idx]));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(offset) = plan.offset.filter(|offset| *offset > 0) {
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        rows = rows.into_iter().skip(offset).collect();
+    }
+    if let Some(limit) = final_limit {
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        rows.truncate(limit);
+    }
+    Ok(SelectRows {
+        vars: vars.to_vec(),
+        rows,
+    })
+}
+
+#[derive(Default)]
+struct SqlFragments {
+    from: Vec<String>,
+    joins: Vec<String>,
+    clauses: Vec<String>,
+    var_cols: HashMap<String, String>,
+}
+
+fn compile_plan_sql(
+    ref_name: &str,
+    graph_filter: Option<&str>,
+    plan: &Plan,
+    sql_args: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<SqlFragments, String> {
+    compile_plan_sql_with_prefix(ref_name, graph_filter, plan, sql_args, encoder, "")
+}
+
+fn compile_plan_sql_with_prefix(
+    ref_name: &str,
+    graph_filter: Option<&str>,
+    plan: &Plan,
+    sql_args: &mut SqlBuilder,
+    encoder: &TermEncoder,
+    alias_prefix: &str,
+) -> Result<SqlFragments, String> {
+    let mut fragments = SqlFragments::default();
+    let ordered = optimized_pattern_order(&plan.patterns, graph_filter.is_some());
+
+    for (alias_idx, pattern_idx) in ordered.iter().enumerate() {
+        let p = &plan.patterns[*pattern_idx];
+        let q = format!("{alias_prefix}q{alias_idx}");
+        fragments.from.push(format!("quads {q}"));
+        sql_args.add_const(&mut fragments.clauses, &format!("{q}.ref_name"), ref_name);
+        match &p.graph {
+            Some(term) => {
+                let graph_col = format!("{q}.graph");
+                add_term(
+                    term,
+                    &graph_col,
+                    &mut fragments.var_cols,
+                    &mut fragments.clauses,
+                    sql_args,
+                );
+                if let Some(g) = graph_filter {
+                    match term {
+                        PatternTerm::Const(c) if c.values.iter().any(|v| v == g) => {}
+                        PatternTerm::Const(_) => fragments.clauses.push("0".to_string()),
+                        PatternTerm::Var(_) => {
+                            sql_args.add_const(&mut fragments.clauses, &graph_col, g)
+                        }
+                    }
+                }
+            }
+            None => {
+                if let Some(g) = graph_filter {
+                    sql_args.add_const(&mut fragments.clauses, &format!("{q}.graph"), g);
+                }
+            }
+        }
+        add_term(
+            &p.subject,
+            &format!("{q}.subject"),
+            &mut fragments.var_cols,
+            &mut fragments.clauses,
+            sql_args,
+        );
+        add_term(
+            &p.predicate,
+            &format!("{q}.predicate"),
+            &mut fragments.var_cols,
+            &mut fragments.clauses,
+            sql_args,
+        );
+        add_term(
+            &p.object,
+            &format!("{q}.object"),
+            &mut fragments.var_cols,
+            &mut fragments.clauses,
+            sql_args,
+        );
+    }
+
+    for (idx, values) in plan.values.iter().enumerate() {
+        add_values_block(alias_prefix, idx, values, &mut fragments, sql_args)?;
+    }
+
+    if let Some(group) = &plan.group {
+        let grouped = compile_group_plan(
+            ref_name,
+            graph_filter,
+            group,
+            &fragments.var_cols,
+            sql_args,
+            encoder,
+            alias_prefix,
+        )?;
+        fragments.from.push(grouped.from_sql);
+        for (var, col) in grouped.outer_var_cols {
+            if let Some(existing) = fragments.var_cols.get(&var) {
+                fragments.clauses.push(format!("{existing} = {col}"));
+            } else {
+                fragments.var_cols.insert(var, col);
+            }
+        }
+    }
+
+    for extension in &plan.extensions {
+        if fragments.var_cols.contains_key(&extension.variable) {
+            if let Expression::Variable(source) = &extension.expression {
+                let source = var_key(source);
+                if source != extension.variable
+                    && let Some(col) = fragments.var_cols.get(&source).cloned()
+                {
+                    fragments.var_cols.insert(extension.variable.clone(), col);
+                    continue;
+                }
+            }
+            return Err(format!(
+                "SPARQL BIND target is already bound in WHERE: {}",
+                extension.variable
+            ));
+        }
+        let compiled = if let Some(group) = &plan.group {
+            compile_grouped_value_expression(
+                &extension.expression,
+                &fragments.var_cols,
+                &group.variables,
+                sql_args,
+                encoder,
+            )?
+        } else {
+            compile_value_expression(
+                &extension.expression,
+                &fragments.var_cols,
+                sql_args,
+                encoder,
+            )?
+        };
+        fragments
+            .var_cols
+            .insert(extension.variable.clone(), compiled);
+    }
+
+    for filter in &plan.filters {
+        let clause = if let Some(group) = &plan.group {
+            compile_grouped_boolean_expression(
+                filter,
+                &fragments.var_cols,
+                &group.variables,
+                sql_args,
+                encoder,
+            )?
+        } else {
+            compile_filter(filter, &fragments.var_cols, sql_args, encoder)?
+        };
+        fragments.clauses.push(clause);
+    }
+
+    for (idx, optional) in plan.optionals.iter().enumerate() {
+        add_optional_join(
+            CompileContext {
+                ref_name,
+                graph_filter,
+                sql_args,
+                encoder,
+            },
+            alias_prefix,
+            idx,
+            optional,
+            &mut fragments,
+        )?;
+    }
+
+    for minus in &plan.minuses {
+        add_minus_filter(
+            ref_name,
+            graph_filter,
+            alias_prefix,
+            minus,
+            &mut fragments,
+            sql_args,
+            encoder,
+        )?;
+    }
+
+    Ok(fragments)
+}
+
+#[derive(Debug)]
+struct CompiledGroup {
+    from_sql: String,
+    outer_var_cols: HashMap<String, String>,
+}
+
+fn compile_group_plan(
+    ref_name: &str,
+    graph_filter: Option<&str>,
+    group: &GroupPlan,
+    outer_var_cols: &HashMap<String, String>,
+    sql_args: &mut SqlBuilder,
+    encoder: &TermEncoder,
+    alias_prefix: &str,
+) -> Result<CompiledGroup, String> {
+    let group_alias = format!("{alias_prefix}grp");
+    let inner_prefix = format!("{alias_prefix}g_");
+    let inner = compile_plan_sql_with_prefix(
+        ref_name,
+        graph_filter,
+        &group.inner,
+        sql_args,
+        encoder,
+        &inner_prefix,
+    )?;
+
+    let mut group_cols = Vec::with_capacity(group.variables.len());
+    let mut select_cols = Vec::with_capacity(group.variables.len() + group.aggregates.len());
+    let mut outer_cols = HashMap::new();
+
+    for (idx, var) in group.variables.iter().enumerate() {
+        let expr = inner
+            .var_cols
+            .get(var)
+            .cloned()
+            .ok_or_else(|| format!("GROUP BY variable is not bound in WHERE: {var}"))?;
+        let alias = quote_sql_identifier(&format!("v{idx}"));
+        group_cols.push(expr.clone());
+        select_cols.push(format!("{expr} as {alias}"));
+        outer_cols.insert(var.clone(), format!("{group_alias}.{alias}"));
+    }
+
+    for (idx, (var, aggregate)) in group.aggregates.iter().enumerate() {
+        let expr = compile_aggregate_expression(aggregate, &inner.var_cols, sql_args, encoder)?;
+        let alias = quote_sql_identifier(&format!("a{idx}"));
+        select_cols.push(format!("{expr} as {alias}"));
+        outer_cols.insert(var.clone(), format!("{group_alias}.{alias}"));
+    }
+
+    if select_cols.is_empty() {
+        select_cols.push("1 as __empty_group".to_string());
+    }
+
+    let mut sql = String::from("(select ");
+    sql.push_str(&select_cols.join(", "));
+    if inner.from.is_empty() {
+        sql.push_str(" from (select 1) base");
+    } else {
+        sql.push_str(" from ");
+        sql.push_str(&inner.from.join(", "));
+    }
+    for join in inner.joins {
+        sql.push(' ');
+        sql.push_str(&join);
+    }
+
+    let mut clauses = inner.clauses;
+    for var in &group.variables {
+        if let (Some(inner_col), Some(outer_col)) =
+            (inner.var_cols.get(var), outer_var_cols.get(var))
+        {
+            clauses.push(format!("{inner_col} = {outer_col}"));
+        }
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" where ");
+        sql.push_str(&clauses.join(" and "));
+    }
+    if !group_cols.is_empty() {
+        sql.push_str(" group by ");
+        sql.push_str(&group_cols.join(", "));
+    }
+    sql.push_str(") ");
+    sql.push_str(&group_alias);
+
+    Ok(CompiledGroup {
+        from_sql: sql,
+        outer_var_cols: outer_cols,
+    })
+}
+
+fn compile_aggregate_expression(
+    aggregate: &AggregateExpression,
+    var_cols: &HashMap<String, String>,
+    sql: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<String, String> {
+    match aggregate {
+        AggregateExpression::CountSolutions { distinct } => {
+            if *distinct {
+                let mut vars = var_cols.iter().collect::<Vec<_>>();
+                vars.sort_by(|a, b| a.0.cmp(b.0));
+                if vars.is_empty() {
+                    Ok("cast(count(distinct 1) as text)".to_string())
+                } else {
+                    let parts = vars
+                        .into_iter()
+                        .map(|(_, col)| format!("coalesce({col}, char(0))"))
+                        .collect::<Vec<_>>();
+                    Ok(format!(
+                        "cast(count(distinct {}) as text)",
+                        parts.join(" || char(31) || ")
+                    ))
+                }
+            } else {
+                Ok("cast(count(*) as text)".to_string())
+            }
+        }
+        AggregateExpression::FunctionCall {
+            name,
+            expr,
+            distinct,
+        } => compile_aggregate_function(name, expr, *distinct, var_cols, sql, encoder),
+    }
+}
+
+fn compile_aggregate_function(
+    name: &AggregateFunction,
+    expr: &Expression,
+    distinct: bool,
+    var_cols: &HashMap<String, String>,
+    sql: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<String, String> {
+    let distinct_sql = if distinct { "distinct " } else { "" };
+    match name {
+        AggregateFunction::Count => {
+            let value = compile_value_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("cast(count({distinct_sql}{value}) as text)"))
+        }
+        AggregateFunction::Sum => {
+            let value = compile_numeric_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("cast(sum({distinct_sql}{value}) as text)"))
+        }
+        AggregateFunction::Avg => {
+            let value = compile_numeric_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("cast(avg({distinct_sql}{value}) as text)"))
+        }
+        AggregateFunction::Min => {
+            let value = compile_value_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("min({distinct_sql}{value})"))
+        }
+        AggregateFunction::Max => {
+            let value = compile_value_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("max({distinct_sql}{value})"))
+        }
+        AggregateFunction::Sample => {
+            let value = compile_value_expression(expr, var_cols, sql, encoder)?;
+            Ok(format!("min({distinct_sql}{value})"))
+        }
+        AggregateFunction::GroupConcat { separator } => {
+            let value = compile_string_expression(expr, var_cols, sql, encoder)?;
+            let separator = separator.as_deref().unwrap_or(" ");
+            let lexical = if distinct {
+                if separator == "," {
+                    format!("group_concat(distinct {value})")
+                } else {
+                    return Err("unsupported SPARQL GROUP_CONCAT(DISTINCT ...) with a custom separator in SQLite".to_string());
+                }
+            } else {
+                let sep = sql.push_text(separator);
+                format!("group_concat({value}, {sep})")
+            };
+            Ok(quote_sql_string_literal(&lexical))
+        }
+        AggregateFunction::Custom(iri) => Err(format!(
+            "unsupported SPARQL custom aggregate for SQLite compilation: {iri}"
+        )),
+    }
+}
+
+fn compile_grouped_value_expression(
+    expr: &Expression,
+    var_cols: &HashMap<String, String>,
+    group_vars: &[String],
+    sql: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<String, String> {
+    if let Expression::Variable(var) = expr {
+        let key = var_key(var);
+        if !group_vars.iter().any(|v| v == &key) && !var_cols.contains_key(&key) {
+            return Err(format!(
+                "SPARQL grouped expression variable is neither grouped nor aggregated: {key}"
+            ));
+        }
+    }
+    compile_value_expression(expr, var_cols, sql, encoder)
+}
+
+fn compile_grouped_boolean_expression(
+    expr: &Expression,
+    var_cols: &HashMap<String, String>,
+    group_vars: &[String],
+    sql: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<String, String> {
+    validate_grouped_expression(expr, var_cols, group_vars)?;
+    compile_boolean_expression(expr, var_cols, sql, encoder)
+}
+
+fn validate_grouped_expression(
+    expr: &Expression,
+    var_cols: &HashMap<String, String>,
+    group_vars: &[String],
+) -> Result<(), String> {
+    match expr {
+        Expression::Variable(var) => {
+            let key = var_key(var);
+            if group_vars.iter().any(|v| v == &key) || var_cols.contains_key(&key) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "SPARQL grouped expression variable is neither grouped nor aggregated: {key}"
+                ))
+            }
+        }
+        Expression::Or(a, b)
+        | Expression::And(a, b)
+        | Expression::Equal(a, b)
+        | Expression::SameTerm(a, b)
+        | Expression::Greater(a, b)
+        | Expression::GreaterOrEqual(a, b)
+        | Expression::Less(a, b)
+        | Expression::LessOrEqual(a, b)
+        | Expression::Add(a, b)
+        | Expression::Subtract(a, b)
+        | Expression::Multiply(a, b)
+        | Expression::Divide(a, b) => {
+            validate_grouped_expression(a, var_cols, group_vars)?;
+            validate_grouped_expression(b, var_cols, group_vars)
+        }
+        Expression::Not(inner) | Expression::UnaryPlus(inner) | Expression::UnaryMinus(inner) => {
+            validate_grouped_expression(inner, var_cols, group_vars)
+        }
+        Expression::Bound(var) => {
+            let key = var_key(var);
+            if group_vars.iter().any(|v| v == &key) || var_cols.contains_key(&key) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "SPARQL grouped expression variable is neither grouped nor aggregated: {key}"
+                ))
+            }
+        }
+        Expression::In(needle, haystack) => {
+            validate_grouped_expression(needle, var_cols, group_vars)?;
+            for expr in haystack {
+                validate_grouped_expression(expr, var_cols, group_vars)?;
+            }
+            Ok(())
+        }
+        Expression::FunctionCall(_, args) | Expression::Coalesce(args) => {
+            for arg in args {
+                validate_grouped_expression(arg, var_cols, group_vars)?;
+            }
+            Ok(())
+        }
+        Expression::If(condition, then_expr, else_expr) => {
+            validate_grouped_expression(condition, var_cols, group_vars)?;
+            validate_grouped_expression(then_expr, var_cols, group_vars)?;
+            validate_grouped_expression(else_expr, var_cols, group_vars)
+        }
+        Expression::NamedNode(_) | Expression::Literal(_) => Ok(()),
+        _ => Ok(()),
+    }
+}
+
+fn add_values_block(
+    alias_prefix: &str,
+    idx: usize,
+    values: &ValuesBlock,
+    fragments: &mut SqlFragments,
+    sql_args: &mut SqlBuilder,
+) -> Result<(), String> {
+    if values.variables.is_empty() {
+        if values.bindings.is_empty() {
+            fragments.clauses.push("0".to_string());
+        }
+        return Ok(());
+    }
+    if values.bindings.is_empty() {
+        fragments.clauses.push("0".to_string());
+        return Ok(());
+    }
+
+    let alias = format!("{alias_prefix}val{idx}");
+    let mut selects = Vec::with_capacity(values.bindings.len());
+    for row in &values.bindings {
+        if row.len() != values.variables.len() {
+            return Err(
+                "malformed SPARQL VALUES block: row width does not match variables".to_string(),
+            );
+        }
+        let cols = row
+            .iter()
+            .enumerate()
+            .map(|(col_idx, value)| {
+                let expr = match value {
+                    Some(value) => sql_args.push_text(value),
+                    None => "null".to_string(),
+                };
+                format!(
+                    "{} as {}",
+                    expr,
+                    quote_sql_identifier(&format!("v{col_idx}"))
+                )
+            })
+            .collect::<Vec<_>>();
+        selects.push(format!("select {}", cols.join(", ")));
+    }
+    fragments
+        .from
+        .push(format!("({}) {alias}", selects.join(" union all ")));
+
+    for (col_idx, var) in values.variables.iter().enumerate() {
+        let col = format!("{}.{}", alias, quote_sql_identifier(&format!("v{col_idx}")));
+        if let Some(existing) = fragments.var_cols.get(var) {
+            fragments
+                .clauses
+                .push(format!("({col} is null or {existing} = {col})"));
+        } else {
+            fragments.var_cols.insert(var.clone(), col);
+        }
+    }
+    Ok(())
+}
+
+fn add_minus_filter(
+    ref_name: &str,
+    graph_filter: Option<&str>,
+    alias_prefix: &str,
+    minus: &MinusPlan,
+    outer: &mut SqlFragments,
+    sql_args: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<(), String> {
+    let nested_prefix = format!("{alias_prefix}m_");
+    let inner = compile_plan_sql_with_prefix(
+        ref_name,
+        graph_filter,
+        &minus.plan,
+        sql_args,
+        encoder,
+        &nested_prefix,
+    )?;
+    let mut shared = Vec::new();
+    for (var, outer_col) in &outer.var_cols {
+        if let Some(inner_col) = inner.var_cols.get(var) {
+            shared.push(format!("{outer_col} = {inner_col}"));
+        }
+    }
+    if shared.is_empty() {
+        return Ok(());
+    }
+
+    let mut subquery = String::from("select 1");
+    if inner.from.is_empty() {
+        subquery.push_str(" from (select 1) base");
+    } else {
+        subquery.push_str(" from ");
+        subquery.push_str(&inner.from.join(", "));
+    }
+    for join in inner.joins {
+        subquery.push(' ');
+        subquery.push_str(&join);
+    }
+    let mut clauses = inner.clauses;
+    clauses.extend(shared);
+    if !clauses.is_empty() {
+        subquery.push_str(" where ");
+        subquery.push_str(&clauses.join(" and "));
+    }
+    outer.clauses.push(format!("not exists ({subquery})"));
+    Ok(())
+}
+
+struct CompileContext<'a> {
+    ref_name: &'a str,
+    graph_filter: Option<&'a str>,
+    sql_args: &'a mut SqlBuilder,
+    encoder: &'a TermEncoder,
+}
+
+fn add_optional_join(
+    context: CompileContext<'_>,
+    alias_prefix: &str,
+    idx: usize,
+    optional: &OptionalPlan,
+    outer: &mut SqlFragments,
+) -> Result<(), String> {
+    let CompileContext {
+        ref_name,
+        graph_filter,
+        sql_args,
+        encoder,
+    } = context;
+    let nested_prefix = format!("{alias_prefix}o{idx}_");
+    let inner = compile_plan_sql_with_prefix(
+        ref_name,
+        graph_filter,
+        &optional.plan,
+        sql_args,
+        encoder,
+        &nested_prefix,
+    )?;
+    let inner_vars = collect_vars(&optional.plan);
+    if inner_vars.is_empty() {
+        return Ok(());
+    }
+
+    let mut select_cols = Vec::with_capacity(inner_vars.len());
+    let mut projected = HashMap::<String, String>::new();
+    for (col_idx, var) in inner_vars.iter().enumerate() {
+        if let Some(col) = inner.var_cols.get(var) {
+            let alias = format!("v{col_idx}");
+            select_cols.push(format!("{} as {}", col, quote_sql_identifier(&alias)));
+            projected.insert(var.clone(), alias);
+        }
+    }
+    if select_cols.is_empty() {
+        return Ok(());
+    }
+
+    let mut subquery = String::from("select distinct ");
+    subquery.push_str(&select_cols.join(", "));
+    if inner.from.is_empty() {
+        subquery.push_str(" from (select 1) base");
+    } else {
+        subquery.push_str(" from ");
+        subquery.push_str(&inner.from.join(", "));
+    }
+    for join in inner.joins {
+        subquery.push(' ');
+        subquery.push_str(&join);
+    }
+    if !inner.clauses.is_empty() {
+        subquery.push_str(" where ");
+        subquery.push_str(&inner.clauses.join(" and "));
+    }
+
+    let alias = format!("{alias_prefix}opt{idx}");
+    let mut on = Vec::new();
+    for (var, col_alias) in &projected {
+        if let Some(outer_col) = outer.var_cols.get(var) {
+            on.push(format!(
+                "{} = {}.{}",
+                outer_col,
+                alias,
+                quote_sql_identifier(col_alias)
+            ));
+        }
+    }
+    if let Some(expr) = &optional.expression {
+        let mut joined_cols = outer.var_cols.clone();
+        for (var, col_alias) in &projected {
+            joined_cols.insert(
+                var.clone(),
+                format!("{}.{}", alias, quote_sql_identifier(col_alias)),
+            );
+        }
+        on.push(compile_filter(expr, &joined_cols, sql_args, encoder)?);
+    }
+    if on.is_empty() {
+        on.push("1".to_string());
+    }
+
+    outer.joins.push(format!(
+        "left join ({subquery}) {alias} on {}",
+        on.join(" and ")
+    ));
+    for (var, col_alias) in projected {
+        outer
+            .var_cols
+            .entry(var)
+            .or_insert_with(|| format!("{}.{}", alias, quote_sql_identifier(&col_alias)));
+    }
+    Ok(())
+}
+
+fn quote_sql_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn ask(
@@ -1608,7 +2443,7 @@ fn construct_quads(
 
 struct RowBindings<'a> {
     vars: &'a [String],
-    values: &'a [String],
+    values: &'a [Option<String>],
 }
 
 impl RowBindings<'_> {
@@ -1617,7 +2452,7 @@ impl RowBindings<'_> {
             .iter()
             .position(|var| var == key)
             .and_then(|idx| self.values.get(idx))
-            .map(String::as_str)
+            .and_then(|value| value.as_deref())
     }
 }
 
@@ -1873,6 +2708,7 @@ mod tests {
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
     fn with_temp_host(test: impl FnOnce() -> Result<(), String>) {
+        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
             "moo-sparql-test-{}-{}-{}",
             std::process::id(),
@@ -1882,21 +2718,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("store.sqlite");
         let path_str = path.to_str().unwrap().to_string();
-        crate::host::install(&path_str).unwrap();
+        crate::host::install_fresh(&path_str).unwrap();
         let result = test();
-        crate::host::drop_host();
         let _ = std::fs::remove_dir_all(&dir);
         result.unwrap();
     }
 
     fn add(graph: &str, subject: &str, predicate: &str, object: &str) {
-        with_host(|h| {
-            h.db.execute(
-                "insert into quads(ref_name, graph, subject, predicate, object) values ('ref', ?1, ?2, ?3, ?4)",
+        with_db(|conn| {
+            conn.execute(
+                "insert into quads(ref_name, graph, subject, predicate, object) values ('store', ?1, ?2, ?3, ?4)",
                 params![graph, subject, predicate, object],
             )
             .unwrap();
         });
+    }
+
+    fn opt_rows(rows: &[&[&str]]) -> Vec<Vec<Option<String>>> {
+        rows.iter()
+            .map(|row| row.iter().map(|value| Some((*value).to_string())).collect())
+            .collect()
     }
 
     #[test]
@@ -1919,10 +2760,7 @@ mod tests {
             assert_eq!(rows.vars, vec!["?g".to_string(), "?o".to_string()]);
             assert_eq!(
                 rows.rows,
-                vec![
-                    vec!["chat:chat-1".to_string(), "o1".to_string()],
-                    vec!["chat:chat-2".to_string(), "o3".to_string()],
-                ]
+                opt_rows(&[&["chat:chat-1", "o1"], &["chat:chat-2", "o3"]])
             );
             Ok(())
         });
@@ -1944,7 +2782,7 @@ mod tests {
                 _ => unreachable!(),
             };
 
-            assert_eq!(rows.rows, vec![vec!["chat:chat-1".to_string()]]);
+            assert_eq!(rows.rows, opt_rows(&[&["chat:chat-1"]]));
             Ok(())
         });
     }
@@ -1970,10 +2808,7 @@ mod tests {
             };
 
             assert_eq!(rows.vars, vec!["?s".to_string(), "?excited".to_string()]);
-            assert_eq!(
-                rows.rows,
-                vec![vec!["thing:1".to_string(), "\"Alpha!\"".to_string()]]
-            );
+            assert_eq!(rows.rows, opt_rows(&[&["thing:1", "\"Alpha!\""]]));
             Ok(())
         });
     }
@@ -1992,7 +2827,7 @@ mod tests {
             };
 
             assert_eq!(rows.vars, vec!["?label".to_string()]);
-            assert_eq!(rows.rows, vec![vec!["\"hello world\"".to_string()]]);
+            assert_eq!(rows.rows, opt_rows(&[&["\"hello world\""]]));
             Ok(())
         });
     }
@@ -2020,7 +2855,210 @@ mod tests {
                 _ => unreachable!(),
             };
 
-            assert_eq!(rows.rows, vec![vec!["item:1".to_string()]]);
+            assert_eq!(rows.rows, opt_rows(&[&["item:1"]]));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn union_merges_branch_rows() {
+        with_temp_host(|| {
+            add("g", "item:1", "rdf:type", "schema:Thing");
+            add("g", "item:2", "rdf:type", "schema:Other");
+
+            let rows = match run_sparql(
+                r#"select ?s where {
+                    { ?s rdf:type schema:Thing }
+                    union
+                    { ?s rdf:type schema:Other }
+                } order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.rows, opt_rows(&[&["item:1"], &["item:2"]]));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn union_leaves_branch_only_variables_unbound() {
+        with_temp_host(|| {
+            add("g", "item:1", "schema:name", "\"Alpha\"");
+            add("g", "item:2", "schema:score", "7");
+
+            let rows = match run_sparql(
+                r#"select ?s ?name ?score where {
+                    { ?s schema:name ?name }
+                    union
+                    { ?s schema:score ?score }
+                } order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(
+                rows.rows,
+                vec![
+                    vec![
+                        Some("item:1".to_string()),
+                        Some("\"Alpha\"".to_string()),
+                        None
+                    ],
+                    vec![Some("item:2".to_string()), None, Some("7".to_string())],
+                ]
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn minus_filters_matching_rows() {
+        with_temp_host(|| {
+            add("g", "item:1", "rdf:type", "schema:Thing");
+            add("g", "item:2", "rdf:type", "schema:Thing");
+            add("g", "item:2", "schema:hidden", "true");
+
+            let rows = match run_sparql(
+                r#"select ?s where {
+                    ?s rdf:type schema:Thing
+                    minus { ?s schema:hidden true }
+                }"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.rows, opt_rows(&[&["item:1"]]));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn values_blocks_restrict_and_bind_variables() {
+        with_temp_host(|| {
+            add("g", "item:1", "rdfs:label", "\"Alpha\"");
+            add("g", "item:2", "rdfs:label", "\"Beta\"");
+            add("g", "item:3", "rdfs:label", "\"Gamma\"");
+
+            let rows = match run_sparql(
+                r#"select ?s ?label where {
+                    values ?s { item:1 item:3 }
+                    ?s rdfs:label ?label
+                } order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(
+                rows.rows,
+                opt_rows(&[&["item:1", "\"Alpha\""], &["item:3", "\"Gamma\""]])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn values_undef_leaves_variable_unbound() {
+        with_temp_host(|| {
+            let rows = match run_sparql(
+                r#"select ?s ?label where {
+                    values (?s ?label) { (item:1 "Alpha") (item:2 UNDEF) }
+                } order by ?s"#,
+                "store",
+                None,
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(
+                rows.rows,
+                vec![
+                    vec![Some("item:1".to_string()), Some("\"Alpha\"".to_string())],
+                    vec![Some("item:2".to_string()), None],
+                ]
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn optional_left_join_returns_unbound_rows() {
+        with_temp_host(|| {
+            add("g", "person:1", "rdf:type", "schema:Person");
+            add("g", "person:1", "schema:name", "\"Ada\"");
+            add("g", "person:2", "rdf:type", "schema:Person");
+
+            let rows = match run_sparql(
+                r#"select ?s ?name where {
+                    ?s rdf:type schema:Person
+                    optional { ?s schema:name ?name }
+                } order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.vars, vec!["?s".to_string(), "?name".to_string()]);
+            assert_eq!(
+                rows.rows,
+                vec![
+                    vec![Some("person:1".to_string()), Some("\"Ada\"".to_string())],
+                    vec![Some("person:2".to_string()), None],
+                ]
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn optional_left_join_expression_filters_only_optional_side() {
+        with_temp_host(|| {
+            add("g", "person:1", "rdf:type", "schema:Person");
+            add("g", "person:1", "schema:name", "\"Ada\"");
+            add("g", "person:2", "rdf:type", "schema:Person");
+            add("g", "person:2", "schema:name", "\"Bob\"");
+
+            let rows = match run_sparql(
+                r#"select ?s ?name where {
+                    ?s rdf:type schema:Person
+                    optional { ?s schema:name ?name filter(strstarts(str(?name), "Ad")) }
+                } order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(
+                rows.rows,
+                vec![
+                    vec![Some("person:1".to_string()), Some("\"Ada\"".to_string())],
+                    vec![Some("person:2".to_string()), None],
+                ]
+            );
             Ok(())
         });
     }
@@ -2052,6 +3090,107 @@ mod tests {
                     "\"Alpha!\"".to_string(),
                 ]]
             );
+            Ok(())
+        });
+    }
+    #[test]
+    fn group_by_counts_rows_per_group() {
+        with_temp_host(|| {
+            add("g", "person:1", "schema:knows", "person:2");
+            add("g", "person:1", "schema:knows", "person:3");
+            add("g", "person:2", "schema:knows", "person:3");
+
+            let rows = match run_sparql(
+                r#"select ?s (count(?o) as ?count) where {
+                    ?s schema:knows ?o
+                } group by ?s order by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.vars, vec!["?s".to_string(), "?count".to_string()]);
+            assert_eq!(
+                rows.rows,
+                opt_rows(&[&["person:1", "2"], &["person:2", "1"]])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn aggregates_without_group_return_single_row() {
+        with_temp_host(|| {
+            add("g", "s1", "schema:score", "1");
+            add("g", "s2", "schema:score", "3");
+
+            let rows = match run_sparql(
+                r#"select (count(*) as ?count) (sum(?score) as ?sum) (avg(?score) as ?avg)
+                   where { ?s schema:score ?score }"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.rows.len(), 1);
+            assert_eq!(rows.rows[0][0], Some("2".to_string()));
+            assert_eq!(rows.rows[0][1], Some("4.0".to_string()));
+            assert_eq!(rows.rows[0][2], Some("2.0".to_string()));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn group_by_having_filters_aggregated_rows() {
+        with_temp_host(|| {
+            add("g", "person:1", "schema:knows", "person:2");
+            add("g", "person:1", "schema:knows", "person:3");
+            add("g", "person:2", "schema:knows", "person:3");
+
+            let rows = match run_sparql(
+                r#"select ?s (count(*) as ?count) where {
+                    ?s schema:knows ?o
+                } group by ?s having(count(*) > 1)"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.rows, opt_rows(&[&["person:1", "2"]]));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn group_concat_uses_separator() {
+        with_temp_host(|| {
+            add("g", "person:1", "rdfs:label", "\"Ada\"");
+            add("g", "person:1", "rdfs:label", "\"Lovelace\"");
+
+            let rows = match run_sparql(
+                r#"select ?s (group_concat(str(?label); separator=", ") as ?labels) where {
+                    ?s rdfs:label ?label
+                } group by ?s"#,
+                "store",
+                Some("g"),
+                None,
+            )? {
+                SparqlResult::Select(rows) => rows,
+                _ => unreachable!(),
+            };
+
+            assert_eq!(rows.rows.len(), 1);
+            assert_eq!(rows.rows[0][0], Some("person:1".to_string()));
+            assert_eq!(rows.rows[0][1], Some("\"Ada, Lovelace\"".to_string()));
             Ok(())
         });
     }

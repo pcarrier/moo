@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { mergeTokenProgress, type TokenProgressValue } from "./tokenProgress";
 
-const tokens = (used: number): TokenProgressValue => ({
+const tokens = (used: number, meta: Partial<TokenProgressValue> = {}): TokenProgressValue => ({
   used,
   budget: 100_000,
   threshold: 80_000,
   fraction: used / 100_000,
+  ...meta,
 });
 
 describe("mergeTokenProgress", () => {
   test("keeps active streaming progress when describe returns stale usage", () => {
-    const live = tokens(70_000);
-    expect(mergeTokenProgress(live, tokens(40_000), true)).toBe(live);
+    const live = tokens(70_000, { source: "compaction", estimated: true });
+    expect(mergeTokenProgress(live, tokens(40_000, { source: "context" }), true)).toBe(live);
   });
 
   test("accepts lower counts when the chat is inactive so persisted final usage applies", () => {
@@ -24,5 +25,15 @@ describe("mergeTokenProgress", () => {
 
   test("accepts explicit resets while active", () => {
     expect(mergeTokenProgress(tokens(70_000), tokens(40_000), true, { reset: true })).toEqual(tokens(40_000));
+  });
+
+  test("keeps source metadata on accepted updates", () => {
+    expect(
+      mergeTokenProgress(
+        tokens(40_000, { source: "context" }),
+        tokens(70_000, { source: "compaction", estimated: true }),
+        true,
+      ),
+    ).toEqual(tokens(70_000, { source: "compaction", estimated: true }));
   });
 });
