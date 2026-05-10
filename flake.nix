@@ -35,10 +35,10 @@
       };
 
       webDepsHashes = {
-        "x86_64-linux" = "sha256-09yIXRZf9yisJlq+AVZcpycUzgSKkPMY7MvtYLBrx0A=";
-        "aarch64-linux" = "sha256-AyZx9i174w3fm7I7Tw7M3Esokj+EWyCSqCSLcHLyoBk=";
+        "x86_64-linux" = "sha256-yw/kSgoX6ge5kydwnJfbHIfaWrU5+OFyje1zfSINvvU=";
+        "aarch64-linux" = "sha256-tfaR3aK7Tnd5JKur+fefG6eO8v2UqI3MN0vW53VD1Fs=";
         "x86_64-darwin" = "sha256-fBgmnPOM2lTK9XBlEx4VJiL32H5zOaFxNQ3b8KExvhM=";
-        "aarch64-darwin" = "sha256-sZdk3tx2TD6+LjTw08MnZ594mrpUUy2A8vvTxw872x4=";
+        "aarch64-darwin" = "sha256-PkxcahHPVA6kmIHc1QSrmbN1HQfo6tl5bSJnfED0SfI=";
       };
 
 
