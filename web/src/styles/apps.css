@@ -216,13 +216,21 @@
 }
 
 .diff-line {
-  display: block;
+  display: flex;
+  align-items: baseline;
   box-sizing: border-box;
   padding: 0 0.75rem;
   min-height: 1.45em;
 }
 
 .file-diff-body .diff-line {
+  white-space: pre-wrap;
+  overflow-wrap: normal;
+}
+
+.diff-line-body {
+  flex: 1 1 auto;
+  min-inline-size: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -277,12 +285,17 @@
 
 .diff-prefix {
   display: inline-block;
+  flex: 0 0 1.2em;
   width: 1.2em;
   user-select: none;
   color: var(--muted);
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .diff-file-prefix {
+  flex-basis: 3ch;
   width: 3ch;
   white-space: nowrap;
 }

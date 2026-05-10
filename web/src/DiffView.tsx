@@ -166,31 +166,13 @@ export function MemoryDiffView(props: {
 }
 
 function DiffTurtleLine(props: { cls: string; sign: string; indent: string; text: string; path: string; onOpenStore?: (hash: string) => void }) {
-  const parts = createMemo(() => linkifyHighlightedText(
-    '<span class="diff-prefix">' + escapeHtml(props.sign) + '</span>' + escapeHtml(props.indent),
-    props.text,
-    props.path,
-    true,
-  ));
+  const parts = createMemo(() => linkifyHighlightedText(props.indent + props.text, props.path, true));
   return (
     <span class={"diff-line " + props.cls}>
-      <For each={parts()}>
-        {(part) => part.hash ? (
-          <button
-            type="button"
-            class="store-link ttl-pn"
-            title="open store preview"
-            onClick={(event) => {
-              event.stopPropagation();
-              props.onOpenStore?.(part.hash!);
-            }}
-          >
-            {part.text}
-          </button>
-        ) : (
-          <span innerHTML={part.html} />
-        )}
-      </For>
+      <span class="diff-prefix">{props.sign}</span>
+      <span class="diff-line-body">
+        <DiffLineParts parts={parts()} onOpenStore={props.onOpenStore} />
+      </span>
     </span>
   );
 }
@@ -252,25 +234,14 @@ function DiffLineView(props: { line: string; path: string; onOpenStore?: (hash: 
   const rendered = createMemo(() => renderDiffLine(props.line, props.path));
   return (
     <span class={rendered().cls}>
-      <Show when={rendered().parts.length > 0} fallback={<span innerHTML="&nbsp;" />}>
-        <For each={rendered().parts}>
-          {(part) => part.hash ? (
-            <button
-              type="button"
-              class="store-link ttl-pn"
-              title="open store preview"
-              onClick={(event) => {
-                event.stopPropagation();
-                props.onOpenStore?.(part.hash!);
-              }}
-            >
-              {part.text}
-            </button>
-          ) : (
-            <span innerHTML={part.html} />
-          )}
-        </For>
+      <Show when={rendered().prefix}>
+        {(prefix) => <span class={"diff-prefix" + (prefix().cls ? " " + prefix().cls : "")}>{prefix().text}</span>}
       </Show>
+      <span class="diff-line-body">
+        <Show when={rendered().parts.length > 0} fallback={<span innerHTML="&nbsp;" />}>
+          <DiffLineParts parts={rendered().parts} onOpenStore={props.onOpenStore} />
+        </Show>
+      </span>
     </span>
   );
 }
@@ -278,10 +249,33 @@ function DiffLineView(props: { line: string; path: string; onOpenStore?: (hash: 
 const SHA256_RE = /sha256:[a-f0-9]{64}/gi;
 
 type DiffLinePart = { html: string; text?: never; hash?: never } | { text: string; hash: string; html?: never };
+type DiffLinePrefix = { text: string; cls?: string };
 
-function renderDiffLine(line: string, path: string): { cls: string; parts: DiffLinePart[] } {
+function DiffLineParts(props: { parts: DiffLinePart[]; onOpenStore?: (hash: string) => void }) {
+  return (
+    <For each={props.parts}>
+      {(part) => part.hash ? (
+        <button
+          type="button"
+          class="store-link ttl-pn"
+          title="open store preview"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onOpenStore?.(part.hash!);
+          }}
+        >
+          {part.text}
+        </button>
+      ) : (
+        <span innerHTML={part.html} />
+      )}
+    </For>
+  );
+}
+
+function renderDiffLine(line: string, path: string): { cls: string; prefix: DiffLinePrefix | null; parts: DiffLinePart[] } {
   let cls = "diff-line diff-context";
-  let prefixHtml = "";
+  let prefix: DiffLinePrefix | null = null;
   let body = "";
   let highlightBody = false;
   if (line.startsWith("@@")) {
@@ -292,20 +286,20 @@ function renderDiffLine(line: string, path: string): { cls: string; parts: DiffL
     body = line;
   } else if (line.startsWith("+++") || line.startsWith("---")) {
     cls = "diff-line diff-file";
-    prefixHtml = '<span class="diff-prefix diff-file-prefix">' + escapeHtml(line.slice(0, 3)) + '</span>';
+    prefix = { text: line.slice(0, 3), cls: "diff-file-prefix" };
     body = line.slice(3);
   } else if (line.startsWith("+")) {
     cls = "diff-line diff-add";
-    prefixHtml = '<span class="diff-prefix">+</span>';
+    prefix = { text: "+" };
     body = line.slice(1);
     highlightBody = true;
   } else if (line.startsWith("-")) {
     cls = "diff-line diff-del";
-    prefixHtml = '<span class="diff-prefix">-</span>';
+    prefix = { text: "-" };
     body = line.slice(1);
     highlightBody = true;
   } else if (line.startsWith(" ")) {
-    prefixHtml = '<span class="diff-prefix"> </span>';
+    prefix = { text: " " };
     body = line.slice(1);
     highlightBody = true;
   } else if (line.startsWith("\ No newline")) {
@@ -315,12 +309,11 @@ function renderDiffLine(line: string, path: string): { cls: string; parts: DiffL
     body = line;
     highlightBody = true;
   }
-  return { cls, parts: linkifyHighlightedText(prefixHtml, body, path, highlightBody) };
+  return { cls, prefix, parts: linkifyHighlightedText(body, path, highlightBody) };
 }
 
-function linkifyHighlightedText(prefixHtml: string, text: string, path: string, highlight: boolean): DiffLinePart[] {
+function linkifyHighlightedText(text: string, path: string, highlight: boolean): DiffLinePart[] {
   const parts: DiffLinePart[] = [];
-  if (prefixHtml) parts.push({ html: prefixHtml });
   SHA256_RE.lastIndex = 0;
   let last = 0;
   let match: RegExpExecArray | null;

@@ -77,9 +77,11 @@ describe("timeline diff overflow", () => {
     expect(diffContentRule).toContain("width: 100%;");
     expect(diffContentRule).toContain("min-width: 0;");
 
-    const diffLineStart = css.indexOf(".file-diff-body .diff-line");
-    const diffLineRule = css.slice(diffLineStart, css.indexOf("}\n", diffLineStart));
-    expect(diffLineRule).toContain("overflow-wrap: anywhere;");
+    const diffLineRule = cssRuleBody(".file-diff-body .diff-line");
+    expect(diffLineRule).toContain("overflow-wrap: normal;");
+
+    const diffLineBodyRule = cssRuleBody(".diff-line-body");
+    expect(diffLineBodyRule).toContain("overflow-wrap: anywhere;");
   });
 
   test("keeps expanded hidden diff lines unboxed", () => {
