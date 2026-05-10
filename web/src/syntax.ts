@@ -266,12 +266,13 @@ function looksLikeDiffText(text: string): boolean {
   return /^[-+]\S/m.test(text) || /^[-+]\s/m.test(text);
 }
 
-// Auto-detect HJSON / common code / plain and apply the matching highlighter.
+// Auto-detect HJSON / Markdown / common code / plain and apply the matching highlighter.
 export function highlightAuto(text: string): string {
   if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   const parsed = parseStructuredText(text, false);
   if (parsed.ok) return highlightHjsonValue(parsed.value);
   if (looksLikeDiffText(text)) return highlightDiff(text, null);
+  if (looksLikeMarkdownText(text)) return highlightWithPrism(text, "markdown");
   const embeddedCode = detectEmbeddedCodeText(text);
   return embeddedCode.ok ? embeddedCode.html : escapeHtml(text);
 }
@@ -717,7 +718,7 @@ function isStructuredContainer(value: unknown): boolean {
   return value !== null && typeof value === "object";
 }
 
-function looksLikeMarkdownText(text: string): boolean {
+export function looksLikeMarkdownText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || !hasLineBreak(trimmed)) return false;
   if (/^#{1,6}\s+\S/m.test(trimmed)) return true;

@@ -233,6 +233,30 @@ describe("HJSON text formatting", () => {
     expect(html).not.toContain('\\&quot;nested\\&quot;');
   });
 
+  test("keeps markdown documents out of code auto-detection", () => {
+    const html = highlightAuto([
+      "# Workflow plan",
+      "",
+      "Moo workflows are first-class run objects with their own view. They are authored with a compact DSL.",
+      "",
+      "## Authoring shape",
+      "",
+      "- workflows do **not** spawn chats as steps.",
+      "- examples can include fenced code.",
+      "",
+      "```python",
+      "def build():",
+      "    pass",
+      "```",
+      "",
+    ].join("\n"));
+
+    expect(html).toContain('<span class="token title important"><span class="token punctuation">#</span> Workflow plan</span>');
+    expect(html).toContain('<span class="token bold"><span class="token punctuation">**</span><span class="token content">not</span><span class="token punctuation">**</span></span>');
+    expect(html).not.toContain('first-<span class="token keyword">class</span>');
+    expect(html).not.toContain('<span class="token keyword">with</span>');
+  });
+
   test("wraps highlighted HJSON containers and long strings with collapsible controls", () => {
     const html = highlightHjsonValue({
       nested: { answer: 42 },

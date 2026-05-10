@@ -40,7 +40,8 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain("const maxPreviewHeight =");
     expect(timeline).toContain("setTruncated(previewEl.scrollHeight > maxPreviewHeight + 1);");
     expect(timeline).toContain("function runJSBlockLanguageForContent(content: string, language?: string)");
-    expect(timeline).toContain('return maybeFormatHjsonTextForView(content.trim()) === null ? undefined : "hjson";');
+    expect(timeline).toContain('if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";');
+    expect(timeline).toContain('if (looksLikeMarkdownText(trimmed)) return "markdown";');
     expect(timeline).toContain('class="runjs-lightbox-backdrop"');
     expect(timeline).toContain('role="button"');
     expect(timeline).toContain('"runjs-block-preview": true');

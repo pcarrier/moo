@@ -23,6 +23,7 @@ import {
   highlightAuto,
   highlightMarkdownCode,
   isHjsonCodeLanguage,
+  looksLikeMarkdownText,
   maybeFormatHjsonTextForView,
 } from "./syntax";
 import { collapseHome } from "./paths";
@@ -3079,7 +3080,10 @@ function highlightRunJSBlock(content: string, language?: string): string {
 
 function runJSBlockLanguageForContent(content: string, language?: string): string | undefined {
   if (language) return language;
-  return maybeFormatHjsonTextForView(content.trim()) === null ? undefined : "hjson";
+  const trimmed = content.trim();
+  if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";
+  if (looksLikeMarkdownText(trimmed)) return "markdown";
+  return undefined;
 }
 
 function runJSBlockMeta(content: string, language?: string): string {
