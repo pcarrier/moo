@@ -1873,11 +1873,12 @@ body.mermaid-lightbox-open {
 .mermaid-lightbox-viewport {
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-x pan-y;
   display: grid;
-  place-items: center;
+  place-items: safe center;
   padding: 1rem;
 }
 
@@ -1886,16 +1887,16 @@ body.mermaid-lightbox-open {
 }
 
 .mermaid-lightbox-content {
-  transform-origin: center;
-  will-change: transform;
+  inline-size: max-content;
+  block-size: max-content;
   background: var(--bg);
   color: var(--fg);
   padding: 1rem;
   border-radius: 0.45rem;
   box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.5);
-  max-inline-size: calc(100vw - 4rem);
-  max-block-size: calc(100vh - 8rem);
-  overflow: auto;
+  max-inline-size: none;
+  max-block-size: none;
+  overflow: visible;
 }
 
 .mermaid-lightbox-content svg {

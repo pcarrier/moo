@@ -4,6 +4,9 @@ const RENDER_DEBOUNCE_MS = 25;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
+const WHEEL_LINE_HEIGHT_PX = 16;
+const WHEEL_ZOOM_DELTA_LIMIT = 500;
+const WHEEL_ZOOM_SENSITIVITY = 0.002;
 
 let initialized = false;
 let nextDiagramId = 0;
@@ -186,17 +189,18 @@ function openMermaidLightbox(diagram: HTMLElement) {
   const viewport = document.createElement("div");
   viewport.className = "mermaid-lightbox-viewport";
 
+  const svgSize = svgLightboxSize(svg);
+  const lightboxSvg = cloneSvgForLightbox(svg, svgSize);
+
   const content = document.createElement("div");
   content.className = "mermaid-lightbox-content";
-  content.append(cloneSvgForLightbox(svg));
+  content.append(lightboxSvg);
   viewport.append(content);
   overlay.append(toolbar, viewport);
   document.body.append(overlay);
   document.body.classList.add("mermaid-lightbox-open");
 
   let scale = 1;
-  let offsetX = 0;
-  let offsetY = 0;
   let dragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
@@ -204,45 +208,67 @@ function openMermaidLightbox(diagram: HTMLElement) {
   let dragOriginY = 0;
 
   const update = () => {
-    content.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    lightboxSvg.style.inlineSize = Math.max(1, svgSize.width * scale) + "px";
+    lightboxSvg.style.blockSize = Math.max(1, svgSize.height * scale) + "px";
     zoomResetButton.textContent = Math.round(scale * 100) + "%";
   };
-  const zoomBy = (factor: number) => {
-    scale = clamp(scale * factor, MIN_ZOOM, MAX_ZOOM);
+  const centerContent = () => {
+    viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
+    viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+  };
+  const zoomBy = (factor: number, anchor?: { clientX: number; clientY: number }) => {
+    const nextScale = clamp(scale * factor, MIN_ZOOM, MAX_ZOOM);
+    if (nextScale === scale) return;
+
+    const previousScale = scale;
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = anchor ? anchor.clientX - rect.left : viewport.clientWidth / 2;
+    const anchorY = anchor ? anchor.clientY - rect.top : viewport.clientHeight / 2;
+    const scrollX = viewport.scrollLeft + anchorX;
+    const scrollY = viewport.scrollTop + anchorY;
+
+    scale = nextScale;
     update();
+
+    const ratio = scale / previousScale;
+    viewport.scrollLeft = scrollX * ratio - anchorX;
+    viewport.scrollTop = scrollY * ratio - anchorY;
   };
   const reset = () => {
     scale = 1;
-    offsetX = 0;
-    offsetY = 0;
     update();
+    centerContent();
   };
   const close = () => closeActiveMermaidLightbox();
 
   const onPointerDown = (event: PointerEvent) => {
-    if (event.button !== 0) return;
+    if (event.pointerType !== "mouse" || event.button !== 0) return;
     dragging = true;
     dragStartX = event.clientX;
     dragStartY = event.clientY;
-    dragOriginX = offsetX;
-    dragOriginY = offsetY;
+    dragOriginX = viewport.scrollLeft;
+    dragOriginY = viewport.scrollTop;
     viewport.classList.add("is-panning");
     viewport.setPointerCapture(event.pointerId);
   };
   const onPointerMove = (event: PointerEvent) => {
     if (!dragging) return;
-    offsetX = dragOriginX + event.clientX - dragStartX;
-    offsetY = dragOriginY + event.clientY - dragStartY;
-    update();
+    event.preventDefault();
+    viewport.scrollLeft = dragOriginX - (event.clientX - dragStartX);
+    viewport.scrollTop = dragOriginY - (event.clientY - dragStartY);
   };
   const onPointerUp = (event: PointerEvent) => {
+    if (!dragging) return;
     dragging = false;
     viewport.classList.remove("is-panning");
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   };
   const onWheel = (event: WheelEvent) => {
+    if (!isLightboxZoomWheel(event)) return;
     event.preventDefault();
-    zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+    const deltaY = normalizedWheelDeltaY(event, viewport.clientHeight);
+    if (deltaY === 0) return;
+    zoomBy(Math.exp(clamp(-deltaY, -WHEEL_ZOOM_DELTA_LIMIT, WHEEL_ZOOM_DELTA_LIMIT) * WHEEL_ZOOM_SENSITIVITY), event);
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
@@ -276,6 +302,7 @@ function openMermaidLightbox(diagram: HTMLElement) {
   overlay.addEventListener("click", onOverlayClick);
   window.addEventListener("keydown", onKeyDown, true);
   update();
+  window.requestAnimationFrame(centerContent);
   closeButton.focus();
 
   activeLightboxCleanup = () => {
@@ -290,9 +317,8 @@ function closeActiveMermaidLightbox() {
   activeLightboxCleanup?.();
 }
 
-function cloneSvgForLightbox(svg: SVGSVGElement): SVGSVGElement {
+function cloneSvgForLightbox(svg: SVGSVGElement, size = svgLightboxSize(svg)): SVGSVGElement {
   const clone = svg.cloneNode(true) as SVGSVGElement;
-  const size = svgLightboxSize(svg);
   clone.removeAttribute("style");
   clone.setAttribute("width", String(size.width));
   clone.setAttribute("height", String(size.height));
@@ -365,6 +391,16 @@ function isDarkTheme(): boolean {
   if (mode === "dark") return true;
   if (mode === "light") return false;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
+function isLightboxZoomWheel(event: WheelEvent): boolean {
+  return event.ctrlKey;
+}
+
+function normalizedWheelDeltaY(event: WheelEvent, pageHeight: number): number {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * WHEEL_LINE_HEIGHT_PX;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * pageHeight;
+  return event.deltaY;
 }
 
 function clamp(value: number, min: number, max: number): number {
