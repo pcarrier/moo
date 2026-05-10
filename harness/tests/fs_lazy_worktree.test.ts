@@ -33,6 +33,12 @@ function addDir(path: string, names: string[] = []) {
     stats.set(target + "/src", { kind: "dir", size: 0, mtime: 0 });
     return { code: 0, stdout: "", stderr: "", durationNs: 0, timedOut: false };
   }
+  if (cmd === "git" && args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+    const cwd = normalize(String(cwdArg ?? "."));
+    return dirs.has(cwd + "/.git")
+      ? { code: 0, stdout: cwd + "\n", stderr: "", durationNs: 0, timedOut: false }
+      : { code: 128, stdout: "", stderr: "not a git repository", durationNs: 0, timedOut: false };
+  }
   return { code: 0, stdout: "", stderr: "", durationNs: 0, timedOut: false };
 };
 (globalThis as any).__op_fs_list = (path: string) => dirs.get(normalize(path)) ?? [];
@@ -69,7 +75,7 @@ function addDir(path: string, names: string[] = []) {
 (globalThis as any).__op_trace_mark = () => Promise.resolve(null);
 (globalThis as any).__op_trace_finish = () => Promise.resolve(null);
 
-const { fsListCommand } = await import("../src/commands/chats");
+const { fsListCommand, recentChatPathsCommand } = await import("../src/commands/chats");
 const { moo } = await import("../src/moo");
 
 describe("fsListCommand", () => {
@@ -109,6 +115,39 @@ describe("fsListCommand", () => {
     expect(procCalls.some((call) => call.cmd === "git" && call.args?.[0] === "worktree")).toBe(false);
   });
 });
+
+describe("recentChatPathsCommand", () => {
+  beforeEach(() => {
+    dirs.clear();
+    stats.clear();
+    refs.clear();
+    procCalls.length = 0;
+    addDir("/repo", [".git"]);
+    addDir("/repo/.git", []);
+    refs.set("user/recent-chat-paths", JSON.stringify(["/repo"]));
+  });
+
+  test("returns recent paths without probing repo kinds by default", async () => {
+    const result = await recentChatPathsCommand();
+
+    expect(result).toEqual({ ok: true, value: { paths: ["/repo"] } });
+    expect(procCalls).toEqual([]);
+  });
+
+  test("probes repo kinds only when requested", async () => {
+    const result = await recentChatPathsCommand({ includeRepos: true });
+
+    expect(result).toEqual({
+      ok: true,
+      value: { paths: ["/repo"], repos: [{ path: "/repo", repoKind: "git" }] },
+    });
+    expect(procCalls.map((call) => [call.cmd, call.args?.[0]])).toContainEqual([
+      "git",
+      "rev-parse",
+    ]);
+  });
+});
+
 
 describe("filesystem API", () => {
   test("does not expose patch helpers", async () => {

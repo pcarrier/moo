@@ -16,7 +16,7 @@ const OPENAI_TOKEN_URL = OPENAI_ISSUER + "/oauth/token";
 
 
 export type LlmAuthProviderId = ProviderName;
-export type LlmAuthMode = "env" | "apiKey" | "oauth" | "subscription";
+export type LlmAuthMode = "env" | "apiKey" | "oauth";
 
 export type LlmAuthProviderSettings = {
   authMode: LlmAuthMode;
@@ -89,10 +89,9 @@ function defaultSettings(): LlmAuthSettings {
 
 function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuthProviderSettings {
   const r = raw && typeof raw === "object" ? raw as LlmAuthProviderSettings : {} as LlmAuthProviderSettings;
-  const requestedMode = r.authMode === "apiKey" || r.authMode === "oauth" || r.authMode === "subscription" ? r.authMode : "env";
+  const requestedMode = r.authMode === "apiKey" || r.authMode === "oauth" ? r.authMode : "env";
   const authMode: LlmAuthMode =
-    id === "openai" ? requestedMode === "subscription" ? "env" : requestedMode :
-    id === "anthropic" ? requestedMode === "oauth" ? "env" : requestedMode :
+    id === "openai" ? requestedMode :
     requestedMode === "apiKey" ? "apiKey" : "env";
   return {
     authMode,
@@ -150,39 +149,32 @@ async function envKeyForProvider(id: LlmAuthProviderId): Promise<string | null> 
   return null;
 }
 
-async function fallbackModelForProvider(id: LlmAuthProviderId): Promise<string> {
+async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAuthMode): Promise<string> {
+  const providerFallback = PROVIDERS[id].fallbackModel;
   const generic = await moo.env.get("MOO_LLM_MODEL");
   if (generic) {
     const trimmed = generic.trim();
     const prefix = id + ":";
-    if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim() || PROVIDERS[id].fallbackModel;
+    if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim() || providerFallback;
   }
   const envName = id === "openai" ? "OPENAI_MODEL" : id === "anthropic" ? "ANTHROPIC_MODEL" : id === "qwen" ? "QWEN_MODEL" : "XAI_MODEL";
-  return (await moo.env.get(envName)) || PROVIDERS[id].fallbackModel;
+  return (await moo.env.get(envName)) || providerFallback;
 }
+
 
 export async function providerConfiguredCredential(id: LlmAuthProviderId): Promise<{ apiKey: string | null; authMode: LlmAuthMode; keyEnvHint: string; baseUrl: string; model: string; oauthAccountId?: string | null }> {
   const settings = await readLlmAuthSettings();
   const provider = settings.providers[id];
   const meta = PROVIDERS[id];
   const baseUrl = provider.baseUrl || (await moo.env.get(meta.baseUrlEnv)) || meta.defaultBaseUrl;
-  const model = await fallbackModelForProvider(id);
+  const requestedAuthMode = provider.authMode;
+  const model = await fallbackModelForProvider(id, requestedAuthMode);
   if (id === "openai" && provider.authMode === "oauth") {
     const oauthBaseUrl = provider.baseUrl || "https://chatgpt.com/backend-api/codex";
     return { apiKey: provider.accessToken || null, authMode: "oauth", keyEnvHint: "OpenAI OAuth", baseUrl: oauthBaseUrl, model, oauthAccountId: provider.oauthAccountId };
   }
-  if (id === "anthropic" && provider.authMode === "subscription") {
-    return { apiKey: provider.apiKey || (await moo.env.get("ANTHROPIC_AUTH_TOKEN")), authMode: "subscription", keyEnvHint: "ANTHROPIC_AUTH_TOKEN", baseUrl, model };
-  }
   if (provider.authMode === "apiKey") {
     return { apiKey: provider.apiKey || null, authMode: "apiKey", keyEnvHint: "stored " + meta.envKey, baseUrl, model };
-  }
-  if (id === "anthropic") {
-    const apiKey = await moo.env.get(meta.envKey);
-    if (apiKey) return { apiKey, authMode: "env", keyEnvHint: meta.envKey, baseUrl, model };
-    const subscriptionToken = await moo.env.get("ANTHROPIC_AUTH_TOKEN");
-    if (subscriptionToken) return { apiKey: subscriptionToken, authMode: "subscription", keyEnvHint: "ANTHROPIC_AUTH_TOKEN", baseUrl, model };
-    return { apiKey: null, authMode: "env", keyEnvHint: meta.envKey + " or ANTHROPIC_AUTH_TOKEN", baseUrl, model };
   }
   return { apiKey: await envKeyForProvider(id), authMode: "env", keyEnvHint: meta.envKey, baseUrl, model };
 }
@@ -224,9 +216,7 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
   const providerInput = input as Record<string, unknown>;
   const modeRaw = String(providerInput.authMode ?? current.authMode ?? "env");
   const authMode: LlmAuthMode =
-    modeRaw === "apiKey" ||
-    (id === "openai" && modeRaw === "oauth") ||
-    (id === "anthropic" && modeRaw === "subscription")
+    modeRaw === "apiKey" || (id === "openai" && modeRaw === "oauth")
       ? modeRaw as LlmAuthMode
       : "env";
   const apiKeyInput = providerInput.apiKey;

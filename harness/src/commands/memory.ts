@@ -151,6 +151,15 @@ export async function graphSummariesCommand(input: Input) {
   return { ok: true, value: { graphs } };
 }
 
+function latestAddTimes(rows: Array<[string, string, string, string, string, string]>): Map<string, string> {
+  const latestAddAt = new Map<string, string>();
+  for (const row of rows) {
+    if (row[4] !== "add") continue;
+    latestAddAt.set(row.slice(0, 4).join("\u0000"), row[5] ?? "");
+  }
+  return latestAddAt;
+}
+
 export async function triplesCommand(input: Input) {
   const removedMode = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
   const rawLimit = Number(input.limit);
@@ -173,7 +182,17 @@ export async function triplesCommand(input: Input) {
         object: input.object ?? null,
         limit,
       } });
-      const triples = (current as Array<[string, string, string, string]>).map((row) => [row[0], row[1], row[2], row[3], "present", ""] as [string, string, string, string, string, string]);
+      const rows = await moo.facts.history({ store, ...{
+        graph,
+        subject: input.subject ?? null,
+        predicate: input.predicate ?? null,
+        object: input.object ?? null,
+      } });
+      const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
+      const triples = (current as Array<[string, string, string, string]>).map((row) => {
+        const rowKey = row.join("\u0000");
+        return [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""] as [string, string, string, string, string, string];
+      });
       const truncated = Boolean(limit && triples.length >= limit);
       return { ok: true, value: { triples, truncated, limit: limit || undefined, total: truncated ? undefined : triples.length } };
     }
@@ -201,11 +220,7 @@ export async function triplesCommand(input: Input) {
       }
     }
     if (removedMode !== "only") {
-      const latestAddAt = new Map<string, string>();
-      for (const row of rows as Array<[string, string, string, string, string, string]>) {
-        if (row[4] !== "add") continue;
-        latestAddAt.set(row.slice(0, 4).join("\u0000"), row[5] ?? "");
-      }
+      const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
       for (const row of current as Array<[string, string, string, string]>) {
         const rowKey = row.join("\u0000");
         pushTriple(triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
@@ -227,12 +242,19 @@ export async function triplesCommand(input: Input) {
         object: input.object ?? null,
         limit: limit ? limit - triples.length : null,
       } });
+      const rows = await moo.facts.history({ store, ...{
+        graph: graph ?? null,
+        subject: input.subject ?? null,
+        predicate: input.predicate ?? null,
+        object: input.object ?? null,
+      } });
+      const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
       for (const row of current as Array<[string, string, string, string]>) {
         const rowKey = row.join("\u0000");
         const key = rowKey + "\u0000present";
         if (seen.has(key)) continue;
         seen.add(key);
-        pushTriple(triples, [row[0], row[1], row[2], row[3], "present", ""]);
+        pushTriple(triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
       }
     }
     const truncated = Boolean(limit && triples.length >= limit);
@@ -265,11 +287,7 @@ export async function triplesCommand(input: Input) {
       }
     }
     if (removedMode === "only") continue;
-    const latestAddAt = new Map<string, string>();
-    for (const row of rows as Array<[string, string, string, string, string, string]>) {
-      if (row[4] !== "add") continue;
-      latestAddAt.set(row.slice(0, 4).join("\u0000"), row[5] ?? "");
-    }
+    const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
     for (const row of current as Array<[string, string, string, string]>) {
       const rowKey = row.join("\u0000");
       const event: [string, string, string, string, string, string] = [

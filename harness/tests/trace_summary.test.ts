@@ -97,22 +97,60 @@ describe("trace value serialization", () => {
 
 
 describe("trace root inference", () => {
-  test("does not ensure step attachment points as root step traces", async () => {
+  test("ensures chat root and step span for chat step attachment points", async () => {
     const previousEnsure = (globalThis as any).__op_trace_ensure_root;
+    const previousEnsureSpan = (globalThis as any).__op_trace_ensure_span;
     const previousStart = (globalThis as any).__op_trace_start_root;
     const ensured: any[] = [];
+    const ensuredSpans: any[] = [];
     (globalThis as any).__op_trace_ensure_root = (raw: string) => {
       ensured.push(JSON.parse(raw));
     };
-    (globalThis as any).__op_trace_start_root = () => JSON.stringify({ traceId: "trace:test", id: "trace:test", stepId: "step:test", parentId: "step:test" });
+    (globalThis as any).__op_trace_ensure_span = (raw: string) => {
+      ensuredSpans.push(JSON.parse(raw));
+    };
+    (globalThis as any).__op_trace_start_root = (parentId: string | null) => JSON.stringify({ traceId: "trace:test", id: "trace:test", parentId });
     try {
-      await startRunJSTraceRoot("step:test", { chatId: "chat:test", label: "Run JS" });
+      await startRunJSTraceRoot("step:test", { chatId: "chat:test", label: "Run JS", title: "Trace Chat" });
 
       expect(ensured).toHaveLength(1);
-      expect(ensured[0]).toMatchObject({ id: "step:test", kind: "chat", name: "Run JS" });
+      expect(ensured[0]).toMatchObject({ id: "chat:chat:test", chatId: "chat:test", kind: "chat", name: "Trace Chat", data: { rootChoice: "chat-for-step-parent" } });
+      expect(ensuredSpans).toHaveLength(1);
+      expect(ensuredSpans[0]).toMatchObject({ id: "step:test", parentId: "chat:chat:test", chatId: "chat:test", kind: "step", name: "Run JS", data: { rootChoice: "chat-step-parent" } });
     } finally {
       if (previousEnsure) (globalThis as any).__op_trace_ensure_root = previousEnsure;
       else delete (globalThis as any).__op_trace_ensure_root;
+      if (previousEnsureSpan) (globalThis as any).__op_trace_ensure_span = previousEnsureSpan;
+      else delete (globalThis as any).__op_trace_ensure_span;
+      if (previousStart) (globalThis as any).__op_trace_start_root = previousStart;
+      else delete (globalThis as any).__op_trace_start_root;
+    }
+  });
+
+  test("falls back to a missing-parent root when a step lacks chat context", async () => {
+    const previousEnsure = (globalThis as any).__op_trace_ensure_root;
+    const previousEnsureSpan = (globalThis as any).__op_trace_ensure_span;
+    const previousStart = (globalThis as any).__op_trace_start_root;
+    const ensured: any[] = [];
+    const ensuredSpans: any[] = [];
+    (globalThis as any).__op_trace_ensure_root = (raw: string) => {
+      ensured.push(JSON.parse(raw));
+    };
+    (globalThis as any).__op_trace_ensure_span = (raw: string) => {
+      ensuredSpans.push(JSON.parse(raw));
+    };
+    (globalThis as any).__op_trace_start_root = () => JSON.stringify({ traceId: "trace:test", id: "trace:test" });
+    try {
+      await startRunJSTraceRoot("step:test", { label: "Run JS" });
+
+      expect(ensured).toHaveLength(1);
+      expect(ensured[0]).toMatchObject({ id: "step:test", kind: "missing-parent", name: "Run JS", data: { rootChoice: "fallback-missing-step-parent" } });
+      expect(ensuredSpans).toEqual([]);
+    } finally {
+      if (previousEnsure) (globalThis as any).__op_trace_ensure_root = previousEnsure;
+      else delete (globalThis as any).__op_trace_ensure_root;
+      if (previousEnsureSpan) (globalThis as any).__op_trace_ensure_span = previousEnsureSpan;
+      else delete (globalThis as any).__op_trace_ensure_span;
       if (previousStart) (globalThis as any).__op_trace_start_root = previousStart;
       else delete (globalThis as any).__op_trace_start_root;
     }

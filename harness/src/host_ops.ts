@@ -107,6 +107,7 @@ export const canTraceSpans = (): boolean => {
 };
 
 export const ensureTraceRoot = (optsJson: string): string => ((__op_trace_ensure_root as any)(optsJson));
+export const ensureTraceSpan = (optsJson: string): string => ((__op_trace_ensure_span as any)(optsJson));
 export const startTraceRoot = (stepId: string | null, dataJson: string): string => ((__op_trace_start_root as any)(stepId, dataJson));
 export const currentTrace = (): string => ((__op_trace_current as any)());
 export const getTrace = (optsJson: string): string => ((__op_trace_get as any)(optsJson));

@@ -9,6 +9,7 @@ import type { UiCommands } from "./ui";
 import type { V8Commands } from "./v8";
 import type { LlmAuthCommands } from "./llmAuth";
 import type { TraceCommands } from "./traces";
+import type { SkillCommands } from "./skills";
 
 export type ApiCommand<K extends string, Req extends Record<string, unknown>, Res> = {
   command: K;
@@ -29,7 +30,8 @@ export type KnownApiCommand =
   | McpCommands
   | V8Commands
   | LlmAuthCommands
-  | TraceCommands;
+  | TraceCommands
+  | SkillCommands;
 
 export type ApiCommandMap = {
   [K in KnownCommandName]: Extract<KnownApiCommand, { command: K }>;

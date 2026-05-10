@@ -117,9 +117,9 @@ describe("new chat layout", () => {
     const branchCard = cssBlock(".fs-branch-card");
     expect(branchCard).toContain("display: flex");
 
-    const branchActions = cssBlock(".fs-branch-pull,\n.fs-branch-upgrade", css.indexOf(".fs-branch-header"));
+    const branchActions = cssBlock(".fs-branch-pull", css.indexOf(".fs-branch-header"));
     expect(branchActions).toContain("white-space: nowrap");
-    expect(sidebar).toContain("Upgrade to jj");
+    expect(sidebar).not.toContain("fs-branch-upgrade");
   });
 
   it("uses each project row as the action without duplicate labels", () => {

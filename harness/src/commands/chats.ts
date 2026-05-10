@@ -436,9 +436,10 @@ async function recentChatRepoSummaries(paths: string[]): Promise<Array<{ path: s
   return await Promise.all(paths.map(async (path) => ({ path, repoKind: await repoKindForPath(path) })));
 }
 
-export async function recentChatPathsCommand() {
+export async function recentChatPathsCommand(input: Input = {}) {
   const paths = await loadRecentChatPaths();
-  return { ok: true, value: { paths, repos: await recentChatRepoSummaries(paths) } };
+  const includeRepos = input.includeRepos === true;
+  return { ok: true, value: { paths, ...(includeRepos ? { repos: await recentChatRepoSummaries(paths) } : {}) } };
 }
 
 export async function fsListCommand(input: Input) {
@@ -509,7 +510,6 @@ type GitBranchesValue = {
   selectedJjRevision?: string | null;
   hasRemote: boolean;
   jjAvailable?: boolean;
-  canUpgradeToJj?: boolean;
   fetched?: boolean;
   message?: string | null;
 };
@@ -622,10 +622,10 @@ async function loadGitBranches(path: string, fetched = false, message: string | 
   const [jjRepo, repo, jjAvailable] = await Promise.all([jjRepoInfo(base), gitRepoInfo(base), isJjAvailable()]);
   if (jjRepo && !repo) {
     const jj = await loadJjRevisions(jjRepo.jjRoot);
-    return { path: base, gitRoot: null, repoRoot: jjRepo.jjRoot, repoKind: "jj", isRepo: true, branches: [], jjRevisions: jj.revisions, currentBranch: null, defaultBranch: null, selectedBranch: null, currentJjRevision: jj.current, selectedJjRevision: jj.selected, hasRemote: false, jjAvailable, canUpgradeToJj: false, fetched, message };
+    return { path: base, gitRoot: null, repoRoot: jjRepo.jjRoot, repoKind: "jj", isRepo: true, branches: [], jjRevisions: jj.revisions, currentBranch: null, defaultBranch: null, selectedBranch: null, currentJjRevision: jj.current, selectedJjRevision: jj.selected, hasRemote: false, jjAvailable, fetched, message };
   }
   if (!repo) {
-    return { path: base, gitRoot: null, repoRoot: null, repoKind: null, isRepo: false, branches: [], currentBranch: null, defaultBranch: null, selectedBranch: null, hasRemote: false, jjAvailable, canUpgradeToJj: false, fetched, message };
+    return { path: base, gitRoot: null, repoRoot: null, repoKind: null, isRepo: false, branches: [], currentBranch: null, defaultBranch: null, selectedBranch: null, hasRemote: false, jjAvailable, fetched, message };
   }
   const cacheKey = repo.gitRoot;
   if (!fetched) {
@@ -687,8 +687,7 @@ async function loadGitBranches(path: string, fetched = false, message: string | 
     currentJjRevision: jjRevisionsResult?.current ?? null,
     selectedJjRevision: jjRevisionsResult?.selected ?? null,
     hasRemote: jjRepo ? false : hasRemote,
-    jjAvailable,
-    canUpgradeToJj: jjAvailable && !jjRepo,
+    jjAvailable: Boolean(jjRepo && jjAvailable),
     fetched,
     message,
   };
@@ -724,24 +723,6 @@ export async function fsGitPullBranchesCommand(input: Input) {
   }
 }
 
-export async function fsGitUpgradeJjCommand(input: Input) {
-  try {
-    const path = typeof input.path === "string" ? input.path : ".";
-    const base = await normalizeDirMaterializingChatWorktree(path);
-    const [repo, jjRepo, jjAvailable] = await Promise.all([gitRepoInfo(base), jjRepoInfo(base), isJjAvailable()]);
-    if (!jjAvailable) return { ok: false, error: { message: "jj is not available on this system" } };
-    if (!repo) return { ok: false, error: { message: "not a git repository: " + base } };
-    if (jjRepo) return { ok: true, value: await loadGitBranches(base, false, "Already a Jujutsu repository") };
-    const init = await moo.proc.run({ cmd: "jj", args: ["git", "init", "--colocate"], cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 });
-    if (init.code !== 0) {
-      return { ok: false, error: { message: (init.stderr || init.stdout || "jj git init --colocate failed").trim() } };
-    }
-    gitBranchesCache.delete(repo.gitRoot);
-    return { ok: true, value: await loadGitBranches(base, false, "Upgraded Git repository to Jujutsu") };
-  } catch (e: any) {
-    return { ok: false, error: { message: e?.message || String(e) } };
-  }
-}
 
 function clampFsSearchLimit(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 24;

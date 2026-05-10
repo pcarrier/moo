@@ -217,6 +217,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const [draft, setDraft] = createSignal<Draft>(emptyDraft());
   const [busy, setBusy] = createSignal(false);
   const [message, setMessage] = createSignal<string | null>(null);
+  const [toolsLoaded, setToolsLoaded] = createSignal(false);
   const [auth, setAuth] = createSignal<Record<string, boolean>>({});
   let titleInputEl: HTMLInputElement | undefined;
 
@@ -227,6 +228,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   async function refresh() {
     setBusy(true);
     setMessage(null);
+    setToolsLoaded(false);
     const listed = await api.mcp.list();
     if (!listed.ok) {
       setMessage(listed.error.message);
@@ -247,7 +249,11 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setAuth(statuses);
     const allTools = await api.mcp.tools();
     if (allTools.ok) setTools(allTools.value.tools);
-    else setMessage(allTools.error.message);
+    else {
+      setTools([]);
+      setMessage(allTools.error.message);
+    }
+    setToolsLoaded(true);
     setBusy(false);
   }
 
@@ -504,7 +510,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
 
           <Card class="mcp-card">
             <header class="mcp-card-header"><strong>Tools</strong></header>
-            <Show when={tools().length > 0} fallback={<EmptyState>No tools discovered.</EmptyState>}>
+            <Show when={tools().length > 0} fallback={<EmptyState>{busy() || !toolsLoaded() ? "Discovering tools…" : servers().length ? "No tools discovered." : "Connect a server to discover tools."}</EmptyState>}>
               <ul class="mcp-tool-list">
                 <For each={tools()}>{(tool) => {
                   const detail = splitDenseDescription(tool);

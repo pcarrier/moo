@@ -110,7 +110,43 @@ export function resolveRepoFileHref(href: string, basePath: string | null | unde
 
 
 export function renderUserMessage(content: string): string {
-  return cachedRender(userMessageCache, content, () => userMarked.parse(linkifyPathMentionsForMarkdown(content)) as string);
+  return cachedRender(userMessageCache, content, () => renderUserMessagePreservingNewlines(linkifyPathMentionsForMarkdown(content)));
+}
+
+function renderUserMessagePreservingNewlines(content: string): string {
+  const lines = content.split("\n");
+  let html = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const fenceMatch = /^( {0,3})(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const fence = fenceMatch[2]!;
+      const fenceChar = fence[0]!;
+      const fenceLength = fence.length;
+      const blockLines = [line];
+      let closed = false;
+      while (i + 1 < lines.length) {
+        i++;
+        const nextLine = lines[i]!;
+        blockLines.push(nextLine);
+        const closing = /^( {0,3})(`{3,}|~{3,})\s*$/.exec(nextLine);
+        if (closing && closing[2]![0] === fenceChar && closing[2]!.length >= fenceLength) {
+          closed = true;
+          break;
+        }
+      }
+      html += closed
+        ? userMarked.parse(blockLines.join("\n")) as string
+        : userMarked.parseInline(blockLines.join("\n")) as string;
+    } else {
+      html += userMarked.parseInline(line) as string;
+    }
+
+    if (i < lines.length - 1) html += "<br>\n";
+  }
+
+  return html;
 }
 
 function linkifyPathMentionsForMarkdown(content: string): string {

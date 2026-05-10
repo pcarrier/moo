@@ -31,6 +31,7 @@ export type StepItem = {
   kind: string;
   status: string;
   at: number;
+  updatedAt?: number;
   text: string;
   error?: {
     kind?: string;

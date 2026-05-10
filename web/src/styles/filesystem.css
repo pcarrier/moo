@@ -142,8 +142,7 @@
 .fs-pick-toggle,
 .fs-path-row button,
 .fs-actions button,
-.fs-branch-pull,
-.fs-branch-upgrade {
+.fs-branch-pull {
   border: 1px solid transparent;
   background: var(--bg);
   color: var(--fg);
@@ -261,8 +260,7 @@
   gap: 0.4rem;
 }
 
-.fs-branch-pull,
-.fs-branch-upgrade {
+.fs-branch-pull {
   flex: 0 0 auto;
   padding: 0.32rem 0.55rem;
   border-color: var(--line);
@@ -364,8 +362,7 @@
 .fs-pick-toggle:hover:not(:disabled),
 .fs-path-row button:hover:not(:disabled),
 .fs-actions button:hover:not(:disabled),
-.fs-branch-pull:hover:not(:disabled),
-.fs-branch-upgrade:hover:not(:disabled) {
+.fs-branch-pull:hover:not(:disabled):hover:not(:disabled) {
   border-color: var(--line-strong);
   background: var(--sidebar-active);
 }
@@ -379,8 +376,7 @@
 .fs-recent-list button:disabled,
 .fs-pick-toggle:disabled,
 .fs-path-row button:disabled,
-.fs-branch-pull:disabled,
-.fs-branch-upgrade:disabled {
+.fs-branch-pull:disabled:disabled {
   opacity: 0.5;
   cursor: wait;
 }

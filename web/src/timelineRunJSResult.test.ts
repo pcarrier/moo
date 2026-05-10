@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
 const runjsFormat = readFileSync(new URL("./timeline/format.ts", import.meta.url), "utf8");
+const timelineCss = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
 
 describe("timeline runJS result rendering", () => {
   test("renders a Result row even when the runJS result is empty", () => {
@@ -31,6 +32,25 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain('async function withTimeout<T>');
     expect(timeline).toContain('"Timed out loading result"');
     expect(timeline).toContain('const object = await withTimeout(');
+  });
+
+  test("runJS code and result blocks use 10-line previews with a lightbox", () => {
+    expect(timeline).toContain("const RUNJS_BLOCK_PREVIEW_LINES = 10;");
+    expect(timeline).toContain("maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}");
+    expect(timeline).toContain("const maxPreviewHeight =");
+    expect(timeline).toContain("setTruncated(previewEl.scrollHeight > maxPreviewHeight + 1);");
+    expect(timeline).toContain("function runJSBlockLanguageForContent(content: string, language?: string)");
+    expect(timeline).toContain('return maybeFormatHjsonTextForView(content.trim()) === null ? undefined : "hjson";');
+    expect(timeline).toContain('class="runjs-lightbox-backdrop"');
+    expect(timeline).toContain('role="button"');
+    expect(timeline).toContain('"runjs-block-preview": true');
+    expect(timeline).toContain('class="runjs-lightbox-copy"');
+    expect(timeline).toContain("if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;");
+    expect(timeline).toContain('class="runjs-block-fade"');
+    expect(timeline).toContain('style={{ "--runjs-preview-lines": String(previewLineLimit()) }}');
+    expect(timelineCss).toContain("max-block-size: calc(var(--runjs-preview-lines) * 1.3em);");
+    expect(timeline).not.toContain('class="runjs-block-open"');
+    expect(timeline).not.toContain('class="runjs-block-more"');
   });
   test("renders error response payloads as highlighted HJSON", () => {
     expect(timeline).toContain('function highlightErrorPayloadForView(body: unknown): string {');

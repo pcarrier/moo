@@ -63,17 +63,17 @@ function resultError(result: unknown): string | undefined {
   return String(error);
 }
 
-function recordFrontendTrace(name: string, startedMs: number, endedMs: number, result: unknown, rpcDurationMs: number) {
+function recordFrontendTrace(name: string, startedNs: number, endedNs: number, result: unknown, rpcDurationNs: number) {
   if (!conn || FRONTEND_TRACE_IGNORED.has(name)) return;
   void conn.run({
     command: FRONTEND_TRACE_COMMAND,
     name,
-    startedNs: startedMs * 1_000_000,
-    endedNs: endedMs * 1_000_000,
+    startedNs,
+    endedNs,
     status: resultStatus(result),
     route: currentRoute(),
     error: resultError(result),
-    rpcDurationMs,
+    rpcDurationNs,
   });
 }
 
@@ -82,9 +82,9 @@ export async function call<T = unknown>(
 ): Promise<ApiResult<T>> {
   if (!conn) return { ok: false, error: { message: "ws not bound" } };
   const name = commandName(payload);
-  const rpcStartedMs = Date.now();
+  const rpcStartedNs = Date.now() * 1_000_000;
   const result = await conn.run<ApiResult<T>>(payload);
-  const receivedMs = Date.now();
-  if (name) recordFrontendTrace(name, receivedMs, receivedMs, result, receivedMs - rpcStartedMs);
+  const receivedNs = Date.now() * 1_000_000;
+  if (name) recordFrontendTrace(name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs);
   return result;
 }

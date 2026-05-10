@@ -22,6 +22,7 @@ import {
   formatHjsonTextForView,
   highlightAuto,
   highlightMarkdownCode,
+  isHjsonCodeLanguage,
   maybeFormatHjsonTextForView,
 } from "./syntax";
 import { collapseHome } from "./paths";
@@ -68,7 +69,15 @@ import {
   type PathAutocompleteSuggestion,
 } from "./timeline/autocomplete";
 import { shouldApplyComposerAutocompleteKey } from "./timeline/composerKeys";
-import { displayDiffStats, formatByteCount, formatRunJSArgs, normalizeRunJS, parseRunJS, shortHash, type ParsedRunJS } from "./timeline/format";
+import {
+  displayDiffStats,
+  formatByteCount,
+  formatRunJSArgs,
+  normalizeRunJS,
+  parseRunJS,
+  shortHash,
+  type ParsedRunJS,
+} from "./timeline/format";
 
 import type { Bag, DismissedReply } from "./state";
 import { absoluteTime, displayChatId } from "./state";
@@ -195,6 +204,15 @@ function HeaderAppList(props: {
   );
 }
 
+type RunJSBlockLightbox = {
+  label: string;
+  content: string;
+  language?: string;
+  meta?: string;
+};
+
+const RUNJS_BLOCK_PREVIEW_LINES = 10;
+
 export function Timeline(props: {
   bag: Bag;
   onToggleSidebar: () => void;
@@ -203,12 +221,35 @@ export function Timeline(props: {
   const { bag, onToggleSidebar } = props;
   const [lightboxImage, setLightboxImage] =
     createSignal<ImageAttachment | null>(null);
+  const [runJSBlockLightbox, setRunJSBlockLightbox] =
+    createSignal<RunJSBlockLightbox | null>(null);
+  const [runJSBlockCopied, setRunJSBlockCopied] = createSignal(false);
+  let runJSBlockLightboxContentEl: HTMLPreElement | undefined;
   const openLightbox = (attachment: ImageAttachment) =>
     setLightboxImage(attachment);
-  const closeLightbox = () => setLightboxImage(null);
+  const openRunJSBlockLightbox = (block: RunJSBlockLightbox) => {
+    setRunJSBlockCopied(false);
+    setRunJSBlockLightbox(block);
+  };
+  const copyRunJSBlockLightbox = async () => {
+    const block = runJSBlockLightbox();
+    if (!block) return;
+    await writeClipboardText(block.content);
+    setRunJSBlockCopied(true);
+    window.setTimeout(() => setRunJSBlockCopied(false), COPY_FEEDBACK_MS);
+  };
+  const closeLightbox = () => {
+    setLightboxImage(null);
+    setRunJSBlockLightbox(null);
+  };
+
+  createEffect(() => {
+    if (!runJSBlockLightbox()) return;
+    requestAnimationFrame(() => runJSBlockLightboxContentEl?.focus());
+  });
 
   const handleLightboxKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || !lightboxImage()) return;
+    if (e.key !== "Escape" || (!lightboxImage() && !runJSBlockLightbox())) return;
     e.preventDefault();
     e.stopPropagation();
     closeLightbox();
@@ -803,12 +844,14 @@ export function Timeline(props: {
                         group={entry}
                         bag={bag}
                         onOpenImage={openLightbox}
+                        onOpenRunJSBlock={openRunJSBlockLightbox}
                       />
                     ) : (
                       <Item
                         item={entry.item}
                         bag={bag}
                         onOpenImage={openLightbox}
+                        onOpenRunJSBlock={openRunJSBlockLightbox}
                       />
                     )
                   }
@@ -871,6 +914,54 @@ export function Timeline(props: {
           )}
         </Show>
         <OngoingTodos todos={bag.todos()} />
+        <Show when={runJSBlockLightbox()}>
+          {(block) => (
+            <div
+              class="runjs-lightbox-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="runjs-lightbox-title"
+              onClick={closeLightbox}
+            >
+              <div
+                class="runjs-lightbox"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div class="runjs-lightbox-header">
+                  <div class="runjs-lightbox-title-wrap">
+                    <div id="runjs-lightbox-title" class="runjs-lightbox-title">
+                      {block().label}
+                    </div>
+                    <Show when={block().meta}>
+                      <div class="runjs-lightbox-meta">{block().meta}</div>
+                    </Show>
+                  </div>
+                  <button
+                    type="button"
+                    class="runjs-lightbox-copy"
+                    onClick={copyRunJSBlockLightbox}
+                  >
+                    {runJSBlockCopied() ? "Copied" : "Copy"}
+                  </button>
+                  <button
+                    type="button"
+                    class="runjs-lightbox-close"
+                    aria-label="close runJS preview"
+                    onClick={closeLightbox}
+                  >
+                    ×
+                  </button>
+                </div>
+                <pre
+                  ref={runJSBlockLightboxContentEl}
+                  class="runjs-lightbox-content"
+                  tabIndex={0}
+                  innerHTML={highlightRunJSBlock(block().content, block().language)}
+                />
+              </div>
+            </div>
+          )}
+        </Show>
         <PendingList bag={bag} onOpenImage={openLightbox} />
         <InputBar bag={bag} onOpenImage={openLightbox} />
       </section>
@@ -1863,6 +1954,7 @@ function DismissedBlock(props: {
   group: Extract<TimelineRenderEntry, { kind: "dismissed" }>;
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
+  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => props.group.id;
@@ -1904,6 +1996,7 @@ function DismissedBlock(props: {
                 item={entry.item}
                 bag={props.bag}
                 onOpenImage={props.onOpenImage}
+                onOpenRunJSBlock={props.onOpenRunJSBlock}
               />
             )
           }
@@ -1917,6 +2010,7 @@ function Item(props: {
   item: TimelineItem;
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
+  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => timelineAnchorKey(props.item);
@@ -1946,6 +2040,7 @@ function Item(props: {
                           expansion={expansion()}
                           timelineKey={key()}
                           onOpenImage={props.onOpenImage}
+                          onOpenRunJSBlock={props.onOpenRunJSBlock}
                         />
                       }
                     >
@@ -2226,6 +2321,7 @@ function Step(props: {
   expansion: TimelineExpansionStore;
   timelineKey: string;
   onOpenImage: (attachment: ImageAttachment) => void;
+  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
 }) {
   const cls = createMemo(() => stepClass(props.item));
   const showStandardMeta = () => showStandardStepMeta(props.item);
@@ -2278,6 +2374,7 @@ function Step(props: {
           item={props.item}
           bag={props.bag}
           expansion={props.expansion}
+          onOpenRunJSBlock={props.onOpenRunJSBlock}
         />
       </Show>
       <Show when={props.item.kind === "agent:Subagent"}>
@@ -2764,6 +2861,7 @@ function RunJSBody(props: {
   item: StepItem;
   bag: Bag;
   expansion: TimelineExpansionStore;
+  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
 }) {
   // Prefer structured runJS data from the timeline API. parseRunJS is only
   // retained for historical timeline entries and older exported payloads.
@@ -2892,6 +2990,8 @@ function RunJSBody(props: {
               klass="runjs-code"
               content={parsed().code}
               language="js"
+              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunJSBlock}
             />
           </Show>
           <Show when={parsed().hasArgs}>
@@ -2922,6 +3022,8 @@ props.item.lazyRunjsResult
               label="Result"
               klass="runjs-out"
               content={parsed().result}
+              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunJSBlock}
             />
           </Show>
           <Show when={parsed().error}>
@@ -2929,6 +3031,8 @@ props.item.lazyRunjsResult
               label="Error"
               klass="runjs-out runjs-error"
               content={parsed().error}
+              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunJSBlock}
             />
           </Show>
           <Show when={hydrateError()}>
@@ -2936,6 +3040,8 @@ props.item.lazyRunjsResult
               label="Error"
               klass="runjs-out runjs-error"
               content={hydrateError()!}
+              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunJSBlock}
             />
           </Show>
         </div>
@@ -2967,22 +3073,106 @@ function RunJSMarkdown(props: {
   );
 }
 
+function highlightRunJSBlock(content: string, language?: string): string {
+  return language ? highlightMarkdownCode(content, language) : highlightAuto(content);
+}
+
+function runJSBlockLanguageForContent(content: string, language?: string): string | undefined {
+  if (language) return language;
+  return maybeFormatHjsonTextForView(content.trim()) === null ? undefined : "hjson";
+}
+
+function runJSBlockMeta(content: string, language?: string): string {
+  const lineCount = content.split("\n").length;
+  const parts = [`${lineCount} ${lineCount === 1 ? "line" : "lines"}`, `${content.length} chars`];
+  const displayLanguage = isHjsonCodeLanguage(language) ? "hjson" : language;
+  if (displayLanguage) parts.unshift(displayLanguage);
+  return parts.join(" · ");
+}
+
 function RunJSBlock(props: {
   label: string;
   klass: string;
   content: string;
   language?: string;
+  maxPreviewLines?: number;
+  onOpenFull?: (block: RunJSBlockLightbox) => void;
 }) {
-  const html = () =>
-    props.language
-      ? highlightMarkdownCode(props.content, props.language)
-      : highlightAuto(props.content);
+  let previewEl: HTMLDivElement | undefined;
+  const [truncated, setTruncated] = createSignal(false);
+  const previewLineLimit = () => props.maxPreviewLines ?? RUNJS_BLOCK_PREVIEW_LINES;
+  const language = () => runJSBlockLanguageForContent(props.content, props.language);
+  const html = () => highlightRunJSBlock(props.content, language());
+  const meta = () => runJSBlockMeta(props.content, language());
+  const measureOverflow = () => {
+    if (!previewEl) return;
+    const style = window.getComputedStyle(previewEl);
+    const lineHeight = Number.parseFloat(style.lineHeight);
+    const maxPreviewHeight =
+      (Number.isFinite(lineHeight) ? lineHeight : 16) * previewLineLimit();
+    setTruncated(previewEl.scrollHeight > maxPreviewHeight + 1);
+  };
+  createEffect(() => {
+    props.content;
+    props.maxPreviewLines;
+    queueMicrotask(measureOverflow);
+  });
+  onMount(() => {
+    measureOverflow();
+    window.addEventListener("resize", measureOverflow);
+  });
+  onCleanup(() => window.removeEventListener("resize", measureOverflow));
+  const openFull = () =>
+    props.onOpenFull?.({
+      label: props.label,
+      content: props.content,
+      language: language(),
+      meta: meta(),
+    });
+  const openFullFromPointer = (ev: MouseEvent) => {
+    if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;
+    openFull();
+  };
+  const openFullFromKeyboard = (ev: KeyboardEvent) => {
+    if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    openFull();
+  };
   return (
     <section class="runjs-block" aria-label={props.label}>
-      <div class="runjs-block-label">{props.label}</div>
-      <pre class={props.klass} innerHTML={html()} />
+      <div class="runjs-block-heading">
+        <div class="runjs-block-title">
+          <span class="runjs-block-label">{props.label}</span>
+          <span class="runjs-block-meta">{meta()}</span>
+        </div>
+      </div>
+      <div
+        ref={previewEl}
+        role="button"
+        tabIndex={0}
+        classList={{
+          "runjs-block-preview": true,
+          "is-truncated": truncated(),
+        }}
+        style={{ "--runjs-preview-lines": String(previewLineLimit()) }}
+        onClick={openFullFromPointer}
+        onKeyDown={openFullFromKeyboard}
+        title={`Open full ${props.label}`}
+      >
+        <pre class={props.klass} innerHTML={html()} />
+        <Show when={truncated()}>
+          <div class="runjs-block-fade" aria-hidden="true" />
+        </Show>
+      </div>
     </section>
   );
+}
+
+function isNestedInteractiveTarget(target: EventTarget | null, root: EventTarget | null): boolean {
+  if (!(target instanceof Element) || !(root instanceof Element)) return false;
+  const interactive = target.closest("button, a, input, textarea, select, summary, [contenteditable='true']");
+  return interactive instanceof Element && interactive !== root && root.contains(interactive);
 }
 
 function CollapsibleBlock(props: {

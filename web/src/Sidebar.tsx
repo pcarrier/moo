@@ -19,7 +19,12 @@ import {
   repoFilePathFromHref,
   resolveRepoFileHref,
 } from "./markdown";
-import { highlightAuto, highlightByPath, highlightHjsonValue } from "./syntax";
+import {
+  DEFAULT_HIGHLIGHT_MAX_BYTES,
+  highlightAuto,
+  highlightByPath,
+  highlightHjsonValue,
+} from "./syntax";
 import { DiffView, MemoryDiffView, type DiffExpansionStore } from "./DiffView";
 import { LoadingDots } from "./LoadingDots";
 import { MaximizeIcon, MenuIcon, PlusIcon, RestoreIcon } from "./icons";
@@ -58,6 +63,7 @@ import {
   type Bag,
   type BrowserNavState,
   type DiffContentMode,
+  type DiffViewState,
   type JsonPreviewFile,
   type OpenRepoFile,
   type RightSidebarTab,
@@ -84,14 +90,18 @@ import { getPsk } from "./auth";
 
 type Chat = ReturnType<Bag["chats"]>[number];
 
-function isFileDiffItem(item: TimelineItem | null | undefined): item is FileDiffItem {
+function isFileDiffItem(
+  item: TimelineItem | null | undefined,
+): item is FileDiffItem {
   return item?.type === "file-diff";
 }
 
 function hasMemoryDiffAction(
   item: MemoryDiffItem | MemoryGraphDiffSummary,
 ): item is MemoryDiffItem & { action: "assert" | "retract" } {
-  return "action" in item && (item.action === "assert" || item.action === "retract");
+  return (
+    "action" in item && (item.action === "assert" || item.action === "retract")
+  );
 }
 
 const INITIAL_RENDERED_CHATS = 80;
@@ -226,7 +236,10 @@ function sameBrowserFilePath(
   const right = String(b || "").trim();
   if (!left || !right) return left === right;
   if (normalizePathSegments(left) === normalizePathSegments(right)) return true;
-  return browserRelativePath(root ?? null, left) === browserRelativePath(root ?? null, right);
+  return (
+    browserRelativePath(root ?? null, left) ===
+    browserRelativePath(root ?? null, right)
+  );
 }
 
 function repoFileNeedsVisibleLoading(
@@ -428,13 +441,23 @@ function parseFileDiffStats(
   const added = Number(value.added);
   const removed = Number(value.removed);
   const lines = Number(value.lines);
-  if (!Number.isFinite(added) && !Number.isFinite(removed) && !Number.isFinite(lines)) {
+  if (
+    !Number.isFinite(added) &&
+    !Number.isFinite(removed) &&
+    !Number.isFinite(lines)
+  ) {
     return undefined;
   }
   return {
-    added: Number.isFinite(added) ? Math.max(0, Math.trunc(added)) : fallback.added,
-    removed: Number.isFinite(removed) ? Math.max(0, Math.trunc(removed)) : fallback.removed,
-    lines: Number.isFinite(lines) ? Math.max(0, Math.trunc(lines)) : fallback.lines,
+    added: Number.isFinite(added)
+      ? Math.max(0, Math.trunc(added))
+      : fallback.added,
+    removed: Number.isFinite(removed)
+      ? Math.max(0, Math.trunc(removed))
+      : fallback.removed,
+    lines: Number.isFinite(lines)
+      ? Math.max(0, Math.trunc(lines))
+      : fallback.lines,
   };
 }
 
@@ -444,14 +467,17 @@ function parseFileDiffPayload(value: unknown): FileDiffPayload | null {
   const afterPresent = Object.prototype.hasOwnProperty.call(value, "after");
   const beforeValue = value.before;
   const afterValue = value.after;
-  const before = beforePresent && (typeof beforeValue === "string" || beforeValue === null)
-    ? beforeValue
-    : undefined;
-  const after = afterPresent && (typeof afterValue === "string" || afterValue === null)
-    ? afterValue
-    : undefined;
+  const before =
+    beforePresent && (typeof beforeValue === "string" || beforeValue === null)
+      ? beforeValue
+      : undefined;
+  const after =
+    afterPresent && (typeof afterValue === "string" || afterValue === null)
+      ? afterValue
+      : undefined;
   const diff = typeof value.diff === "string" ? value.diff : undefined;
-  if (diff === undefined && before === undefined && after === undefined) return null;
+  if (diff === undefined && before === undefined && after === undefined)
+    return null;
   return {
     chatId: typeof value.chatId === "string" ? value.chatId : undefined,
     path: typeof value.path === "string" ? value.path : undefined,
@@ -461,12 +487,17 @@ function parseFileDiffPayload(value: unknown): FileDiffPayload | null {
     after,
     hasBefore: before !== undefined,
     hasAfter: after !== undefined,
-    at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : undefined,
+    at:
+      typeof value.at === "number" && Number.isFinite(value.at)
+        ? value.at
+        : undefined,
     hash: typeof value.hash === "string" ? value.hash : undefined,
   };
 }
 
-function parseFileDiffPayloadObject(object: StoreObject): FileDiffPayload | null {
+function parseFileDiffPayloadObject(
+  object: StoreObject,
+): FileDiffPayload | null {
   const text = object?.content ?? object?.text;
   if (typeof text !== "string") return null;
   let parsed: unknown;
@@ -475,9 +506,10 @@ function parseFileDiffPayloadObject(object: StoreObject): FileDiffPayload | null
   } catch {
     return null;
   }
-  const candidates = isRecord(parsed) && isRecord(parsed.value)
-    ? [parsed.value, parsed]
-    : [parsed];
+  const candidates =
+    isRecord(parsed) && isRecord(parsed.value)
+      ? [parsed.value, parsed]
+      : [parsed];
   for (const candidate of candidates) {
     const payload = parseFileDiffPayload(candidate);
     if (payload) return payload;
@@ -485,26 +517,34 @@ function parseFileDiffPayloadObject(object: StoreObject): FileDiffPayload | null
   return null;
 }
 
-function normalizedFileDiffObjectHash(hash: string | null | undefined): string | null {
+function normalizedFileDiffObjectHash(
+  hash: string | null | undefined,
+): string | null {
   const raw = String(hash || "").trim();
   return raw ? raw.toLowerCase() : null;
 }
 
-async function fileDiffPayloadForHash(hash: string): Promise<FileDiffPayload | null> {
+async function fileDiffPayloadForHash(
+  hash: string,
+): Promise<FileDiffPayload | null> {
   const normalized = normalizedFileDiffObjectHash(hash);
   if (!normalized) return null;
   let cached = fileDiffPayloadCache.get(normalized);
   if (!cached) {
     cached = api.objects
       .get(normalized as Sha256Hash)
-      .then((result) => result.ok ? parseFileDiffPayloadObject(result.value.object) : null)
+      .then((result) =>
+        result.ok ? parseFileDiffPayloadObject(result.value.object) : null,
+      )
       .catch(() => null);
     fileDiffPayloadCache.set(normalized, cached);
   }
   return cached;
 }
 
-async function hydrateFileDiffItem(source: FileDiffItem): Promise<FileDiffItem | null> {
+async function hydrateFileDiffItem(
+  source: FileDiffItem,
+): Promise<FileDiffItem | null> {
   const hash = normalizedFileDiffObjectHash(source.hash);
   if (!hash) return null;
   const payload = await fileDiffPayloadForHash(hash);
@@ -514,7 +554,8 @@ async function hydrateFileDiffItem(source: FileDiffItem): Promise<FileDiffItem |
     ...source,
     path: payload.path || source.path,
     diff,
-    stats: payload.stats ?? source.stats ?? (diff ? diffStats(diff) : undefined),
+    stats:
+      payload.stats ?? source.stats ?? (diff ? diffStats(diff) : undefined),
     hash: payload.hash || source.hash || hash,
     at: payload.at ?? source.at,
   };
@@ -525,13 +566,17 @@ async function hydrateFileDiffItem(source: FileDiffItem): Promise<FileDiffItem |
 }
 
 function hasBeforeSnapshot(item: FileDiffItem): boolean {
-  return Object.prototype.hasOwnProperty.call(item, "before")
-    && (typeof item.before === "string" || item.before === null);
+  return (
+    Object.prototype.hasOwnProperty.call(item, "before") &&
+    (typeof item.before === "string" || item.before === null)
+  );
 }
 
 function hasAfterSnapshot(item: FileDiffItem): boolean {
-  return Object.prototype.hasOwnProperty.call(item, "after")
-    && typeof item.after === "string";
+  return (
+    Object.prototype.hasOwnProperty.call(item, "after") &&
+    (typeof item.after === "string" || item.after === null)
+  );
 }
 
 function fileDiffSourceItems(item: MergedFileDiffItem): FileDiffItem[] {
@@ -539,60 +584,65 @@ function fileDiffSourceItems(item: MergedFileDiffItem): FileDiffItem[] {
   return [...sources].sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
 }
 
-function expandedFileDiffNeedsHydration(item: MergedFileDiffItem): boolean {
+export function expandedFileDiffNeedsHydration(
+  item: MergedFileDiffItem,
+): boolean {
   const sources = fileDiffSourceItems(item);
   const first = sources[0];
   const last = sources[sources.length - 1];
   return Boolean(
-    (first && !hasBeforeSnapshot(first) && first.hash)
-      || (last && !hasAfterSnapshot(last) && last.hash),
+    (first && !hasBeforeSnapshot(first) && first.hash) ||
+    (last && !hasAfterSnapshot(last) && last.hash),
   );
 }
 
-function expandedFileDiffHydrationKey(item: MergedFileDiffItem): string {
+export function expandedFileDiffHydrationKey(item: MergedFileDiffItem): string {
   return fileDiffSourceItems(item)
-    .map((source) => [
-      source.id,
-      source.path,
-      source.at,
-      source.hash ?? "",
-      hasBeforeSnapshot(source) ? "before" : "",
-      hasAfterSnapshot(source) ? `after:${source.after?.length ?? 0}` : "",
-      source.diff?.length ?? 0,
-    ].join("\0"))
+    .map((source) =>
+      [
+        source.id,
+        source.path,
+        source.at,
+        source.hash ?? "",
+        hasBeforeSnapshot(source) ? "before" : "",
+        hasAfterSnapshot(source) ? `after:${source.after?.length ?? 0}` : "",
+        source.diff?.length ?? 0,
+      ].join("\0"),
+    )
     .join("\n");
 }
 
-async function hydrateMergedFileDiff(item: MergedFileDiffItem): Promise<MergedFileDiffItem> {
+async function hydrateMergedFileDiff(
+  item: MergedFileDiffItem,
+): Promise<MergedFileDiffItem> {
   const sources = fileDiffSourceItems(item);
   if (sources.length === 0) return item;
   const hydrateIndexes = new Set<number>();
   const first = sources[0]!;
   const last = sources[sources.length - 1]!;
   if (!hasBeforeSnapshot(first) && first.hash) hydrateIndexes.add(0);
-  if (!hasAfterSnapshot(last) && last.hash) hydrateIndexes.add(sources.length - 1);
+  if (!hasAfterSnapshot(last) && last.hash)
+    hydrateIndexes.add(sources.length - 1);
   if (hydrateIndexes.size === 0) return item;
 
   const next = [...sources];
   let changed = false;
-  await Promise.all([...hydrateIndexes].map(async (index) => {
-    const hydrated = await hydrateFileDiffItem(next[index]!);
-    if (!hydrated) return;
-    next[index] = hydrated;
-    changed = true;
-  }));
+  await Promise.all(
+    [...hydrateIndexes].map(async (index) => {
+      const hydrated = await hydrateFileDiffItem(next[index]!);
+      if (!hydrated) return;
+      next[index] = hydrated;
+      changed = true;
+    }),
+  );
   if (!changed) return item;
-  if (next.length === 1) {
-    const only = next[0]!;
-    return {
-      ...item,
-      ...only,
-      id: item.id,
-      path: item.path || only.path,
-      items: item.items,
-    };
-  }
-  return mergeFileDiffItems(next);
+  const merged = mergeFileDiffItems(next);
+  return {
+    ...merged,
+    id: item.id,
+    path: item.path || merged.path,
+    items: next,
+  };
 }
 
 function openRepoFileTimelineDiff(
@@ -603,11 +653,13 @@ function openRepoFileTimelineDiff(
   if (file.kind !== "file") return null;
   const previewPath = file.path || file.requestedPath;
   const relativePath = browserRelativePath(root, previewPath);
-  return diffs.find(
-    (diff) =>
-      sameDiffPathInRoot(diff.path, relativePath, root) ||
-      sameDiffPathInRoot(diff.path, previewPath, root),
-  ) ?? null;
+  return (
+    diffs.find(
+      (diff) =>
+        sameDiffPathInRoot(diff.path, relativePath, root) ||
+        sameDiffPathInRoot(diff.path, previewPath, root),
+    ) ?? null
+  );
 }
 
 function comparableFileContent(value: string): string {
@@ -628,7 +680,10 @@ function synthesizeOpenRepoFileDiff(
   const before = timelineDiff.before;
   if (before !== null && typeof before !== "string") return null;
   const content = file.content || "";
-  if ((before?.length ?? 0) + content.length > OPEN_REPO_FILE_SYNTHETIC_DIFF_MAX_BYTES) {
+  if (
+    (before?.length ?? 0) + content.length >
+    OPEN_REPO_FILE_SYNTHETIC_DIFF_MAX_BYTES
+  ) {
     return null;
   }
   const previewPath = file.path || file.requestedPath;
@@ -658,17 +713,21 @@ function synthesizeOpenRepoFileDiff(
   };
 }
 
-function preferredOpenRepoFileDiff(
+export function preferredOpenRepoFileDiff(
   file: OpenRepoFile,
   root: string | null | undefined,
   timelineDiff: FileDiffItem | null | undefined,
   currentDiff: FileDiffItem | null | undefined,
 ): FileDiffItem | null {
   if (file.kind !== "file") return null;
+  if (file.loading) return null;
   if (!timelineDiff) return currentDiff ?? null;
 
   const content = file.content || "";
-  if (typeof timelineDiff.after === "string" && sameFileContent(timelineDiff.after, content)) {
+  if (
+    typeof timelineDiff.after === "string" &&
+    sameFileContent(timelineDiff.after, content)
+  ) {
     return timelineDiff;
   }
 
@@ -767,7 +826,15 @@ function sameDiffStats(
   a: { added: number; removed: number; lines: number } | null | undefined,
   b: { added: number; removed: number; lines: number } | null | undefined,
 ): boolean {
-  return !a && !b ? true : Boolean(a && b && a.added === b.added && a.removed === b.removed && a.lines === b.lines);
+  return !a && !b
+    ? true
+    : Boolean(
+        a &&
+        b &&
+        a.added === b.added &&
+        a.removed === b.removed &&
+        a.lines === b.lines,
+      );
 }
 
 function sameOpenRepoFile(a: OpenRepoFile, b: OpenRepoFile): boolean {
@@ -829,24 +896,29 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [explorerParent, setExplorerParent] = createSignal<string | null>(null);
   const [explorerEntries, setExplorerEntries] = createSignal<FsEntry[]>([]);
   const [recentPaths, setRecentPaths] = createSignal<string[]>([]);
-  const [recentRepoKinds, setRecentRepoKinds] = createSignal<Record<string, GitBranchesValue["repoKind"]>>({});
+  const [recentRepoKinds, setRecentRepoKinds] = createSignal<
+    Record<string, GitBranchesValue["repoKind"]>
+  >({});
   const [recentPathsLoaded, setRecentPathsLoaded] = createSignal(false);
   const [pendingProjectPath, setPendingProjectPath] = createSignal<string | null>(null);
   const [branchPath, setBranchPath] = createSignal<string | null>(null);
   const [branches, setBranches] = createSignal<GitBranchItem[]>([]);
   const [selectedBranch, setSelectedBranch] = createSignal<string | null>(null);
   const [jjRevisions, setJjRevisions] = createSignal<JjRevisionItem[]>([]);
-  const [selectedJjRevision, setSelectedJjRevision] = createSignal<string | null>(null);
-  const [repoKind, setRepoKind] = createSignal<GitBranchesValue["repoKind"]>(null);
+  const [selectedJjRevision, setSelectedJjRevision] = createSignal<
+    string | null
+  >(null);
+  const [repoKind, setRepoKind] =
+    createSignal<GitBranchesValue["repoKind"]>(null);
   const [isGitRepo, setIsGitRepo] = createSignal(false);
   const [isVersionedRepo, setIsVersionedRepo] = createSignal(false);
   const [hasBranchRemote, setHasBranchRemote] = createSignal(false);
   const [branchesLoading, setBranchesLoading] = createSignal(false);
   const [branchesPulling, setBranchesPulling] = createSignal(false);
-  const [branchesUpgrading, setBranchesUpgrading] = createSignal(false);
   const [jjAvailable, setJjAvailable] = createSignal(false);
-  const [canUpgradeToJj, setCanUpgradeToJj] = createSignal(false);
-  const [branchesMessage, setBranchesMessage] = createSignal<string | null>(null);
+  const [branchesMessage, setBranchesMessage] = createSignal<string | null>(
+    null,
+  );
   const [branchesError, setBranchesError] = createSignal<string | null>(null);
   const [explorerBusy, setExplorerBusy] = createSignal(false);
   const [creatingProjectChat, setCreatingProjectChat] = createSignal(false);
@@ -856,15 +928,29 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   async function loadRecentPaths() {
     const recent = await api.chat.recentPaths();
     setRecentPathsLoaded(true);
-    if (recent.ok) {
-      setRecentPaths(recent.value.paths.map((p) => collapseHome(p)));
-      const kinds: Record<string, GitBranchesValue["repoKind"]> = {};
-      for (const repo of recent.value.repos || []) kinds[collapseHome(repo.path)] = repo.repoKind;
-      setRecentRepoKinds(kinds);
+    if (!recent.ok) {
+      setRecentRepoKinds({});
+      return;
     }
-    const recentFirst = recent.ok ? recent.value.paths[0] : null;
+
+    const paths = recent.value.paths.map((p) => collapseHome(p));
+    setRecentPaths(paths);
+    setRecentRepoKinds({});
+
+    const recentFirst = recent.value.paths[0] || null;
     const start = recentFirst ? collapseHome(recentFirst) : explorerPath();
     setExplorerPath(start || ".");
+
+    if (recent.value.paths.length > 0) void loadRecentRepoKinds();
+  }
+
+  async function loadRecentRepoKinds() {
+    const recent = await api.chat.recentPaths(true);
+    if (!recent.ok) return;
+    const kinds: Record<string, GitBranchesValue["repoKind"]> = {};
+    for (const repo of recent.value.repos || [])
+      kinds[collapseHome(repo.path)] = repo.repoKind;
+    setRecentRepoKinds(kinds);
   }
 
   onMount(() => {
@@ -875,26 +961,42 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     return (path || ".").trim().replace(/\/+$/, "") || ".";
   }
 
-  function sameBranchPath(a: string | null | undefined, b: string | null | undefined): boolean {
+  function sameBranchPath(
+    a: string | null | undefined,
+    b: string | null | undefined,
+  ): boolean {
     return cleanDisplayPath(a) === cleanDisplayPath(b);
   }
 
   function selectedBranchFromValue(value: GitBranchesValue): string | null {
-    return value.selectedBranch || value.currentBranch || value.defaultBranch || value.branches[0]?.ref || null;
+    return (
+      value.selectedBranch ||
+      value.currentBranch ||
+      value.defaultBranch ||
+      value.branches[0]?.ref ||
+      null
+    );
   }
 
   function selectedJjRevisionFromValue(value: GitBranchesValue): string | null {
-    return value.selectedJjRevision || value.currentJjRevision || value.jjRevisions?.[0]?.rev || "@";
+    return (
+      value.selectedJjRevision ||
+      value.currentJjRevision ||
+      value.jjRevisions?.[0]?.rev ||
+      "@"
+    );
   }
 
-  function repoKindLabel(kind = repoKind()): string {
+  function repoKindLabel(kind: GitBranchesValue["repoKind"] | undefined): string {
     if (kind === "jj") return "JJ";
     if (kind === "git") return "Git";
-    return "No VCS";
+    if (kind === null) return "No VCS";
+    return "…";
   }
 
-  function recentRepoKind(path: string): GitBranchesValue["repoKind"] {
-    return recentRepoKinds()[path] ?? null;
+  function recentRepoKind(path: string): GitBranchesValue["repoKind"] | undefined {
+    const kinds = recentRepoKinds();
+    return Object.prototype.hasOwnProperty.call(kinds, path) ? kinds[path] : undefined;
   }
 
   function branchStartValue(path = explorerPath()): string | null {
@@ -914,20 +1016,33 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setJjRevisions(value.jjRevisions || []);
     setHasBranchRemote(value.hasRemote);
     setJjAvailable(Boolean(value.jjAvailable));
-    setCanUpgradeToJj(Boolean(value.canUpgradeToJj));
     setSelectedBranch((prev) => {
-      if (sameBranchPath(previousPath, collapsed) && prev && value.branches.some((branch) => branch.ref === prev)) return prev;
+      if (
+        sameBranchPath(previousPath, collapsed) &&
+        prev &&
+        value.branches.some((branch) => branch.ref === prev)
+      )
+        return prev;
       return selectedBranchFromValue(value);
     });
     setSelectedJjRevision((prev) => {
-      if (sameBranchPath(previousPath, collapsed) && prev && (value.jjRevisions || []).some((revision) => revision.rev === prev)) return prev;
+      if (
+        sameBranchPath(previousPath, collapsed) &&
+        prev &&
+        (value.jjRevisions || []).some((revision) => revision.rev === prev)
+      )
+        return prev;
       return selectedJjRevisionFromValue(value);
     });
-    setBranchesMessage(value.message || (value.fetched ? "Fetched remote branches" : null));
+    setBranchesMessage(
+      value.message || (value.fetched ? "Fetched remote branches" : null),
+    );
   }
 
   let branchLoadSeq = 0;
-  async function loadBranches(path = explorerPath()): Promise<GitBranchesValue | null> {
+  async function loadBranches(
+    path = explorerPath(),
+  ): Promise<GitBranchesValue | null> {
     const displayPath = path || ".";
     const seq = ++branchLoadSeq;
     setBranchesLoading(true);
@@ -946,27 +1061,15 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       setSelectedJjRevision(null);
       setHasBranchRemote(false);
       setJjAvailable(false);
-      setCanUpgradeToJj(false);
       setBranchesError(r.error.message);
       return null;
     }
     applyBranchValue(r.value, displayPath);
-    if (!r.value.isRepo) setBranchesMessage("No Git or Jujutsu repository detected; the chat will use this directory as-is.");
+    if (!r.value.isRepo)
+      setBranchesMessage(
+        "No Git or Jujutsu repository detected; the chat will use this directory as-is.",
+      );
     return r.value;
-  }
-
-  async function upgradeGitToJj() {
-    if (branchesUpgrading()) return;
-    const path = branchPath() || pendingProjectPath() || explorerPath();
-    setBranchesUpgrading(true);
-    setBranchesError(null);
-    const r = await api.fs.upgradeGitToJj(expandHome(path));
-    setBranchesUpgrading(false);
-    if (!r.ok) {
-      setBranchesError(r.error.message);
-      return;
-    }
-    applyBranchValue(r.value, path);
   }
 
   async function pullBranches() {
@@ -1023,7 +1126,6 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setSelectedJjRevision(null);
     setHasBranchRemote(false);
     setJjAvailable(false);
-    setCanUpgradeToJj(false);
     setBranchesMessage(null);
     setBranchesError(null);
   }
@@ -1090,159 +1192,174 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       <main class="new-chat-route" aria-label="start a new chat">
         <section class="new-chat-panel" aria-label="New chat options">
           <Show when={pendingProjectPath()} fallback={
-          <section
-            class="fs-explorer fs-explorer-main"
-            aria-label="project directory"
-          >
-            <button
-              type="button"
-              class="fs-pick-toggle fs-scratch-toggle"
-              onClick={createRepoLessChat}
-            >
-              <span class="fs-scratch-title">Start without a project</span>
-            </button>
-            <Show when={recentPaths().length > 0}>
-              <div class="fs-section-title">Recent projects</div>
-              <div
-                class="fs-recent-list"
-                role="list"
-                aria-label="recent directories"
+              <section
+                class="fs-explorer fs-explorer-main"
+                aria-label="project directory"
               >
-                <For each={recentPaths()}>
-                  {(path) => (
-                    <button
-                      type="button"
-                      role="listitem"
-                      title={path}
-                      onClick={() => chooseRecentPath(path)}
-                      disabled={creatingProjectChat() || branchesLoading()}
-                    >
-                      <span class="fs-folder">📁</span>
-                      <span class="fs-recent-path">{path}</span>
-                      <span classList={{ "fs-repo-badge": true, "is-git": recentRepoKind(path) === "git", "is-jj": recentRepoKind(path) === "jj", "is-none": !recentRepoKind(path) }}>
-                        {repoKindLabel(recentRepoKind(path))}
-                      </span>
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
-            <Show when={recentPaths().length === 0}>
-              <Show
-                when={recentPathsLoaded()}
-                fallback={
-                  <div class="fs-loading-centered">
-                    <LoadingDots label="loading recent projects" />
-                  </div>
-                }
-              >
-                <div class="fs-empty">
-                  No recent projects yet. Enter a path below or browse folders.
-                </div>
-              </Show>
-            </Show>
-            <div class="fs-path-card">
-              <label for="new-chat-path">Project path</label>
-              <div class="fs-path-row">
-                <input
-                  id="new-chat-path"
-                  value={explorerPath()}
-                  onInput={(e) => setExplorerPath(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") createChatInExplorer();
-                  }}
-                  aria-label="project path"
-                  placeholder="/path/to/project"
-                />
                 <button
                   type="button"
-                  class="fs-start-action"
-                  onClick={createChatInExplorer}
-                  disabled={creatingProjectChat() || branchesLoading()}
+                  class="fs-pick-toggle fs-scratch-toggle"
+                  onClick={createRepoLessChat}
                 >
-                  Start
+                  <span class="fs-scratch-title">Start without a project</span>
                 </button>
-              </div>
-              <button
-                type="button"
-                class="fs-pick-toggle fs-browse-toggle"
-                onClick={() => openPathPicker()}
-              >
-                Browse folders
-              </button>
-            </div>
-            <Show when={explorerExpanded()}>
-              <div class="fs-picker">
-                <div class="fs-path-row fs-browser-row">
-                  <input
-                    value={explorerPath()}
-                    onInput={(e) => setExplorerPath(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openPathPicker();
-                    }}
-                    aria-label="browse path"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => openPathPicker()}
-                    disabled={explorerBusy()}
+                <Show when={recentPaths().length > 0}>
+                  <div class="fs-section-title">Recent projects</div>
+                  <div
+                    class="fs-recent-list"
+                    role="list"
+                    aria-label="recent directories"
                   >
-                    Go
-                  </button>
-                </div>
-                <Show when={explorerError()}>
-                  <div class="fs-error">
-                    <PrettyError
-                      title="Couldn’t browse folder"
-                      message={explorerError() || "Unable to list this folder"}
-                    />
+                    <For each={recentPaths()}>
+                      {(path) => (
+                        <button
+                          type="button"
+                          role="listitem"
+                          title={path}
+                          onClick={() => chooseRecentPath(path)}
+                          disabled={creatingProjectChat() || branchesLoading()}
+                        >
+                          <span class="fs-folder">📁</span>
+                          <span class="fs-recent-path">{path}</span>
+                          <span
+                            classList={{
+                              "fs-repo-badge": true,
+                              "is-git": recentRepoKind(path) === "git",
+                              "is-jj": recentRepoKind(path) === "jj",
+                              "is-none": recentRepoKind(path) === null,
+                              "is-loading": recentRepoKind(path) === undefined,
+                            }}
+                          >
+                            {repoKindLabel(recentRepoKind(path))}
+                          </span>
+                        </button>
+                      )}
+                    </For>
                   </div>
                 </Show>
-                <div class="fs-entries" aria-busy={explorerBusy()}>
-                  <Show when={explorerParent()}>
-                    {(parent) => (
-                      <button
-                        type="button"
-                        class="fs-entry dir"
-                        onClick={() => openPathPicker(parent())}
-                      >
-                        <span>↩</span>
-                        <span>..</span>
-                      </button>
-                    )}
+                <Show when={recentPaths().length === 0}>
+                  <Show
+                    when={recentPathsLoaded()}
+                    fallback={
+                      <div class="fs-loading-centered">
+                        <LoadingDots label="loading recent projects" />
+                      </div>
+                    }
+                  >
+                    <div class="fs-empty">
+                      No recent projects yet. Enter a path below or browse
+                      folders.
+                    </div>
                   </Show>
-                  <For each={explorerEntries()}>
-                    {(entry) => (
+                </Show>
+                <div class="fs-path-card">
+                  <label for="new-chat-path">Project path</label>
+                  <div class="fs-path-row">
+                    <input
+                      id="new-chat-path"
+                      value={explorerPath()}
+                      onInput={(e) => setExplorerPath(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") createChatInExplorer();
+                      }}
+                      aria-label="project path"
+                      placeholder="/path/to/project"
+                    />
+                    <button
+                      type="button"
+                      class="fs-start-action"
+                      onClick={createChatInExplorer}
+                      disabled={creatingProjectChat() || branchesLoading()}
+                    >
+                      Start
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="fs-pick-toggle fs-browse-toggle"
+                    onClick={() => openPathPicker()}
+                  >
+                    Browse folders
+                  </button>
+                </div>
+                <Show when={explorerExpanded()}>
+                  <div class="fs-picker">
+                    <div class="fs-path-row fs-browser-row">
+                      <input
+                        value={explorerPath()}
+                        onInput={(e) => setExplorerPath(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") openPathPicker();
+                        }}
+                        aria-label="browse path"
+                      />
                       <button
                         type="button"
-                        class={"fs-entry " + entry.kind}
-                        classList={{ changed: entry.changed }}
-                        disabled={entry.kind !== "dir"}
-                        title={collapseHome(entry.path)}
-                        onClick={() =>
-                          entry.kind === "dir" && openPathPicker(entry.path)
-                        }
+                        onClick={() => openPathPicker()}
+                        disabled={explorerBusy()}
                       >
-                        <span>
-                          {entry.kind === "dir"
-                            ? "📁"
-                            : entry.kind === "symlink"
-                              ? "↗"
-                              : "·"}
-                        </span>
-                        <span>{entry.name}</span>
-                        <Show when={entry.changed}>
-                          <EntryDiffBadge entry={entry} />
-                        </Show>
+                        Go
                       </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-            </Show>
-          </section>
-          }>
-            <section class="fs-branch-step" aria-label="choose repository branch">
+                    </div>
+                    <Show when={explorerError()}>
+                      <div class="fs-error">
+                        <PrettyError
+                          title="Couldn’t browse folder"
+                          message={
+                            explorerError() || "Unable to list this folder"
+                          }
+                        />
+                      </div>
+                    </Show>
+                    <div class="fs-entries" aria-busy={explorerBusy()}>
+                      <Show when={explorerParent()}>
+                        {(parent) => (
+                          <button
+                            type="button"
+                            class="fs-entry dir"
+                            onClick={() => openPathPicker(parent())}
+                          >
+                            <span>↩</span>
+                            <span>..</span>
+                          </button>
+                        )}
+                      </Show>
+                      <For each={explorerEntries()}>
+                        {(entry) => (
+                          <button
+                            type="button"
+                            class={"fs-entry " + entry.kind}
+                            classList={{ changed: entry.changed }}
+                            disabled={entry.kind !== "dir"}
+                            title={collapseHome(entry.path)}
+                            onClick={() =>
+                              entry.kind === "dir" && openPathPicker(entry.path)
+                            }
+                          >
+                            <span>
+                              {entry.kind === "dir"
+                                ? "📁"
+                                : entry.kind === "symlink"
+                                  ? "↗"
+                                  : "·"}
+                            </span>
+                            <span>{entry.name}</span>
+                            <Show when={entry.changed}>
+                              <EntryDiffBadge entry={entry} />
+                            </Show>
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+              </section>
+            }
+          >
+            <section
+              class="fs-branch-step"
+              aria-label="choose repository branch"
+            >
               <div class="fs-branch-step-topline">
                 <button
                   type="button"
@@ -1255,102 +1372,106 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                 </button>
                 <div class="fs-branch-title-block">
                   <h2 class="fs-branch-project" title={pendingProjectPath() || ""}>{pendingProjectPath()}</h2>
-                  <div class="fs-repo-kind">{repoKindLabel()}{jjAvailable() ? " · jj available" : ""}</div>
+                  <div class="fs-repo-kind">{repoKindLabel(repoKind())}</div>
                 </div>
                 <button
                   type="button"
                   class="fs-start-action fs-branch-start"
                   onClick={createChatWithBranch}
-                  disabled={creatingProjectChat() || branchesPulling() || branchesUpgrading()}
+                  disabled={creatingProjectChat() || branchesPulling()}
                 >
                   Start
                 </button>
               </div>
               <Show when={repoKind() === "jj"}>
-              <div class="fs-branch-card" aria-label="jj start revision">
-                <div class="fs-branch-header">
-                  <label for="new-chat-jj-revision">JJ start revision</label>
+                <div class="fs-branch-card" aria-label="jj start revision">
+                  <div class="fs-branch-header">
+                    <label for="new-chat-jj-revision">JJ start revision</label>
+                  </div>
+                  <select
+                    id="new-chat-jj-revision"
+                    value={selectedJjRevision() || "@"}
+                    onChange={(e) =>
+                      setSelectedJjRevision(e.currentTarget.value || "@")
+                    }
+                    disabled={jjRevisions().length === 0}
+                    aria-label="jj revision to start from"
+                  >
+                    <For each={jjRevisions()}>
+                      {(revision) => (
+                        <option value={revision.rev}>
+                          {revision.current ? "● " : ""}
+                          {revision.name}
+                          {revision.kind === "bookmark"
+                            ? " (bookmark)"
+                            : revision.kind === "trunk"
+                              ? " (trunk)"
+                              : ""}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                  <div class="fs-branch-hint">
+                    Choose the jj change, bookmark, or trunk revision the new
+                    workspace should start from.
+                  </div>
+                  <Show when={branchesError()}>
+                    <div class="fs-branch-error">{branchesError()}</div>
+                  </Show>
+                  <Show when={branchesMessage()}>
+                    <div class="fs-branch-message">{branchesMessage()}</div>
+                  </Show>
                 </div>
-                <select
-                  id="new-chat-jj-revision"
-                  value={selectedJjRevision() || "@"}
-                  onChange={(e) => setSelectedJjRevision(e.currentTarget.value || "@")}
-                  disabled={branchesUpgrading() || jjRevisions().length === 0}
-                  aria-label="jj revision to start from"
-                >
-                  <For each={jjRevisions()}>
-                    {(revision) => (
-                      <option value={revision.rev}>
-                        {revision.current ? "● " : ""}{revision.name}{revision.kind === "bookmark" ? " (bookmark)" : revision.kind === "trunk" ? " (trunk)" : ""}
-                      </option>
-                    )}
-                  </For>
-                </select>
-                <div class="fs-branch-hint">
-                  Choose the jj change, bookmark, or trunk revision the new workspace should start from.
-                </div>
-                <Show when={branchesError()}>
-                  <div class="fs-branch-error">{branchesError()}</div>
-                </Show>
-                <Show when={branchesMessage()}>
-                  <div class="fs-branch-message">{branchesMessage()}</div>
-                </Show>
-              </div>
               </Show>
               <Show when={isGitRepo()}>
-              <div class="fs-branch-card" aria-label="git branch">
-                <div class="fs-branch-header">
-                  <label for="new-chat-branch">Git branch</label>
-                  <div class="fs-branch-header-actions">
-                    <Show when={canUpgradeToJj()}>
+                <div class="fs-branch-card" aria-label="git branch">
+                  <div class="fs-branch-header">
+                    <label for="new-chat-branch">Git branch</label>
+                    <div class="fs-branch-header-actions">
                       <button
                         type="button"
-                        class="fs-branch-upgrade"
-                        onClick={upgradeGitToJj}
-                        disabled={branchesPulling() || branchesUpgrading()}
-                        title="Initialize colocated Jujutsu metadata for this Git repo"
+                        class="fs-branch-pull"
+                        onClick={pullBranches}
+                        disabled={!isGitRepo() || !hasBranchRemote() || branchesLoading() || branchesPulling()}
+                        title="Fetch remote branches"
                       >
-                        {branchesUpgrading() ? "Upgrading…" : "Upgrade to jj"}
+                        {branchesPulling() ? "Pulling…" : "Pull branches"}
                       </button>
-                    </Show>
-                  <button
-                    type="button"
-                    class="fs-branch-pull"
-                    onClick={pullBranches}
-                    disabled={!isGitRepo() || !hasBranchRemote() || branchesLoading() || branchesPulling()}
-                    title="Fetch remote branches"
+                    </div>
+                  </div>
+                  <select
+                    id="new-chat-branch"
+                    value={selectedBranch() || ""}
+                    onChange={(e) =>
+                      setSelectedBranch(e.currentTarget.value || null)
+                    }
+                    disabled={branchesPulling() || branches().length === 0}
+                    aria-label="git branch to start from"
                   >
-                    {branchesPulling() ? "Pulling…" : "Pull branches"}
-                  </button>
-                  </div>
+                    <For each={branches()}>
+                      {(branch) => (
+                        <option value={branch.ref}>
+                          {branch.current ? "● " : ""}
+                          {branch.name}
+                          {branch.kind === "remote" ? " (remote)" : ""}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                  <Show when={branchesLoading() || !selectedBranch()}>
+                    <div class="fs-branch-hint">
+                      {branchesLoading()
+                        ? "Loading branches in the background. You can start now using the current checkout."
+                        : "Choose a branch to start from, or start using this directory as-is."}
+                    </div>
+                  </Show>
+                  <Show when={branchesError()}>
+                    <div class="fs-branch-error">{branchesError()}</div>
+                  </Show>
+                  <Show when={branchesMessage()}>
+                    <div class="fs-branch-message">{branchesMessage()}</div>
+                  </Show>
                 </div>
-                <select
-                  id="new-chat-branch"
-                  value={selectedBranch() || ""}
-                  onChange={(e) => setSelectedBranch(e.currentTarget.value || null)}
-                  disabled={branchesPulling() || branches().length === 0}
-                  aria-label="git branch to start from"
-                >
-                  <For each={branches()}>
-                    {(branch) => (
-                      <option value={branch.ref}>
-                        {branch.current ? "● " : ""}{branch.name}{branch.kind === "remote" ? " (remote)" : ""}
-                      </option>
-                    )}
-                  </For>
-                </select>
-                <Show when={branchesLoading() || !selectedBranch()}>
-                  <div class="fs-branch-hint">
-                    {branchesLoading() ? "Loading branches in the background. You can start now using the current checkout." : "Choose a branch to start from, or start using this directory as-is."}
-                  </div>
-                </Show>
-                <Show when={branchesError()}>
-                  <div class="fs-branch-error">{branchesError()}</div>
-                </Show>
-                <Show when={branchesMessage()}>
-                  <div class="fs-branch-message">{branchesMessage()}</div>
-                </Show>
-              </div>
               </Show>
             </section>
           </Show>
@@ -1369,6 +1490,9 @@ function RepoFileDiffPreview(props: {
   onOpenStore?: (hash: string) => void;
   scopeLabel?: "Individual change" | "Chat changeset";
   expansionKeyPrefix?: string;
+  viewState?: DiffViewState;
+  setMode?: (mode: DiffContentMode) => void;
+  setScrollTop?: (scrollTop: number, mode: DiffContentMode) => void;
 }) {
   const previewPath = () => props.file.path || props.file.requestedPath;
   const relativePreviewPath = () =>
@@ -1377,12 +1501,16 @@ function RepoFileDiffPreview(props: {
   const displayPath = () =>
     displayFilePath(previewPath(), props.assetRootPath ?? null);
   const recordedAfterContent = () =>
-    typeof props.diff.after === "string"
-      ? props.diff.after
-      : null;
+    typeof props.diff.after === "string" ? props.diff.after : null;
   const latestContent = () =>
     props.file.kind === "file" ? props.file.content || "" : "";
-  const [mode, setMode] = createSignal<DiffContentMode>("diff");
+  const [localMode, setLocalMode] = createSignal<DiffContentMode>("diff");
+  const mode = () => props.viewState?.mode ?? localMode();
+  const setMode = (nextMode: DiffContentMode) => {
+    props.setMode?.(nextMode);
+    if (!props.viewState) setLocalMode(nextMode);
+  };
+  const scrollTop = () => props.viewState?.scrollTopByMode[mode()] ?? 0;
   const sizeBytes = () =>
     props.file.loading && props.file.size === 0
       ? (cachedFileSizeBytes(previewPath(), props.assetRootPath) ??
@@ -1394,7 +1522,9 @@ function RepoFileDiffPreview(props: {
   createEffect(
     on(
       () => props.diff.id + "\n" + previewPath(),
-      () => setMode("diff"),
+      () => {
+        if (!props.viewState) setMode("diff");
+      },
     ),
   );
 
@@ -1414,12 +1544,15 @@ function RepoFileDiffPreview(props: {
       onOpenStore={props.onOpenStore}
       expansion={props.expansion}
       expansionKeyPrefix={
-        props.expansionKeyPrefix ?? `browser:${normalizedBrowserDiffPath(diffPath())}`
+        props.expansionKeyPrefix ??
+        `browser:${normalizedBrowserDiffPath(diffPath())}`
       }
       sizeBytes={sizeBytes()}
       stats={props.diff.stats}
       loading={visibleLoading()}
       error={props.file.error}
+      scrollTop={scrollTop()}
+      onScrollTopChange={props.setScrollTop}
     />
   );
 }
@@ -1447,6 +1580,8 @@ function FileDiffPanel(props: {
   class?: string;
   ref?: HTMLElement | ((el: HTMLElement) => void);
   tabIndex?: number;
+  scrollTop?: number | null;
+  onScrollTopChange?: (scrollTop: number, mode: DiffContentMode) => void;
 }) {
   const sourcePath = () => props.sourcePath || props.path;
   const previewKind = () => previewKindForPath(sourcePath());
@@ -1458,6 +1593,33 @@ function FileDiffPanel(props: {
   const renderedSource = createMemo(() =>
     highlightByPath(sourceContent(), sourcePath()),
   );
+  let scrollEl: HTMLElement | undefined;
+  const setScrollEl = (el: HTMLElement) => {
+    scrollEl = el;
+    restoreScrollTop();
+  };
+  const restoreScrollTop = () => {
+    const top = props.scrollTop;
+    if (typeof top !== "number") return;
+    requestAnimationFrame(() => {
+      if (scrollEl) scrollEl.scrollTop = top;
+    });
+  };
+  const handleScroll = (event: Event) => {
+    props.onScrollTopChange?.(
+      (event.currentTarget as HTMLElement).scrollTop,
+      props.mode(),
+    );
+  };
+  createEffect(() => {
+    props.path;
+    props.diff;
+    props.snapshot;
+    props.sourceContent;
+    props.mode();
+    props.scrollTop;
+    restoreScrollTop();
+  });
   const stats = createMemo(() => props.stats ?? diffStats(props.diff || ""));
   const hasStats = () =>
     Boolean(props.stats) || stats().added > 0 || stats().removed > 0;
@@ -1467,6 +1629,7 @@ function FileDiffPanel(props: {
     hasSize() ? formatBytes(props.sizeBytes ?? 0) : "000.0 KiB",
   );
   createEffect(() => {
+    if (props.loading) return;
     if (props.mode() === "preview" && !hasPreview()) props.setMode("diff");
     if (props.mode() === "source" && !hasSnapshot()) props.setMode("diff");
   });
@@ -1475,8 +1638,10 @@ function FileDiffPanel(props: {
       when={props.mode() === "preview" && hasPreview()}
       fallback={
         <pre
+          ref={setScrollEl}
           class="repo-file-content repo-file-source right-diff-snapshot-source"
           innerHTML={renderedSource()}
+          onScroll={handleScroll}
         />
       }
     >
@@ -1486,6 +1651,8 @@ function FileDiffPanel(props: {
         path={sourcePath()}
         assetRootPath={props.assetRootPath ?? null}
         onOpenFile={props.onOpenFile}
+        ref={setScrollEl}
+        onScroll={handleScroll}
       />
     </Show>
   );
@@ -1545,9 +1712,11 @@ function FileDiffPanel(props: {
       </div>
       <Show when={props.mode() === "diff"} fallback={renderedSnapshot()}>
         <div
+          ref={setScrollEl}
           class="file-diff-body right-diff-body"
           role="log"
           aria-label={`${props.scopeLabel} for ${props.displayPath}`}
+          onScroll={handleScroll}
         >
           <DiffView
             diff={props.diff}
@@ -1573,6 +1742,14 @@ export function RepoFilePreview(props: {
   diffStats?: BrowserDiffStatsMap;
   expansion?: DiffExpansionStore;
   onOpenStore?: (hash: string) => void;
+  syntaxHighlightMaxBytes?: number;
+  diffViewState?: (key: string) => DiffViewState;
+  setDiffViewMode?: (key: string, mode: DiffContentMode) => void;
+  setDiffViewScrollTop?: (
+    key: string,
+    scrollTop: number,
+    mode: DiffContentMode,
+  ) => void;
 }) {
   const previewPath = () => props.file.path || props.file.requestedPath;
   const previewKind = () => previewKindForPath(previewPath());
@@ -1598,7 +1775,11 @@ export function RepoFilePreview(props: {
     isDiffFile() ? "diff" : previewKind() ? "preview" : "source",
   );
   const renderedSource = createMemo(() =>
-    highlightByPath(props.file.content || "", previewPath()),
+    highlightByPath(
+      props.file.content || "",
+      previewPath(),
+      props.syntaxHighlightMaxBytes ?? DEFAULT_HIGHLIGHT_MAX_BYTES,
+    ),
   );
   const directoryEntries = createMemo(() =>
     directoryEntriesWithParent(
@@ -1615,7 +1796,43 @@ export function RepoFilePreview(props: {
     ),
   );
   const diffFileStats = createMemo(() => diffStats(props.file.content || ""));
+  const readyTimelineDiff = (item: FileDiffItem | null | undefined) =>
+    item && !expandedFileDiffNeedsHydration(item) ? item : null;
+  const [hydratedTimelineDiff, setHydratedTimelineDiff] =
+    createSignal<FileDiffItem | null>(readyTimelineDiff(props.timelineDiff));
+  let hydrateTimelineDiffRequest = 0;
+  createEffect(
+    on(
+      () =>
+        props.timelineDiff
+          ? expandedFileDiffHydrationKey(props.timelineDiff)
+          : "",
+      async () => {
+        const request = ++hydrateTimelineDiffRequest;
+        const current = props.timelineDiff ?? null;
+        if (!current) {
+          setHydratedTimelineDiff(null);
+          return;
+        }
+        if (!expandedFileDiffNeedsHydration(current)) {
+          setHydratedTimelineDiff(current);
+          return;
+        }
+        setHydratedTimelineDiff(null);
+        const next = await hydrateMergedFileDiff(current);
+        if (request === hydrateTimelineDiffRequest)
+          setHydratedTimelineDiff(next);
+      },
+    ),
+  );
+  const timelineDiffHydrating = () =>
+    Boolean(
+      props.timelineDiff &&
+      expandedFileDiffNeedsHydration(props.timelineDiff) &&
+      !hydratedTimelineDiff(),
+    );
   const currentFileDiff = createMemo(() => {
+    if (timelineDiffHydrating()) return null;
     const currentDiff = openRepoFileCurrentDiff(
       props.file,
       props.assetRootPath ?? null,
@@ -1624,7 +1841,7 @@ export function RepoFilePreview(props: {
     return preferredOpenRepoFileDiff(
       props.file,
       props.assetRootPath ?? null,
-      props.timelineDiff,
+      hydratedTimelineDiff(),
       currentDiff,
     );
   });
@@ -1764,17 +1981,30 @@ export function RepoFilePreview(props: {
     />
   );
 
-  const currentDiffFile = (diff: FileDiffItem) => (
-    <RepoFileDiffPreview
-      file={props.file}
-      diff={diff}
-      assetRootPath={props.assetRootPath}
-      expansion={props.expansion}
-      expansionKeyPrefix={`repo-file:${normalizedBrowserDiffPath(diff.path)}`}
-      onOpenFile={props.onOpenFile}
-      onOpenStore={props.onOpenStore}
-    />
-  );
+  const currentDiffViewKey = (diff: FileDiffItem) =>
+    normalizedBrowserDiffPath(
+      diff.path || props.file.path || props.file.requestedPath,
+    );
+
+  const currentDiffFile = (diff: FileDiffItem) => {
+    const viewKey = currentDiffViewKey(diff);
+    return (
+      <RepoFileDiffPreview
+        file={props.file}
+        diff={diff}
+        assetRootPath={props.assetRootPath}
+        expansion={props.expansion}
+        expansionKeyPrefix={`repo-file:${normalizedBrowserDiffPath(diff.path)}`}
+        onOpenFile={props.onOpenFile}
+        onOpenStore={props.onOpenStore}
+        viewState={props.diffViewState?.(viewKey)}
+        setMode={(mode) => props.setDiffViewMode?.(viewKey, mode)}
+        setScrollTop={(scrollTop, mode) =>
+          props.setDiffViewScrollTop?.(viewKey, scrollTop, mode)
+        }
+      />
+    );
+  };
 
   return (
     <Show
@@ -1945,10 +2175,10 @@ export function RightSidebar(props: { bag: Bag }) {
                             : tab.kind === "json"
                               ? "{}"
                               : tab.kind === "trace"
-                              ? "⌁"
-                              : tab.kind === "app" || tab.kind === "app-code"
-                                ? tab.icon || "▣"
-                                : "□"}
+                                ? "⌁"
+                                : tab.kind === "app" || tab.kind === "app-code"
+                                  ? tab.icon || "▣"
+                                  : "□"}
                 </span>
                 <span class="right-tab-title">
                   {tabTitle(tab, props.bag.currentChatWorktreePath())}
@@ -1990,7 +2220,9 @@ export function RightSidebar(props: { bag: Bag }) {
             <Switch fallback={<TrailsTab bag={props.bag} />}>
               <Match when={tab().kind === "file"}>
                 <RepoFilePreview
-                  file={(tab() as Extract<RightSidebarTab, { kind: "file" }>).file}
+                  file={
+                    (tab() as Extract<RightSidebarTab, { kind: "file" }>).file
+                  }
                   assetRootPath={props.bag.currentChatWorktreePath()}
                   timelineDiff={openRepoFileTimelineDiff(
                     (tab() as Extract<RightSidebarTab, { kind: "file" }>).file,
@@ -2002,11 +2234,19 @@ export function RightSidebar(props: { bag: Bag }) {
                     void props.bag.openStorePreviewInSidebar(hash)
                   }
                   expansion={props.bag.expansionStore()}
+                  syntaxHighlightMaxBytes={
+                    props.bag.settingsCache()?.ui?.syntaxHighlightMaxBytes
+                  }
+                  diffViewState={props.bag.expandedDiffViewState}
+                  setDiffViewMode={props.bag.setExpandedDiffViewMode}
+                  setDiffViewScrollTop={props.bag.setExpandedDiffViewScrollTop}
                 />
               </Match>
               <Match when={tab().kind === "store"}>
                 <StorePreviewTab
-                  store={(tab() as Extract<RightSidebarTab, { kind: "store" }>).store}
+                  store={
+                    (tab() as Extract<RightSidebarTab, { kind: "store" }>).store
+                  }
                   onClose={() => void props.bag.closeRightSidebarTab(tab().id)}
                   onOpenStore={(hash) =>
                     void props.bag.openStorePreviewInSidebar(hash)
@@ -2015,7 +2255,9 @@ export function RightSidebar(props: { bag: Bag }) {
               </Match>
               <Match when={tab().kind === "json"}>
                 <JsonPreviewTab
-                  json={(tab() as Extract<RightSidebarTab, { kind: "json" }>).json}
+                  json={
+                    (tab() as Extract<RightSidebarTab, { kind: "json" }>).json
+                  }
                   onClose={() => void props.bag.closeRightSidebarTab(tab().id)}
                   onOpenStore={(hash) =>
                     void props.bag.openStorePreviewInSidebar(hash)
@@ -2048,7 +2290,10 @@ export function RightSidebar(props: { bag: Bag }) {
               <Match when={tab().kind === "app-code"}>
                 <AppCodeExplorer
                   bag={props.bag}
-                  uiId={(tab() as Extract<RightSidebarTab, { kind: "app-code" }>).uiId}
+                  uiId={
+                    (tab() as Extract<RightSidebarTab, { kind: "app-code" }>)
+                      .uiId
+                  }
                 />
               </Match>
               <Match when={tab().kind === "browser"}>
@@ -2121,19 +2366,60 @@ function BrowserTab(props: {
     return stats;
   });
 
-  const browserFileDiff = createMemo(() => {
-    const current = file();
-    const timelineDiff = openRepoFileTimelineDiff(
-      current,
-      rootPath(),
-      browserDiffs(),
+  const browserTimelineDiff = createMemo(() =>
+    openRepoFileTimelineDiff(file(), rootPath(), browserDiffs()),
+  );
+  const readyBrowserTimelineDiff = (item: FileDiffItem | null | undefined) =>
+    item && !expandedFileDiffNeedsHydration(item) ? item : null;
+  const [hydratedBrowserTimelineDiff, setHydratedBrowserTimelineDiff] =
+    createSignal<FileDiffItem | null>(
+      readyBrowserTimelineDiff(browserTimelineDiff()),
     );
+  let hydrateBrowserTimelineDiffRequest = 0;
+  createEffect(
+    on(
+      () =>
+        browserTimelineDiff()
+          ? expandedFileDiffHydrationKey(browserTimelineDiff()!)
+          : "",
+      async () => {
+        const request = ++hydrateBrowserTimelineDiffRequest;
+        const current = browserTimelineDiff();
+        if (!current) {
+          setHydratedBrowserTimelineDiff(null);
+          return;
+        }
+        if (!expandedFileDiffNeedsHydration(current)) {
+          setHydratedBrowserTimelineDiff(current);
+          return;
+        }
+        setHydratedBrowserTimelineDiff(null);
+        const next = await hydrateMergedFileDiff(current);
+        if (request === hydrateBrowserTimelineDiffRequest)
+          setHydratedBrowserTimelineDiff(next);
+      },
+    ),
+  );
+  const browserTimelineDiffHydrating = () =>
+    Boolean(
+      browserTimelineDiff() &&
+      expandedFileDiffNeedsHydration(browserTimelineDiff()!) &&
+      !hydratedBrowserTimelineDiff(),
+    );
+  const browserFileDiff = createMemo(() => {
+    if (browserTimelineDiffHydrating()) return null;
+    const current = file();
     const currentDiff = openRepoFileCurrentDiff(
       current,
       rootPath(),
       "browser-current",
     );
-    return preferredOpenRepoFileDiff(current, rootPath(), timelineDiff, currentDiff);
+    return preferredOpenRepoFileDiff(
+      current,
+      rootPath(),
+      hydratedBrowserTimelineDiff(),
+      currentDiff,
+    );
   });
 
   const openPath = (path: string | null | undefined, replace = false) => {
@@ -2310,6 +2596,12 @@ function BrowserTab(props: {
             }
             expansion={props.bag.expansionStore()}
             diffStats={timelineDiffStats()}
+            syntaxHighlightMaxBytes={
+              props.bag.settingsCache()?.ui?.syntaxHighlightMaxBytes
+            }
+            diffViewState={props.bag.expandedDiffViewState}
+            setDiffViewMode={props.bag.setExpandedDiffViewMode}
+            setDiffViewScrollTop={props.bag.setExpandedDiffViewScrollTop}
           />
         }
       >
@@ -2322,6 +2614,28 @@ function BrowserTab(props: {
             onOpenFile={openPath}
             onOpenStore={(hash) =>
               void props.bag.openStorePreviewInSidebar(hash)
+            }
+            viewState={props.bag.expandedDiffViewState(
+              normalizedBrowserDiffPath(
+                diff().path || file().path || file().requestedPath,
+              ),
+            )}
+            setMode={(mode) =>
+              props.bag.setExpandedDiffViewMode(
+                normalizedBrowserDiffPath(
+                  diff().path || file().path || file().requestedPath,
+                ),
+                mode,
+              )
+            }
+            setScrollTop={(scrollTop, mode) =>
+              props.bag.setExpandedDiffViewScrollTop(
+                normalizedBrowserDiffPath(
+                  diff().path || file().path || file().requestedPath,
+                ),
+                scrollTop,
+                mode,
+              )
             }
           />
         )}
@@ -2355,10 +2669,10 @@ function TraceDetailHeader(props: { bag: Bag; tab: RightSidebarTab | null }) {
       : props.tab?.kind === "json"
         ? "{}"
         : props.tab?.kind === "trace"
-        ? "⌁"
-        : props.tab?.kind === "browser"
-          ? "▤"
-          : "□";
+          ? "⌁"
+          : props.tab?.kind === "browser"
+            ? "▤"
+            : "□";
   return (
     <header class="trace-sidebar-header">
       <div class="trace-sidebar-title" title={title()}>
@@ -2406,7 +2720,10 @@ function JsonPreviewTab(props: {
   const downloadName = () => props.json.downloadName || "pointer.json";
   const downloadMime = () => props.json.downloadMime || "application/json";
   const downloadHref = () =>
-    "data:" + downloadMime() + ";charset=utf-8," + encodeURIComponent(props.json.raw);
+    "data:" +
+    downloadMime() +
+    ";charset=utf-8," +
+    encodeURIComponent(props.json.raw);
   const previewClass = () =>
     props.json.layout === "bare"
       ? "store-preview json-preview json-preview-bare"
@@ -3114,7 +3431,9 @@ function FileDiffList(props: { bag: Bag; diffs: FileDiffItem[] }) {
               title={collapseHome(item.path)}
             >
               <span class="trail-history-diff-dot" aria-hidden="true" />
-              <span class="right-diff-path"><span class="path-ellipsis-text">{collapseHome(item.path)}</span></span>
+              <span class="right-diff-path"><span class="path-ellipsis-text">
+                {collapseHome(item.path)}
+              </span></span>
               <ChangeStatsBadge
                 stats={() => stats}
                 label={() => diffStatLabel(item)}
@@ -3136,13 +3455,30 @@ type DiffJumpOption = {
   label: string;
 };
 
-function ExpandedFileDiffList(props: { bag: Bag; diffs: MergedFileDiffItem[] }) {
+function ExpandedFileDiffList(props: {
+  bag: Bag;
+  diffs: MergedFileDiffItem[];
+}) {
   const fileRefs = new Map<string, HTMLElement>();
+  const viewStateKey = (item: MergedFileDiffItem) =>
+    normalizedBrowserDiffPath(item.path);
+  const viewStateFor = (item: MergedFileDiffItem) =>
+    props.bag.expandedDiffViewState(viewStateKey(item));
+  const setViewMode = (item: MergedFileDiffItem, mode: DiffContentMode) => {
+    props.bag.setExpandedDiffViewMode(viewStateKey(item), mode);
+  };
+  const setViewScrollTop = (
+    item: MergedFileDiffItem,
+    scrollTop: number,
+    mode: DiffContentMode,
+  ) => {
+    props.bag.setExpandedDiffViewScrollTop(viewStateKey(item), scrollTop, mode);
+  };
   const registerFile = (item: MergedFileDiffItem, el: HTMLElement) => {
-    fileRefs.set(diffJumpKey(item), el);
+    fileRefs.set(viewStateKey(item), el);
   };
   const jumpToFile = (item: MergedFileDiffItem) => {
-    const el = fileRefs.get(diffJumpKey(item));
+    const el = fileRefs.get(viewStateKey(item));
     if (!el) return;
     el.scrollIntoView({
       block: "start",
@@ -3152,9 +3488,11 @@ function ExpandedFileDiffList(props: { bag: Bag; diffs: MergedFileDiffItem[] }) 
     el.focus({ preventScroll: true });
   };
   createEffect(() => {
-    const valid = new Set(props.diffs.map(diffJumpKey));
+    const valid = new Set(props.diffs.map(viewStateKey));
     for (const key of Array.from(fileRefs.keys())) {
-      if (!valid.has(key)) fileRefs.delete(key);
+      if (!valid.has(key)) {
+        fileRefs.delete(key);
+      }
     }
   });
   return (
@@ -3169,6 +3507,11 @@ function ExpandedFileDiffList(props: { bag: Bag; diffs: MergedFileDiffItem[] }) 
               bag={props.bag}
               item={item}
               register={(el) => registerFile(item, el)}
+              viewState={viewStateFor(item)}
+              setMode={(mode) => setViewMode(item, mode)}
+              setScrollTop={(scrollTop, mode) =>
+                setViewScrollTop(item, scrollTop, mode)
+              }
             />
           )}
         </For>
@@ -3305,9 +3648,25 @@ function ExpandedFileDiffCard(props: {
   bag: Bag;
   item: MergedFileDiffItem;
   register: (el: HTMLElement) => void;
+  viewState: DiffViewState;
+  setMode: (mode: DiffContentMode) => void;
+  setScrollTop: (scrollTop: number, mode: DiffContentMode) => void;
 }) {
-  const [mode, setMode] = createSignal<DiffContentMode>("diff");
-  const [hydratedItem, setHydratedItem] = createSignal<MergedFileDiffItem>(props.item);
+  const [mode, setModeSignal] = createSignal<DiffContentMode>(
+    props.viewState.mode,
+  );
+  const setMode = (nextMode: DiffContentMode) => {
+    props.setMode(nextMode);
+    setModeSignal(nextMode);
+  };
+  createEffect(() => {
+    props.item.path;
+    setModeSignal(props.viewState.mode);
+  });
+  const scrollTop = () => props.viewState.scrollTopByMode[mode()] ?? 0;
+  const [hydratedItem, setHydratedItem] = createSignal<MergedFileDiffItem>(
+    props.item,
+  );
   const [hydrating, setHydrating] = createSignal(false);
   const [sizeLoading, setSizeLoading] = createSignal(false);
   const displayItem = () => hydratedItem();
@@ -3374,8 +3733,8 @@ function ExpandedFileDiffCard(props: {
 
   createEffect(
     on(
-      () => diffJumpKey(props.item),
-      () => setMode("diff"),
+      () => normalizedBrowserDiffPath(props.item.path),
+      () => setMode(props.viewState.mode),
     ),
   );
 
@@ -3396,7 +3755,8 @@ function ExpandedFileDiffCard(props: {
         let sizeRevisionCurrent = false;
         if (cached !== null) {
           setLoadedSizeBytes(cached);
-          sizeRevisionCurrent = cachedFileSizeRevision(nextPath, basePath) === revision;
+          sizeRevisionCurrent =
+            cachedFileSizeRevision(nextPath, basePath) === revision;
         } else if (snapshotSize !== null) {
           setLoadedSizeBytes(snapshotSize);
           rememberFileSizeBytes(nextPath, basePath, snapshotSize, revision);
@@ -3410,10 +3770,7 @@ function ExpandedFileDiffCard(props: {
           source.path === nextPath &&
           source.basePath === normalizedBasePath &&
           source.revision === revision;
-        if (
-          sizeRevisionCurrent &&
-          (!wantsSource || hasLoadedSource)
-        ) {
+        if (sizeRevisionCurrent && (!wantsSource || hasLoadedSource)) {
           setSizeLoading(false);
           return;
         }
@@ -3483,6 +3840,8 @@ function ExpandedFileDiffCard(props: {
       sizeBytes={loadedSizeBytes()}
       stats={diffStatsForDisplay(displayItem())}
       loading={hydrating() || sizeLoading()}
+      scrollTop={scrollTop()}
+      onScrollTopChange={props.setScrollTop}
     />
   );
 }
@@ -3570,7 +3929,9 @@ function DiffDetailTab(props: {
         ) ?? props.tab.item
     );
   });
-  const [hydratedItem, setHydratedItem] = createSignal<FileDiffItem | null>(null);
+  const [hydratedItem, setHydratedItem] = createSignal<FileDiffItem | null>(
+    null,
+  );
   const [hydrating, setHydrating] = createSignal(false);
   let hydrateRequest = 0;
 
@@ -3599,7 +3960,9 @@ function DiffDetailTab(props: {
     ),
   );
 
-  const item = createMemo<FileDiffItem | null>(() => hydratedItem() ?? rawItem() ?? null);
+  const item = createMemo<FileDiffItem | null>(
+    () => hydratedItem() ?? rawItem() ?? null,
+  );
   const scopeLabel = () =>
     props.tab.scope === "history" ? "Chat changeset" : "Individual change";
   const path = () => item()?.path || props.tab.path;
@@ -3607,6 +3970,10 @@ function DiffDetailTab(props: {
   const mode = () => props.tab.mode ?? "diff";
   const setMode = (nextMode: DiffContentMode) =>
     props.bag.setDiffTabMode(props.tab.id, nextMode);
+  const scrollTop = () => props.tab.scrollTopByMode?.[mode()] ?? 0;
+  const setScrollTop = (scrollTop: number, nextMode: DiffContentMode) => {
+    props.bag.setDiffTabScrollTop(props.tab.id, scrollTop, nextMode);
+  };
   const recordedAfterContent = () => item()?.after;
   const sizeRevision = () =>
     fileSizeRevisionForPath(path(), trailSourceItems(props.bag));
@@ -3748,7 +4115,9 @@ function DiffDetailTab(props: {
         <section class="repo-file-preview right-diff-detail">
           <header class="repo-file-header right-diff-header">
             <div class="right-diff-title-row">
-              <strong title={displayPath()}><span class="path-ellipsis-text">{displayPath()}</span></strong>
+              <strong title={displayPath()}>
+                <span class="path-ellipsis-text">{displayPath()}</span>
+              </strong>
               <span class="right-diff-scope-label">{scopeLabel()}</span>
             </div>
           </header>
@@ -3775,6 +4144,8 @@ function DiffDetailTab(props: {
           sizeBytes={sourceSizeBytes()}
           stats={diff().stats}
           loading={hydrating() || sourceLoading()}
+          scrollTop={scrollTop()}
+          onScrollTopChange={setScrollTop}
         />
       )}
     </Show>
@@ -3849,7 +4220,12 @@ function MemoryDiffDetailTab(props: {
         >
           <MemoryDiffView
             changes={item()?.changes}
-            action={(() => { const current = item(); return current && hasMemoryDiffAction(current) ? current.action : undefined; })()}
+            action={(() => {
+              const current = item();
+              return current && hasMemoryDiffAction(current)
+                ? current.action
+                : undefined;
+            })()}
             diff={item()?.diff ?? ""}
             path={path()}
             onOpenStore={(hash) =>
@@ -4000,6 +4376,8 @@ function RenderedFilePreview(props: {
   path: string;
   assetRootPath?: string | null;
   onOpenFile?: (path: string) => void;
+  ref?: HTMLDivElement | ((el: HTMLDivElement) => void);
+  onScroll?: (event: Event) => void;
 }) {
   const markdownHtml = createMemo(() => renderMarkdown(props.content || ""));
   const htmlPreviewSrc = createMemo(() =>
@@ -4016,13 +4394,19 @@ function RenderedFilePreview(props: {
       when={props.kind === "html"}
       fallback={
         <div
+          ref={props.ref}
           class="repo-file-content repo-file-rendered repo-file-markdown markdown"
           onClick={onMarkdownClick}
+          onScroll={props.onScroll}
           innerHTML={markdownHtml()}
         />
       }
     >
-      <div class="repo-file-content repo-file-rendered repo-file-html-preview">
+      <div
+        ref={props.ref}
+        class="repo-file-content repo-file-rendered repo-file-html-preview"
+        onScroll={props.onScroll}
+      >
         <iframe
           class="repo-file-html-frame"
           title={`HTML preview of ${collapseHome(props.path)}`}
@@ -4127,7 +4511,6 @@ function encodeRawPathSegments(path: string): string {
     : "";
 }
 
-
 function handleStoreHashClick(
   ev: MouseEvent,
   onOpenStore?: (hash: string) => void,
@@ -4158,7 +4541,6 @@ function handleRenderedMarkdownClick(
   ev.stopPropagation();
   onOpenFile(nextPath);
 }
-
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string; icon: string }[] = [
   { mode: "system", label: "system", icon: "◐" },
@@ -4276,7 +4658,11 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
 
   createEffect(() => {
     const traceSettings = bag.traceSettingsCache();
-    if (traceSettings && bag.view() === "traces" && !clickHouseTracingEnabled()) {
+    if (
+      traceSettings &&
+      bag.view() === "traces" &&
+      !clickHouseTracingEnabled()
+    ) {
       bag.showChat();
     }
   });
@@ -4406,6 +4792,11 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
     if (!bag.pointersLoaded()) return "loading";
     const count = pointerCount();
     return `${count} pointer${count === 1 ? "" : "s"}`;
+  });
+  const skillCountLabel = createMemo(() => {
+    if (!bag.skillsLoaded()) return "loading";
+    const count = bag.skills().length;
+    return `${count} skill${count === 1 ? "" : "s"}`;
   });
 
   const reduceMotion =
@@ -4656,9 +5047,14 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
           <For each={renderedActiveChatIds()}>
             {(chatId) => chatRow(chatId)}
           </For>
-          <Show when={hiddenActiveChats() > 0 && loadingMoreChats() === "active"}>
+          <Show
+            when={hiddenActiveChats() > 0 && loadingMoreChats() === "active"}
+          >
             <li class="chat-list-loading">
-              <LoadingDots class="chat-list-loading-dots" label="loading more chats" />
+              <LoadingDots
+                class="chat-list-loading-dots"
+                label="loading more chats"
+              />
             </li>
           </Show>
           <Show when={archivedChats().length > 0}>
@@ -4682,8 +5078,7 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
               </For>
               <Show
                 when={
-                  hiddenArchivedChats() > 0 &&
-                  loadingMoreChats() === "archived"
+                  hiddenArchivedChats() > 0 && loadingMoreChats() === "archived"
                 }
               >
                 <li class="chat-list-loading">
@@ -4725,6 +5120,15 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       >
         <span class="sidebar-tab-label">pointers</span>
         <span class="sidebar-tab-count">{pointerCountLabel()}</span>
+      </button>
+      <button
+        type="button"
+        class="sidebar-tab"
+        classList={{ active: bag.view() === "skills" }}
+        onClick={() => navigate(() => bag.showSkills())}
+      >
+        <span class="sidebar-tab-label">skills</span>
+        <span class="sidebar-tab-count">{skillCountLabel()}</span>
       </button>
       <button
         type="button"

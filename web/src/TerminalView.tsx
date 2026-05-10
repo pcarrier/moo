@@ -34,11 +34,11 @@ const TERMINAL_FONT_FAMILY = "ui-monospace, monospace";
 const TERMINAL_FONT_SIZE = 14;
 
 const DARK_TERMINAL_PALETTE =
-  PALETTES.find((palette) => palette.id === "default") ??
+  PALETTES.find((palette) => palette.id === "vscode-dark") ??
   PALETTES.find((palette) => palette.dark) ??
   PALETTES[0];
 const LIGHT_TERMINAL_PALETTE =
-  PALETTES.find((palette) => palette.id === "catppuccin-latte") ??
+  PALETTES.find((palette) => palette.id === "vscode-light") ??
   PALETTES.find((palette) => !palette.dark) ??
   DARK_TERMINAL_PALETTE;
 

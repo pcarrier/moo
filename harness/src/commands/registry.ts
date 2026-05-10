@@ -56,7 +56,6 @@ import {
   chatsListCommand,
   fsGitBranchesCommand,
   fsGitPullBranchesCommand,
-  fsGitUpgradeJjCommand,
   fsListCommand,
   fsReadCommand,
   fsSearchCommand,
@@ -95,6 +94,7 @@ import {
   llmAuthSaveCommand,
 } from "./llm_auth";
 import { messageDeleteCommand, messageRestoreCommand } from "./messages";
+import { skillDownloadCommand, skillGetCommand, skillRefreshCommand, skillRemoveCommand, skillSaveCommand, skillsListCommand } from "./skills";
 
 export type CommandHandler = (input: Input) => unknown | Promise<unknown> | Effect<unknown, unknown>;
 type CommandGroup = { name: string; handlers: Record<string, CommandHandler> };
@@ -118,7 +118,7 @@ const STEP_COMMANDS: Record<string, CommandHandler> = {
 const CHAT_COMMANDS: Record<string, CommandHandler> = {
   chats: () => chatsListCommand(),
   "chat-autocomplete": chatAutocompleteCommand,
-  "chat-recent-paths": () => recentChatPathsCommand(),
+  "chat-recent-paths": recentChatPathsCommand,
   "chat-new": chatNewCommand,
   "chat-rm": chatRemoveCommand,
   "chat-fork": chatForkCommand,
@@ -136,7 +136,6 @@ const FILE_COMMANDS: Record<string, CommandHandler> = {
   "fs-search": fsSearchCommand,
   "fs-git-branches": fsGitBranchesCommand,
   "fs-git-pull-branches": fsGitPullBranchesCommand,
-  "fs-git-upgrade-jj": fsGitUpgradeJjCommand,
 };
 
 const MEMORY_COMMANDS: Record<string, CommandHandler> = {
@@ -201,6 +200,15 @@ const MESSAGE_COMMANDS: Record<string, CommandHandler> = {
   "message-restore": messageRestoreCommand,
 };
 
+const SKILL_COMMANDS: Record<string, CommandHandler> = {
+  "skills-list": skillsListCommand,
+  "skill-get": skillGetCommand,
+  "skill-download": skillDownloadCommand,
+  "skill-save": skillSaveCommand,
+  "skill-remove": skillRemoveCommand,
+  "skill-refresh": skillRefreshCommand,
+};
+
 const COMMAND_GROUPS: CommandGroup[] = [
   {
     name: "core",
@@ -215,6 +223,7 @@ const COMMAND_GROUPS: CommandGroup[] = [
   { name: "file", handlers: FILE_COMMANDS },
   { name: "message", handlers: MESSAGE_COMMANDS },
   { name: "memory", handlers: MEMORY_COMMANDS },
+  { name: "skills", handlers: SKILL_COMMANDS },
   { name: "llm", handlers: LLM_COMMANDS },
   { name: "mcp", handlers: MCP_COMMANDS },
   { name: "ui", handlers: UI_COMMANDS },

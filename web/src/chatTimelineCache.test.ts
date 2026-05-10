@@ -64,4 +64,19 @@ describe("chat timeline LRU cache", () => {
     expect(routeBlock).toContain("const restored = restoreCachedChat(resolved.chatId, summary, {");
     expect(routeBlock).toContain("allowStale: true,");
   });
+  test("restores current chat-list metadata over stale cached overviews", () => {
+    const restoreStart = stateSource.indexOf("function cachedSnapshotForLimit(");
+    expect(restoreStart).toBeGreaterThanOrEqual(0);
+    const restoreEnd = stateSource.indexOf("function cachedDescribeNeedsRefresh", restoreStart);
+    const restoreBlock = stateSource.slice(restoreStart, restoreEnd);
+
+    expect(restoreBlock).toContain(
+      "overview: mergeCachedOverviewWithSummary(cached.overview, summary)",
+    );
+    expect(restoreBlock).toContain("applyOverviewValue(");
+    expect(restoreBlock).toContain(
+      "mergeCachedOverviewWithSummary(cached.overview, summary)",
+    );
+  });
+
 });

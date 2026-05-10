@@ -48,6 +48,8 @@
   align-items: baseline;
   gap: 0.12em;
   min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--text);
   font-size: 0.82rem;
 }
@@ -55,14 +57,38 @@
 .ongoing-todo-line {
   display: flex;
   align-items: baseline;
+  flex: 1 1 auto;
   gap: 0.18em;
   min-inline-size: 0;
+  overflow: hidden;
 }
 
 .ongoing-todo-text,
 .ongoing-todo-details {
   min-inline-size: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ongoing-todo .ongoing-todo-text {
+  display: block;
+  flex: 1 1 auto;
+}
+
+.ongoing-todo-details {
+  flex: 0 1 auto;
+  max-inline-size: 35%;
+}
+
+.ongoing-todo .todo-note.markdown > * {
+  display: inline;
+}
+
+.ongoing-todo .todo-note.markdown > * + * {
+  margin-left: 0.35em;
+  margin-top: 0;
 }
 
 .todo-bubbles {

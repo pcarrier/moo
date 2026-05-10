@@ -35,17 +35,17 @@ describe("step driver", () => {
       tokenThreshold: 50,
       requestModel: "m",
       requestEffort: "low",
-      requestAuthMode: "subscription",
+      requestAuthMode: "apiKey",
       url: "https://llm.test",
-      headers: { authorization: "Bearer x" },
+      headers: { authorization: "x" },
       body: { model: "m" },
       streamEvents: { draftEvent: { kind: "draft" } },
       countThoughtDuration: true,
     };
-    const state = reduceStepDriverState({ chatId: "c1", provider: { name: "anthropic", authMode: "subscription" }, phase: "prepare" } as any, { type: "Prepared", prepared });
+    const state = reduceStepDriverState({ chatId: "c1", provider: { name: "anthropic", authMode: "apiKey" }, phase: "prepare" } as any, { type: "Prepared", prepared });
     expect(planStepDriverEffects(state)).toEqual([{ type: "Return", value: expect.objectContaining({ kind: "llm", url: "https://llm.test" }) }]);
     const handled = reduceStepDriverState(state as any, { type: "LlmResultReceived", llmResult: { ok: false, status: 429 }, llmDurationNs: 100 });
-    expect(handled.llmHandling).toEqual(expect.objectContaining({ requestProvider: "anthropic", requestAuthMode: "subscription" }));
+    expect(handled.llmHandling).toEqual(expect.objectContaining({ requestProvider: "anthropic", requestAuthMode: "apiKey" }));
   });
 
 
@@ -61,7 +61,7 @@ describe("step driver", () => {
       requestModel: "m",
       requestEffort: "low",
       url: "https://llm.test",
-      headers: { authorization: "Bearer x" },
+      headers: { authorization: "x" },
       body: { model: "m" },
       streamEvents: { draftEvent: { kind: "draft" } },
       countThoughtDuration: true,

@@ -9,6 +9,13 @@ describe("timeline runJS state merging", () => {
     expect(state).toContain("a.resultHash === right.resultHash");
   });
 
+
+  test("uses update-aware timeline watermarks", () => {
+    expect(state).toContain("function newestTimelineWatermark(items: TimelineItem[]): number");
+    expect(state).toContain('item.type === "step" ? Number((item as any).updatedAt ?? 0) : 0');
+    expect(state).not.toContain('} else if (hasRunningTimelineStep(timeline())) {');
+  });
+
   test("handles explicit runJS completion events", () => {
     expect(state).toContain('ev.kind === "runjs-step-finished"');
     expect(state).toContain('item.step !== ev.stepId');

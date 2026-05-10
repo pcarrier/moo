@@ -217,6 +217,49 @@ export type MemoryBindings = Record<string, string>;
 export type MemoryWrite = { subject: string; predicate: string; object: string; project: string | null };
 export type StoreObject = { kind: string; content?: string; text?: string; bytesBase64?: string; size?: number } | null;
 
+export type SkillFrontmatterValue = string | number | boolean | null | Array<string | number | boolean | null>;
+export type SkillFrontmatter = Record<string, SkillFrontmatterValue>;
+
+export type SkillSource =
+  | { kind: "builtin" }
+  | { kind: "repo"; path: string; root?: string }
+  | { kind: "user"; url?: string };
+
+export type SkillSummary = {
+  version?: number;
+  id: string;
+  name: string;
+  enabled: boolean;
+  url?: string;
+  builtin?: boolean;
+  repo?: boolean;
+  source?: SkillSource;
+  frontmatter: SkillFrontmatter;
+  frontmatterRaw?: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRefreshError?: string;
+};
+
+export type Skill = SkillSummary & { content: string };
+
+export type SkillSaveInput = {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  url?: string;
+  frontmatter?: SkillFrontmatter;
+  content?: string;
+};
+
+export type SkillRefreshResult = {
+  ok: boolean;
+  refreshed: boolean;
+  skill: Skill | null;
+  error?: string;
+};
+
 export type UiApp = UiAppManifest;
 
 export type UiBundle = UiAppBundle;
@@ -326,7 +369,6 @@ export type GitBranchesValue = {
   selectedJjRevision?: string | null;
   hasRemote: boolean;
   jjAvailable?: boolean;
-  canUpgradeToJj?: boolean;
   fetched?: boolean;
   message?: string | null;
 };
@@ -518,6 +560,9 @@ export type V8StatsValue = {
 export interface TraceRow {
   id: string;
   traceId?: string | null;
+  rootId?: string | null;
+  rootKind?: string | null;
+  rootName?: string | null;
   parentId: string | null;
   chatId: string | null;
   runId: string | null;
@@ -527,9 +572,7 @@ export interface TraceRow {
   seq: number;
   status: "ok" | "error" | "running" | "cancelled" | "timeout" | string;
   t0Ns: number;
-  t0Us?: number;
   t1Ns: number | null;
-  t1Us?: number | null;
   inputHash: string | null;
   outputHash: string | null;
   errorHash: string | null;
@@ -552,7 +595,6 @@ export type TraceSearchArgs = Record<string, unknown> & {
   hasError?: boolean;
   limit?: number;
   beforeNs?: number | string;
-  beforeUs?: number;
   startedAfterNs?: number | string;
   startedBeforeNs?: number | string;
   minDurationNs?: number | string;

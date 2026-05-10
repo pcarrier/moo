@@ -4,6 +4,7 @@ import { appendStep } from "./steps";
 
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
 export type TodoPriority = "high" | "normal" | "low";
+export type TodoIdInput = string | number;
 
 export type AgentTodo = {
   id: string;
@@ -39,7 +40,7 @@ export type TodoDiffSummary = {
 
 export type TodoPatch = {
   add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>;
-  update?: Array<{ id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>;
+  update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>;
   clearDone?: boolean;
   clearStatuses?: TodoStatus[];
 };
@@ -159,10 +160,19 @@ function cleanPriority(value: unknown): TodoPriority | undefined {
   return typeof value === "string" && VALID_PRIORITIES.has(value as TodoPriority) ? value as TodoPriority : undefined;
 }
 
+function normalizeTodoId(value: unknown): string | null {
+  if (typeof value === "string") {
+    const id = value.trim();
+    return id ? id.slice(0, 40) : null;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  return null;
+}
+
 function nextTodoId(items: Array<{ id?: unknown }>, seen = new Set<string>()): string {
   let max = 0;
   for (const item of items) {
-    const id = typeof item.id === "string" ? item.id.trim() : typeof item.id === "number" ? String(item.id) : "";
+    const id = normalizeTodoId(item.id) ?? "";
     if (/^[1-9]\d*$/.test(id)) max = Math.max(max, Number(id));
   }
   let next = max + 1;
@@ -178,7 +188,7 @@ function normalizeState(value: unknown): AgentTodoState {
   const out: AgentTodo[] = [];
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
-    const id = typeof item.id === "string" && item.id.trim() ? item.id.trim().slice(0, 40) : nextTodoId(out, seen);
+    const id = normalizeTodoId(item.id) ?? nextTodoId(out, seen);
     if (seen.has(id)) continue;
     let text: string;
     try { text = cleanText(item.text); } catch { continue; }
@@ -219,8 +229,9 @@ export async function patchTodos(chatId: string, patch: TodoPatch): Promise<Agen
   if (clear.size) items = items.filter((item) => !clear.has(item.status));
   if (Array.isArray(patch.update)) {
     for (const upd of patch.update) {
-      if (!upd || typeof upd.id !== "string") continue;
-      const item = items.find((candidate) => candidate.id === upd.id);
+      const id = normalizeTodoId(upd?.id);
+      if (!id) continue;
+      const item = items.find((candidate) => candidate.id === id);
       if (!item) continue;
       if (upd.text !== undefined) item.text = cleanText(upd.text);
       if (upd.status !== undefined) item.status = cleanStatus(upd.status, item.status);
@@ -263,10 +274,11 @@ export async function addTodo(chatId: string, input: { text: string; priority?: 
   return after.items[before.items.length] ?? after.items[after.items.length - 1]!;
 }
 
-export async function updateTodo(chatId: string, input: { id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo> {
+export async function updateTodo(chatId: string, input: { id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo> {
+  const id = normalizeTodoId(input.id);
   const after = await patchTodos(chatId, { update: [input] });
-  const item = after.items.find((candidate) => candidate.id === input.id);
-  if (!item) throw new Error(`todo not found: ${input.id}`);
+  const item = id ? after.items.find((candidate) => candidate.id === id) : null;
+  if (!item) throw new Error(`todo not found: ${String(input.id)}`);
   return item;
 }
 

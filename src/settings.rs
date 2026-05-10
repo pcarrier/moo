@@ -34,6 +34,7 @@ pub const PSK_KEY: &str = "auth.psk";
 pub const V8_ENV_KEY: &str = "v8.env";
 pub const V8_CONFIG_KEY: &str = "v8.config";
 pub const TRACE_CONFIG_KEY: &str = "trace.config";
+pub const SERVER_BASE_URL_KEY: &str = "server.baseUrl";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -156,4 +157,53 @@ mod tests {
         assert_eq!(normalized_blank.clickhouse_user, None);
         assert_eq!(normalized_blank.clickhouse_password, None);
     }
+
+    #[test]
+    fn server_base_url_normalizes_and_validates() {
+        assert_eq!(
+            normalize_server_base_url(" https://moo.example.com/ ").unwrap(),
+            "https://moo.example.com"
+        );
+        assert!(normalize_server_base_url("moo.example.com").is_err());
+        assert!(normalize_server_base_url("http://bad host").is_err());
+    }
+}
+
+pub fn normalize_server_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("base URL is empty".to_string());
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("base URL must start with http:// or https://".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_whitespace()) {
+        return Err("base URL must not contain whitespace".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn read_server_base_url(conn: &Connection) -> Result<Option<String>, String> {
+    match get(conn, SERVER_BASE_URL_KEY)? {
+        Some(value) => normalize_server_base_url(&value).map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn write_server_base_url(
+    conn: &Connection,
+    value: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        clear(conn, SERVER_BASE_URL_KEY)?;
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        clear(conn, SERVER_BASE_URL_KEY)?;
+        return Ok(None);
+    }
+    let normalized = normalize_server_base_url(trimmed)?;
+    set(conn, SERVER_BASE_URL_KEY, &normalized)?;
+    Ok(Some(normalized))
 }

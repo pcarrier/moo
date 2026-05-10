@@ -1,5 +1,9 @@
 import type { ChatSummary, DescribeOverviewValue, TimelineItem } from "../api";
-import type { CachedTimelinePage, CachedTrailPage, ChatCacheEntry } from "./types";
+import type {
+  CachedTimelinePage,
+  CachedTrailPage,
+  ChatCacheEntry,
+} from "./types";
 
 const INITIAL_TIMELINE_LIMIT = 160;
 
@@ -40,7 +44,8 @@ export function chatCacheHasData(entry: ChatCacheEntry): boolean {
     (entry.timelinePages && Object.keys(entry.timelinePages).length > 0) ||
     (entry.trailPages && Object.keys(entry.trailPages).length > 0) ||
     entry.model ||
-    entry.ui
+    entry.ui ||
+    entry.rightSidebar
   );
 }
 
@@ -55,6 +60,36 @@ export function isDescribeFreshForSummary(
     value.totalTurns === summary.totalTurns &&
     value.totalSteps === summary.totalSteps
   );
+}
+
+export function mergeCachedOverviewWithSummary(
+  overview: DescribeOverviewValue,
+  summary: ChatSummary | undefined,
+): DescribeOverviewValue {
+  if (!summary) return overview;
+  const next: DescribeOverviewValue = {
+    ...overview,
+    head: summary.head,
+    title: summary.title,
+    path: summary.path,
+    totalFacts: summary.totalFacts,
+    totalTurns: summary.totalTurns,
+    totalSteps: summary.totalSteps,
+  };
+  if (summary.worktreePath !== undefined) {
+    next.worktreePath = summary.worktreePath;
+  }
+  if (Number.isFinite(summary.createdAt) && summary.createdAt > 0) {
+    next.createdAt = summary.createdAt;
+  }
+  if (Number.isFinite(summary.lastAt) && summary.lastAt > 0) {
+    next.lastAt = summary.lastAt;
+  }
+  if (summary.hidden !== undefined) next.hidden = summary.hidden;
+  if (summary.parentChatId !== undefined) {
+    next.parentChatId = summary.parentChatId;
+  }
+  return next;
 }
 
 function normalizeCachedTimelinePage(
@@ -125,5 +160,6 @@ export function normalizeChatCacheEntry(raw: unknown): ChatCacheEntry | null {
     trailPages,
     model: value.model,
     ui: value.ui,
+    rightSidebar: value.rightSidebar,
   };
 }

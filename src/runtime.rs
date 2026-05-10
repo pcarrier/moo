@@ -427,13 +427,11 @@ fn run_cached_main_async_in_scope(
             let previous = cell.borrow_mut().take();
             finish_open_trace_state(previous, "startup");
         });
-        let mut opened = HashSet::new();
-        opened.insert(parent_id.clone());
         TRACE_STATE.with(|cell| {
             *cell.borrow_mut() = Some(TraceState {
                 root_id: parent_id.clone(),
                 current_parent_id: parent_id,
-                opened,
+                opened: HashSet::new(),
             });
         });
     }
@@ -490,13 +488,11 @@ fn run_main_async_in_scope(
     let (completion_tx, completion_rx) = mpsc::channel();
     let _guard = AsyncHostStateGuard::install(completion_tx, agent_run);
     if let Some(parent_id) = parent_id {
-        let mut opened = HashSet::new();
-        opened.insert(parent_id.clone());
         TRACE_STATE.with(|cell| {
             *cell.borrow_mut() = Some(TraceState {
                 root_id: parent_id.clone(),
                 current_parent_id: parent_id,
-                opened,
+                opened: HashSet::new(),
             });
         });
     }
@@ -884,6 +880,7 @@ pub(crate) fn install_globals(scope: &mut v8::PinScope) -> Result<(), String> {
     install_console(scope)?;
     install_fn(scope, "__op_agent_run", op_agent_run)?;
     install_fn(scope, "__op_trace_ensure_root", op_trace_ensure_root)?;
+    install_fn(scope, "__op_trace_ensure_span", op_trace_ensure_span)?;
     install_fn(scope, "__op_trace_start_root", op_trace_start_root)?;
     install_fn(scope, "__op_trace_current", op_trace_current)?;
     install_fn(scope, "__op_trace_get", op_trace_get)?;
@@ -1133,6 +1130,68 @@ fn op_trace_ensure_root(
     }) {
         Ok(()) => set_string_return(scope, &mut rv, "null"),
         Err(e) => throw(scope, &format!("trace_ensure_root: {e}")),
+    }
+}
+
+fn op_trace_ensure_span(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parsed = json_arg(scope, &args, 0);
+    let Some(id) = parsed.get("id").and_then(Value::as_str) else {
+        throw(scope, "trace_ensure_span requires id");
+        return;
+    };
+    let Some(parent_id) = parsed.get("parentId").and_then(Value::as_str) else {
+        throw(scope, "trace_ensure_span requires parentId");
+        return;
+    };
+    let id = id.trim();
+    let parent_id = parent_id.trim();
+    if id.is_empty() || parent_id.is_empty() {
+        throw(
+            scope,
+            "trace_ensure_span requires non-empty id and parentId",
+        );
+        return;
+    }
+    let chat_id = parsed.get("chatId").and_then(Value::as_str);
+    let run_id = parsed.get("runId").and_then(Value::as_str);
+    let kind = parsed.get("kind").and_then(Value::as_str).unwrap_or("span");
+    let name = parsed.get("name").and_then(Value::as_str).unwrap_or(id);
+    let started_ns = parsed
+        .get("startedNs")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(now_ns);
+    let data = parsed.get("data").cloned().unwrap_or_else(|| json!({}));
+    let (input_hash, data_json) = match trace_payload_parts("trace:Input", data, "input") {
+        Ok(parts) => parts,
+        Err(e) => {
+            throw(scope, &format!("trace_ensure_span: {e}"));
+            return;
+        }
+    };
+    let id = id.to_string();
+    let parent_id = parent_id.to_string();
+    let chat_id = chat_id.map(ToString::to_string);
+    let run_id = run_id.map(ToString::to_string);
+    let kind = kind.to_string();
+    let name = name.to_string();
+    match host::trace_open(host::TraceOpenParams {
+        id: &id,
+        parent_id: Some(&parent_id),
+        chat_id: chat_id.as_deref(),
+        run_id: run_id.as_deref(),
+        kind: &kind,
+        name: &name,
+        started_ns,
+        input_hash: Some(&input_hash),
+        invoked_from_step_id: None,
+        data_json: Some(&data_json),
+    }) {
+        Ok(()) => set_string_return(scope, &mut rv, "null"),
+        Err(e) => throw(scope, &format!("trace_ensure_span: {e}")),
     }
 }
 
@@ -1562,6 +1621,7 @@ fn trace_current_json() -> Value {
         json!({
             "id": state.root_id,
             "rootId": state.root_id,
+            "traceId": state.root_id,
             "parentId": state.current_parent_id,
         })
     })
@@ -1571,6 +1631,10 @@ fn trace_row_json(row: &host::TraceRow) -> Value {
     json!({
         "id": row.id,
         "parentId": row.parent_id,
+        "rootId": row.root_id,
+        "rootKind": row.root_kind,
+        "rootName": row.root_name,
+        "traceId": row.root_id,
         "chatId": row.chat_id,
         "runId": row.run_id,
         "kind": row.kind,
