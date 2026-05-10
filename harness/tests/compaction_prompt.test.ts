@@ -6,12 +6,16 @@ import {
   compactionContinuationSystemMessage,
 } from "../src/prompt";
 import {
+  DYNAMIC_CONTEXT_MESSAGE_ROLE,
+  appendDynamicContextMessages,
+  buildStreamingLLMRequest,
   compactionProviderForRequest,
   compactionRequestTokenLimit,
   estimateTokens,
   fitCompactionSummaryMessages,
   parseSseDataEvents,
   accumulateSummaryStreamEvent,
+  toAnthropicMessages,
 } from "../src/agent";
 
 describe("compaction prompts", () => {
@@ -78,6 +82,58 @@ describe("compaction prompts", () => {
     expect(fitted[1].content).toContain("Please inspect this image.");
     expect(fitted[1].content).toContain("image attachment omitted from compaction request");
     expect(Array.isArray(fitted[1].content)).toBe(false);
+  });
+
+  test("appends dynamic context as a tail internal message", () => {
+    const messages = appendDynamicContextMessages([
+      { role: "system", content: "stable system" },
+      { role: "user", content: "hello" },
+    ], "Private TODOs: 1 todo.");
+
+    expect(messages.at(-1)).toMatchObject({ role: DYNAMIC_CONTEXT_MESSAGE_ROLE });
+    expect(messages.at(-1)?.content).toContain("Private dynamic context for the assistant");
+    expect(messages.at(-1)?.content).toContain("Private TODOs: 1 todo.");
+    expect(messages.filter((message: any) => message.role === "system")).toHaveLength(1);
+  });
+
+  test("refreshing dynamic context replaces the prior tail block", () => {
+    const first = appendDynamicContextMessages([{ role: "system", content: "stable" }], "old todos");
+    const refreshed = appendDynamicContextMessages([...first, { role: "tool", tool_call_id: "call-1", content: "ok" }], "new todos");
+
+    expect(refreshed.map((message: any) => message.content).join("\n")).not.toContain("old todos");
+    expect(refreshed.at(-1)?.role).toBe(DYNAMIC_CONTEXT_MESSAGE_ROLE);
+    expect(refreshed.at(-1)?.content).toContain("new todos");
+    expect(refreshed.filter((message: any) => message.content?.includes?.("Private dynamic context"))).toHaveLength(1);
+  });
+
+  test("Anthropic keeps dynamic context at the transcript tail", () => {
+    const messages = appendDynamicContextMessages([
+      { role: "system", content: "stable system" },
+      { role: "user", content: "hello" },
+    ], "tail todos");
+
+    const anthropic = toAnthropicMessages(messages);
+
+    expect(anthropic.system).toBe("stable system");
+    expect(anthropic.system).not.toContain("tail todos");
+    expect(anthropic.messages.at(-1)).toMatchObject({ role: "user" });
+    expect(anthropic.messages.at(-1)?.content).toContain("tail todos");
+  });
+
+  test("OpenAI Responses keeps dynamic context out of instructions", () => {
+    const provider = { name: "openai" as const, apiKey: "key", baseUrl: "https://llm.test/v1", model: "gpt-5", effort: null, keyEnvHint: "KEY" };
+    const messages = appendDynamicContextMessages([
+      { role: "system", content: "stable system" },
+      { role: "user", content: "hello" },
+    ], "tail todos");
+
+    const request = buildStreamingLLMRequest(provider, messages, null);
+
+    expect(request.responsesApi).toBe(true);
+    expect((request.body as any).instructions).toBe("stable system");
+    expect((request.body as any).instructions).not.toContain("tail todos");
+    expect((request.body as any).input.at(-1)).toMatchObject({ role: "user" });
+    expect((request.body as any).input.at(-1)?.content).toContain("tail todos");
   });
 
   test("uses low/no reasoning for compaction summary requests", () => {

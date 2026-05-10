@@ -24,7 +24,7 @@ const DEFAULT_HARNESS: &str = include_str!(concat!(env!("OUT_DIR"), "/default_ha
 const DEFAULT_UI_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/default_ui.html.br"));
 
 #[derive(Parser)]
-#[command(name = "moo", about = "moo agent harness (rusty_v8 + SQLite)")]
+#[command(name = "moo", version, about = "moo agent harness")]
 struct Cli {
     /// Path to a JS bundle. Falls back to the embedded harness.
     #[arg(long, global = true)]

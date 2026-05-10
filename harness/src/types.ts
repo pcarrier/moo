@@ -101,6 +101,74 @@ export type UiOpenAppResult = {
 };
 
 
+export type SkillFrontmatterValue = string | number | boolean | null | Array<string | number | boolean | null>;
+export type SkillFrontmatter = Record<string, SkillFrontmatterValue>;
+
+export type SkillSource =
+  | { kind: "builtin" }
+  | { kind: "repo"; path: string; root?: string }
+  | { kind: "user"; url?: string };
+
+export type SkillMeta = {
+  version?: number;
+  id: string;
+  name: string;
+  enabled: boolean;
+  url?: string;
+  builtin?: boolean;
+  repo?: boolean;
+  source?: SkillSource;
+  frontmatter: SkillFrontmatter;
+  frontmatterRaw?: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRefreshError?: string;
+};
+
+export type SkillSummary = SkillMeta;
+
+export type Skill = SkillMeta & { content: string };
+
+export type SkillListArgs = { enabled?: boolean; root?: string | null };
+export type SkillQueryOptions = { root?: string | null };
+
+export type SkillSaveInput = {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  url?: string;
+  frontmatter?: SkillFrontmatter;
+  content?: string;
+};
+
+export type SkillRefreshResult = {
+  ok: boolean;
+  refreshed: boolean;
+  skill: Skill | null;
+  error?: string;
+};
+
+export type BuiltinSkill = {
+  id: string;
+  name?: string;
+  enabled?: boolean;
+  content: string;
+};
+
+export type MooSkillsApi = {
+  list(args?: SkillListArgs): Promise<SkillSummary[]>;
+  get(idOrName: string, opts?: SkillQueryOptions): Promise<SkillSummary | null>;
+  load(idOrName: string, opts?: SkillQueryOptions): Promise<Skill | null>;
+  content(idOrName: string, opts?: SkillQueryOptions): Promise<string | null>;
+  save(input: SkillSaveInput): Promise<Skill>;
+  upsert(input: SkillSaveInput): Promise<Skill>;
+  delete(idOrName: string): Promise<boolean>;
+  remove(idOrName: string): Promise<boolean>;
+  refresh(idOrName: string, opts?: { timeoutMs?: number; root?: string | null }): Promise<SkillRefreshResult>;
+  parseMarkdown(content: string): { frontmatterRaw: string; frontmatter: SkillFrontmatter; body: string };
+};
+
 export type McpTransport = "http" | "sse";
 
 export type McpOAuthConfig = {
@@ -284,7 +352,7 @@ export type LLMProvider = {
   model: string;
   effort: string | null;
   keyEnvHint: string;
-  authMode?: "env" | "apiKey" | "oauth" | "subscription";
+  authMode?: "env" | "apiKey" | "oauth";
   oauthAccountId?: string | null;
 };
 
@@ -318,6 +386,10 @@ export type TraceKind = "trace" | "span" | "mark" | string;
 export type TraceRow = {
   id: string;
   traceId: string;
+  rootId?: string | null;
+  rootKind?: string | null;
+  rootName?: string | null;
+  parentId?: string | null;
   seq: number;
   stepId: string | null;
   kind: TraceKind;
@@ -331,7 +403,7 @@ export type TraceRow = {
   dataHash?: string | null;
   data: Record<string, unknown>;
 };
-export type TraceCurrent = { traceId: string; id: string; stepId: string | null; parentId: string };
+export type TraceCurrent = { traceId?: string | null; id: string; rootId?: string | null; stepId: string | null; parentId: string };
 export type TraceTreeNode = TraceRow & { children: TraceTreeNode[] };
 export type TraceChat = { id: string; title: string | null };
 export type TraceErrorCategory =
@@ -386,9 +458,10 @@ export type TraceDiagnostic = TraceDiagnosis;
 export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
 export type TodoPriority = "high" | "normal" | "low";
+export type TodoIdInput = string | number;
 export type AgentTodo = { id: string; text: string; status: TodoStatus; priority?: TodoPriority; note?: string; createdAt: string; updatedAt: string };
 export type AgentTodoState = { version: 1; updatedAt: string; items: AgentTodo[] };
-export type TodoPatch = { add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>; update?: Array<{ id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
+export type TodoPatch = { add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>; update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
 
 export type MooTracesApi = {
   current(): Promise<TraceCurrent | null>;
@@ -510,12 +583,13 @@ export type Moo = {
   todos: {
     list(): Promise<AgentTodoState>;
     add(args: { text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }): Promise<AgentTodo>;
-    update(args: { id: string; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo>;
-    done(args: { id: string; note?: string }): Promise<AgentTodo>;
-    drop(args: { id: string; note?: string }): Promise<AgentTodo>;
+    update(args: { id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo>;
+    done(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
+    drop(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
     patch(args: TodoPatch): Promise<AgentTodoState>;
     clear(args?: { statuses?: TodoStatus[] }): Promise<AgentTodoState>;
   };
+  skills: MooSkillsApi;
   pointers: {
     get(name: string): Promise<string | null>;
     set(name: string, target: string): Promise<RefSetReceipt>;

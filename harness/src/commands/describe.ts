@@ -23,7 +23,7 @@ const TRAIL_STEP_INDEX_LIMIT = 240;
 
 
 type TimelineRef =
-  | { type: "step"; id: string; at: number }
+  | { type: "step"; id: string; at: number; updatedAt?: number }
   | { type: "input"; id: string; at: number }
   | { type: "input-response"; id: string; reqId: string; at: number }
   | { type: "log"; id: string; at: number }
@@ -166,11 +166,21 @@ async function selectRows(c: ReturnType<typeof chatRefs>, where: string, vars: s
 }
 
 async function loadStepRows(c: ReturnType<typeof chatRefs>, limit = 0) {
-  return selectRows(c, "?step rdf:type agent:Step . ?step agent:kind ?kind . ?step agent:status ?status . ?step agent:createdAt ?at .", "?step ?kind ?status ?at", limit);
+  return selectRows(
+    c,
+    "?step rdf:type agent:Step . ?step agent:kind ?kind . ?step agent:status ?status . ?step agent:createdAt ?at . optional { ?step agent:updatedAt ?updatedAt . }",
+    "?step ?kind ?status ?at ?updatedAt",
+    limit,
+  );
 }
 
 async function loadStepRowsByKind(c: ReturnType<typeof chatRefs>, kind: string, limit = 0) {
-  const rows = await selectRows(c, `?step rdf:type agent:Step . ?step agent:kind ${kind} . ?step agent:status ?status . ?step agent:createdAt ?at .`, "?step ?status ?at", limit);
+  const rows = await selectRows(
+    c,
+    `?step rdf:type agent:Step . ?step agent:kind ${kind} . ?step agent:status ?status . ?step agent:createdAt ?at . optional { ?step agent:updatedAt ?updatedAt . }`,
+    "?step ?status ?at ?updatedAt",
+    limit,
+  );
   return rows.map((row) => ({ ...row, "?kind": kind }));
 }
 
@@ -526,7 +536,12 @@ async function loadTimelineSnapshot(
   }
 
   const timelineRefs: TimelineRef[] = [
-    ...steps.map((row) => ({ type: "step" as const, id: row["?step"]!, at: factTimestamp(row["?at"]) })),
+    ...steps.map((row) => ({
+      type: "step" as const,
+      id: row["?step"]!,
+      at: factTimestamp(row["?at"]),
+      updatedAt: factTimestamp(row["?updatedAt"]),
+    })),
     ...inputs.map((row) => ({ type: "input" as const, id: row["?req"]!, at: factTimestamp(row["?at"]) })),
     ...inputResponses.map((row) => ({
       type: "input-response" as const,
@@ -541,7 +556,7 @@ async function loadTimelineSnapshot(
   const totalTimelineItems = totalSteps + totalInputs + totalInputResponses + totalLogs + totalTrailEntries + syntheticCompactions.length;
   const visibleRefs = (() => {
     const source = Number.isFinite(sinceAt) && sinceAt > 0
-      ? timelineRefs.filter((ref) => ref.at > sinceAt)
+      ? timelineRefs.filter((ref) => ref.at > sinceAt || (ref.type === "step" && (ref.updatedAt ?? 0) > sinceAt))
       : timelineRefs;
     if (timelineLimit <= 0 || source.length <= timelineLimit) return source;
     if (Number.isFinite(sinceAt) && sinceAt > 0) return source.slice(-timelineLimit);
@@ -658,6 +673,7 @@ async function loadTimelineSnapshot(
       kind: s["?kind"],
       status: s["?status"],
       at: factTimestamp(s["?at"]),
+      updatedAt: factTimestamp(s["?updatedAt"]) || undefined,
     };
     const deletedAt = deletedAtByStep.get(stepId);
     if (deletedAt) item.deletedAt = Number(deletedAt) || deletedAt;

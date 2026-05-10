@@ -31,7 +31,7 @@ export type ChatCommands =
   | ApiCommand<"chats", Record<string, never>, { chats: ChatSummary[]; homeDir: string | null }>
   | ApiCommand<"chat-autocomplete", { query: string; limit?: number }, { suggestions: ChatAutocompleteSuggestion[] }>
   | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; worktreePath?: string | null; recent?: string[] }>
-  | ApiCommand<"chat-recent-paths", Record<string, never>, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
+  | ApiCommand<"chat-recent-paths", { includeRepos?: boolean }, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
   | ApiCommand<"chat-rm", { chatId: ChatId }, { chatId: ChatId; refsDeleted: number; quadsCleared: number }>
   | ApiCommand<"chat-fork", { chatId: ChatId; step: StepId; forkChatId?: ChatId }, { chatId: ChatId; sourceChatId: ChatId; forkedFromStep: StepId; forkedFromAt: number; path?: string | null; worktreePath?: string | null; copiedFacts: number }>
   | ApiCommand<"chat-rename", { chatId: ChatId; title: string | null }, { chatId: ChatId; title: string | null }>
@@ -76,7 +76,7 @@ export const chatApi = {
   autocomplete: (query: string, limit = 12) =>
     callCommand("chat-autocomplete", { query, limit }),
   new: newChat,
-  recentPaths: () => callCommand("chat-recent-paths", {}),
+  recentPaths: (includeRepos = false) => callCommand("chat-recent-paths", { ...(includeRepos ? { includeRepos } : {}) }),
   remove: (chatId: ChatId) =>
     callCommand("chat-rm", { chatId }),
   rename: (chatId: ChatId, title: string | null) =>

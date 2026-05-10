@@ -42,12 +42,14 @@ export function escapeHtml(s: string): string {
 // Highlighters tokenize the entire input synchronously; on multi-MB files
 // they freeze the main thread. Above this size, fall back to plain-escaped
 // text — viewers can still read the content, just without syntax colors.
-const HIGHLIGHT_MAX_BYTES = 256 * 1024;
+export const DEFAULT_HIGHLIGHT_MAX_BYTES = 1024 * 1024;
 
 const DATA_LANGUAGES = new Set(["json", "jsonc", "jsonl", "hjson"]);
 
 const HIGHLIGHT_CACHE_MAX_ENTRIES = 512;
 const HIGHLIGHT_CACHE_MAX_TEXT_LENGTH = 64 * 1024;
+const HJSON_COLLAPSIBLE_STRING_MIN_CHARS = 96;
+const HJSON_COLLAPSIBLE_STRING_PREVIEW_CHARS = 96;
 const highlightCache = new Map<string, string>();
 
 function cachedHighlight(key: string, textLength: number, render: () => string): string {
@@ -79,15 +81,24 @@ const PRISM_LANGUAGE_EXTENSION_OVERRIDES: Record<string, string> = {
   zsh: "bash",
 };
 
+type HjsonComment = {
+  before: string[];
+  after?: string;
+};
+
+type HjsonCommentMap = Map<string, HjsonComment>;
+
 type HjsonFormatOptions = {
   indent?: number;
   maxDepth?: number;
   linkStoreHashes?: boolean;
+  comments?: HjsonCommentMap;
 };
 
-type RenderContext = Required<Omit<HjsonFormatOptions, "linkStoreHashes">> & {
+type RenderContext = Required<Omit<HjsonFormatOptions, "linkStoreHashes" | "comments">> & {
   html: boolean;
   linkStoreHashes: boolean;
+  comments: HjsonCommentMap | null;
   seen: WeakSet<object>;
   embeddedDepth: number;
 };
@@ -95,6 +106,7 @@ type RenderContext = Required<Omit<HjsonFormatOptions, "linkStoreHashes">> & {
 type ParsedStructuredText = {
   ok: true;
   value: unknown;
+  comments: HjsonCommentMap | null;
 } | {
   ok: false;
 };
@@ -107,8 +119,8 @@ type EmbeddedCodeText = {
   ok: false;
 };
 
-export function highlightMarkdownCode(text: string, language: string | null | undefined): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+export function highlightMarkdownCode(text: string, language: string | null | undefined, maxBytes = DEFAULT_HIGHLIGHT_MAX_BYTES): string {
+  if (text.length > maxBytes) return escapeHtml(text);
   const lang = normalizeCodeLanguage(language);
   return cachedHighlight("md:" + lang + "\0" + text, text.length, () => {
     if (lang === "diff" || lang === "patch") return highlightDiff(text, null);
@@ -135,8 +147,8 @@ export function displayCodeLanguage(language: string | null | undefined): string
   return DATA_LANGUAGES.has(normalized) ? "hjson" : normalized;
 }
 
-export function highlightByPath(text: string, path: string): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+export function highlightByPath(text: string, path: string, maxBytes = DEFAULT_HIGHLIGHT_MAX_BYTES): string {
+  if (text.length > maxBytes) return escapeHtml(text);
   const extension = fileExtension(path);
   if (extension === "json" || extension === "jsonc" || extension === "jsonl" || extension === "hjson") {
     return highlightHjson(text, { force: true, jsonLines: extension === "jsonl" });
@@ -147,7 +159,7 @@ export function highlightByPath(text: string, path: string): string {
 }
 
 export function highlightLineFragmentByPath(text: string, path: string): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+  if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   const extension = fileExtension(path);
   const prismLanguage = DATA_LANGUAGES.has(extension) ? "json" : prismLanguageForExtension(extension);
   if (prismLanguage) return highlightCodeRecursive(text, prismLanguage, 0);
@@ -155,7 +167,7 @@ export function highlightLineFragmentByPath(text: string, path: string): string 
 }
 
 export function highlightDiff(text: string, path: string | null | undefined): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+  if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   const explicitLanguage = prismLanguageForPath(path || "");
   const detectedLanguage = explicitLanguage || detectDiffBodyLanguage(text);
   const lines = splitLinesKeepingEndings(text);
@@ -256,7 +268,7 @@ function looksLikeDiffText(text: string): boolean {
 
 // Auto-detect HJSON / common code / plain and apply the matching highlighter.
 export function highlightAuto(text: string): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+  if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   const parsed = parseStructuredText(text, false);
   if (parsed.ok) return highlightHjsonValue(parsed.value);
   if (looksLikeDiffText(text)) return highlightDiff(text, null);
@@ -265,12 +277,13 @@ export function highlightAuto(text: string): string {
 }
 
 export function formatHjson(value: unknown, options: HjsonFormatOptions = {}): string {
-  return renderHjsonValue(value, 0, createRenderContext(options, false));
+  const ctx = createRenderContext(options, false);
+  return renderRootHjsonComments(ctx) + renderHjsonValue(value, 0, ctx);
 }
 
 export function maybeFormatHjsonTextForView(text: string): string | null {
   const parsed = parseStructuredText(text, false);
-  return parsed.ok ? formatHjson(unwrapStructuredTextString(parsed.value)) : null;
+  return parsed.ok ? formatHjson(unwrapStructuredTextString(parsed.value), { comments: parsed.comments ?? undefined }) : null;
 }
 
 export function formatHjsonTextForView(text: string): string {
@@ -282,13 +295,13 @@ export function formatJsonTextForView(text: string): string {
 }
 
 export function highlightHjson(text: string, options: { force?: boolean; jsonLines?: boolean } = {}): string {
-  if (text.length > HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
+  if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   if (options.jsonLines) {
     const highlightedLines = highlightHjsonLines(text);
     if (highlightedLines !== null) return highlightedLines;
   }
   const parsed = parseStructuredText(text, options.force === true);
-  if (parsed.ok) return highlightHjsonValue(parsed.value);
+  if (parsed.ok) return highlightHjsonValue(parsed.value, { comments: parsed.comments ?? undefined });
   return highlightWithPrism(text, "json");
 }
 
@@ -297,7 +310,8 @@ export function highlightJson(text: string): string {
 }
 
 export function highlightHjsonValue(value: unknown, options: HjsonFormatOptions = {}): string {
-  return renderHjsonValue(value, 0, createRenderContext(options, true));
+  const ctx = createRenderContext(options, true);
+  return renderRootHjsonComments(ctx) + renderHjsonValue(value, 0, ctx);
 }
 
 export function highlightTurtle(text: string): string {
@@ -320,12 +334,13 @@ function createRenderContext(options: HjsonFormatOptions, html: boolean): Render
     indent: options.indent ?? 2,
     maxDepth: options.maxDepth ?? 40,
     linkStoreHashes: options.linkStoreHashes === true,
+    comments: options.comments ?? null,
     seen: new WeakSet<object>(),
     embeddedDepth: 0,
   };
 }
 
-function renderHjsonValue(value: unknown, depth: number, ctx: RenderContext): string {
+function renderHjsonValue(value: unknown, depth: number, ctx: RenderContext, path: Array<string | number> = []): string {
   if (value === null) return span(ctx, "json-null", "null");
   if (typeof value === "string") return renderHjsonString(value, padFor(ctx, depth), ctx);
   if (typeof value === "number") {
@@ -341,41 +356,86 @@ function renderHjsonValue(value: unknown, depth: number, ctx: RenderContext): st
   if (!value || typeof value !== "object") return renderHjsonString(String(value), padFor(ctx, depth), ctx);
 
   const special = specialDisplayValue(value);
-  if (special.handled) return renderHjsonValue(special.value, depth, ctx);
+  if (special.handled) return renderHjsonValue(special.value, depth, ctx, path);
 
   if (depth >= ctx.maxDepth) return renderHjsonString("[Max depth]", padFor(ctx, depth), ctx);
   if (ctx.seen.has(value)) return renderHjsonString("[Circular]", padFor(ctx, depth), ctx);
 
   ctx.seen.add(value);
   try {
-    if (Array.isArray(value)) return renderHjsonArray(value, depth, ctx);
-    return renderHjsonObject(value as Record<string, unknown>, depth, ctx);
+    if (Array.isArray(value)) return renderHjsonArray(value, depth, ctx, path);
+    return renderHjsonObject(value as Record<string, unknown>, depth, ctx, path);
   } finally {
     ctx.seen.delete(value);
   }
 }
 
-function renderHjsonArray(value: unknown[], depth: number, ctx: RenderContext): string {
+function renderHjsonArray(value: unknown[], depth: number, ctx: RenderContext, path: Array<string | number>): string {
   if (value.length === 0) return span(ctx, "json-punct", "[]");
   const itemPad = padFor(ctx, depth + 1);
   const endPad = padFor(ctx, depth);
   const lines: string[] = [];
   for (let i = 0; i < value.length; i++) {
     const item = Object.prototype.hasOwnProperty.call(value, i) ? value[i] : undefined;
-    lines.push(itemPad + renderHjsonValue(item, depth + 1, ctx));
+    const itemPath = path.concat(i);
+    const comment = commentForPath(ctx, itemPath);
+    lines.push(...renderHjsonCommentLines(comment?.before, itemPad, ctx));
+    let line = itemPad + renderHjsonValue(item, depth + 1, ctx, itemPath);
+    if (comment?.after) line += " " + renderHjsonComment(comment.after, ctx);
+    lines.push(line);
   }
-  return span(ctx, "json-punct", "[") + "\n" + lines.join("\n") + "\n" + endPad + span(ctx, "json-punct", "]");
+  const body = "\n" + lines.join("\n") + "\n" + endPad;
+  const html =
+    span(ctx, "json-punct", "[") +
+    hjsonCollapsedPreview(ctx, hjsonCountSummary(value.length, "item")) +
+    hjsonBody(ctx, body) +
+    span(ctx, "json-punct", "]");
+  return hjsonCollapsible(ctx, "array", html);
 }
 
-function renderHjsonObject(value: Record<string, unknown>, depth: number, ctx: RenderContext): string {
+function renderHjsonObject(value: Record<string, unknown>, depth: number, ctx: RenderContext, path: Array<string | number>): string {
   const entries = Object.entries(value);
   if (entries.length === 0) return span(ctx, "json-punct", "{}");
   const itemPad = padFor(ctx, depth + 1);
   const endPad = padFor(ctx, depth);
-  const lines = entries.map(([key, entryValue]) => {
-    return itemPad + renderHjsonKey(key, ctx) + span(ctx, "json-punct", ":") + " " + renderHjsonValue(entryValue, depth + 1, ctx);
-  });
-  return span(ctx, "json-punct", "{") + "\n" + lines.join("\n") + "\n" + endPad + span(ctx, "json-punct", "}");
+  const lines: string[] = [];
+  for (const [key, entryValue] of entries) {
+    const entryPath = path.concat(key);
+    const comment = commentForPath(ctx, entryPath);
+    lines.push(...renderHjsonCommentLines(comment?.before, itemPad, ctx));
+    let line = itemPad + renderHjsonKey(key, ctx) + span(ctx, "json-punct", ":") + " " + renderHjsonValue(entryValue, depth + 1, ctx, entryPath);
+    if (comment?.after) line += " " + renderHjsonComment(comment.after, ctx);
+    lines.push(line);
+  }
+  const body = "\n" + lines.join("\n") + "\n" + endPad;
+  const html =
+    span(ctx, "json-punct", "{") +
+    hjsonCollapsedPreview(ctx, hjsonCountSummary(entries.length, "key")) +
+    hjsonBody(ctx, body) +
+    span(ctx, "json-punct", "}");
+  return hjsonCollapsible(ctx, "object", html);
+}
+
+function commentKey(path: Array<string | number>): string {
+  return JSON.stringify(path);
+}
+
+function commentForPath(ctx: RenderContext, path: Array<string | number>): HjsonComment | undefined {
+  return ctx.comments?.get(commentKey(path));
+}
+
+function renderRootHjsonComments(ctx: RenderContext): string {
+  const before = commentForPath(ctx, [])?.before;
+  if (!before?.length) return "";
+  return renderHjsonCommentLines(before, "", ctx).join("\n") + "\n";
+}
+
+function renderHjsonCommentLines(comments: string[] | undefined, pad: string, ctx: RenderContext): string[] {
+  return comments?.map((comment) => pad + renderHjsonComment(comment, ctx)) ?? [];
+}
+
+function renderHjsonComment(comment: string, ctx: RenderContext): string {
+  return span(ctx, "json-comment", comment);
 }
 
 function renderHjsonKey(key: string, ctx: RenderContext): string {
@@ -390,12 +450,14 @@ function renderHjsonString(value: string, pad: string, ctx: RenderContext): stri
   if (!ctx.html) return quoted;
 
   const storeHash = ctx.linkStoreHashes ? normalizedStoreHash(value) : null;
-  if (storeHash) return renderLinkedHjsonString(quoted, storeHash, ctx);
+  const embedded = storeHash ? null : embeddedHighlightHtml(value, ctx);
+  const rendered = storeHash
+    ? renderLinkedHjsonString(quoted, storeHash, ctx)
+    : embedded
+      ? span(ctx, "json-str", '"') + '<span class="json-embedded">' + embedded + "</span>" + span(ctx, "json-str", '"')
+      : span(ctx, "json-str", quoted);
 
-  const embedded = embeddedHighlightHtml(value, ctx);
-  if (!embedded) return span(ctx, "json-str", quoted);
-
-  return span(ctx, "json-str", '"') + '<span class="json-embedded">' + embedded + "</span>" + span(ctx, "json-str", '"');
+  return maybeCollapsibleHjsonString(value, rendered, embedded !== null, ctx);
 }
 
 function renderLinkedHjsonString(quoted: string, hash: string, ctx: RenderContext): string {
@@ -414,15 +476,62 @@ function renderHjsonMultilineString(value: string, pad: string, ctx: RenderConte
   }
 
   const embedded = embeddedHighlightHtml(value, ctx) || escapeHtml(value);
-  return (
+  const rendered =
+    '<span class="hjson-string-expanded">' +
     span(ctx, "json-str", "'''") + "\n" +
     '<span class="json-embedded">' + indentHtmlLines(embedded, bodyPad) + "</span>" + "\n" +
-    pad + span(ctx, "json-str", "'''")
+    pad + span(ctx, "json-str", "'''") +
+    "</span>";
+  return hjsonCollapsible(ctx, "string", rendered + hjsonStringCollapsedPreview(ctx, value));
+}
+
+function hjsonCollapsible(ctx: RenderContext, kind: "object" | "array" | "string", html: string): string {
+  if (!ctx.html) return html;
+  return (
+    '<span class="hjson-collapsible hjson-' + kind + '" data-hjson-kind="' + kind + '">' +
+    '<button type="button" class="hjson-toggle" aria-expanded="true" aria-label="collapse ' + kind + '" title="collapse ' + kind + '"></button>' +
+    html +
+    "</span>"
   );
 }
 
+function hjsonBody(ctx: RenderContext, html: string): string {
+  return ctx.html ? '<span class="hjson-body">' + html + "</span>" : html;
+}
+
+function hjsonCollapsedPreview(ctx: RenderContext, text: string): string {
+  return ctx.html ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + escapeHtml(text) + "</span>" : "";
+}
+
+function hjsonStringCollapsedPreview(ctx: RenderContext, value: string): string {
+  return ctx.html
+    ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + span(ctx, "json-str", collapsedHjsonStringPreview(value)) + "</span>"
+    : "";
+}
+
+function maybeCollapsibleHjsonString(value: string, rendered: string, hasEmbedded: boolean, ctx: RenderContext): string {
+  if (!ctx.html || (!hasEmbedded && value.length < HJSON_COLLAPSIBLE_STRING_MIN_CHARS && !hasLineBreak(value))) return rendered;
+  return hjsonCollapsible(
+    ctx,
+    "string",
+    '<span class="hjson-string-expanded">' + rendered + "</span>" + hjsonStringCollapsedPreview(ctx, value),
+  );
+}
+
+function hjsonCountSummary(count: number, unit: string): string {
+  return "… " + count + " " + unit + (count === 1 ? "" : "s");
+}
+
+function collapsedHjsonStringPreview(value: string): string {
+  const normalized = value.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
+  const preview = normalized.length > HJSON_COLLAPSIBLE_STRING_PREVIEW_CHARS
+    ? normalized.slice(0, HJSON_COLLAPSIBLE_STRING_PREVIEW_CHARS - 1) + "…"
+    : normalized;
+  return quoteHjsonString(preview);
+}
+
 function embeddedHighlightHtml(value: string, ctx: RenderContext): string | null {
-  if (ctx.embeddedDepth >= 2 || value.length > HIGHLIGHT_MAX_BYTES) return null;
+  if (ctx.embeddedDepth >= 2 || value.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return null;
 
   const embeddedCtx: RenderContext = {
     ...ctx,
@@ -433,6 +542,7 @@ function embeddedHighlightHtml(value: string, ctx: RenderContext): string | null
   const parsed = parseStructuredText(value, false);
   if (parsed.ok) return renderHjsonValue(parsed.value, 0, embeddedCtx);
   if (looksLikeDiffText(value)) return highlightDiff(value, null);
+  if (looksLikeMarkdownText(value)) return highlightWithPrism(value, "markdown");
 
   const embeddedCode = detectEmbeddedCodeText(value);
   return embeddedCode.ok ? embeddedCode.html : null;
@@ -504,10 +614,92 @@ function parseStructuredText(text: string, force: boolean): ParsedStructuredText
   if (!force && !looksLikeStructuredText(text)) return { ok: false };
   if (!text.trim()) return { ok: false };
   try {
-    return { ok: true, value: Hjson.parse(text) };
+    return { ok: true, value: Hjson.parse(text), comments: collectHjsonComments(text) };
   } catch {
     return { ok: false };
   }
+}
+
+function collectHjsonComments(text: string): HjsonCommentMap | null {
+  if (!/(?:^|[\s{[,])(?:\/\/|\/\*)/.test(text)) return null;
+  const comments = new Map<string, HjsonComment>();
+  const stack: Array<{ type: "object" | "array"; path: Array<string | number>; index: number }> = [];
+  const pending: string[] = [];
+  let inBlockComment = false;
+  for (const rawLine of text.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    if (inBlockComment) {
+      pending.push(trimmed);
+      if (trimmed.includes("*/")) inBlockComment = false;
+      continue;
+    }
+    while (/^[}\]]/.test(trimmed) && stack.length) stack.pop();
+    const ownLineComment = fullLineComment(trimmed);
+    if (ownLineComment) {
+      pending.push(ownLineComment);
+      if (ownLineComment.startsWith("/*") && !ownLineComment.includes("*/")) inBlockComment = true;
+      continue;
+    }
+    const parent = stack[stack.length - 1];
+    const key = parent?.type === "object" ? propertyKey(trimmed) : undefined;
+    const isItem = parent?.type === "array" && !/^[}\]]/.test(trimmed);
+    const path = key !== undefined && parent ? parent.path.concat(key) : isItem && parent ? parent.path.concat(parent.index) : null;
+    const trailing = trailingComment(rawLine);
+    if (path) {
+      if (pending.length || trailing) comments.set(commentKey(path), { before: pending.splice(0), after: trailing ?? undefined });
+      if (parent?.type === "array") parent.index++;
+    }
+    const valueText = key !== undefined ? trimmed.slice(trimmed.indexOf(":") + 1).trim() : trimmed;
+    const opener = firstContainerOpener(stripComments(valueText));
+    if (opener && path) stack.push({ type: opener === "{" ? "object" : "array", path, index: 0 });
+    else if (!parent && /^[{[]/.test(trimmed)) {
+      if (pending.length) comments.set(commentKey([]), { before: pending.splice(0) });
+      stack.push({ type: trimmed[0] === "{" ? "object" : "array", path: [], index: 0 });
+    } else if (!path && pending.length) {
+      pending.length = 0;
+    }
+  }
+  return comments.size ? comments : null;
+}
+
+function fullLineComment(trimmed: string): string | null {
+  return trimmed.startsWith("//") || trimmed.startsWith("/*") ? trimmed : null;
+}
+
+function propertyKey(trimmed: string): string | undefined {
+  const quoted = /^"((?:\\.|[^"\\])*)"\s*:/.exec(trimmed);
+  if (quoted) {
+    try { return JSON.parse('"' + quoted[1] + '"'); } catch { return quoted[1]; }
+  }
+  const bare = /^([A-Za-z_$][A-Za-z0-9_$-]*)\s*:/.exec(trimmed);
+  return bare?.[1];
+}
+
+function trailingComment(line: string): string | null {
+  let quote = "";
+  for (let i = 0; i < line.length - 1; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "/" && line[i + 1] === "/") return line.slice(i).trim();
+    if (ch === "/" && line[i + 1] === "*") return line.slice(i).trim();
+  }
+  return null;
+}
+
+function stripComments(text: string): string {
+  const at = trailingComment(text);
+  return at ? text.slice(0, text.indexOf(at)).trim() : text;
+}
+
+function firstContainerOpener(text: string): "{" | "[" | null {
+  const ch = firstNonWhitespaceChar(text.replace(/,$/, ""));
+  return ch === "{" || ch === "[" ? ch : null;
 }
 
 function unwrapStructuredTextString(value: unknown): unknown {
@@ -525,9 +717,43 @@ function isStructuredContainer(value: unknown): boolean {
   return value !== null && typeof value === "object";
 }
 
+function looksLikeMarkdownText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || !hasLineBreak(trimmed)) return false;
+  if (/^#{1,6}\s+\S/m.test(trimmed)) return true;
+  if (/^>\s+\S/m.test(trimmed)) return true;
+  if (/^[-*+]\s+\S/m.test(trimmed)) return true;
+  if (/^\d+[.)]\s+\S/m.test(trimmed)) return true;
+  if (/^```[\s\S]*```\s*$/m.test(trimmed)) return true;
+  if (/^\|.*\|\s*$/m.test(trimmed) && /^\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|\s*$/m.test(trimmed)) return true;
+  if (/\[[^\]\n]+\]\([^\s)]+\)/.test(trimmed)) return true;
+  return false;
+}
+
 function looksLikeStructuredText(text: string): boolean {
-  const ch = firstNonWhitespaceChar(text);
+  const ch = firstNonWhitespaceChar(stripLeadingJsoncComments(text));
   return ch === "{" || ch === "[" || ch === '"';
+}
+
+function stripLeadingJsoncComments(text: string): string {
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && /[ \t\n\r\f]/.test(text[i])) i++;
+    if (text[i] === "/" && text[i + 1] === "/") {
+      const end = text.indexOf("\n", i + 2);
+      if (end === -1) return "";
+      i = end + 1;
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1) return "";
+      i = end + 2;
+      continue;
+    }
+    break;
+  }
+  return text.slice(i);
 }
 
 function firstNonWhitespaceChar(text: string): string {
@@ -564,7 +790,7 @@ function highlightWithPrism(text: string, language: string): string {
 }
 
 function highlightCodeRecursive(text: string, language: string, depth: number): string {
-  if (depth >= 4 || text.length > HIGHLIGHT_MAX_BYTES) return highlightWithPrism(text, language);
+  if (depth >= 4 || text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return highlightWithPrism(text, language);
   if (language === "yaml") return highlightYamlWithEmbeddedBlocks(text, depth);
   if (language === "javascript" || language === "typescript") return highlightJsWithEmbeddedTemplates(text, language, depth);
   if (language === "python") return highlightPythonWithEmbeddedStrings(text, depth);

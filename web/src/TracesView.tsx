@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import type { JSX } from "solid-js";
 import type { Bag } from "./state";
 import { LoadingDots } from "./LoadingDots";
@@ -11,9 +11,10 @@ type LoadState = "idle" | "loading" | "error";
 type TraceTab = "all" | "failed" | "search";
 type TraceKindFilter = "any" | TraceRow["kind"];
 type TraceStatusFilter = "any" | TraceRow["status"];
-type SearchHit = { node: TraceRow; ancestors: TraceRow[] };
-type DetailState = { node: TraceRow; children: TraceRow[]; ancestors: TraceRow[] };
-type SelectTraceRootOptions = { request?: number; focusId?: string; expandIds?: Iterable<string>; preserveTab?: boolean };
+type SearchHit = { node: TraceRow; ancestors: TraceRow[]; root?: TraceRow | null };
+type DetailState = { node: TraceRow; children: TraceRow[]; ancestors: TraceRow[]; root?: TraceRow | null };
+type TraceTreeLoad = { root?: TraceRow | null; nodes: TraceRow[] };
+type SelectTraceRootOptions = { request?: number; focusId?: string; expandIds?: Iterable<string>; preserveTab?: boolean; preserveUrl?: boolean };
 type TreeRow = { node: TraceRow; depth: number; ghost?: boolean; parentId: string | null };
 type TraceScopeFilter = "any" | "chat" | "global";
 
@@ -24,7 +25,7 @@ const SUBTREE_DEPTH = 4;
 const TRACE_LOAD_TIMEOUT_MS = 30_000;
 const KIND_FILTERS: TraceKindFilter[] = ["any", "frontend", "chat", "turn", "step", "llm", "tool", "runjs", "system", "user"];
 const STATUS_FILTERS: TraceStatusFilter[] = ["any", "ok", "error", "running"];
-const INTERESTING_ANCESTORS = new Set<TraceRow["kind"]>(["step", "turn", "chat"]);
+const ROOT_KINDS = new Set<TraceRow["kind"]>(["chat", "command", "frontend", "http", "system", "trace", "runjs-recovered", "missing-parent"]);
 
 const TRACE_SELECTOR_DEFAULT_W = 224;
 const TRACE_SELECTOR_MIN_W = 168;
@@ -63,10 +64,10 @@ async function unwrap<T>(promise: Promise<{ ok: true; value: T } | { ok: false; 
 }
 
 function nowNs(): number { return Date.now() * 1_000_000; }
-function rowStartedUs(row: TraceRow): number { return Number(row.t0Us ?? Math.floor(Number(row.t0Ns) / 1_000)); }
-function rowEndedUs(row: TraceRow, now = Date.now() * 1_000): number { return row.t1Us == null ? now : Number(row.t1Us); }
-function rowStartedNs(row: TraceRow): number { return rowStartedUs(row) * 1_000; }
-function rowEndedNs(row: TraceRow, now = nowNs()): number { return row.t1Us == null ? now : rowEndedUs(row) * 1_000; }
+function rowStartedNs(row: TraceRow): number { return Number(row.t0Ns); }
+function rowEndedNs(row: TraceRow, now = nowNs()): number { return row.t1Ns == null ? now : Number(row.t1Ns); }
+function rowIsRunning(row: TraceRow): boolean { return row.t1Ns == null && row.status === "running"; }
+function rowDisplayStatus(row: TraceRow): TraceRow["status"] { return row.t1Ns != null && row.status === "running" ? "ok" : row.status; }
 function nsToMs(ns: number): number { return ns / 1_000_000; }
 
 function durationNs(row: TraceRow, now = nowNs()): number | null {
@@ -406,12 +407,31 @@ function copyText(text: string) {
   void navigator.clipboard?.writeText(text);
 }
 
-function nearestInterestingAncestor(hit: SearchHit): TraceRow {
-  const chain = [...hit.ancestors, hit.node];
-  for (let i = chain.length - 1; i >= 0; i--) {
-    if (INTERESTING_ANCESTORS.has(chain[i].kind)) return chain[i];
+function traceRootOf(node: TraceRow, ancestors: TraceRow[] = []): TraceRow {
+  const explicitRootId = node.rootId && (node.rootId !== node.id || !node.parentId) ? node.rootId : null;
+  if (explicitRootId) {
+    const match = [...ancestors, node].find((row) => row.id === explicitRootId);
+    if (match) return match;
   }
-  return hit.node;
+  return ancestors[0] || node;
+}
+
+function isCanonicalRoot(row: TraceRow): boolean {
+  return !row.parentId && (!row.rootId || row.rootId === row.id);
+}
+
+function rootLabel(row: TraceRow): string {
+  if (isCanonicalRoot(row)) return ROOT_KINDS.has(row.kind) ? "root" : "root?";
+  return row.rootKind ? `in ${row.rootKind} root` : "in root";
+}
+
+function rootMeta(row: TraceRow): string {
+  const parts = [row.chatId ? `chat ${row.chatId}` : null, row.runId ? `run ${row.runId}` : null].filter(Boolean);
+  return parts.length ? parts.join(" · ") : row.id;
+}
+
+function rootTitle(row: TraceRow): string {
+  return isCanonicalRoot(row) ? `${nodeTitle(row)} · ${rootLabel(row)}` : `${nodeTitle(row)} · ${rootLabel(row)} ${row.rootName || row.rootId || "ancestor"}`;
 }
 
 function compareRowsChronological(a: TraceRow, b: TraceRow): number {
@@ -556,7 +576,7 @@ export function TraceEventDetails(props: { event: TraceRow; onOpenStore?: (hash:
       <div class="trace-detail-title">
         <KindBadge kind={props.event.kind} />
         <h2>{nodeTitle(props.event)}</h2>
-        <StatusBadge status={props.event.status} />
+        <StatusBadge status={rowDisplayStatus(props.event)} />
       </div>
       <div class="trace-detail-meta">
         <span>{formatDurationNs(durationNs(props.event))}</span>
@@ -584,7 +604,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
   const [activeTab, setActiveTab] = createSignal<TraceTab>("all");
   const [traceRoots, setTraceRoots] = createSignal<TraceRow[]>([]);
   const [rootsState, setRootsState] = createSignal<LoadState>("idle");
-  const [rootsCursorUs, setRootsCursorUs] = createSignal<number | null>(null);
+  const [rootsCursorNs, setRootsCursorNs] = createSignal<number | null>(null);
   const [rootsCanLoadMore, setRootsCanLoadMore] = createSignal(true);
   const [rootQuery, setRootQuery] = createSignal("");
   const initialTraceId = props.bag.traceId?.() || null;
@@ -641,7 +661,8 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
 
   const rootMatchesSelection = (row: TraceRow) => {
     const key = selectedRootKey();
-    return !!key && row.id === key;
+    if (!key) return false;
+    return row.id === key || row.rootId === key || (row.kind === "chat" && row.chatId === key);
   };
 
   const durationRange = () => parseDurationRange(durationRangeFilter());
@@ -657,19 +678,25 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     if (minDurationNs != null && (durationNs(row) ?? -1) < minDurationNs) return false;
     const maxDurationNs = durationMaxNs();
     if (maxDurationNs != null && (durationNs(row) ?? Number.POSITIVE_INFINITY) > maxDurationNs) return false;
-    const afterUs = startedAfterNs();
-    if (afterUs != null && Number(rowStartedNs(row) || 0) < afterUs) return false;
+    const afterNs = startedAfterNs();
+    if (afterNs != null && Number(rowStartedNs(row) || 0) < afterNs) return false;
     const beforeNs = startedBeforeNs();
     if (beforeNs != null && Number(rowStartedNs(row) || 0) > beforeNs) return false;
     return true;
+  };
+
+  const rowMatchesKindFilter = (row: TraceRow, kind: TraceKindFilter): boolean => {
+    if (kind === "any") return true;
+    if (kind !== "chat") return row.kind === kind;
+    return row.kind === "chat" && !!row.chatId && isCanonicalRoot(row);
   };
 
   const rowMatchesTraceFilters = (row: TraceRow, opts: { queryText?: string; restrictChatToSelection?: boolean } = {}) => {
     const kind = kindFilter();
     const status = statusFilter();
     const scope = scopeFilter();
-    if (kind !== "any" && row.kind !== kind) return false;
-    if (status !== "any" && row.status !== status) return false;
+    if (!rowMatchesKindFilter(row, kind)) return false;
+    if (status !== "any" && rowDisplayStatus(row) !== status) return false;
     if (scope === "chat") {
       if (!row.chatId) return false;
       const chatId = selectedChatId();
@@ -692,7 +719,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     return haystack.includes(query);
   };
 
-  const filteredTraceRoots = createMemo(() => traceRoots().filter((root) => rowMatchesTraceFilters(root)));
+  const filteredTraceRoots = createMemo(() => traceRoots().filter((root) => isCanonicalRoot(root) && rowMatchesTraceFilters(root)));
   const filteredFailures = createMemo(() => failures().filter((hit) => hitMatchesFilters(hit)));
   const filteredSearchHits = createMemo(() => searchHits().filter((hit) => hitMatchesFilters(hit, { restrictChatToSelection: true })));
 
@@ -705,6 +732,12 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     return "roots";
   };
   const selectorSummary = () => `${selectorCount()} ${selectorNoun()}`;
+
+  async function loadTraceTreeFromRoot(root: TraceRow, maxDepth: number): Promise<TraceTreeLoad> {
+    return root.kind === "chat" && root.chatId
+      ? await unwrap(api.traces.chatTree({ chatId: root.chatId, maxDepth }), "trace chat tree load")
+      : await unwrap(api.traces.subtree({ id: root.id, maxDepth }), "trace tree load");
+  }
 
   const failedChats = createMemo(() => {
     const grouped = new Map<string, { chatId: string; title: string; lastMs: number; count: number }>();
@@ -743,7 +776,9 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     }
     for (const list of byParent.values()) list.sort((a, b) => (rowStartedNs(a) - rowStartedNs(b)) || (a.seq - b.seq));
     for (const list of virtualByParent.values()) list.sort((a, b) => (rowStartedNs(a) - rowStartedNs(b)) || (a.seq - b.seq));
-    const roots = rootId() && nodeById().has(rootId()!) ? [nodeById().get(rootId()!)!] : (byParent.get(null) || []);
+    const preferredRootId = rootId();
+    const preferredRoot = preferredRootId ? nodeById().get(preferredRootId) : null;
+    const roots = preferredRoot ? [preferredRoot] : (byParent.get(null) || []).filter(isCanonicalRoot);
     const rows: TreeRow[] = [];
     const seen = new Set<string>();
     const visit = (node: TraceRow, depth: number, ghost = false, parentId: string | null = node.parentId) => {
@@ -769,19 +804,19 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     setError(null);
     try {
       const query = rootQuery().trim() || undefined;
-      const rootArgs: TraceSearchArgs = { limit: TRACE_PAGE_LIMIT, beforeUs: opts.more ? rootsCursorUs() || undefined : undefined, query };
+      const rootArgs: TraceSearchArgs = { limit: TRACE_PAGE_LIMIT, beforeNs: opts.more ? rootsCursorNs() || undefined : undefined, query };
       const minDurationNs = durationMinNs();
       const kind = kindFilter();
       const status = statusFilter();
       const scope = scopeFilter();
       const maxDurationNs = durationMaxNs();
-      const afterMs = startedAfterNs();
+      const afterNs = startedAfterNs();
       if (minDurationNs != null) rootArgs.minDurationNs = minDurationNs;
       if (maxDurationNs != null) rootArgs.maxDurationNs = maxDurationNs;
       if (kind !== "any") rootArgs.kind = kind;
       if (status !== "any") rootArgs.status = status;
       if (scope !== "any") rootArgs.scope = scope;
-      if (afterMs != null) rootArgs.startedAfterNs = afterMs;
+      if (afterNs != null) rootArgs.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) rootArgs.startedBeforeNs = beforeNs;
       const value = await unwrap(api.traces.roots(rootArgs), "trace roots load");
@@ -790,10 +825,10 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       setTraceRoots(next);
       setRootsCanLoadMore(value.roots.length >= TRACE_PAGE_LIMIT);
       const oldest = next.reduce<number | null>((min, row) => {
-        const t = rowStartedUs(row) || 0;
+        const t = rowStartedNs(row) || 0;
         return t > 0 && (min == null || t < min) ? t : min;
       }, null);
-      setRootsCursorUs(oldest);
+      setRootsCursorNs(oldest);
       if (!selectedRootKey() && next[0]) void selectTraceRoot(next[0]);
       setRootsState("idle");
     } catch (err) {
@@ -808,36 +843,41 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     if (!isCurrentSelection(request)) return;
     setSelectedRootKey(root.id);
     setSelectedChatId(root.chatId);
-    if (root.kind === "chat" && root.chatId) {
-      props.bag.showTraces?.(root.chatId);
-    } else {
-      props.bag.showTrace?.(root.id);
+    if (!opts.preserveUrl) {
+      if (root.kind === "chat" && root.chatId) {
+        props.bag.showTraces?.(root.chatId);
+      } else {
+        props.bag.showTrace?.(root.id);
+      }
     }
     if (!opts.preserveTab) setActiveTab("all");
     setTreeState("loading");
     setError(null);
     try {
-      const value = root.kind === "chat" && root.chatId
-        ? await unwrap(api.traces.chatTree({ chatId: root.chatId, maxDepth: DEFAULT_TREE_DEPTH }), "trace chat tree load")
-        : { root, nodes: (await unwrap(api.traces.subtree({ id: root.id, maxDepth: DEFAULT_TREE_DEPTH }), "trace tree load")).nodes };
+      const value = await loadTraceTreeFromRoot(root, DEFAULT_TREE_DEPTH);
       if (!isCurrentSelection(request)) return;
+      const canonicalRoot = value.root || value.nodes.find(isCanonicalRoot) || value.nodes[0] || root;
+      if (canonicalRoot.id !== root.id) {
+        setSelectedRootKey(canonicalRoot.id);
+        setSelectedChatId(canonicalRoot.chatId);
+        if (!opts.preserveUrl) {
+          if (canonicalRoot.kind === "chat" && canonicalRoot.chatId) props.bag.showTraces?.(canonicalRoot.chatId);
+          else props.bag.showTrace?.(canonicalRoot.id);
+        }
+      }
       setNodes(value.nodes);
-      setRootId(value.root?.id || value.nodes[0]?.id || root.id);
-      const baseDepth = value.nodes[0]?.depth || 0;
+      setRootId(canonicalRoot.id);
+      const baseDepth = canonicalRoot.depth || value.nodes[0]?.depth || 0;
+      const pathIds = new Set(opts.expandIds || []);
       const open = new Set<string>();
       for (const node of value.nodes) if (node.depth - baseDepth < DEFAULT_TREE_OPEN_DEPTH) open.add(node.id);
+      for (const id of pathIds) open.add(id);
       setExpanded(open);
       setLoadedBoundary(new Map(value.nodes.filter((node) => node.depth - baseDepth >= DEFAULT_TREE_DEPTH - 1).map((node) => [node.id, DEFAULT_TREE_DEPTH])));
-      const first = opts.focusId || value.root?.id || value.nodes[0]?.id || root.id;
-      if (opts.expandIds) {
-        setExpanded((prev) => {
-          const next = new Set(prev);
-          for (const id of opts.expandIds || []) next.add(id);
-          return next;
-        });
-      }
+      const first = opts.focusId || canonicalRoot.id;
       setSelectedId(first);
       if (first) void loadDetail(first, { request });
+      if (opts.focusId) scrollTraceRowIntoView(opts.focusId);
       setTreeState("idle");
     } catch (err) {
       if (!isCurrentSelection(request)) return;
@@ -870,9 +910,10 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       if (!isCurrentSelection(request)) return;
       setDetail(value);
       const chain = [...value.ancestors, value.node];
-      const root = chain[0] || value.node;
-      const expandIds = chain.slice(0, -1).map((row) => row.id);
-      await selectTraceRoot(root, { request, focusId: value.node.id, expandIds });
+      const root = value.root || traceRootOf(value.node, value.ancestors);
+      const rootIndex = chain.findIndex((row) => row.id === root.id);
+      const expandIds = (rootIndex >= 0 ? chain.slice(rootIndex, -1) : chain.slice(0, -1)).map((row) => row.id);
+      await selectTraceRoot(root, { request, focusId: value.node.id, expandIds, preserveUrl: true });
     } catch (err) {
       if (!isCurrentSelection(request)) return;
       setTreeState("error");
@@ -890,10 +931,10 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       const args: TraceSearchArgs = { chatId, limit: 200 };
       const minDurationNs = durationMinNs();
       const maxDurationNs = durationMaxNs();
-      const afterMs = startedAfterNs();
+      const afterNs = startedAfterNs();
       if (minDurationNs != null) args.minDurationNs = minDurationNs;
       if (maxDurationNs != null) args.maxDurationNs = maxDurationNs;
-      if (afterMs != null) args.startedAfterNs = afterMs;
+      if (afterNs != null) args.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) args.startedBeforeNs = beforeNs;
       const value = await unwrap(api.traces.failed(args), "trace failed load");
@@ -921,10 +962,10 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       if (rootQuery().trim()) args.query = rootQuery().trim();
       const minDurationNs = durationMinNs();
       const maxDurationNs = durationMaxNs();
-      const afterMs = startedAfterNs();
+      const afterNs = startedAfterNs();
       if (minDurationNs != null) args.minDurationNs = minDurationNs;
       if (maxDurationNs != null) args.maxDurationNs = maxDurationNs;
-      if (afterMs != null) args.startedAfterNs = afterMs;
+      if (afterNs != null) args.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) args.startedBeforeNs = beforeNs;
       const value = await unwrap(api.traces.search(args), "trace search load");
@@ -978,8 +1019,9 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     const request = nextSelectionRequest();
     revealHitInTree(hit);
     const chain = [...hit.ancestors, hit.node];
-    const root = chain[0] || hit.node;
-    const expandIds = chain.slice(0, -1).map((row) => row.id);
+    const root = hit.root || traceRootOf(hit.node, hit.ancestors);
+    const rootIndex = chain.findIndex((row) => row.id === root.id);
+    const expandIds = (rootIndex >= 0 ? chain.slice(rootIndex, -1) : chain.slice(0, -1)).map((row) => row.id);
     await selectTraceRoot(root, { request, focusId: hit.node.id, expandIds, preserveTab: true });
     if (!isCurrentSelection(request)) return;
     scrollTraceRowIntoView(hit.node.id);
@@ -987,9 +1029,9 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
 
   function revealHitInTree(hit: SearchHit) {
     const chain = [...hit.ancestors, hit.node];
-    const root = chain[0] || hit.node;
+    const root = hit.root || traceRootOf(hit.node, hit.ancestors);
     const existingRoot = rootId();
-    const keepCurrentTree = !!existingRoot && chain.some((row) => row.id === existingRoot);
+    const keepCurrentTree = !!existingRoot && existingRoot === root.id;
     const nextNodes = keepCurrentTree ? mergeRows(nodes(), chain) : mergeRows([], chain);
     const nextChatId = hit.node.chatId || root.chatId || null;
     const nextIds = new Set(nextNodes.map((node) => node.id));
@@ -1025,7 +1067,17 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       const value = await unwrap(api.traces.node({ id }), "trace node load");
       if (request != null && !isCurrentSelection(request)) return;
       setDetail(value);
-      revealDetailInTree(value);
+      const bestRoot = value.root || traceRootOf(value.node, value.ancestors);
+      const currentRootId = rootId();
+      if (bestRoot.id !== currentRootId && (value.node.id !== currentRootId || value.ancestors.length > 0)) {
+        const chain = [...value.ancestors, value.node];
+        const rootIndex = chain.findIndex((row) => row.id === bestRoot.id);
+        const expandIds = (rootIndex >= 0 ? chain.slice(rootIndex, -1) : chain.slice(0, -1)).map((row) => row.id);
+        await selectTraceRoot(bestRoot, { request, focusId: value.node.id, expandIds, preserveTab: true });
+        if (!isCurrentSelection(request ?? selectionRequest)) return;
+      } else {
+        revealDetailInTree(value);
+      }
       setDetailState("idle");
     } catch (err) {
       if (request != null && !isCurrentSelection(request)) return;
@@ -1037,17 +1089,20 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
   function revealDetailInTree(value: DetailState) {
     const visible = new Set(nodes().map((node) => node.id));
     const missing = [value.node, ...value.ancestors].filter((node) => node && !visible.has(node.id));
-    const nextNodes = missing.length ? mergeRows(nodes(), missing) : nodes();
+    const updated = [value.node, ...value.children, ...value.ancestors];
+    const nextNodes = mergeRows(nodes(), updated);
     const nextIds = new Set(nextNodes.map((node) => node.id));
     const loadedAncestors = value.ancestors.filter((ancestor) => nextIds.has(ancestor.id));
 
-    if (missing.length) setNodes(nextNodes);
+    setNodes(nextNodes);
+    const bestRoot = value.root || traceRootOf(value.node, loadedAncestors);
     const currentRootId = rootId();
     const currentRootIsFocusedNode = !currentRootId || currentRootId === value.node.id;
-    const currentRootIsInAncestorChain = !!currentRootId && loadedAncestors.some((ancestor) => ancestor.id === currentRootId);
-    if (loadedAncestors[0] && (currentRootIsFocusedNode || !currentRootIsInAncestorChain)) {
-      setRootId(loadedAncestors[0].id);
-    } else if (!currentRootId && loadedAncestors[0]) setRootId(loadedAncestors[0].id);
+    const currentRootIsBestRoot = !!currentRootId && currentRootId === bestRoot.id;
+    if (bestRoot && (currentRootIsFocusedNode || !currentRootIsBestRoot)) {
+      setRootId(bestRoot.id);
+    }
+    if (!selectedRootKey()) setSelectedRootKey(bestRoot.id);
     if (!selectedChatId() && value.node.chatId) setSelectedChatId(value.node.chatId);
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -1234,17 +1289,17 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
             </span>
             <span class="trace-tree-branch" />
             <span class="trace-row-main">
-              <span class="trace-row-title"><KindBadge kind={row.node.kind} /><span>{nodeTitle(row.node)}</span><Show when={events()}>{(n) => <span class="trace-row-note">{n()} ev</span>}</Show><Show when={row.node.invokedFromStepId}><span class="trace-row-note">↩</span></Show></span>
+              <span class="trace-row-title"><KindBadge kind={row.node.kind} /><span>{nodeTitle(row.node)}</span><Show when={isCanonicalRoot(row.node)}><span class="trace-row-note trace-root-note">root</span></Show><Show when={events()}>{(n) => <span class="trace-row-note">{n()} ev</span>}</Show><Show when={row.node.invokedFromStepId}><span class="trace-row-note">↩</span></Show></span>
             </span>
           </span>
-          <span class="trace-row-timeline" title={`${formatTimeNs(rowStartedNs(row.node))} → ${row.node.t1Ns != null ? formatTimeNs(rowEndedNs(row.node)) : "running"}`}>
+          <span class="trace-row-timeline" title={`${formatTimeNs(rowStartedNs(row.node))} → ${rowIsRunning(row.node) ? "running" : formatTimeNs(rowEndedNs(row.node))}`}>
             <span class="trace-row-axis" />
-            <span class={`trace-row-bar trace-kind-${row.node.kind}`} classList={{ error: row.node.status === "error", running: row.node.status === "running" }} />
+            <span class={`trace-row-bar trace-kind-${row.node.kind}`} classList={{ error: rowDisplayStatus(row.node) === "error", running: rowIsRunning(row.node) }} />
             <Show when={errorCount(row.node) > 0}><span class="trace-row-marker error" /></Show>
           </span>
           <span class="trace-row-right">
             <span class="trace-row-duration">{rowDuration()}</span>
-            <StatusBadge status={row.node.status} />
+            <StatusBadge status={rowDisplayStatus(row.node)} />
           </span>
         </button>
         <Show when={expanded().has(row.node.id) && shouldOfferLoadMore(row.node)}>
@@ -1255,6 +1310,33 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       </>
     );
   }
+
+  async function refreshActiveRunningTrace() {
+    const root = rootId();
+    if (!root || !nodes().some(rowIsRunning)) return;
+    const request = selectionRequest;
+    try {
+      const value = await unwrap(api.traces.subtree({ id: root, maxDepth: SUBTREE_DEPTH }), "trace subtree refresh");
+      if (!isCurrentSelection(request)) return;
+      setNodes(mergeRows(nodes(), value.nodes));
+      const selected = selectedId();
+      if (!selected || !value.nodes.some((node) => node.id === selected)) return;
+      const detailValue = await unwrap(api.traces.node({ id: selected }), "trace node refresh");
+      if (!isCurrentSelection(request)) return;
+      setDetail(detailValue);
+      revealDetailInTree(detailValue);
+    } catch {
+      // Background refresh should not replace the visible trace with an error state.
+    }
+  }
+
+  createEffect(() => {
+    const root = rootId();
+    const hasRunningRows = nodes().some(rowIsRunning);
+    if (!root || !hasRunningRows) return;
+    const timer = window.setInterval(() => { void refreshActiveRunningTrace(); }, 2_000);
+    onCleanup(() => window.clearInterval(timer));
+  });
 
   createEffect(() => {
     storeNumber(TRACE_SELECTOR_WIDTH_STORAGE_KEY, selectorWidth());
@@ -1315,9 +1397,9 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     const chatId = props.bag.traceChatId?.() || null;
     const id = props.bag.traceId?.() || null;
     if (chatId) {
-      if (chatId === selectedChatId() && !id) return;
+      if (untrack(() => chatId === selectedChatId() && !id)) return;
       void selectChat(chatId);
-    } else if (id && id !== selectedRootKey()) {
+    } else if (id && untrack(() => id !== selectedRootKey() && id !== selectedId())) {
       void selectTraceId(id);
     }
   });
@@ -1334,9 +1416,11 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       try {
         const value = await unwrap(api.traces.node({ id: trace.id }), "trace sidebar trace load");
         if (!isCurrentSelection(request)) return;
-        revealHitInTree({ node: value.node, ancestors: value.ancestors });
-        const ancestor = nearestInterestingAncestor({ node: value.node, ancestors: value.ancestors });
-        await loadSubtree(ancestor.id, { focus: value.node.id, append: true, request });
+        const chain = [...value.ancestors, value.node];
+        const root = value.root || traceRootOf(value.node, value.ancestors);
+        const rootIndex = chain.findIndex((row) => row.id === root.id);
+        const expandIds = (rootIndex >= 0 ? chain.slice(rootIndex, -1) : chain.slice(0, -1)).map((row) => row.id);
+        await selectTraceRoot(root, { request, focusId: value.node.id, expandIds, preserveTab: true });
       } catch (err) {
         if (!isCurrentSelection(request)) return;
         setError(errMessage(err));
@@ -1356,7 +1440,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
             <HeaderIconButton title="refresh traces" aria-label="refresh traces" onClick={() => {
               void loadTraceRoots();
               void loadFailures(selectedChatId() || undefined);
-              const current = traceRoots().find((row) => (row.chatId || row.id) === selectedRootKey());
+              const current = traceRoots().find((row) => rootMatchesSelection(row));
               if (current) void selectTraceRoot(current);
             }}><RefreshIcon /></HeaderIconButton>
           }
@@ -1395,13 +1479,14 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
                 <For each={filteredTraceRoots()} fallback={<EmptyState class="trace-empty"><Show when={rootsState() === "loading"} fallback={"No traces found."}>Loading traces <LoadingDots class="trace-loading-dots" label="loading traces" /></Show></EmptyState>}>
                   {(root) => (
                     <button type="button" class="trace-root-row" classList={{ selected: rootMatchesSelection(root) }} onClick={() => selectTraceRoot(root)}>
-                      <div class="trace-root-title">
+                      <div class="trace-root-title" title={rootTitle(root)}>
                         <KindBadge kind={root.kind} />
-                        <span>{nodeTitle(root)}</span>
+                        <span class="trace-root-name">{nodeTitle(root)}</span>
+                        <span class="trace-root-badge">{rootLabel(root)}</span>
                         <Show when={formatRootDuration(root)}>{(duration) => <span class="trace-root-duration">{duration()}</span>}</Show>
                         <Show when={errorCount(root)}>{(n) => <span class="trace-error-count">{n()} err</span>}</Show>
                       </div>
-                      <div class="trace-root-meta"><span>{relativeTimeNs(rowEndedNs(root) || rowStartedNs(root))}</span></div>
+                      <div class="trace-root-meta"><span class="trace-root-meta-text">{rootMeta(root)}</span><span class="trace-root-age">{relativeTimeNs(rowEndedNs(root) || rowStartedNs(root))}</span></div>
                     </button>
                   )}
                 </For>
@@ -1409,12 +1494,12 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
               </Show>
               <Show when={activeTab() === "failed"}>
                 <For each={filteredFailures()} fallback={<EmptyState class="trace-empty"><Show when={failedState() === "loading"} fallback={"No failed spans match the filters."}>Loading failures <LoadingDots class="trace-loading-dots" label="loading failed spans" /></Show></EmptyState>}>
-                  {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span>{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span>{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
+                  {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span class="trace-root-name">{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span class="trace-root-meta-text">{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
                 </For>
               </Show>
               <Show when={activeTab() === "search"}>
                 <For each={filteredSearchHits()} fallback={<EmptyState class="trace-empty"><Show when={searchState() === "loading"} fallback={"No spans match the filters."}>Loading spans <LoadingDots class="trace-loading-dots" label="loading spans" /></Show></EmptyState>}>
-                  {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span>{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span>{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
+                  {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span class="trace-root-name">{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span class="trace-root-meta-text">{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
                 </For>
               </Show>
             </div>
@@ -1435,12 +1520,15 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
               <Show when={detail()} fallback={<EmptyState class="trace-empty">Select a tree entry to inspect input, output, errors, and events.</EmptyState>}>
                 {(state) => (
                   <>
-                    <div class="trace-detail-title"><KindBadge kind={state().node.kind} /><h2>{nodeTitle(state().node)}</h2><StatusBadge status={state().node.status} /></div>
+                    <div class="trace-detail-title"><KindBadge kind={state().node.kind} /><h2>{nodeTitle(state().node)}</h2><StatusBadge status={rowDisplayStatus(state().node)} /></div>
                     <div class="trace-detail-meta">
                       <span>started {relativeTimeNs(rowStartedNs(state().node))} ({formatTimeNs(rowStartedNs(state().node))})</span>
                       <span>ended {state().node.t1Ns != null ? `${relativeTimeNs(rowEndedNs(state().node))} (${formatTimeNs(rowEndedNs(state().node))})` : "running"}</span>
                       <span>{formatDurationNs(durationNs(state().node))}</span>
                       <span>{state().children.length} children · {markRows(state().children).length} events</span>
+                      <Show when={state().root?.id !== state().node.id ? state().root : null}>
+                        {(root) => <span class="trace-parent-link">root <ActionButton class="trace-link-button" onClick={() => loadDetail(root().id)}>{nodeTitle(root())}</ActionButton></span>}
+                      </Show>
                       <Show when={state().node.parentId}>
                         {(parentId) => (
                           <span class="trace-parent-link">
@@ -1458,7 +1546,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
                       </Show>
                     </div>
                     <div class="trace-crumbs" aria-label="trace ancestors"><For each={state().ancestors}>{(ancestor) => <ActionButton class="trace-link-button" onClick={() => loadDetail(ancestor.id)}>{nodeTitle(ancestor)}</ActionButton>}</For><span>› {nodeTitle(state().node)}</span></div>
-                    <section class="trace-detail-section trace-span-timeline-section"><h3>Local timeline</h3><div class="trace-devtools-frame"><div class="trace-devtools-summary"><span>{formatTimeNs(boundsForDetail(state().node, state().children)?.startNs)}</span><strong>{formatDurationNs(boundsForDetail(state().node, state().children)?.durationNs)}</strong><span>{state().children.length} spans · {markRows(state().children).length} events</span></div><div class="trace-devtools-overview"><TraceTimelineRuler bounds={boundsForDetail(state().node, state().children)} events={markRows(state().children)} /><span class="trace-overview-bar primary" style={timelineStyle(state().node, boundsForDetail(state().node, state().children))} /><For each={sortedRows(state().children).slice(0, 120)}>{(child) => <span class={`trace-overview-bar trace-kind-${child.kind}`} classList={{ error: child.status === "error", running: child.status === "running" }} style={timelineStyle(child, boundsForDetail(state().node, state().children))} />}</For></div><div class="trace-span-timeline" role="treegrid" aria-label="span flame chart"><button type="button" class="trace-span-timeline-row primary" style={timelineStyle(state().node, boundsForDetail(state().node, state().children))} onClick={() => loadDetail(state().node.id)}><span class="trace-span-label"><KindBadge kind={state().node.kind} /> <span>{nodeTitle(state().node)}</span><StatusBadge status={state().node.status} /></span><span class="trace-span-rail" title={`${formatTimeNs(rowStartedNs(state().node))} → ${state().node.t1Ns != null ? formatTimeNs(rowEndedNs(state().node)) : "running"}`}><span class="trace-row-axis" /><span class={`trace-span-bar trace-kind-${state().node.kind}`} classList={{ error: state().node.status === "error", running: state().node.status === "running" }} /><For each={markRows(state().children)}>{(event) => <span class={`trace-event-pin inline ${eventLevelClass(markLevel(event))}`} style={eventTimelineStyle(event, boundsForDetail(state().node, state().children))} title={eventMarkerTitle(event, boundsForDetail(state().node, state().children)?.startNs)} />}</For></span><span class="trace-span-time">{formatOffsetNs(rowStartedNs(state().node), boundsForDetail(state().node, state().children)?.startNs)}</span><span class="trace-span-total">{formatDurationNs(durationNs(state().node))}</span></button><For each={sortedRows(state().children).slice(0, 100)} fallback={<EmptyState class="trace-empty trace-inline-empty">No child spans.</EmptyState>}>{(child) => (<button type="button" class="trace-span-timeline-row child" style={timelineStyle(child, boundsForDetail(state().node, state().children))} onClick={() => loadDetail(child.id)}><span class="trace-span-label"><KindBadge kind={child.kind} /> <span>{nodeTitle(child)}</span><StatusBadge status={child.status} /></span><span class="trace-span-rail" title={`${formatTimeNs(rowStartedNs(child))} → ${child.t1Ns != null ? formatTimeNs(rowEndedNs(child)) : "running"}`}><span class="trace-row-axis" /><span class={`trace-span-bar trace-kind-${child.kind}`} classList={{ error: child.status === "error", running: child.status === "running" }} /></span><span class="trace-span-time">{formatOffsetNs(rowStartedNs(child), boundsForDetail(state().node, state().children)?.startNs)}</span><span class="trace-span-total">{formatDurationNs(durationNs(child))}</span></button>)}</For></div></div></section>
+                    <section class="trace-detail-section trace-span-timeline-section"><h3>Local timeline</h3><div class="trace-devtools-frame"><div class="trace-devtools-summary"><span>{formatTimeNs(boundsForDetail(state().node, state().children)?.startNs)}</span><strong>{formatDurationNs(boundsForDetail(state().node, state().children)?.durationNs)}</strong><span>{state().children.length} spans · {markRows(state().children).length} events</span></div><div class="trace-devtools-overview"><TraceTimelineRuler bounds={boundsForDetail(state().node, state().children)} events={markRows(state().children)} /><span class="trace-overview-bar primary" style={timelineStyle(state().node, boundsForDetail(state().node, state().children))} /><For each={sortedRows(state().children).slice(0, 120)}>{(child) => <span class={`trace-overview-bar trace-kind-${child.kind}`} classList={{ error: rowDisplayStatus(child) === "error", running: rowIsRunning(child) }} style={timelineStyle(child, boundsForDetail(state().node, state().children))} />}</For></div><div class="trace-span-timeline" role="treegrid" aria-label="span flame chart"><button type="button" class="trace-span-timeline-row primary" style={timelineStyle(state().node, boundsForDetail(state().node, state().children))} onClick={() => loadDetail(state().node.id)}><span class="trace-span-label"><KindBadge kind={state().node.kind} /> <span>{nodeTitle(state().node)}</span><StatusBadge status={rowDisplayStatus(state().node)} /></span><span class="trace-span-rail" title={`${formatTimeNs(rowStartedNs(state().node))} → ${state().node.t1Ns != null ? formatTimeNs(rowEndedNs(state().node)) : "running"}`}><span class="trace-row-axis" /><span class={`trace-span-bar trace-kind-${state().node.kind}`} classList={{ error: rowDisplayStatus(state().node) === "error", running: rowIsRunning(state().node) }} /><For each={markRows(state().children)}>{(event) => <span class={`trace-event-pin inline ${eventLevelClass(markLevel(event))}`} style={eventTimelineStyle(event, boundsForDetail(state().node, state().children))} title={eventMarkerTitle(event, boundsForDetail(state().node, state().children)?.startNs)} />}</For></span><span class="trace-span-time">{formatOffsetNs(rowStartedNs(state().node), boundsForDetail(state().node, state().children)?.startNs)}</span><span class="trace-span-total">{formatDurationNs(durationNs(state().node))}</span></button><For each={sortedRows(state().children).slice(0, 100)} fallback={<EmptyState class="trace-empty trace-inline-empty">No child spans.</EmptyState>}>{(child) => (<button type="button" class="trace-span-timeline-row child" style={timelineStyle(child, boundsForDetail(state().node, state().children))} onClick={() => loadDetail(child.id)}><span class="trace-span-label"><KindBadge kind={child.kind} /> <span>{nodeTitle(child)}</span><StatusBadge status={rowDisplayStatus(child)} /></span><span class="trace-span-rail" title={`${formatTimeNs(rowStartedNs(child))} → ${child.t1Ns != null ? formatTimeNs(rowEndedNs(child)) : "running"}`}><span class="trace-row-axis" /><span class={`trace-span-bar trace-kind-${child.kind}`} classList={{ error: rowDisplayStatus(child) === "error", running: rowIsRunning(child) }} /></span><span class="trace-span-time">{formatOffsetNs(rowStartedNs(child), boundsForDetail(state().node, state().children)?.startNs)}</span><span class="trace-span-total">{formatDurationNs(durationNs(child))}</span></button>)}</For></div></div></section>
                     <Show when={state().node.inputHash}>
                       {(hash) => <HashBlock label="Input" hash={hash()} onOpenStore={props.bag.openStorePreviewInSidebar} />}
                     </Show>

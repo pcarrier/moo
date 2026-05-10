@@ -2,7 +2,7 @@ import { callCommand } from "./contract";
 import type { ApiCommand } from "./contract";
 
 export type LlmProviderId = "openai" | "anthropic" | "qwen" | "xai";
-export type LlmAuthMode = "env" | "apiKey" | "oauth" | "subscription";
+export type LlmAuthMode = "env" | "apiKey" | "oauth";
 
 export type LlmRetrySettings = {
   maxAttempts: number;
@@ -14,6 +14,10 @@ export type LlmRetrySettings = {
 
 export type LlmCompactionSettings = {
   thresholdPercent: number;
+};
+
+export type UiBehaviorSettings = {
+  syntaxHighlightMaxBytes: number;
 };
 
 
@@ -39,12 +43,14 @@ export type LlmProviderSaveSettings = {
 
 export type LlmAuthSettings = {
   providers: Record<LlmProviderId, LlmProviderAuthSettings>;
+  serverBaseUrl?: string | null;
   compaction: LlmCompactionSettings;
   retries: LlmRetrySettings;
+  ui: UiBehaviorSettings;
   updatedAt?: number;
 };
 
-type LlmAuthSaveInput = Partial<Record<LlmProviderId, LlmProviderSaveSettings>> & { compaction?: Partial<LlmCompactionSettings>; retries?: Partial<LlmRetrySettings> };
+type LlmAuthSaveInput = Partial<Record<LlmProviderId, LlmProviderSaveSettings>> & { serverBaseUrl?: string | null; compaction?: Partial<LlmCompactionSettings>; retries?: Partial<LlmRetrySettings>; ui?: Partial<UiBehaviorSettings> };
 
 export type LlmDeviceLogin = {
   provider: LlmProviderId;

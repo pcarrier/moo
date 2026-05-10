@@ -1,5 +1,19 @@
 import type { MemoryGraphDiffSummary } from "../diffs";
-import type { ChatModelInfo, DescribeOverviewValue, DescribeTimelinePage, DescribeTrailPage, DescribeUpdateValue, DiffStats, FileDiffItem, FsEntry, MemoryDiffItem, StoreObject, TraceRow, UiApp, UiInstance } from "../api";
+import type {
+  ChatModelInfo,
+  DescribeOverviewValue,
+  DescribeTimelinePage,
+  DescribeTrailPage,
+  DescribeUpdateValue,
+  DiffStats,
+  FileDiffItem,
+  FsEntry,
+  MemoryDiffItem,
+  StoreObject,
+  TraceRow,
+  UiApp,
+  UiInstance,
+} from "../api";
 
 export type OpenRepoFile = {
   requestedPath: string;
@@ -40,6 +54,11 @@ export type JsonPreviewFile = {
 
 export type DiffContentMode = "diff" | "preview" | "source";
 
+export type DiffViewState = {
+  mode: DiffContentMode;
+  scrollTopByMode: Partial<Record<DiffContentMode, number>>;
+};
+
 export type BrowserNavState = {
   path: string | null;
   history: string[];
@@ -62,6 +81,7 @@ export type RightSidebarTab =
       item?: FileDiffItem;
       scope: "history" | "timeline";
       mode?: DiffContentMode;
+      scrollTopByMode?: Partial<Record<DiffContentMode, number>>;
     }
   | { id: string; kind: "trace"; title: string; trace: TraceRow }
   | {
@@ -91,13 +111,13 @@ export type RightSidebarTab =
       icon?: string | null;
     };
 
-
 export type RightSidebarState = {
   tabs: RightSidebarTab[];
   activeTabId: string;
   width: string;
   collapsed: boolean;
   maximized: boolean;
+  expandedDiffViewState?: Record<string, DiffViewState>;
 };
 
 export type CachedTimelinePage = DescribeTimelinePage & {
@@ -119,7 +139,7 @@ export type ChatCacheEntry = {
   activeTrailKey?: string;
   model?: ChatModelInfo;
   ui?: { apps: UiApp[]; instances: UiInstance[]; primaryUiId?: string | null };
+  rightSidebar?: RightSidebarState;
   accessedAt?: number;
   updatedAt: number;
 };
-

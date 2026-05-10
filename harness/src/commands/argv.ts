@@ -27,7 +27,6 @@ const PATH_COMMANDS = new Set([
   "fs-list",
   "fs-git-branches",
   "fs-git-pull-branches",
-  "fs-git-upgrade-jj",
 ]);
 const TRIPLE_MUTATION_COMMANDS = new Set([
   "assert",

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -32,8 +32,9 @@ static TRACE_BACKEND: Mutex<Option<ClickHouseTraceClient>> = Mutex::new(None);
 static TRACE_INITIALIZING: Mutex<Option<settings::TraceConfig>> = Mutex::new(None);
 static NEXT_TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
+static NEXT_TRACE_STATE_VERSION: AtomicU64 = AtomicU64::new(1);
 static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQueue::start);
-static TRACE_SHADOW_ROWS: LazyLock<Mutex<HashMap<String, TraceRow>>> =
+static TRACE_IN_FLIGHT_ROWS: LazyLock<Mutex<HashMap<String, TraceInFlightRow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug)]
@@ -183,9 +184,11 @@ impl ClickHouseTraceClient {
     }
 
     fn state_json(row: &TraceRow) -> serde_json::Value {
-        let version = now_ms()
+        let wall_version = now_ms()
             .max(row.ended_ns.unwrap_or(row.started_ns) / 1_000_000)
             .max(row.started_ns / 1_000_000) as u64;
+        let version = (wall_version << 20)
+            | (NEXT_TRACE_STATE_VERSION.fetch_add(1, Ordering::Relaxed) & ((1 << 20) - 1));
         serde_json::json!({
             "id": row.id, "status": row.status, "ended_ns": row.ended_ns,
             "output_hash": row.output_hash, "error_hash": row.error_hash,
@@ -216,7 +219,9 @@ impl ClickHouseTraceClient {
     }
 
     fn select_trace_rows(&self, clause: &str, include_data: bool) -> Result<Vec<TraceRow>, String> {
-        self.select_latest_trace_rows(clause, None, include_data)
+        let mut rows = self.select_latest_trace_rows(clause, None, include_data)?;
+        self.attach_trace_roots(&mut rows)?;
+        Ok(rows)
     }
 
     fn select_latest_trace_rows(
@@ -242,13 +247,14 @@ impl ClickHouseTraceClient {
             .iter()
             .map(ch_trace_row_from_json)
             .collect::<Result<Vec<_>, _>>()?;
+        overlay_trace_in_flight_rows(&mut rows);
         if include_data {
             hydrate_trace_rows_ch(self, &mut rows)?;
         }
         Ok(rows)
     }
 
-    fn get_trace(&self, id: &str) -> Result<Option<TraceRow>, String> {
+    fn get_trace_raw(&self, id: &str) -> Result<Option<TraceRow>, String> {
         let sql = ch_latest_trace_rows_sql(
             &self.trace_table,
             &self.state_table,
@@ -261,8 +267,17 @@ impl ClickHouseTraceClient {
             .iter()
             .map(ch_trace_row_from_json)
             .collect::<Result<Vec<_>, _>>()?;
+        overlay_trace_in_flight_rows(&mut rows);
         hydrate_trace_rows_ch(self, &mut rows)?;
         Ok(rows.pop())
+    }
+
+    fn get_trace(&self, id: &str) -> Result<Option<TraceRow>, String> {
+        let mut row = self.get_trace_raw(id)?;
+        if let Some(row) = row.as_mut() {
+            self.attach_trace_root(row)?;
+        }
+        Ok(row)
     }
 
     fn children_for_parents(&self, parent_ids: &[String]) -> Result<Vec<TraceRow>, String> {
@@ -325,9 +340,70 @@ impl ClickHouseTraceClient {
             .map(|ns| format!(" AND started_ns < {ns}"))
             .unwrap_or_default();
         self.select_trace_rows(
-            &format!("WHERE isNull(parent_id) AND kind = 'chat'{before} ORDER BY started_ns DESC LIMIT {limit}"),
+            &format!("WHERE {TRACE_ROOT_FILTER_SQL} AND kind = 'chat'{before} ORDER BY started_ns DESC LIMIT {limit}"),
             false,
         )
+    }
+
+    fn root_for(&self, id: &str) -> Result<Option<TraceRow>, String> {
+        let Some(mut row) = self.get_trace_raw(id)? else {
+            return Ok(None);
+        };
+        let mut seen = HashSet::new();
+        while let Some(parent_id) = row.parent_id.clone() {
+            if !seen.insert(parent_id.clone()) {
+                break;
+            }
+            let Some(parent) = self.get_trace_raw(&parent_id)? else {
+                break;
+            };
+            row = parent;
+        }
+        row.root_id = row.id.clone();
+        row.root_kind = row.kind.clone();
+        row.root_name = row.name.clone();
+        Ok(Some(row))
+    }
+
+    fn attach_trace_root(&self, row: &mut TraceRow) -> Result<(), String> {
+        if row.parent_id.is_none() {
+            row.root_id = row.id.clone();
+            row.root_kind = row.kind.clone();
+            row.root_name = row.name.clone();
+            return Ok(());
+        }
+        if let Some(root) = self.root_for(&row.id)? {
+            row.root_id = root.id;
+            row.root_kind = root.kind;
+            row.root_name = root.name;
+        }
+        Ok(())
+    }
+
+    fn attach_trace_roots(&self, rows: &mut [TraceRow]) -> Result<(), String> {
+        let mut roots: HashMap<String, (String, String, String)> = HashMap::new();
+        for row in rows.iter_mut() {
+            if row.parent_id.is_none() {
+                row.root_id = row.id.clone();
+                row.root_kind = row.kind.clone();
+                row.root_name = row.name.clone();
+                continue;
+            }
+            if let Some((root_id, root_kind, root_name)) = roots.get(&row.id).cloned() {
+                row.root_id = root_id;
+                row.root_kind = root_kind;
+                row.root_name = root_name;
+                continue;
+            }
+            if let Some(root) = self.root_for(&row.id)? {
+                let tuple = (root.id, root.kind, root.name);
+                row.root_id = tuple.0.clone();
+                row.root_kind = tuple.1.clone();
+                row.root_name = tuple.2.clone();
+                roots.insert(row.id.clone(), tuple);
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -345,7 +421,7 @@ impl ClickHouseTraceClient {
         scope: Option<&str>,
     ) -> Result<Vec<TraceRow>, String> {
         let limit = limit.clamp(1, 500);
-        let mut clauses = vec!["isNull(parent_id)".to_string()];
+        let mut clauses = vec![TRACE_ROOT_FILTER_SQL.to_string()];
         let mut having_clauses: Vec<String> = Vec::new();
         if let Some(before_ns) = before_ns {
             clauses.push(format!("started_ns < {before_ns}"));
@@ -375,7 +451,11 @@ impl ClickHouseTraceClient {
         }
         let kind = kind.unwrap_or("").trim();
         if !kind.is_empty() && kind != "any" {
-            clauses.push(format!("kind = {}", ch_sql_string(kind)));
+            if kind == "chat" {
+                clauses.push(TRACE_CHAT_KIND_FILTER_SQL.to_string());
+            } else {
+                clauses.push(format!("kind = {}", ch_sql_string(kind)));
+            }
         }
         let status = status.unwrap_or("").trim();
         if !status.is_empty() && status != "any" {
@@ -416,7 +496,11 @@ impl ClickHouseTraceClient {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            clauses.push(format!("kind = {}", ch_sql_string(kind)));
+            if kind == "chat" {
+                clauses.push(TRACE_CHAT_KIND_FILTER_SQL.to_string());
+            } else {
+                clauses.push(format!("kind = {}", ch_sql_string(kind)));
+            }
         }
         let status = if query.has_error {
             Some("error")
@@ -447,7 +531,7 @@ impl ClickHouseTraceClient {
             clauses.push(format!("run_id = {}", ch_sql_string(run_id)));
         }
         if query.roots_only {
-            clauses.push("isNull(parent_id)".to_string());
+            clauses.push(TRACE_ROOT_FILTER_SQL.to_string());
         }
         match query.scope.as_deref().map(str::trim) {
             Some("global") => clauses.push("chat_id IS NULL".to_string()),
@@ -476,17 +560,19 @@ impl ClickHouseTraceClient {
         } else {
             format!("WHERE {}", clauses.join(" AND "))
         };
-        self.select_latest_trace_rows(
+        let mut rows = self.select_latest_trace_rows(
             &format!("{where_clause} ORDER BY started_ns DESC LIMIT {limit}"),
             Some(&having_clauses.join(" AND ")),
             false,
-        )
+        )?;
+        self.attach_trace_roots(&mut rows)?;
+        Ok(rows)
     }
 
     fn chat_root_for(&self, chat_id: &str) -> Result<Option<TraceRow>, String> {
         let mut rows = self.select_trace_rows(
             &format!(
-                "WHERE isNull(parent_id) AND kind = 'chat' AND chat_id = {} ORDER BY started_ns DESC LIMIT 1",
+                "WHERE {TRACE_ROOT_FILTER_SQL} AND kind = 'chat' AND chat_id = {} ORDER BY started_ns DESC LIMIT 1",
                 ch_sql_string(chat_id),
             ),
             false,
@@ -502,18 +588,37 @@ impl ClickHouseTraceClient {
         let Some(root) = self.chat_root_for(chat_id)? else {
             return Ok((None, Vec::new()));
         };
-        let max_depth = max_depth.max(0) as i64;
-        let max_abs_depth = root.depth + max_depth;
-        let nodes = self.select_trace_rows(
-            &format!(
-                "WHERE chat_id = {} AND depth >= {} AND depth <= {} ORDER BY depth ASC, seq ASC",
-                ch_sql_string(chat_id),
-                root.depth,
-                max_abs_depth,
-            ),
-            false,
-        )?;
+        let nodes = self.subtree_rows(&root.id, max_depth)?;
         Ok((Some(root), nodes))
+    }
+
+    fn subtree_rows(&self, id: &str, max_depth: i32) -> Result<Vec<TraceRow>, String> {
+        let max_depth = max_depth.max(0) as usize;
+        let Some(root) = self.get_trace(id)? else {
+            return Ok(vec![]);
+        };
+        let root_id = root.id.clone();
+        let root_kind = root.kind.clone();
+        let root_name = root.name.clone();
+        let mut rows = vec![root];
+        let mut frontier = vec![id.to_string()];
+        for _ in 0..max_depth {
+            let mut next = Vec::new();
+            let children = self.children_for_parents(&frontier)?;
+            next.extend(children.iter().map(|row| row.id.clone()));
+            rows.extend(children);
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        rows.sort_by_key(|row| (row.depth, row.seq));
+        for row in rows.iter_mut() {
+            row.root_id = root_id.clone();
+            row.root_kind = root_kind.clone();
+            row.root_name = root_name.clone();
+        }
+        Ok(rows)
     }
 
     fn get_blob(&self, hash: &str) -> Result<Option<Vec<u8>>, String> {
@@ -580,6 +685,12 @@ enum TraceWrite {
     },
 }
 
+#[derive(Clone, Debug)]
+struct TraceInFlightRow {
+    row: TraceRow,
+    pending_writes: usize,
+}
+
 struct TraceWriteQueue {
     tx: Sender<TraceWrite>,
 }
@@ -603,7 +714,9 @@ impl TraceWriteQueue {
                             | Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
-                    if let Err(error) = flush_trace_writes(&batch) {
+                    let result = flush_trace_writes(&batch);
+                    complete_trace_in_flight_writes(&batch);
+                    if let Err(error) = result {
                         report_trace_write_error(error, batch.len());
                     }
                     batch.clear();
@@ -673,35 +786,127 @@ fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
 }
 
 fn enqueue_trace_write(write: TraceWrite) -> Result<(), String> {
-    if let TraceWrite::Span(row) | TraceWrite::State(row) = &write
-        && let Ok(mut shadow) = TRACE_SHADOW_ROWS.lock()
-    {
-        shadow.insert(row.id.clone(), (**row).clone());
-    }
+    register_trace_in_flight_write(&write);
     TRACE_WRITE_QUEUE.enqueue(write)
 }
 
-fn trace_shadow_get(id: &str) -> Option<TraceRow> {
-    TRACE_SHADOW_ROWS
-        .lock()
-        .ok()
-        .and_then(|shadow| shadow.get(id).cloned())
+fn register_trace_in_flight_write(write: &TraceWrite) {
+    let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() else {
+        return;
+    };
+    match write {
+        TraceWrite::Span(row) => {
+            rows.entry(row.id.clone())
+                .and_modify(|entry| {
+                    let previous_state = (
+                        entry.row.status.clone(),
+                        entry.row.ended_ns,
+                        entry.row.output_hash.clone(),
+                        entry.row.error_hash.clone(),
+                        entry.row.data_json.clone(),
+                        entry.row.data_hash.clone(),
+                    );
+                    entry.row = (**row).clone();
+                    entry.row.status = previous_state.0;
+                    entry.row.ended_ns = previous_state.1;
+                    entry.row.output_hash = previous_state.2;
+                    entry.row.error_hash = previous_state.3;
+                    entry.row.data_json = previous_state.4;
+                    entry.row.data_hash = previous_state.5;
+                    entry.pending_writes = entry.pending_writes.saturating_add(1);
+                })
+                .or_insert_with(|| TraceInFlightRow {
+                    row: (**row).clone(),
+                    pending_writes: 1,
+                });
+        }
+        TraceWrite::State(row) => {
+            rows.entry(row.id.clone())
+                .and_modify(|entry| {
+                    entry.row.status = row.status.clone();
+                    entry.row.ended_ns = row.ended_ns;
+                    entry.row.output_hash = row.output_hash.clone();
+                    entry.row.error_hash = row.error_hash.clone();
+                    entry.row.data_json = row.data_json.clone();
+                    entry.row.data_hash = row.data_hash.clone();
+                    entry.pending_writes = entry.pending_writes.saturating_add(1);
+                })
+                .or_insert_with(|| TraceInFlightRow {
+                    row: (**row).clone(),
+                    pending_writes: 1,
+                });
+        }
+        TraceWrite::Event { .. } | TraceWrite::Blob { .. } => {}
+    }
 }
 
-fn trace_shadow_children(parent_id: Option<&str>, limit: Option<i64>) -> Vec<TraceRow> {
-    let Ok(shadow) = TRACE_SHADOW_ROWS.lock() else {
+fn trace_write_row_id(write: &TraceWrite) -> Option<&str> {
+    match write {
+        TraceWrite::Span(row) | TraceWrite::State(row) => Some(row.id.as_str()),
+        TraceWrite::Event { .. } | TraceWrite::Blob { .. } => None,
+    }
+}
+
+fn complete_trace_in_flight_writes(writes: &[TraceWrite]) {
+    let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() else {
+        return;
+    };
+    for write in writes {
+        let Some(id) = trace_write_row_id(write) else {
+            continue;
+        };
+        let should_remove = if let Some(entry) = rows.get_mut(id) {
+            entry.pending_writes = entry.pending_writes.saturating_sub(1);
+            entry.pending_writes == 0
+        } else {
+            false
+        };
+        if should_remove {
+            rows.remove(id);
+        }
+    }
+}
+
+fn trace_in_flight_get(id: &str) -> Option<TraceRow> {
+    TRACE_IN_FLIGHT_ROWS
+        .lock()
+        .ok()
+        .and_then(|rows| rows.get(id).map(|entry| entry.row.clone()))
+}
+
+fn trace_in_flight_children(parent_id: Option<&str>, limit: Option<i64>) -> Vec<TraceRow> {
+    let Ok(rows) = TRACE_IN_FLIGHT_ROWS.lock() else {
         return vec![];
     };
-    let mut rows: Vec<TraceRow> = shadow
+    let mut rows: Vec<TraceRow> = rows
         .values()
-        .filter(|row| row.parent_id.as_deref() == parent_id)
-        .cloned()
+        .filter(|entry| entry.row.parent_id.as_deref() == parent_id)
+        .map(|entry| entry.row.clone())
         .collect();
     rows.sort_by_key(|row| (row.depth, row.seq));
     if let Some(limit) = limit {
         rows.truncate(limit.max(0) as usize);
     }
     rows
+}
+
+fn overlay_trace_in_flight_rows(rows: &mut [TraceRow]) {
+    let Ok(in_flight) = TRACE_IN_FLIGHT_ROWS.lock() else {
+        return;
+    };
+    for row in rows {
+        let Some(local) = in_flight.get(&row.id).map(|entry| &entry.row) else {
+            continue;
+        };
+        if row.ended_ns.is_none() && local.ended_ns.is_some() {
+            row.status = local.status.clone();
+            row.ended_ns = local.ended_ns;
+            row.output_hash = local.output_hash.clone();
+            row.error_hash = local.error_hash.clone();
+            row.data_json = local.data_json.clone();
+            row.data_hash = local.data_hash.clone();
+        }
+    }
 }
 
 fn ch_encode_query(s: &str) -> String {
@@ -721,8 +926,11 @@ fn ch_encode_query(s: &str) -> String {
     out
 }
 
-const TRACE_CH_SELECT_COLUMNS: &str = "id, parent_id, chat_id, run_id, kind, name, depth, seq, ifNull(status, 'running') AS status, started_ns, ended_ns, input_hash, output_hash, error_hash, invoked_from_step_id, data_json, data_hash";
-const TRACE_CH_LIST_COLUMNS: &str = "id, parent_id, chat_id, run_id, kind, name, depth, seq, ifNull(status, 'running') AS status, started_ns, ended_ns, input_hash, output_hash, error_hash, invoked_from_step_id, NULL AS data_json, data_hash";
+const TRACE_CH_SELECT_COLUMNS: &str = "s.id AS id, s.parent_id AS parent_id, s.chat_id AS chat_id, s.run_id AS run_id, s.kind AS kind, s.name AS name, s.depth AS depth, s.seq AS seq, ifNull(st.status, 'running') AS status, s.started_ns AS started_ns, st.ended_ns AS ended_ns, s.input_hash AS input_hash, st.output_hash AS output_hash, st.error_hash AS error_hash, s.invoked_from_step_id AS invoked_from_step_id, st.data_json AS data_json, st.data_hash AS data_hash";
+const TRACE_CH_LIST_COLUMNS: &str = "s.id AS id, s.parent_id AS parent_id, s.chat_id AS chat_id, s.run_id AS run_id, s.kind AS kind, s.name AS name, s.depth AS depth, s.seq AS seq, ifNull(st.status, 'running') AS status, s.started_ns AS started_ns, st.ended_ns AS ended_ns, s.input_hash AS input_hash, st.output_hash AS output_hash, st.error_hash AS error_hash, s.invoked_from_step_id AS invoked_from_step_id, NULL AS data_json, st.data_hash AS data_hash";
+const TRACE_ROOT_FILTER_SQL: &str = "isNull(parent_id)";
+const TRACE_CHAT_KIND_FILTER_SQL: &str =
+    "kind = 'chat' AND chat_id IS NOT NULL AND isNull(parent_id)";
 
 fn ch_sql_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -770,6 +978,12 @@ fn ch_split_order_limit(clause: &str) -> (&str, &str) {
     }
 }
 
+fn ch_latest_trace_state_sql(state_table: &str, base_ids: &str) -> String {
+    format!(
+        "SELECT id, tupleElement(state, 1) AS status, tupleElement(state, 2) AS ended_ns, tupleElement(state, 3) AS output_hash, tupleElement(state, 4) AS error_hash, tupleElement(state, 5) AS data_json, tupleElement(state, 6) AS data_hash FROM (SELECT id, argMax(tuple(toNullable(status), ended_ns, output_hash, error_hash, data_json, data_hash), tuple(if(isNull(ended_ns), 0, 1), _version)) AS state FROM {state_table} WHERE id IN ({base_ids}) GROUP BY id)"
+    )
+}
+
 fn ch_latest_trace_rows_sql(
     table: &str,
     state_table: &str,
@@ -778,23 +992,16 @@ fn ch_latest_trace_rows_sql(
     having: Option<&str>,
 ) -> String {
     let (where_clause, order_limit) = ch_split_order_limit(clause.trim());
-    let mut filters = Vec::new();
     let where_clause = where_clause.trim();
-    if let Some(rest) = where_clause.strip_prefix("WHERE ") {
-        let rest = rest.trim();
-        if !rest.is_empty() {
-            filters.push(rest.to_string());
-        }
-    } else if !where_clause.is_empty() {
-        filters.push(where_clause.to_string());
-    }
-    if let Some(having) = having.map(str::trim).filter(|s| !s.is_empty()) {
-        filters.push(having.to_string());
-    }
-    let outer_where = if filters.is_empty() {
+    let base_filter = if let Some(rest) = where_clause.strip_prefix("WHERE ") {
+        rest.trim()
+    } else {
+        where_clause
+    };
+    let base_where = if base_filter.is_empty() {
         String::new()
     } else {
-        format!(" WHERE {}", filters.join(" AND "))
+        format!(" WHERE {base_filter}")
     };
     let order_limit = order_limit.trim();
     let order_limit = if order_limit.is_empty() {
@@ -802,8 +1009,17 @@ fn ch_latest_trace_rows_sql(
     } else {
         format!(" {order_limit}")
     };
+    if let Some(having) = having.map(str::trim).filter(|s| !s.is_empty()) {
+        let base_ids = format!("SELECT id FROM {table}{base_where}");
+        let state = ch_latest_trace_state_sql(state_table, &base_ids);
+        return format!(
+            "SELECT * FROM (SELECT {columns} FROM (SELECT * FROM {table}{base_where}) AS s ANY LEFT JOIN ({state}) AS st USING (id)) WHERE {having}{order_limit}"
+        );
+    }
+    let base_ids = format!("SELECT id FROM {table}{base_where}{order_limit}");
+    let state = ch_latest_trace_state_sql(state_table, &base_ids);
     format!(
-        "SELECT {columns} FROM {table} AS s ANY LEFT JOIN (SELECT id, status, ended_ns, output_hash, error_hash, data_json, data_hash FROM {state_table} FINAL) AS st USING (id){outer_where}{order_limit}"
+        "SELECT {columns} FROM (SELECT * FROM {table}{base_where}{order_limit}) AS s ANY LEFT JOIN ({state}) AS st USING (id)"
     )
 }
 
@@ -819,6 +1035,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn trace_raw_reads_apply_in_flight_overlay_before_hydration() {
+        let source = include_str!("host.rs");
+        let get_raw = &source
+            [source.find("fn get_trace_raw").unwrap()..source.find("fn get_trace(&self").unwrap()];
+
+        assert!(get_raw.contains("overlay_trace_in_flight_rows(&mut rows);"));
+        assert!(
+            get_raw
+                .find("overlay_trace_in_flight_rows(&mut rows);")
+                .unwrap()
+                < get_raw
+                    .find("hydrate_trace_rows_ch(self, &mut rows)?;")
+                    .unwrap()
+        );
+    }
+
+    #[test]
     fn latest_trace_rows_sql_filters_after_final() {
         let sql = ch_latest_trace_rows_sql(
             "moo_traces",
@@ -828,9 +1061,12 @@ mod tests {
             Some("status = 'error'"),
         );
 
-        assert!(sql.contains("FROM moo_traces AS s ANY LEFT JOIN (SELECT id, status, ended_ns, output_hash, error_hash, data_json, data_hash FROM moo_traces_state FINAL) AS st USING (id) WHERE isNull(parent_id) AND status = 'error' ORDER BY started_ns DESC LIMIT 25"));
-        assert!(!sql.contains("argMax"));
-        assert!(!sql.contains("GROUP BY id"));
+        assert!(sql.contains("SELECT * FROM (SELECT s.id AS id"));
+        assert!(sql.contains("FROM (SELECT * FROM moo_traces WHERE isNull(parent_id)) AS s ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status, tupleElement(state, 2) AS ended_ns"));
+        assert!(sql.contains("argMax(tuple(toNullable(status), ended_ns, output_hash, error_hash, data_json, data_hash), tuple(if(isNull(ended_ns), 0, 1), _version)) AS state"));
+        assert!(sql.contains("FROM moo_traces_state WHERE id IN (SELECT id FROM moo_traces WHERE isNull(parent_id)) GROUP BY id"));
+        assert!(sql.contains(")) WHERE status = 'error' ORDER BY started_ns DESC LIMIT 25"));
+        assert!(!sql.contains("LIMIT 1 BY id"));
     }
 
     #[test]
@@ -843,19 +1079,54 @@ mod tests {
             None,
         );
 
-        assert!(sql.contains(" FROM moo_traces AS s ANY LEFT JOIN (SELECT id, status, ended_ns, output_hash, error_hash, data_json, data_hash FROM moo_traces_state FINAL) AS st USING (id) ORDER BY seq ASC LIMIT 10"));
+        assert!(sql.contains(" FROM (SELECT * FROM moo_traces ORDER BY seq ASC LIMIT 10) AS s ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status"));
+        assert!(sql.contains("FROM moo_traces_state WHERE id IN (SELECT id FROM moo_traces ORDER BY seq ASC LIMIT 10) GROUP BY id"));
         assert!(!sql.contains(") WHERE  ORDER"));
+    }
+
+    #[test]
+    fn latest_trace_rows_sql_filters_duration_after_joined_state() {
+        let sql = ch_latest_trace_rows_sql(
+            "moo_traces",
+            "moo_traces_state",
+            TRACE_CH_LIST_COLUMNS,
+            "WHERE isNull(parent_id) ORDER BY started_ns DESC LIMIT 100",
+            Some("(ifNull(ended_ns, 1234567890) - started_ns) >= 10000000"),
+        );
+
+        assert!(sql.contains("ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status"));
+        assert!(sql.contains(
+            ")) WHERE (ifNull(ended_ns, 1234567890) - started_ns) >= 10000000 ORDER BY started_ns DESC LIMIT 100"
+        ));
+        assert!(!sql.contains("ifNull(st.ended_ns"));
+        assert!(sql.contains("GROUP BY id"));
+        assert!(!sql.contains("LIMIT 1 BY id"));
+    }
+
+    #[test]
+    fn latest_trace_state_prefers_finished_state_over_newer_running_state() {
+        let sql = ch_latest_trace_state_sql("moo_traces_state", "SELECT id FROM moo_traces");
+
+        assert!(sql.contains("tuple(if(isNull(ended_ns), 0, 1), _version)"));
+        assert!(!sql.contains("tuple(_version, if(isNull(ended_ns), 0, 1))"));
     }
 
     #[test]
     fn inferred_step_attachment_root_is_not_step_kind() {
         let (kind, name) = infer_trace_root_kind_name("step:abc123");
 
-        assert_eq!(kind, "chat");
+        assert_eq!(kind, "missing-parent");
         assert_eq!(name, "step:abc123");
     }
 
     #[test]
+    fn kind_chat_filter_only_selects_chat_roots() {
+        assert_eq!(
+            TRACE_CHAT_KIND_FILTER_SQL,
+            "kind = 'chat' AND chat_id IS NOT NULL AND isNull(parent_id)"
+        );
+    }
+
     fn trace_roots_sql_only_selects_null_parent_rows() {
         let sql = ch_latest_trace_rows_sql(
             "moo_traces",
@@ -865,9 +1136,9 @@ mod tests {
             None,
         );
 
-        assert!(sql.contains(
-            "WHERE isNull(parent_id) AND started_ns < 100 ORDER BY started_ns DESC LIMIT 25"
-        ));
+        assert!(sql.contains(&format!(
+            "WHERE {TRACE_ROOT_FILTER_SQL} AND started_ns < 100 ORDER BY started_ns DESC LIMIT 25"
+        )));
         assert!(!sql.contains("parent_id = ''"));
     }
 
@@ -943,6 +1214,9 @@ fn ch_trace_row_from_json(row: &Value) -> Result<TraceRow, String> {
     Ok(TraceRow {
         id: ch_string(row, "id")?,
         parent_id: ch_opt_string(row, "parent_id")?,
+        root_id: ch_string(row, "id")?,
+        root_kind: ch_string(row, "kind")?,
+        root_name: ch_string(row, "name")?,
         chat_id: ch_opt_string(row, "chat_id")?,
         run_id: ch_opt_string(row, "run_id")?,
         kind: ch_string(row, "kind")?,
@@ -1225,11 +1499,12 @@ pub static TEST_DB_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 pub fn install_fresh(db_path: &str) -> Result<(), String> {
     *DB.lock().expect("db mutex poisoned") = Some(open_db(db_path)?);
-    if let Ok(mut shadow) = TRACE_SHADOW_ROWS.lock() {
-        shadow.clear();
+    if let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() {
+        rows.clear();
     }
     NEXT_TRACE_SEQ.store(1, Ordering::Relaxed);
     NEXT_TRACE_EVENT_ID.store(1, Ordering::Relaxed);
+    NEXT_TRACE_STATE_VERSION.store(1, Ordering::Relaxed);
     *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = None;
     Ok(())
 }
@@ -1369,7 +1644,7 @@ fn infer_trace_root_kind_name(id: &str) -> (&'static str, String) {
         // A step is always a child in the trace tree. If the concrete step row
         // is missing when a trace is attached to it, backfill a chat-shaped
         // ancestor under the step id rather than creating a root `step` span.
-        return ("chat", id.to_string());
+        return ("missing-parent", id.to_string());
     }
     if id.starts_with("trace:") {
         return ("trace", id.to_string());
@@ -1407,6 +1682,9 @@ pub fn get_object(hash: &str) -> Result<Option<(String, Vec<u8>)>, String> {
 pub struct TraceRow {
     pub id: String,
     pub parent_id: Option<String>,
+    pub root_id: String,
+    pub root_kind: String,
+    pub root_name: String,
     pub chat_id: Option<String>,
     pub run_id: Option<String>,
     pub kind: String,
@@ -1523,6 +1801,9 @@ pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
     let row = TraceRow {
         id: id.to_string(),
         parent_id: None,
+        root_id: id.to_string(),
+        root_kind: kind.to_string(),
+        root_name: name.to_string(),
         chat_id: chat_id.map(ToString::to_string),
         run_id: run_id.map(ToString::to_string),
         kind: kind.to_string(),
@@ -1572,7 +1853,14 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
     } = params;
     let parent = match parent_id {
         Some(parent_id) => match trace_get(parent_id)? {
-            Some(row) => Some((row.depth, row.chat_id, row.run_id)),
+            Some(row) => Some((
+                row.depth,
+                row.chat_id,
+                row.run_id,
+                row.root_id,
+                row.root_kind,
+                row.root_name,
+            )),
             None => {
                 let (kind, name) = infer_trace_root_kind_name(parent_id);
                 trace_ensure_root(TraceRootParams {
@@ -1585,17 +1873,39 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
                     input_hash: None,
                     data_json: Some(r#"{"backfilled":"missing live trace parent"}"#),
                 })?;
-                trace_get(parent_id)?.map(|row| (row.depth, row.chat_id, row.run_id))
+                trace_get(parent_id)?.map(|row| {
+                    (
+                        row.depth,
+                        row.chat_id,
+                        row.run_id,
+                        row.root_id,
+                        row.root_kind,
+                        row.root_name,
+                    )
+                })
             }
         },
         None => None,
     };
     let seq = NEXT_TRACE_SEQ.fetch_add(1, Ordering::Relaxed) as i64;
     let prepared = prepare_trace_data_queued(data_json)?;
-    let (depth, inherited_chat_id, inherited_run_id) = parent.unwrap_or((0, None, None));
+    let (depth, inherited_chat_id, inherited_run_id, root_id, root_kind, root_name) = parent
+        .unwrap_or_else(|| {
+            (
+                0,
+                None,
+                None,
+                id.to_string(),
+                kind.to_string(),
+                name.to_string(),
+            )
+        });
     let row = TraceRow {
         id: id.to_string(),
         parent_id: parent_id.map(ToString::to_string),
+        root_id,
+        root_kind,
+        root_name,
         chat_id: chat_id.map(ToString::to_string).or(inherited_chat_id),
         run_id: run_id.map(ToString::to_string).or(inherited_run_id),
         kind: kind.to_string(),
@@ -1618,7 +1928,14 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
 }
 
 pub fn trace_update_data(id: &str, data_json: Option<&str>) -> Result<bool, String> {
-    let Some(mut row) = trace_shadow_get(id) else {
+    let mut row = if let Some(row) = trace_in_flight_get(id) {
+        row
+    } else if let Some(client) = current_trace_client() {
+        let Some(row) = client.get_trace_raw(id)? else {
+            return Ok(false);
+        };
+        row
+    } else {
         return Ok(false);
     };
     let prepared = prepare_trace_data_queued(data_json)?;
@@ -1636,7 +1953,32 @@ pub fn trace_finish(
     error_hash: Option<&str>,
     data_json: Option<&str>,
 ) -> Result<bool, String> {
-    let Some(mut row) = trace_shadow_get(id) else {
+    let mut row = if let Some(row) = trace_in_flight_get(id) {
+        row
+    } else if let Some(client) = current_trace_client() {
+        client.get_trace_raw(id)?.unwrap_or_else(|| TraceRow {
+            id: id.to_string(),
+            parent_id: None,
+            root_id: id.to_string(),
+            root_kind: String::new(),
+            root_name: String::new(),
+            chat_id: None,
+            run_id: None,
+            kind: String::new(),
+            name: String::new(),
+            depth: 0,
+            seq: 0,
+            status: "running".to_string(),
+            started_ns: ended_ns,
+            ended_ns: None,
+            input_hash: None,
+            output_hash: None,
+            error_hash: None,
+            invoked_from_step_id: None,
+            data_json: None,
+            data_hash: None,
+        })
+    } else {
         return Ok(false);
     };
     let prepared = prepare_trace_data_queued(data_json)?;
@@ -1674,9 +2016,9 @@ pub fn trace_event(
 
 pub fn trace_get(id: &str) -> Result<Option<TraceRow>, String> {
     let Some(client) = current_trace_client() else {
-        return Ok(trace_shadow_get(id));
+        return Ok(trace_in_flight_get(id));
     };
-    if let Some(mut row) = trace_shadow_get(id) {
+    if let Some(mut row) = trace_in_flight_get(id) {
         let _ = hydrate_trace_row_ch(&client, &mut row);
         return Ok(Some(row));
     }
@@ -1688,22 +2030,22 @@ pub fn trace_children(
     limit: Option<i64>,
 ) -> Result<Vec<TraceRow>, String> {
     let Some(client) = current_trace_client() else {
-        return Ok(trace_shadow_children(parent_id, limit));
+        return Ok(trace_in_flight_children(parent_id, limit));
     };
     client.children(parent_id, limit)
 }
 
 pub fn trace_ancestors(id: &str) -> Result<Vec<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
+    if current_trace_client().is_none() {
         return Ok(vec![]);
-    };
+    }
     let mut rows = Vec::new();
-    let mut current = client.get_trace(id)?;
+    let mut current = trace_get(id)?;
     while let Some(row) = current {
         let parent_id = row.parent_id.clone();
         rows.push(row);
         current = match parent_id {
-            Some(parent_id) => client.get_trace(&parent_id)?,
+            Some(parent_id) => trace_get(&parent_id)?,
             None => None,
         };
     }
@@ -1715,24 +2057,7 @@ pub fn trace_subtree(id: &str, max_depth: i32) -> Result<Vec<TraceRow>, String> 
     let Some(client) = current_trace_client() else {
         return Ok(vec![]);
     };
-    let max_depth = max_depth.max(0) as usize;
-    let Some(root) = client.get_trace(id)? else {
-        return Ok(vec![]);
-    };
-    let mut rows = vec![root];
-    let mut frontier = vec![id.to_string()];
-    for _ in 0..max_depth {
-        let mut next = Vec::new();
-        let children = client.children_for_parents(&frontier)?;
-        next.extend(children.iter().map(|row| row.id.clone()));
-        rows.extend(children);
-        if next.is_empty() {
-            break;
-        }
-        frontier = next;
-    }
-    rows.sort_by_key(|row| (row.depth, row.seq));
-    Ok(rows)
+    client.subtree_rows(id, max_depth)
 }
 
 pub fn trace_events(

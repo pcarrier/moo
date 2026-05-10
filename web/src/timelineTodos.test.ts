@@ -47,6 +47,39 @@ describe("timeline TODO UI", () => {
     expect(css).toContain('border-radius: 0;');
   });
 
+  test("keeps ongoing TODO rows to one ellipsized line", () => {
+    expect(css).toContain(`.ongoing-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 0.12em;
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;`);
+    expect(css).toContain(`.ongoing-todo-line {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;`);
+    expect(css).toContain(`.ongoing-todo-text,
+.ongoing-todo-details {
+  min-inline-size: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}`);
+    expect(css).toContain(`.ongoing-todo .ongoing-todo-text {
+  display: block;
+  flex: 1 1 auto;
+}`);
+    expect(css).toContain(`.ongoing-todo-details {
+  flex: 0 1 auto;
+  max-inline-size: 35%;
+}`);
+    expect(css).toContain(`.ongoing-todo .todo-note.markdown > * {
+  display: inline;
+}`);
+  });
+
   test("renders TODO diffs in the timeline without diff chrome", () => {
     expect(timeline).toContain('props.item.type === "todo-diff"');
     expect(timeline).toContain('item={props.item as FileDiffItem | MemoryDiffItem | TodoDiffItem}');

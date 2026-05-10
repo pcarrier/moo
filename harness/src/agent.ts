@@ -70,6 +70,51 @@ function modelExtras(model: string | null | undefined, effort?: string | null): 
 
 type TraceMetadata = Record<string, unknown>;
 
+export const DYNAMIC_CONTEXT_MESSAGE_ROLE = "dynamic_context" as const;
+
+const DYNAMIC_CONTEXT_USER_PREFIX =
+  "Private dynamic context for the assistant (not a user request). Use it for the next response; do not mention it unless relevant.";
+
+type DynamicContextMessage = {
+  role: typeof DYNAMIC_CONTEXT_MESSAGE_ROLE;
+  content: string;
+};
+
+export function isDynamicContextMessage(message: any): boolean {
+  return Boolean(message && typeof message === "object" && message.role === DYNAMIC_CONTEXT_MESSAGE_ROLE);
+}
+
+function formatDynamicContextMessage(content: string): string {
+  return DYNAMIC_CONTEXT_USER_PREFIX + "\n\n" + content;
+}
+
+export function dynamicContextMessageForProvider(message: DynamicContextMessage): any {
+  return { role: "user", content: message.content };
+}
+
+export function messageForProvider(message: any): any {
+  return isDynamicContextMessage(message) ? dynamicContextMessageForProvider(message) : message;
+}
+
+export function appendDynamicContextMessages(messages: any[], content: string | null | undefined): any[] {
+  const base = Array.isArray(messages) ? messages.filter((message) => !isDynamicContextMessage(message)) : [];
+  const text = String(content ?? "").trim();
+  if (!text) return base;
+  const message: DynamicContextMessage = {
+    role: DYNAMIC_CONTEXT_MESSAGE_ROLE,
+    content: formatDynamicContextMessage(text),
+  };
+  return [...base, message];
+}
+
+export async function refreshDynamicContextMessages(chatId: string, messages: any[]): Promise<any[]> {
+  return appendDynamicContextMessages(messages, await formatTodosForDynamicContext(chatId));
+}
+
+function messagesForProvider(messages: any[]): any[] {
+  return Array.isArray(messages) ? messages.map(messageForProvider) : [];
+}
+
 export function messagesForTrace(messages: any[] | null | undefined, tools?: any[] | null): TraceMetadata {
   const list = Array.isArray(messages) ? messages : [];
   return {
@@ -349,8 +394,9 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
 }
 
 export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[], tools: any[] | null) {
+  const providerMessages = messagesForProvider(messages);
   if (provider.name === "anthropic") {
-    const anthropic = toAnthropicMessages(messages);
+    const anthropic = toAnthropicMessages(providerMessages);
     const body: Record<string, unknown> = {
       model: provider.model,
       max_tokens: anthropicMaxTokens(),
@@ -376,7 +422,7 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
   }
 
   const responsesApi = usesResponsesApi(provider);
-  const outboundMessages = requiresFinalUserContinuation(provider) ? ensureEndsWithUserMessage(messages) : messages;
+  const outboundMessages = requiresFinalUserContinuation(provider) ? ensureEndsWithUserMessage(providerMessages) : providerMessages;
   const responsesInput = responsesApi ? toResponsesInput(outboundMessages) : null;
   const instructions = responsesApi ? extractInstructions(outboundMessages) : undefined;
   const body: Record<string, unknown> = responsesApi
@@ -418,12 +464,7 @@ export function toResponsesTools(tools: any[] | null): any[] | null {
 export function llmProviderHeaders(provider: LLMProvider): Record<string, string> {
   if (provider.name === "anthropic") {
     const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
-    if (provider.authMode === "subscription") {
-      headers.Authorization = "Bearer " + (provider.apiKey || "");
-      headers["anthropic-beta"] = "oauth-2025-04-20";
-    } else {
-      headers["x-api-key"] = provider.apiKey || "";
-    }
+    headers["x-api-key"] = provider.apiKey || "";
     return headers;
   }
   const headers: Record<string, string> = { Authorization: "Bearer " + (provider.apiKey || "") };
@@ -451,7 +492,8 @@ export function toAnthropicTools(tools: any[] | null): any[] | null {
 export function toAnthropicMessages(messages: any[]): { system: string; messages: any[] } {
   const systemParts: string[] = [];
   const out: any[] = [];
-  for (const msg of messages) {
+  for (const rawMsg of messages) {
+    const msg = messageForProvider(rawMsg);
     if (msg?.role === "system") {
       const text = contentText(msg.content);
       if (text) systemParts.push(text);
@@ -552,9 +594,10 @@ function extractInstructions(messages: any[]): string | undefined {
 }
 
 export function toResponsesInput(messages: any[]): any[] {
-  const hasNonSystem = messages.some((m) => m.role !== "system");
+  const outboundMessages = messagesForProvider(messages);
+  const hasNonSystem = outboundMessages.some((m) => m.role !== "system");
   const input: any[] = [];
-  for (const msg of messages) {
+  for (const msg of outboundMessages) {
     if (msg.role === "system" && hasNonSystem) continue;
     if (msg.role === "tool") {
       input.push({
@@ -1271,13 +1314,6 @@ function headerValue(value: unknown): string | null {
   return stringField(value);
 }
 
-function anthropicSubscriptionRateLimitHint(provider: Pick<LLMProvider, "name" | "authMode">, status: number, type: string | null): string | null {
-  if (status !== 429) return null;
-  if (provider.name !== "anthropic") return null;
-  if (provider.authMode !== "subscription") return null;
-  if (type && type !== "rate_limit_error") return null;
-  return "Anthropic subscription/OAuth tokens share Anthropic's Claude app rate limits. Wait for the reset window or switch this provider to an Anthropic API key for API quota.";
-}
 
 function compactionProviderErrorBodyForRecord(parsed: any, raw: unknown): any {
   if (parsed != null) return parsed;
@@ -1342,7 +1378,6 @@ export async function runCompaction(chatId: string, provider: LLMProvider, meta:
       code: compactionProviderErrorCode(parsed),
       requestId: providerErrorRequestId(parsed, resp.headers),
       retryAfter: providerErrorRetryAfter(resp.headers, parsed),
-      hint: anthropicSubscriptionRateLimitHint(requestProvider, resp.status, compactionProviderErrorType(parsed)),
       body: compactionProviderErrorBodyForRecord(parsed, resp.body),
     });
     return "failed";
@@ -1472,9 +1507,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
     });
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });
-  const todoContext = await formatTodosForDynamicContext(chatId);
-  if (todoContext) messages.push({ role: "system", content: todoContext });
-  return messages;
+  return await refreshDynamicContextMessages(chatId, messages);
 }
 
 async function transcriptMessages(chatId: string, afterAt: number): Promise<any[]> {
@@ -1762,10 +1795,15 @@ async function finishRunJSStep(
   const endedAt = Date.now();
   const status = error ? "agent:Failed" : "agent:Done";
   const durationNs = typeof startedAt === "number" ? Math.max(0, endedAt - startedAt) * 1_000_000 : undefined;
-  const statusRows = await moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:status" } });
+  const [statusRows, updatedAtRows] = await Promise.all([
+    moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:status" } }),
+    moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:updatedAt" } }),
+  ]);
   await moo.facts.update({ store: c.facts, fn: (txn) => {
     for (const [g, s, p, o] of statusRows) txn.remove({ graph: g, subject: s, predicate: p, object: o });
+    for (const [g, s, p, o] of updatedAtRows) txn.remove({ graph: g, subject: s, predicate: p, object: o });
     txn.add({ graph: c.graph, subject: stepId, predicate: "agent:status", object: status });
+    txn.add({ graph: c.graph, subject: stepId, predicate: "agent:updatedAt", object: String(endedAt) });
     if (resultHash) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:result", object: resultHash });
     if (error) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: error });
   } });

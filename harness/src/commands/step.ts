@@ -36,6 +36,7 @@ import {
   traceMark,
   traceSpan,
   buildStreamingLLMRequest,
+  refreshDynamicContextMessages,
   compactionProviderForRequest,
   compactionRequestTokenLimit,
   fitCompactionSummaryMessages,
@@ -188,15 +189,6 @@ function headerValue(value: unknown): string | null {
   return stringField(value);
 }
 
-function anthropicSubscriptionRateLimitHint(input: Input, status: number, type: string | null, parsed?: any): string | null {
-  if (status !== 429) return null;
-  if (input.requestProvider !== "anthropic") return null;
-  if (input.requestAuthMode !== "subscription") return null;
-  if (type && type !== "rate_limit_error") return null;
-  const message = String(parsed?.error?.message ?? parsed?.message ?? "").toLowerCase();
-  if (message && !/(subscription|oauth|claude app|first[- ]party|consumer|usage limit)/.test(message)) return null;
-  return "This Anthropic request used a Claude subscription token, so Anthropic may apply Claude app limits instead of API quota. If that is not intended, configure an Anthropic API key; API-key credentials now take precedence over ANTHROPIC_AUTH_TOKEN in env mode.";
-}
 
 function providerFailureReason(status: number): string {
   if (status >= 400) return `provider returned HTTP ${status}`;
@@ -934,7 +926,7 @@ export async function stepPrepareCommand(input: Input) {
       };
     }
   } else {
-    messages = passedMessages;
+    messages = await traceSpan("llm.refresh_dynamic_context", { chatId, messages: passedMessages.length }, () => refreshDynamicContextMessages(chatId, passedMessages));
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
     await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
   }
@@ -1053,7 +1045,7 @@ export async function stepHandleLlmCommand(input: Input) {
       const type = providerErrorType(parsed);
       const requestId = providerErrorRequestId(parsed, llmResult.headers);
       const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
-      const hint = anthropicSubscriptionRateLimitHint(input, status, type, parsed);
+      const hint = null;
       await traceMark("compaction.failed", { chatId, reason, status, attempt, errorBody: llmResult.errorBody || null, requestId, retryAfter, hint });
       await recordCompactionFailure(chatId, reason, {
         trigger: "automatic",
@@ -1166,7 +1158,7 @@ export async function stepHandleLlmCommand(input: Input) {
     const type = providerErrorType(parsed);
     const requestId = providerErrorRequestId(parsed, llmResult.headers);
     const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
-    const hint = anthropicSubscriptionRateLimitHint(input, status, type);
+    const hint = null;
     await recordErrorStep(
       chatId,
       "provider",

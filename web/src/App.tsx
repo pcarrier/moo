@@ -35,11 +35,13 @@ import { Timeline } from "./Timeline";
 import { FactsView, PointersView } from "./MemoryView";
 import { AppsView } from "./AppsView";
 import { McpView } from "./McpView";
+import { SkillsView } from "./SkillsView";
 import { V8View } from "./V8View";
 import { TracesView } from "./TracesView";
 import { SettingsView } from "./SettingsView";
 import { type Bag } from "./state";
 import { startMermaidRenderer } from "./mermaid";
+import { startHjsonCollapsible } from "./hjsonCollapsible";
 
 export function App(props: { bag: Bag }) {
   const { bag } = props;
@@ -48,7 +50,7 @@ export function App(props: { bag: Bag }) {
   const [mobileNavMode, setMobileNavMode] = createSignal(compactNavMatches());
   let mobileRightSidebarCollapsedForChat: string | null = null;
   const viewHasRightSidebar = () =>
-    ["chat", "apps", "facts", "pointers", "v8", "traces"].includes(bag.view());
+    ["chat", "apps", "facts", "pointers", "skills", "v8", "traces"].includes(bag.view());
   const isMobileNav = () => {
     if (typeof window === "undefined") return mobileNavMode();
     return compactNavMatches();
@@ -130,6 +132,7 @@ export function App(props: { bag: Bag }) {
     syncMobileMode();
     bag.start();
     const stopMermaidRenderer = startMermaidRenderer(document.body);
+    const stopHjsonCollapsible = startHjsonCollapsible(document.body);
     const legacyMobileQuery = mobileQuery as MediaQueryList & {
       addListener?: (
         listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void,
@@ -165,6 +168,7 @@ export function App(props: { bag: Bag }) {
         );
       if (viewportRaf) window.cancelAnimationFrame(viewportRaf);
       stopMermaidRenderer();
+      stopHjsonCollapsible();
       window.removeEventListener("resize", syncViewportHeight);
       window.removeEventListener("orientationchange", syncViewportHeight);
       window.visualViewport?.removeEventListener("resize", syncViewportHeight);
@@ -227,6 +231,8 @@ export function App(props: { bag: Bag }) {
         return <AppsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "mcp":
         return <McpView bag={bag} onToggleSidebar={toggleSidebar} />;
+      case "skills":
+        return <SkillsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "settings":
         return <SettingsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "traces":

@@ -7,6 +7,7 @@ import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
 import { appendStep } from "./steps";
 import { addTodo, clearTodos, getTodos, patchTodos, updateTodo, withTodoDiffBatch } from "./todos";
+import { setSkillRootProvider, skills } from "./skills";
 
 const time: Moo["time"] = {
   async nowMs() {
@@ -112,7 +113,13 @@ export async function withMooRunJSContext<T>(
 
 type TraceRootInfo = { traceId?: string | null; resultHash?: string | null; error?: string | null; status?: string };
 
-function inferTraceRoot(id: string, data: Record<string, unknown>) {
+type TraceRootPlan = {
+  root: Record<string, unknown>;
+  span?: Record<string, unknown>;
+  parentId: string;
+};
+
+function inferTraceRoot(id: string, data: Record<string, unknown>): TraceRootPlan {
   const chatId = typeof data.chatId === "string" && data.chatId ? data.chatId : null;
   const runId = typeof data.runId === "string" && data.runId ? data.runId : null;
   const label = typeof data.label === "string" && data.label ? data.label : id;
@@ -120,36 +127,73 @@ function inferTraceRoot(id: string, data: Record<string, unknown>) {
   const startedNs = Date.now() * 1_000_000;
   if (id.startsWith("command:")) {
     return {
-      id,
-      chatId,
-      runId,
-      kind: "command",
-      name: command ? `command ${command}` : label,
-      startedNs,
-      data: { label, command, chatId },
+      parentId: id,
+      root: {
+        id,
+        chatId,
+        runId,
+        kind: "command",
+        name: command ? `command ${command}` : label,
+        startedNs,
+        data: { label, command, chatId },
+      },
     };
   }
   if (id.startsWith("step:")) {
-    // Steps are interior nodes in the trace tree; never create root `step` rows.
-    // The step id is still used as the attachment point for the runjs trace.
+    if (chatId) {
+      const chatTitle = typeof data.title === "string" && data.title ? data.title : chatId;
+      return {
+        parentId: id,
+        root: {
+          id: `chat:${chatId}`,
+          chatId,
+          runId,
+          kind: "chat",
+          name: chatTitle,
+          startedNs,
+          data: { chatId, runId, rootChoice: "chat-for-step-parent" },
+        },
+        span: {
+          id,
+          parentId: `chat:${chatId}`,
+          chatId,
+          runId,
+          kind: "step",
+          name: label,
+          startedNs,
+          data: { label, chatId, runId, rootChoice: "chat-step-parent" },
+        },
+      };
+    }
+    // A step id is an attachment point supplied by the chat driver, not a trace root.
+    // If the driver-created span is missing, make the fallback explicit and easy to spot.
     return {
-      id,
-      chatId,
-      runId,
-      kind: "chat",
-      name: label,
-      startedNs,
-      data: { label, chatId, runId },
+      parentId: id,
+      root: {
+        id,
+        chatId,
+        runId,
+        kind: "missing-parent",
+        name: label,
+        startedNs,
+        data: { label, chatId, runId, rootChoice: "fallback-missing-step-parent" },
+      },
     };
   }
-  return { id, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } };
+  return { parentId: id, root: { id, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } } };
 }
 
 export async function startRunJSTraceRoot(stepId: string | null, data: Record<string, unknown> = {}) {
-  if (stepId) await host.ensureTraceRoot(JSON.stringify(inferTraceRoot(stepId, data)));
-  const raw = await host.startTraceRoot(stepId, JSON.stringify(traceJsonValue(data)));
+  let parentId = stepId;
+  if (stepId) {
+    const plan = inferTraceRoot(stepId, data);
+    await host.ensureTraceRoot(JSON.stringify(plan.root));
+    if (plan.span) await host.ensureTraceSpan(JSON.stringify(plan.span));
+    parentId = plan.parentId;
+  }
+  const raw = await host.startTraceRoot(parentId, JSON.stringify(traceJsonValue(data)));
   const cur = raw ? JSON.parse(raw) : null;
-  if (activeRunJSContext && cur?.traceId) activeRunJSContext.traceId = cur.traceId;
+  if (activeRunJSContext && (cur?.traceId || cur?.rootId)) activeRunJSContext.traceId = cur.traceId || cur.rootId;
   return cur;
 }
 export const startTraceRoot = startRunJSTraceRoot;
@@ -169,7 +213,15 @@ export async function finishRunJSTraceRoot(info: TraceRootInfo) {
       ...(info.resultHash ? { resultHash: info.resultHash } : {}),
       ...(info.error ? { error: info.error } : {}),
     };
-    return (await host.finishTrace(traceId, info.status || (info.error ? "error" : "ok"), JSON.stringify(traceJsonValue(data)))) === "true";
+    const status = info.status || (info.error ? "error" : "ok");
+    const dataJson = JSON.stringify(traceJsonValue(data));
+    const finished = (await host.finishTrace(traceId, status, dataJson)) === "true";
+    const rootId = typeof row?.rootId === "string" && row.rootId ? row.rootId : null;
+    const rootKind = typeof row?.rootKind === "string" && row.rootKind ? row.rootKind : null;
+    if (finished && rootKind === "command" && rootId && rootId !== traceId) {
+      await host.finishTrace(rootId, status, dataJson);
+    }
+    return finished;
   } finally {
     if (shouldLeave) {
       try {
@@ -196,9 +248,9 @@ function buildTraceTree(rows: TraceRow[]): TraceTreeNode | null {
   for (const row of rows) nodes.set(row.id, { ...(row as TraceRow), children: [] });
   let root: TraceTreeNode | null = null;
   for (const node of nodes.values()) {
-    const parentId = typeof node.data?.parentId === "string" ? node.data.parentId : null;
+    const parentId = node.parentId || (typeof node.data?.parentId === "string" ? node.data.parentId : null);
     if (!parentId || !nodes.has(parentId)) {
-      if (node.kind === "trace" || !root) root = node;
+      if ((node.rootId && node.id === node.rootId) || node.kind === "trace" || !root) root = node;
       continue;
     }
     nodes.get(parentId)!.children.push(node);
@@ -1032,6 +1084,8 @@ async function activeScratchRoot(): Promise<string | null> {
   return activeChatId ? await chat.scratch(activeChatId) : null;
 }
 
+setSkillRootProvider(activeScratchRoot);
+
 function resolveWorkspacePath(root: string, path: string = "."): string {
   const raw = String(path || ".");
   if (raw.startsWith("/")) return raw;
@@ -1417,6 +1471,7 @@ type McpRequestOptions = {
   skipInitialize?: boolean;
   omitSession?: boolean;
   retryingSession?: boolean;
+  timeoutMs?: number;
 };
 
 function mcpOAuthTokenRef(id: string): string {
@@ -1591,7 +1646,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.2.0" },
+    clientInfo: { name: "moo", version: "0.2.1" },
   };
 }
 
@@ -1844,7 +1899,7 @@ const mcpCore = {
       const session = await loadMcpSession(server.id);
       if (!session?.initializedAt) {
         await traces.mark("mcp.initialize.required", { serverId: server.id, method });
-        await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
+        await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true, timeoutMs: opts.timeoutMs });
       }
     }
     let token = await loadMcpOAuthToken(server.id);
@@ -1868,7 +1923,7 @@ const mcpCore = {
         method,
         params,
       },
-      timeoutMs: server.timeoutMs ?? 60_000,
+      timeoutMs: opts.timeoutMs ?? server.timeoutMs ?? 60_000,
     });
     const responseSessionId = headerValue(response.headers, "mcp-session-id");
     await traces.mark("mcp.http.response", {
@@ -1885,7 +1940,7 @@ const mcpCore = {
     if (isMcpSessionError(response.status, response.body) && !opts.retryingSession && method !== "initialize") {
       await traces.mark("mcp.session.retry", { serverId: server.id, method, status: response.status });
       await clearMcpSessionId(server.id);
-      await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true });
+      await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true, timeoutMs: opts.timeoutMs });
       return mcpCore.request<T>(server.id, method, params, { ...opts, retryingSession: true });
     }
     if (response.status < 200 || response.status >= 300) {
@@ -1904,16 +1959,16 @@ const mcpCore = {
     return payload?.result as T;
   },
   async listTools(serverId?: string): Promise<McpTool[]> {
-    const servers = serverId ? [await mcpCore.getServer(serverId)] : await mcpCore.listServers();
-    const out: McpTool[] = [];
-    for (const server of servers) {
-      if (!server || server.enabled === false) continue;
-      const result: any = await mcpCore.request(server.id, "tools/list", {});
+    const servers = (serverId ? [await mcpCore.getServer(serverId)] : await mcpCore.listServers())
+      .filter((server): server is McpServerConfig => !!server && server.enabled !== false);
+    const results = await Promise.allSettled(servers.map(async (server) => {
+      const result: any = await mcpCore.request(server.id, "tools/list", {}, { timeoutMs: Math.min(server.timeoutMs ?? 10_000, 10_000) });
+      const tools: McpTool[] = [];
       for (const tool of result?.tools || []) {
         const name = String(tool.name || "");
         if (!name) continue;
         const inputSchema = tool.inputSchema ?? tool.input_schema ?? undefined;
-        out.push({
+        tools.push({
           serverId: server.id,
           server: server.id,
           name,
@@ -1923,7 +1978,17 @@ const mcpCore = {
           inputSchema,
         });
       }
+      return tools;
+    }));
+    const out: McpTool[] = [];
+    const errors: string[] = [];
+    for (let i = 0; i < results.length; i += 1) {
+      const result = results[i];
+      if (result.status === "fulfilled") out.push(...result.value);
+      else errors.push(`${servers[i].id}: ${result.reason?.message || String(result.reason)}`);
     }
+    if (serverId && errors.length) throw new Error(errors[0]);
+    if (!out.length && errors.length) throw new Error(errors.join("; "));
     return out;
   },
   async callTool<T = unknown>(serverId: string, name: string, arguments_: unknown = {}): Promise<T> {
@@ -3143,6 +3208,7 @@ const rawMoo: Moo = {
   log,
   objects,
   todos,
+  skills,
   pointers,
   sparql,
   facts,

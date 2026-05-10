@@ -568,6 +568,8 @@ fn serves_ui_route(path: &str) -> bool {
         || path.starts_with("/apps/")
         || path == "/mcp"
         || path.starts_with("/mcp/")
+        || path == "/skills"
+        || path.starts_with("/skills/")
         || path == "/v8"
         || path.starts_with("/v8/")
         || path == "/traces"

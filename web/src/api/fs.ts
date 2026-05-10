@@ -8,8 +8,7 @@ export type FsCommands =
   | ApiCommand<"fs-search", { path: string; query: string; limit?: number }, FsSearchValue>
   | ApiCommand<"fs-read", { path: string; basePath?: string | null; includeDiff?: boolean }, FsReadValue>
   | ApiCommand<"fs-git-branches", { path: string }, GitBranchesValue>
-  | ApiCommand<"fs-git-pull-branches", { path: string }, GitBranchesValue>
-  | ApiCommand<"fs-git-upgrade-jj", { path: string }, GitBranchesValue>;
+  | ApiCommand<"fs-git-pull-branches", { path: string }, GitBranchesValue>;
 
 export const fsApi = {
   list: (path: string) => callCommand("fs-list", { path }),
@@ -19,5 +18,4 @@ export const fsApi = {
     callCommand("fs-read", { path, ...optional({ basePath }), ...(includeDiff ? { includeDiff } : {}) }),
   gitBranches: (path: string) => callCommand("fs-git-branches", { path }),
   pullBranches: (path: string) => callCommand("fs-git-pull-branches", { path }),
-  upgradeGitToJj: (path: string) => callCommand("fs-git-upgrade-jj", { path }),
 };

@@ -23,6 +23,7 @@ use crate::driver;
 use crate::host;
 use crate::runtime;
 use crate::runtime::AgentRunHandler;
+use crate::settings;
 use crate::snapshots;
 use crate::util::{now_ms, sha256_object_hash};
 
@@ -1046,6 +1047,7 @@ pub struct Pool {
     // use `blocking_lock` since they aren't inside a tokio runtime.
     chat_locks: Arc<Mutex<HashMap<String, Arc<TokioMutex<()>>>>>,
     server_base_url: Option<String>,
+    db: String,
 }
 
 impl Pool {
@@ -1077,6 +1079,7 @@ impl Pool {
             async_tool_tx,
             chat_locks: Arc::new(Mutex::new(HashMap::new())),
             server_base_url,
+            db: db.to_string(),
         }
     }
 
@@ -1165,7 +1168,13 @@ impl Pool {
     }
 
     fn input_with_server_base_url(&self, input: String) -> String {
-        payload_with_server_base_url(input, self.server_base_url.as_deref())
+        let configured = host::open_settings_db(&self.db)
+            .ok()
+            .and_then(|conn| settings::read_server_base_url(&conn).ok().flatten());
+        payload_with_server_base_url(
+            input,
+            configured.as_deref().or(self.server_base_url.as_deref()),
+        )
     }
 
     fn dispatch(&self, bundle: Arc<String>, input: String) -> Result<String, String> {

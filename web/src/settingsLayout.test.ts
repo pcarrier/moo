@@ -48,9 +48,9 @@ describe("settings layout", () => {
   });
 
   it("renders provider auth select options as controlled native option children", () => {
-    expect(settingsView).toContain('{canSubscription ? <option value="subscription" selected={draft().authMode === "subscription"}>Subscription token</option> : null}');
     expect(settingsView).toContain('{canOAuth ? <option value="oauth" selected={draft().authMode === "oauth"}>OAuth</option> : null}');
-    expect(settingsView).not.toContain('<Show when={canSubscription}><option value="subscription">Subscription token</option></Show>');
+    expect(settingsView).not.toContain('canSubscription');
+    expect(settingsView).not.toContain('value="subscription"');
     expect(settingsView).not.toContain('<Show when={canOAuth}><option value="oauth">OAuth</option></Show>');
   });
 

@@ -11,7 +11,6 @@ type ProviderMeta = {
   envLabel: string;
   defaultBaseUrl: string;
   supportsOAuth?: boolean;
-  supportsSubscription?: boolean;
 };
 
 type ProviderDraft = {
@@ -33,7 +32,7 @@ const SETTINGS_TABS: SettingsTab[] = [
 
 const PROVIDERS: ProviderMeta[] = [
   { id: "openai", title: "OpenAI", envLabel: "OPENAI_API_KEY", defaultBaseUrl: "https://api.openai.com/v1", supportsOAuth: true },
-  { id: "anthropic", title: "Anthropic", envLabel: "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN", defaultBaseUrl: "https://api.anthropic.com/v1", supportsSubscription: true },
+  { id: "anthropic", title: "Anthropic", envLabel: "ANTHROPIC_API_KEY", defaultBaseUrl: "https://api.anthropic.com/v1" },
   { id: "qwen", title: "Qwen", envLabel: "QWEN_API_KEY or DASHSCOPE_API_KEY", defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
   { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
 ];
@@ -91,9 +90,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [compactionThresholdPercent, setCompactionThresholdPercent] = createSignal("50");
   const [maxAttempts, setMaxAttempts] = createSignal("3");
   const [baseDelayMs, setBaseDelayMs] = createSignal("750");
+  const [serverBaseUrl, setServerBaseUrl] = createSignal("");
   const [maxDelayMs, setMaxDelayMs] = createSignal("8000");
   const [jitterMs, setJitterMs] = createSignal("250");
   const [maxRetryAfterMs, setMaxRetryAfterMs] = createSignal("1800000");
+  const [syntaxHighlightMaxMiB, setSyntaxHighlightMaxMiB] = createSignal("1");
   function updateDraft(id: LlmProviderId, patch: Partial<ProviderDraft>) {
     setDirty(true);
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -112,11 +113,13 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
       };
     }
     setDrafts(providerDrafts);
+    setServerBaseUrl(next.serverBaseUrl || "");
     setCompactionThresholdPercent(numberOrBlank(next.compaction?.thresholdPercent ?? 75));
     setMaxAttempts(numberOrBlank(next.retries.maxAttempts));
     setBaseDelayMs(numberOrBlank(next.retries.baseDelayMs));
     setMaxDelayMs(numberOrBlank(next.retries.maxDelayMs));
     setJitterMs(numberOrBlank(next.retries.jitterMs));
+    setSyntaxHighlightMaxMiB(mib(next.ui?.syntaxHighlightMaxBytes ?? 1024 * 1024));
     setMaxRetryAfterMs(numberOrBlank(next.retries.maxRetryAfterMs));
   }
 
@@ -142,6 +145,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         api.traces.saveSettings(currentTrace.config),
         api.v8.saveSettings(currentV8.settings),
         api.llmAuth.save({
+        serverBaseUrl: serverBaseUrl(),
         openai: {
           authMode: d.openai.authMode,
           apiKey: d.openai.apiKey === "••••" ? undefined : d.openai.apiKey,
@@ -171,6 +175,9 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           maxDelayMs: Number(maxDelayMs()),
           jitterMs: Number(jitterMs()),
           maxRetryAfterMs: Number(maxRetryAfterMs()),
+        },
+        ui: {
+          syntaxHighlightMaxBytes: mibToBytes(syntaxHighlightMaxMiB()) ?? 1024 * 1024,
         },
       }),
       ]);
@@ -361,7 +368,6 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const draft = () => drafts()[meta.id];
     const provider = () => settings()?.providers[meta.id];
     const canOAuth = !!meta.supportsOAuth;
-    const canSubscription = !!meta.supportsSubscription;
     return (
       <section class="settings-section llm-provider-section">
         <h2>{meta.title}</h2>
@@ -372,15 +378,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         >
           <option value="env" selected={draft().authMode === "env"}>Environment variable ({meta.envLabel})</option>
           <option value="apiKey" selected={draft().authMode === "apiKey"}>Stored API key</option>
-          {canSubscription ? <option value="subscription" selected={draft().authMode === "subscription"}>Subscription token</option> : null}
           {canOAuth ? <option value="oauth" selected={draft().authMode === "oauth"}>OAuth</option> : null}
         </select>
-        <Show when={draft().authMode === "apiKey" || draft().authMode === "subscription"}>
-          <label class="field-label">{draft().authMode === "subscription" ? "Subscription auth token" : "API key"}</label>
-          <input type="password" value={draft().apiKey} onInput={(e) => updateDraft(meta.id, { apiKey: e.currentTarget.value })} placeholder={draft().authMode === "subscription" ? "ANTHROPIC_AUTH_TOKEN" : "secret key"} />
-          <Show when={draft().authMode === "subscription"}>
-            <p class="oauth-help">Uses an Anthropic subscription bearer token with the OAuth beta header instead of API-key billing.</p>
-          </Show>
+        <Show when={draft().authMode === "apiKey"}>
+          <label class="field-label">API key</label>
+          <input type="password" value={draft().apiKey} onInput={(e) => updateDraft(meta.id, { apiKey: e.currentTarget.value })} placeholder="secret key" />
         </Show>
         <Show when={canOAuth}>
           <div class="oauth-status">
@@ -568,6 +570,18 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                     <div class="settings-grid behavior-settings-grid">
                       <Card class="settings-card behavior-settings-card">
                         <div class="settings-form-section">
+                          <h2>Base URL</h2>
+                          <p class="settings-help">Public URL for this Moo instance, used for OAuth callbacks and tool links. Leave blank to use the launch-time value.</p>
+                          <label>
+                            <span>Base URL</span>
+                            <input
+                              value={serverBaseUrl()}
+                              placeholder="https://moo.example.com"
+                              onInput={(e) => { setDirty(true); setServerBaseUrl(e.currentTarget.value); }}
+                            />
+                          </label>
+                        </div>
+                        <div class="settings-form-section">
                           <h2>Compaction</h2>
                           <div class="settings-row compact">
                             <label>
@@ -576,6 +590,16 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                             </label>
                           </div>
                           <p class="settings-help">Compact before a prompt reaches this share of the context window.</p>
+                        </div>
+                        <div class="settings-form-section">
+                          <h2>Rendering</h2>
+                          <div class="settings-row compact">
+                            <label>
+                              <span>Syntax highlighting cutoff (MiB)</span>
+                              <input type="number" min="1" max="64" value={syntaxHighlightMaxMiB()} onInput={(e) => { setDirty(true); setSyntaxHighlightMaxMiB(e.currentTarget.value); }} />
+                            </label>
+                          </div>
+                          <p class="settings-help">Files larger than this render as plain text in the sidebar to avoid freezing the browser.</p>
                         </div>
                         <div class="settings-form-section">
                           <h2>Retries</h2>

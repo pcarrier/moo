@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatHjson, formatHjsonTextForView, highlightDiff, highlightAuto, highlightHjsonValue, highlightLineFragmentByPath } from "./syntax";
+import { formatHjson, formatHjsonTextForView, highlightDiff, highlightAuto, highlightHjson, highlightHjsonValue, highlightJson, highlightLineFragmentByPath } from "./syntax";
 
 describe("highlightDiff", () => {
   test("does not put source newlines inside block-level diff rows", () => {
@@ -89,6 +89,92 @@ describe("HJSON text formatting", () => {
 }`);
   });
 
+
+  test("preserves JSONC comments when formatting for HJSON view", () => {
+    const text = `{
+  // service command
+  "command": "bun test", // runs tests
+  "args": [
+    // keep watch mode
+    "--watch"
+  ]
+}`;
+
+    expect(formatHjsonTextForView(text)).toBe(`{
+  // service command
+  command: "bun test" // runs tests
+  args: [
+    // keep watch mode
+    "--watch"
+  ]
+}`);
+  });
+
+
+  test("preserves leading object and multiline block JSONC comments", () => {
+    const text = `// line comments
+{
+  // object comments
+  "id": "linear",
+  "title": "Implement Linear ticket",
+
+  /*
+    block comments
+  */
+  "steps": [
+    {
+      "id": "ticket.get",
+      "kind": "mcp.call",
+      "server": "linear",
+      "tool": "getIssue"
+    }
+  ]
+}`;
+
+    expect(formatHjsonTextForView(text)).toBe(`// line comments
+{
+  // object comments
+  id: "linear"
+  title: "Implement Linear ticket"
+  /*
+  block comments
+  */
+  steps: [
+    {
+      id: "ticket.get"
+      kind: "mcp.call"
+      server: "linear"
+      tool: "getIssue"
+    }
+  ]
+}`);
+  });
+
+  test("preserves JSONC comments in highlighted foldable HJSON", () => {
+    const html = highlightHjson(`{
+  // service command
+  "command": "bun test" // runs tests
+}`);
+
+    expect(html).toContain('<span class="json-comment">// service command</span>');
+    expect(html).toContain('<span class="json-comment">// runs tests</span>');
+    expect(html).toContain('class="hjson-collapsible hjson-object"');
+
+    const leadingHtml = highlightHjson(`// leading\n{\n  "command": "bun test"\n}`);
+    expect(leadingHtml.indexOf('<span class="json-comment">// leading</span>')).toBeLessThan(leadingHtml.indexOf('class="hjson-collapsible hjson-object"'));
+  });
+
+
+  test("syntax-highlights markdown strings in highlighted JSON", () => {
+    const html = highlightJson(JSON.stringify({ output: "# Result\n\n- **ok**\n- [file](web/src/syntax.ts)" }));
+
+    expect(html).toContain('<span class="json-embedded">    <span class="token title important"><span class="token punctuation">#</span> Result</span>');
+    expect(html).toContain('<span class="token list punctuation">-</span> <span class="token bold"><span class="token punctuation">**</span><span class="token content">ok</span><span class="token punctuation">**</span></span>');
+    expect(html).toContain('<span class="token url">[<span class="token content">file</span>](<span class="token url">web/src/syntax.ts</span>)</span>');
+    expect(html).not.toContain('<h1>Result</h1>');
+    expect(html).not.toContain('\\n');
+  });
+
   test("indents multiline string bodies below their delimiters", () => {
     expect(formatHjson({ output: "first\nsecond" })).toBe(`{
   output: '''
@@ -146,6 +232,24 @@ describe("HJSON text formatting", () => {
     expect(html).toContain('<span class="json-num">42</span>');
     expect(html).not.toContain('\\&quot;nested\\&quot;');
   });
+
+  test("wraps highlighted HJSON containers and long strings with collapsible controls", () => {
+    const html = highlightHjsonValue({
+      nested: { answer: 42 },
+      list: ["a", "b"],
+      output: "first\nsecond",
+      long: "x".repeat(120),
+    });
+
+    expect(html).toContain('class="hjson-collapsible hjson-object" data-hjson-kind="object"');
+    expect(html).toContain('class="hjson-collapsible hjson-array" data-hjson-kind="array"');
+    expect(html).toContain('class="hjson-collapsible hjson-string" data-hjson-kind="string"');
+    expect(html).toContain('class="hjson-toggle" aria-expanded="true" aria-label="collapse object"');
+    expect(html).toContain('<span class="hjson-collapsed-preview" aria-hidden="true">… 4 keys</span>');
+    expect(html).toContain('<span class="hjson-collapsed-preview" aria-hidden="true">… 2 items</span>');
+    expect(html).toContain(`<span class="hjson-string-expanded"><span class="json-str">'''</span>`);
+  });
+
   test("can link exact sha256 HJSON string values", () => {
     const html = highlightHjsonValue(
       {

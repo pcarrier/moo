@@ -3,7 +3,17 @@ import { renderMarkdown, renderUserMessage } from "./markdown";
 
 describe("renderUserMessage", () => {
   test("preserves single newlines in user input", () => {
-    expect(renderUserMessage("alpha\nbeta\ngamma")).toBe("<p>alpha<br>beta<br>gamma</p>\n");
+    expect(renderUserMessage("alpha\nbeta\ngamma")).toBe("alpha<br>\nbeta<br>\ngamma");
+  });
+
+
+  test("preserves blank lines in user input", () => {
+    expect(renderUserMessage("alpha\n\nbeta")).toBe("alpha<br>\n<br>\nbeta");
+  });
+
+  test("preserves newlines around markdown blocks in user input", () => {
+    expect(renderUserMessage("# title\nbody")).toBe("# title<br>\nbody");
+    expect(renderUserMessage("**bold**\n_text_")).toBe("<strong>bold</strong><br>\n<em>text</em>");
   });
 
   test("does not change assistant markdown soft line breaks", () => {

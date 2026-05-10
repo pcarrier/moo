@@ -37,6 +37,7 @@ import {
   type UiApp,
   type UiInstance,
   type McpServerConfig,
+  type SkillSummary,
   type V8StatsValue,
   type LlmAuthSettings,
   type TraceSettingsValue,
@@ -68,19 +69,44 @@ import {
   withExpectedChatWorktreePath,
   withExpectedChatWorktreePaths,
 } from "./state/chatPaths";
-import { normalizeModelMru, readModelMru, persistModelMru } from "./state/modelMru";
+import {
+  normalizeModelMru,
+  readModelMru,
+  persistModelMru,
+} from "./state/modelMru";
 import { createSingleFlight, retryChatLoad } from "./state/async";
 import {
   chatCacheHasData,
   isDescribeFreshForSummary,
+  mergeCachedOverviewWithSummary,
   normalizeChatCacheEntry,
   pruneCachedPages,
   timelineCacheKey,
   trailCacheKey,
 } from "./state/chatCache";
 import { displayChatId } from "./state/time";
-import type { BrowserNavState, CachedTimelinePage, CachedTrailPage, ChatCacheEntry, DiffContentMode, JsonPreviewFile, OpenRepoFile, RightSidebarState, RightSidebarTab, StorePreviewFile } from "./state/types";
-export type { BrowserNavState, DiffContentMode, JsonPreviewFile, OpenRepoFile, RightSidebarTab, StorePreviewFile } from "./state/types";
+import type {
+  BrowserNavState,
+  CachedTimelinePage,
+  CachedTrailPage,
+  ChatCacheEntry,
+  DiffContentMode,
+  DiffViewState,
+  JsonPreviewFile,
+  OpenRepoFile,
+  RightSidebarState,
+  RightSidebarTab,
+  StorePreviewFile,
+} from "./state/types";
+export type {
+  BrowserNavState,
+  DiffContentMode,
+  DiffViewState,
+  JsonPreviewFile,
+  OpenRepoFile,
+  RightSidebarTab,
+  StorePreviewFile,
+} from "./state/types";
 export { absoluteTime, displayChatId, relativeTime } from "./state/time";
 
 const INITIAL_TIMELINE_LIMIT = 160;
@@ -93,6 +119,7 @@ const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:apps",
   "view:facts",
   "view:pointers",
+  "view:skills",
   "view:v8",
   "view:traces",
 ];
@@ -129,6 +156,11 @@ export function createState() {
   const traceSettingsSingle = createSingleFlight(
     api.traces.settings,
     () => "trace-settings",
+  );
+  const skillsListSingle = createSingleFlight(
+    api.skills.list,
+    (opts?: { enabled?: boolean; chatId?: string | null; root?: string | null }) =>
+      `skills:${opts?.chatId ?? ""}:${opts?.root ?? ""}:${opts?.enabled ?? ""}`,
   );
   const [startupLoading, setStartupLoading] = createSignal(true);
   const [chats, setChats] = createSignal<ChatSummary[]>([]);
@@ -385,6 +417,8 @@ export function createState() {
   const [uiAppsLoaded, setUiAppsLoaded] = createSignal(false);
   const [mcpServers, setMcpServers] = createSignal<McpServerConfig[]>([]);
   const [mcpServersLoaded, setMcpServersLoaded] = createSignal(false);
+  const [skills, setSkills] = createSignal<SkillSummary[]>([]);
+  const [skillsLoaded, setSkillsLoaded] = createSignal(false);
   const [v8Stats, setV8Stats] = createSignal<V8StatsValue | null>(null);
   const [v8StatsLoaded, setV8StatsLoaded] = createSignal(false);
   const [settingsCache, setSettingsCacheSignal] =
@@ -394,7 +428,11 @@ export function createState() {
       const currentUpdatedAt = current?.updatedAt;
       const nextUpdatedAt = next.updatedAt;
       if (typeof currentUpdatedAt === "number") {
-        if (typeof nextUpdatedAt !== "number" || nextUpdatedAt < currentUpdatedAt) return current;
+        if (
+          typeof nextUpdatedAt !== "number" ||
+          nextUpdatedAt < currentUpdatedAt
+        )
+          return current;
       }
       return next;
     });
@@ -740,7 +778,7 @@ export function createState() {
     });
     return {
       mode: "snapshot",
-      overview: cached.overview,
+      overview: mergeCachedOverviewWithSummary(cached.overview, summary),
       timeline,
       trail,
     };
@@ -761,13 +799,23 @@ export function createState() {
       cached.overview &&
       (opts?.allowStale || isDescribeFreshForSummary(cached.overview, summary))
     ) {
-      applyOverviewValue(id, cached.overview);
+      applyOverviewValue(
+        id,
+        mergeCachedOverviewWithSummary(cached.overview, summary),
+      );
     }
     if (cached.model) setChatModel(modelWithPendingWrites(id, cached.model));
     if (cached.ui) {
       setChatUiApps(cached.ui.apps);
       setUiInstances(cached.ui.instances);
       restorePrimaryUi(cached.ui.primaryUiId ?? null, cached.ui.instances);
+    }
+    if (cached.rightSidebar) {
+      const layout = rightSidebarLayoutForScope(id);
+      setRightSidebarByChat((prev) => ({
+        ...prev,
+        [id]: normalizeRightSidebarState(cached.rightSidebar, layout),
+      }));
     }
     touchChatCache(id, {});
     return !!snapshot;
@@ -1186,12 +1234,16 @@ export function createState() {
   }
 
   function logPreviewTitle(item: LogItem): string {
-    const shortId = (item.id || shortStableTextId(item.message || "")).replace(/^log[:_-]?/, "").slice(0, 12);
+    const shortId = (item.id || shortStableTextId(item.message || ""))
+      .replace(/^log[:_-]?/, "")
+      .slice(0, 12);
     return shortId ? "log " + shortId : "moo.log";
   }
 
   function decodeJsonPreviewTarget(target: string): JsonPreviewFile {
-    const raw = target.startsWith("json:") ? target.slice("json:".length) : target;
+    const raw = target.startsWith("json:")
+      ? target.slice("json:".length)
+      : target;
     let value: unknown = null;
     let error: string | null = null;
     try {
@@ -1267,6 +1319,33 @@ export function createState() {
     return { path: nextPath ?? null, history, index };
   }
 
+  function normalizeExpandedDiffViewState(
+    state: Record<string, DiffViewState> | undefined,
+  ): Record<string, DiffViewState> {
+    if (!state || typeof state !== "object") return {};
+    const out: Record<string, DiffViewState> = {};
+    for (const [key, value] of Object.entries(state).slice(-200)) {
+      if (!key || !value || typeof value !== "object") continue;
+      const mode =
+        value.mode === "preview" || value.mode === "source"
+          ? value.mode
+          : "diff";
+      const scrollTopByMode: Partial<Record<DiffContentMode, number>> = {};
+      for (const candidate of [
+        "diff",
+        "preview",
+        "source",
+      ] as DiffContentMode[]) {
+        const top = value.scrollTopByMode?.[candidate];
+        if (typeof top === "number" && Number.isFinite(top) && top >= 0) {
+          scrollTopByMode[candidate] = Math.min(Math.trunc(top), 1_000_000);
+        }
+      }
+      out[key] = { mode, scrollTopByMode };
+    }
+    return out;
+  }
+
   function defaultRightSidebarState(
     layout?: RightSidebarLayoutState,
   ): RightSidebarState {
@@ -1280,6 +1359,7 @@ export function createState() {
       width: clampRightSidebarWidth(layout?.width),
       collapsed: layout?.collapsed === true,
       maximized: false,
+      expandedDiffViewState: {},
     };
   }
 
@@ -1325,6 +1405,9 @@ export function createState() {
       width: clampRightSidebarWidth(state?.width ?? layout?.width),
       collapsed: state?.collapsed ?? layout?.collapsed === true,
       maximized: state?.maximized ?? false,
+      expandedDiffViewState: normalizeExpandedDiffViewState(
+        state?.expandedDiffViewState,
+      ),
     };
   }
 
@@ -1406,6 +1489,7 @@ export function createState() {
       case "apps":
       case "facts":
       case "pointers":
+      case "skills":
       case "v8":
       case "traces":
         return `view:${view()}`;
@@ -1414,11 +1498,16 @@ export function createState() {
     }
   }
 
+  function cachedRightSidebarState(id: string): RightSidebarState | undefined {
+    if (id.startsWith("view:")) return undefined;
+    return chatCache.get(id)?.rightSidebar;
+  }
+
   function currentRightSidebarState(): RightSidebarState | null {
     const id = currentRightSidebarScopeId();
     if (!id) return null;
     return normalizeRightSidebarState(
-      rightSidebarByChat()[id],
+      rightSidebarByChat()[id] ?? cachedRightSidebarState(id),
       rightSidebarLayoutForScope(id),
     );
   }
@@ -1434,7 +1523,9 @@ export function createState() {
       case "v8":
         return tab.kind === "store" || tab.kind === "json";
       case "traces":
-        return tab.kind === "store" || tab.kind === "json" || tab.kind === "trace";
+        return (
+          tab.kind === "store" || tab.kind === "json" || tab.kind === "trace"
+        );
       default:
         return false;
     }
@@ -1469,7 +1560,12 @@ export function createState() {
     const layout = rightSidebarLayoutForScope(id);
     setRightSidebarByChat((prev) => {
       const normalized = normalizeRightSidebarState(
-        fn(normalizeRightSidebarState(prev[id], layout)),
+        fn(
+          normalizeRightSidebarState(
+            prev[id] ?? cachedRightSidebarState(id),
+            layout,
+          ),
+        ),
         layout,
       );
       const tabs = trimRightSidebarTabs(
@@ -1479,10 +1575,13 @@ export function createState() {
       const activeTabId = tabs.some((tab) => tab.id === normalized.activeTabId)
         ? normalized.activeTabId
         : tabs[0]!.id;
+      const nextState = { ...normalized, tabs, activeTabId };
+      if (!id.startsWith("view:"))
+        touchChatCache(id, { rightSidebar: nextState });
       return pruneRightSidebarScopes(
         {
           ...prev,
-          [id]: { ...normalized, tabs, activeTabId },
+          [id]: nextState,
         },
         id,
       );
@@ -1538,7 +1637,10 @@ export function createState() {
         );
       case "diff": {
         const diff = b as Extract<RightSidebarTab, { kind: "diff" }>;
-        return a.scope === diff.scope && sameDiffPath(a.path, diff.path);
+        if (a.scope !== diff.scope) return false;
+        return a.scope === "timeline"
+          ? a.diffId === diff.diffId
+          : sameDiffPath(a.path, diff.path);
       }
       case "memory-diff": {
         const diff = b as Extract<RightSidebarTab, { kind: "memory-diff" }>;
@@ -1574,7 +1676,12 @@ export function createState() {
         : state.activeTabId;
       const nextTab: RightSidebarTab =
         existing?.kind === "diff" && tab.kind === "diff"
-          ? { ...tab, id: existing.id, mode: existing.mode }
+          ? {
+              ...tab,
+              id: existing.id,
+              mode: existing.mode,
+              scrollTopByMode: existing.scrollTopByMode,
+            }
           : existing
             ? ({ ...tab, id: existing.id } as RightSidebarTab)
             : tab;
@@ -1623,6 +1730,73 @@ export function createState() {
         tab.id === tabId && tab.kind === "diff" ? { ...tab, mode } : tab,
       ),
     }));
+  }
+
+  function setDiffTabScrollTop(
+    tabId: string,
+    scrollTop: number,
+    mode: DiffContentMode,
+  ) {
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.id === tabId && tab.kind === "diff"
+          ? {
+              ...tab,
+              scrollTopByMode: {
+                ...(tab.scrollTopByMode ?? {}),
+                [mode]: scrollTop,
+              },
+            }
+          : tab,
+      ),
+    }));
+  }
+
+  function expandedDiffViewState(key: string): DiffViewState {
+    const state = currentRightSidebarState();
+    return (
+      state?.expandedDiffViewState?.[key] ?? {
+        mode: "diff",
+        scrollTopByMode: {},
+      }
+    );
+  }
+
+  function setExpandedDiffViewMode(key: string, mode: DiffContentMode) {
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      expandedDiffViewState: {
+        ...(state.expandedDiffViewState ?? {}),
+        [key]: {
+          ...(state.expandedDiffViewState?.[key] ?? { scrollTopByMode: {} }),
+          mode,
+        },
+      },
+    }));
+  }
+
+  function setExpandedDiffViewScrollTop(
+    key: string,
+    scrollTop: number,
+    mode: DiffContentMode,
+  ) {
+    updateCurrentRightSidebarState((state) => {
+      const current = state.expandedDiffViewState?.[key] ?? {
+        mode: "diff",
+        scrollTopByMode: {},
+      };
+      return {
+        ...state,
+        expandedDiffViewState: {
+          ...(state.expandedDiffViewState ?? {}),
+          [key]: {
+            ...current,
+            scrollTopByMode: { ...current.scrollTopByMode, [mode]: scrollTop },
+          },
+        },
+      };
+    });
   }
 
   function setActiveRightSidebarTab(tabId: string) {
@@ -2000,7 +2174,9 @@ export function createState() {
       (tab) =>
         tab.kind === "diff" &&
         (tab.id === tabId ||
-          (tab.scope === scope && sameDiffPath(tab.path, diff.path))),
+          (scope === "history" &&
+            tab.scope === "history" &&
+            sameDiffPath(tab.path, diff.path))),
     );
     if (existing) return;
     upsertRightSidebarTab({
@@ -2116,7 +2292,9 @@ export function createState() {
   }
 
   const stored = localStorage.getItem(sidebarLayout.key);
-  const [sidebarW, setSidebarW_] = createSignal(sidebarLayout.clampWidth(stored));
+  const [sidebarW, setSidebarW_] = createSignal(
+    sidebarLayout.clampWidth(stored),
+  );
   function setSidebarW(width: number | string) {
     setSidebarW_(sidebarLayout.clampWidth(width, "percent", true));
   }
@@ -2124,12 +2302,13 @@ export function createState() {
     localStorage.getItem(sidebarLayout.collapsedKey) === "1",
   );
 
-  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/apps`, `/traces[/<traceId>]`, `/traces/chat/<chatId>`.
+  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/skills`, `/apps`, `/traces[/<traceId>]`, `/traces/chat/<chatId>`.
   type Loc =
     | { view: "chat"; chatId: string | null }
     | { view: "new" }
     | { view: "facts"; graph: string | null; subject: string | null }
     | { view: "pointers" }
+    | { view: "skills" }
     | { view: "apps"; instanceId: string | null }
     | { view: "mcp" }
     | { view: "v8" }
@@ -2166,6 +2345,8 @@ export function createState() {
     }
     if (path === "/pointers" || path.startsWith("/pointers/"))
       return { view: "pointers" };
+    if (path === "/skills" || path.startsWith("/skills/"))
+      return { view: "skills" };
     if (path === "/mcp" || path.startsWith("/mcp/")) return { view: "mcp" };
     if (path === "/v8" || path.startsWith("/v8/")) return { view: "v8" };
     if (path === "/traces" || path.startsWith("/traces/")) {
@@ -2189,6 +2370,7 @@ export function createState() {
       | "new"
       | "facts"
       | "pointers"
+      | "skills"
       | "apps"
       | "mcp"
       | "v8"
@@ -2210,6 +2392,7 @@ export function createState() {
       return subject ? `${base}#${encodeURIComponent(subject)}` : base;
     }
     if (v === "pointers") return "/pointers";
+    if (v === "skills") return "/skills";
     if (v === "mcp") return "/mcp";
     if (v === "v8") return "/v8";
     if (v === "traces")
@@ -2257,6 +2440,7 @@ export function createState() {
     | "new"
     | "facts"
     | "pointers"
+    | "skills"
     | "apps"
     | "mcp"
     | "v8"
@@ -2364,6 +2548,16 @@ export function createState() {
     pushUrl();
   }
 
+  function showSkills() {
+    setOpenUiId(null);
+    setOpenUiInstanceId(null);
+    setView("skills");
+    setFocusedSubject(null);
+    setFocusedGraph(null);
+    void refreshSkills();
+    pushUrl();
+  }
+
   function showV8() {
     setOpenUiId(null);
     setOpenUiInstanceId(null);
@@ -2436,6 +2630,13 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
+    } else if (loc.view === "skills") {
+      setView("skills");
+      setFocusedSubject(null);
+      setFocusedGraph(null);
+      setOpenUiId(null);
+      setOpenUiInstanceId(null);
+      void refreshSkills();
     } else if (loc.view === "v8") {
       setView("v8");
       setFocusedSubject(null);
@@ -2463,7 +2664,10 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
-      const target = loc.view === "chat" ? loc.chatId ?? chats()[0]?.chatId ?? null : chats()[0]?.chatId ?? null;
+      const target =
+        loc.view === "chat"
+          ? (loc.chatId ?? chats()[0]?.chatId ?? null)
+          : (chats()[0]?.chatId ?? null);
       if (target && target !== chatId()) {
         void selectChat(target, true);
       } else if (!target) {
@@ -2651,17 +2855,22 @@ export function createState() {
   let timelineMutationSeq = 0;
   const serverTimelineWatermarkByChat = new Map<string, number>();
 
-  function newestTimelineAt(items: TimelineItem[]): number {
+  function newestTimelineWatermark(items: TimelineItem[]): number {
     let latest = 0;
     for (const item of items) {
       const at = Number((item as any).at ?? 0);
-      if (Number.isFinite(at) && at > latest) latest = at;
+      const updatedAt = item.type === "step" ? Number((item as any).updatedAt ?? 0) : 0;
+      const watermark = Math.max(
+        Number.isFinite(at) ? at : 0,
+        Number.isFinite(updatedAt) ? updatedAt : 0,
+      );
+      if (watermark > latest) latest = watermark;
     }
     return latest;
   }
 
   function rememberServerTimelineWatermark(id: string, items: TimelineItem[]) {
-    const latest = newestTimelineAt(items);
+    const latest = newestTimelineWatermark(items);
     if (latest <= 0) return;
     serverTimelineWatermarkByChat.set(
       id,
@@ -2716,9 +2925,11 @@ export function createState() {
           describeRequeued = true;
           return;
         }
-        if (updateHasTimeline(r.value) && r.value.timeline.items.length)
+        if (updateHasTimeline(r.value) && r.value.timeline.items.length) {
           applyTimelineUpdateValue(id, r.value);
-        else applyUpdateValue(id, r.value);
+        } else {
+          applyUpdateValue(id, r.value);
+        }
         return;
       }
       const r = await retryChatLoad(
@@ -3022,6 +3233,7 @@ export function createState() {
     );
   }
 
+
   function hasUnansweredUserInput(items: TimelineItem[]): boolean {
     for (let i = items.length - 1; i >= 0; i -= 1) {
       const item = items[i];
@@ -3273,6 +3485,14 @@ export function createState() {
     else reportError("mcp", r.error);
   }
 
+  async function refreshSkills() {
+    const current = chatId();
+    const r = await skillsListSingle(current ? { chatId: current } : {});
+    setSkillsLoaded(true);
+    if (r.ok) setSkills(r.value.skills);
+    else reportError("skills", r.error);
+  }
+
   async function refreshSettingsCache() {
     setSettingsError(null);
     let firstError: string | null = null;
@@ -3283,7 +3503,9 @@ export function createState() {
       }
     };
     const errorMessage = (reason: unknown): string =>
-      reason instanceof Error ? reason.message : String(reason || "Unknown settings error");
+      reason instanceof Error
+        ? reason.message
+        : String(reason || "Unknown settings error");
 
     const settings = settingsSingle()
       .then((result) => {
@@ -4570,6 +4792,7 @@ export function createState() {
   const refreshUisSoon = debounce(refreshUis);
   const refreshChatUisSoon = debounce(refreshChatUis);
   const refreshPointersSoon = debounce(refreshPointers);
+  const refreshSkillsSoon = debounce(refreshSkills);
   const refreshV8StatsSoon = debounce(refreshV8Stats, 1000);
   const pendingRepoFileRefreshPaths = new Set<string>();
   const refreshPendingRepoFilesSoon = debounce(() => {
@@ -4585,11 +4808,18 @@ export function createState() {
   const events = new EventStream();
   bindWS(events);
   void refreshSettingsCache();
+  void refreshSkills();
   const offEvents = events.on((ev: any) => {
     if (ev.kind === "ping") return;
     if (ev.kind === "trace-write-error") {
       const rows = typeof ev.rows === "number" ? ev.rows : undefined;
-      notify("tracing", ev.message || "trace write failed", rows == null ? undefined : rows + " queued row" + (rows === 1 ? "" : "s"));
+      notify(
+        "tracing",
+        ev.message || "trace write failed",
+        rows == null
+          ? undefined
+          : rows + " queued row" + (rows === 1 ? "" : "s"),
+      );
       return;
     }
     if (ev.kind === "v8") {
@@ -4778,7 +5008,10 @@ export function createState() {
               const runjs = item.runjs
                 ? {
                     ...item.runjs,
-                    error: typeof ev.error === "string" ? ev.error : item.runjs.error,
+                    error:
+                      typeof ev.error === "string"
+                        ? ev.error
+                        : item.runjs.error,
                     durationNs:
                       typeof ev.durationNs === "number"
                         ? ev.durationNs
@@ -4863,7 +5096,7 @@ export function createState() {
           content: ev.content,
           at:
             previous?.draftId === ev.draftId
-              ? previous?.at ?? (Number(ev.at) || Date.now())
+              ? (previous?.at ?? (Number(ev.at) || Date.now()))
               : Number(ev.at) || Date.now(),
         });
       }
@@ -5010,7 +5243,10 @@ export function createState() {
       refreshFactsViewSoon();
       refreshVocabularySoon();
     }
-    if (ev.kind === "pointer") refreshPointersSoon();
+    if (ev.kind === "pointer") {
+      refreshPointersSoon();
+      if (typeof ref === "string" && (ref === "skills/index" || ref.startsWith("skills/"))) refreshSkillsSoon();
+    }
     if (ref.startsWith("ui/") || ref.startsWith("uiinst/")) {
       refreshUisSoon();
       refreshChatUisSoon();
@@ -5108,6 +5344,7 @@ export function createState() {
     refreshUisSoon.cancel();
     refreshChatUisSoon.cancel();
     refreshPointersSoon.cancel();
+    refreshSkillsSoon.cancel();
     refreshV8StatsSoon.cancel();
     if (chatMemoryRefreshTimer !== null)
       window.clearTimeout(chatMemoryRefreshTimer);
@@ -5210,7 +5447,11 @@ export function createState() {
       if (initialView === "facts") {
         refreshGraphSummaries();
         const initialLoc = parseLocation();
-        if (initialLoc.view === "facts" && initialLoc.graph && initialLoc.graph !== focusedGraph()) {
+        if (
+          initialLoc.view === "facts" &&
+          initialLoc.graph &&
+          initialLoc.graph !== focusedGraph()
+        ) {
           setFocusedGraph(initialLoc.graph);
         }
         refreshVocabulary();
@@ -5252,6 +5493,7 @@ export function createState() {
         loc.view === "new" ||
         loc.view === "facts" ||
         loc.view === "pointers" ||
+        loc.view === "skills" ||
         loc.view === "apps" ||
         loc.view === "mcp" ||
         loc.view === "v8" ||
@@ -5273,6 +5515,10 @@ export function createState() {
         if (loc.view === "new") setView("new");
         else if (loc.view === "apps") setView("apps");
         else if (loc.view === "mcp") setView("mcp");
+        else if (loc.view === "skills") {
+          setView("skills");
+          void refreshSkills();
+        }
         else if (loc.view === "v8") {
           setView("v8");
           void refreshV8Stats();
@@ -5361,6 +5607,8 @@ export function createState() {
     uiAppsLoaded,
     mcpServers,
     mcpServersLoaded,
+    skills,
+    skillsLoaded,
     v8Stats,
     v8StatsLoaded,
     settingsCache,
@@ -5404,6 +5652,10 @@ export function createState() {
     setActiveRightSidebarTab,
     setBrowserTabNav,
     setDiffTabMode,
+    setDiffTabScrollTop,
+    expandedDiffViewState,
+    setExpandedDiffViewMode,
+    setExpandedDiffViewScrollTop,
     closeRightSidebarTab,
     openDiffInSidebar,
     openMemoryDiffInSidebar,
@@ -5428,6 +5680,7 @@ export function createState() {
     showPointers,
     showApps,
     showMcp,
+    showSkills,
     showV8,
     showTraces,
     showTrace,
@@ -5471,6 +5724,7 @@ export function createState() {
     refreshVocabulary,
     refreshUis,
     refreshMcpServers,
+    refreshSkills,
     refreshV8Stats,
     refreshSettingsCache,
     setCachedSettings,
@@ -5521,4 +5775,3 @@ export function createState() {
     start,
   };
 }
-

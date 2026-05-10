@@ -1055,6 +1055,20 @@ details.runjs-step:not([open]) > .step-footer {
   max-inline-size: 100%;
 }
 
+.runjs-block-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+
+.runjs-block-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45em;
+  min-width: 0;
+}
+
 .runjs-block-label {
   align-self: flex-start;
   font-size: 0.68em;
@@ -1062,6 +1076,55 @@ details.runjs-step:not([open]) > .step-footer {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
+.runjs-block-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72em;
+  color: color-mix(in srgb, currentColor 48%, transparent);
+}
+
+.runjs-block-preview {
+  --runjs-preview-lines: 10;
+  position: relative;
+  display: block;
+  width: 100%;
+  max-block-size: calc(var(--runjs-preview-lines) * 1.3em);
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: zoom-in;
+  font: inherit;
+  text-align: start;
+}
+
+.runjs-block-preview:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fg) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.runjs-block-preview:hover .runjs-code,
+.runjs-block-preview:hover .runjs-args,
+.runjs-block-preview:hover .runjs-out,
+.runjs-block-preview:focus-visible .runjs-code,
+.runjs-block-preview:focus-visible .runjs-args,
+.runjs-block-preview:focus-visible .runjs-out {
+  border-left-color: color-mix(in srgb, currentColor 42%, transparent);
+}
+
+.runjs-block-fade {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  height: 1.3em;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  mask-image: linear-gradient(to bottom, transparent, black);
 }
 
 .runjs-body .runjs-code,
@@ -1092,6 +1155,93 @@ details.runjs-step:not([open]) > .step-footer {
   :root:not([data-theme="light"]) .runjs-body .runjs-out {
     background: rgba(255, 255, 255, 0.05);
   }
+}
+
+.runjs-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg) 82%, rgba(0, 0, 0, 0.55));
+}
+
+.runjs-lightbox {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.runjs-lightbox-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.65rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.runjs-lightbox-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.runjs-lightbox-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.runjs-lightbox-meta {
+  margin-top: 0.1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.78em;
+}
+
+.runjs-lightbox-copy,
+.runjs-lightbox-close {
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.runjs-lightbox-copy {
+  border: 1px solid var(--line);
+  padding: 0.18rem 0.45rem;
+  font: inherit;
+  font-size: 0.82em;
+}
+
+.runjs-lightbox-close {
+  border: none;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.runjs-lightbox-copy:hover,
+.runjs-lightbox-close:hover {
+  color: var(--fg);
+}
+
+.runjs-lightbox-content {
+  margin: 0;
+  padding: 0.85rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.86em;
+  line-height: 1.35;
 }
 
 .shell-out,
@@ -1201,6 +1351,51 @@ details.collapsible > pre {
 .json-comment {
   color: var(--muted);
   font-style: italic;
+}
+.hjson-collapsible {
+  white-space: inherit;
+}
+.hjson-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 0.95em;
+  block-size: 0.95em;
+  margin: 0 0.16em 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  vertical-align: -0.05em;
+  cursor: pointer;
+}
+.hjson-toggle::before {
+  content: "▾";
+}
+.hjson-collapsible.is-collapsed > .hjson-toggle::before {
+  content: "▸";
+}
+.hjson-toggle:hover,
+.hjson-toggle:focus-visible {
+  color: var(--fg);
+}
+.hjson-toggle:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
+}
+.hjson-collapsed-preview {
+  display: none;
+  color: var(--muted);
+}
+.hjson-collapsible.is-collapsed > .hjson-body,
+.hjson-collapsible.is-collapsed > .hjson-string-expanded {
+  display: none;
+}
+.hjson-collapsible.is-collapsed > .hjson-collapsed-preview {
+  display: inline;
 }
 .token.property,
 .token.attr-name,
@@ -1558,9 +1753,6 @@ details.collapsible > pre {
 .markdown p:last-child,
 .markdown > *:last-child {
   margin-bottom: 0;
-}
-.markdown br + br {
-  display: none;
 }
 .markdown h1,
 .markdown h2,

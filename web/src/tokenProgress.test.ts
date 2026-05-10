@@ -27,6 +27,16 @@ describe("mergeTokenProgress", () => {
     expect(mergeTokenProgress(tokens(70_000), tokens(40_000), true, { reset: true })).toEqual(tokens(40_000));
   });
 
+  test("accepts lower compaction pressure while active when reset metadata came from describe", () => {
+    expect(
+      mergeTokenProgress(
+        tokens(70_000, { source: "compaction", estimated: true }),
+        tokens(40_000, { source: "compaction", estimated: true }),
+        true,
+      ),
+    ).toEqual(tokens(40_000, { source: "compaction", estimated: true }));
+  });
+
   test("keeps source metadata on accepted updates", () => {
     expect(
       mergeTokenProgress(

@@ -2807,11 +2807,15 @@
 
 .trace-root-row {
   display: flex;
-  align-items: center;
-  gap: 0.3rem;
+  flex: 0 0 auto;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.12rem;
   width: 100%;
   min-width: 0;
+  max-width: 100%;
   padding: 0.18rem 0.3rem;
+  overflow: hidden;
   border: 1px solid transparent;
   border-radius: 0.22rem;
   background: transparent;
@@ -2831,9 +2835,7 @@
 }
 
 .trace-hit-row {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 0.12rem;
+  align-items: stretch;
 }
 
 .trace-hit-row .trace-root-title {
@@ -2851,13 +2853,15 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
   font-size: 0.78rem;
   font-weight: 680;
-  flex: 1 1 auto;
 }
 
-.trace-root-title > span:not(.trace-kind-badge):not(.trace-error-count) {
+.trace-root-name {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2866,12 +2870,27 @@
 
 .trace-root-meta {
   display: flex;
-  flex: 0 0 auto;
+  align-items: center;
   gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--muted, #8f98a8);
   font-size: 0.62rem;
   line-height: 1;
   white-space: nowrap;
+}
+
+.trace-root-meta-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-root-age {
+  flex: 0 0 auto;
 }
 
 .trace-root-duration {
@@ -2881,6 +2900,29 @@
   font-weight: 620;
   line-height: 1;
   white-space: nowrap;
+}
+
+.trace-root-badge,
+.trace-root-choice,
+.trace-root-note {
+  flex: 0 0 auto;
+  border: 1px solid var(--line, rgba(255,255,255,0.16));
+  border-radius: 0;
+  padding: 0 0.18rem;
+  color: var(--muted, #8f98a8);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.56rem;
+  font-weight: 680;
+  line-height: 1.25;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.trace-root-choice {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
 }
 
 .trace-timeline-range {

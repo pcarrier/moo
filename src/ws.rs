@@ -236,7 +236,8 @@ fn run_command(
     }
 
     let source = bundle();
-    let payload = payload_with_base_url(payload, base_url.as_deref());
+    let effective_base_url = effective_server_base_url(&db, base_url.as_deref());
+    let payload = payload_with_base_url(payload, effective_base_url.as_deref());
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
     apply_driver_actions(&result_value, &pool, source);
     send_run_result(&writer_tx, &id, result_value);
@@ -275,6 +276,13 @@ fn send_run_result(writer_tx: &mpsc::Sender<String>, id: &str, result: Value) {
     });
     let _ = writer_tx.send(frame.to_string());
 }
+fn effective_server_base_url(db: &str, base_url: Option<&str>) -> Option<String> {
+    let configured = host::open_settings_db(db)
+        .ok()
+        .and_then(|conn| settings::read_server_base_url(&conn).ok().flatten());
+    configured.or_else(|| base_url.map(str::to_string).filter(|s| !s.is_empty()))
+}
+
 fn payload_with_base_url(mut payload: Value, base_url: Option<&str>) -> Value {
     let Some(base_url) = base_url.filter(|s| !s.is_empty()) else {
         return payload;
@@ -681,6 +689,16 @@ fn normalize_retry_policy(input: Option<&Value>) -> Value {
     })
 }
 
+fn normalize_ui_settings(raw: Option<&Value>) -> Value {
+    let obj = raw.and_then(Value::as_object);
+    let syntax_highlight_max_bytes = obj
+        .and_then(|o| o.get("syntaxHighlightMaxBytes"))
+        .and_then(Value::as_u64)
+        .filter(|v| *v > 0)
+        .unwrap_or(1024 * 1024);
+    json!({ "syntaxHighlightMaxBytes": syntax_highlight_max_bytes })
+}
+
 fn normalize_compaction_settings(input: Option<&Value>) -> Value {
     let obj = input.and_then(Value::as_object);
     json!({ "thresholdPercent": clamp_i64(obj.and_then(|o| value_i64(o.get("thresholdPercent"))), 75, 1, 100) })
@@ -695,10 +713,7 @@ fn non_empty_string(value: Option<&Value>) -> Option<String> {
 }
 
 fn normalize_llm_auth_mode<'a>(id: &str, requested: &'a str) -> &'a str {
-    if requested == "apiKey"
-        || (id == "openai" && requested == "oauth")
-        || (id == "anthropic" && requested == "subscription")
-    {
+    if requested == "apiKey" || (id == "openai" && requested == "oauth") {
         requested
     } else {
         "env"
@@ -739,6 +754,7 @@ fn normalize_llm_auth_settings(raw: &Value) -> Value {
         "compaction".to_string(),
         normalize_compaction_settings(raw.get("compaction")),
     );
+    out.insert("ui".to_string(), normalize_ui_settings(raw.get("ui")));
     out.insert(
         "retries".to_string(),
         normalize_retry_policy(raw.get("retries")),
@@ -925,7 +941,16 @@ fn write_llm_auth_settings_conn(conn: &mut Connection, mut next: Value) -> Resul
 fn llm_auth_get(db: &str) -> Value {
     let result: Result<Value, String> = (|| {
         let conn = host::open_settings_db(db)?;
-        Ok(json!({ "settings": redact_llm_auth_settings(&read_llm_auth_settings_conn(&conn)?) }))
+        let mut settings_value = redact_llm_auth_settings(&read_llm_auth_settings_conn(&conn)?);
+        if let Some(obj) = settings_value.as_object_mut() {
+            obj.insert(
+                "serverBaseUrl".to_string(),
+                settings::read_server_base_url(&conn)?
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+        }
+        Ok(json!({ "settings": settings_value }))
     })();
     match result {
         Ok(value) => json!({ "ok": true, "value": value }),
@@ -957,9 +982,27 @@ fn llm_auth_save(db: &str, payload: &Value) -> Value {
             "providers": providers,
             "compaction": if payload.get("compaction").and_then(Value::as_object).is_some() { normalize_compaction_settings(payload.get("compaction")) } else { current.get("compaction").cloned().unwrap_or_else(|| normalize_compaction_settings(None)) },
             "retries": if payload.get("retries").and_then(Value::as_object).is_some() { normalize_retry_policy(payload.get("retries")) } else { current.get("retries").cloned().unwrap_or_else(|| normalize_retry_policy(None)) },
+            "ui": if payload.get("ui").and_then(Value::as_object).is_some() { normalize_ui_settings(payload.get("ui")) } else { current.get("ui").cloned().unwrap_or_else(|| normalize_ui_settings(None)) },
         });
+        let saved_server_base_url = if payload.get("serverBaseUrl").is_some() {
+            settings::write_server_base_url(
+                &conn,
+                payload.get("serverBaseUrl").and_then(Value::as_str),
+            )?
+        } else {
+            settings::read_server_base_url(&conn)?
+        };
         let saved = write_llm_auth_settings_conn(&mut conn, settings)?;
-        Ok(json!({ "settings": redact_llm_auth_settings(&saved) }))
+        let mut redacted = redact_llm_auth_settings(&saved);
+        if let Some(obj) = redacted.as_object_mut() {
+            obj.insert(
+                "serverBaseUrl".to_string(),
+                saved_server_base_url
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+        }
+        Ok(json!({ "settings": redacted }))
     })();
     match result {
         Ok(value) => json!({ "ok": true, "value": value }),
@@ -1009,22 +1052,8 @@ fn trace_i64(payload: &Value, key: &str) -> Result<Option<i64>, String> {
     }
 }
 
-fn trace_ns(
-    payload: &Value,
-    ns_key: &str,
-    us_key: &str,
-    ms_key: &str,
-) -> Result<Option<i64>, String> {
-    if let Some(ns) = trace_i64(payload, ns_key)? {
-        return Ok(Some(ns));
-    }
-    if let Some(us) = trace_i64(payload, us_key)? {
-        return Ok(Some(us.saturating_mul(1_000)));
-    }
-    if let Some(ms) = trace_i64(payload, ms_key)? {
-        return Ok(Some(ms.saturating_mul(1_000_000)));
-    }
-    Ok(None)
+fn trace_ns(payload: &Value, ns_key: &str) -> Result<Option<i64>, String> {
+    trace_i64(payload, ns_key)
 }
 
 fn trace_bool(payload: &Value, key: &str) -> Result<Option<bool>, String> {
@@ -1078,6 +1107,10 @@ fn trace_row_to_json_with_objects(row: &host::TraceRow, include_objects: bool) -
     let mut value = json!({
         "id": row.id,
         "parentId": row.parent_id,
+        "rootId": row.root_id,
+        "rootKind": row.root_kind,
+        "rootName": row.root_name,
+        "traceId": row.root_id,
         "chatId": row.chat_id,
         "runId": row.run_id,
         "kind": row.kind,
@@ -1087,8 +1120,6 @@ fn trace_row_to_json_with_objects(row: &host::TraceRow, include_objects: bool) -
         "status": row.status,
         "t0Ns": row.started_ns,
         "t1Ns": row.ended_ns,
-        "t0Us": row.started_ns / 1_000,
-        "t1Us": row.ended_ns.map(|ns| ns / 1_000),
         "inputHash": row.input_hash,
         "outputHash": row.output_hash,
         "errorHash": row.error_hash,
@@ -1118,7 +1149,6 @@ fn trace_event_to_json(row: &host::TraceEventRow) -> Value {
         "id": row.id,
         "spanId": row.span_id,
         "tsNs": row.ts_ns,
-        "tsUs": row.ts_ns / 1_000,
         "level": row.level,
         "message": row.message,
         "dataHash": row.data_hash,
@@ -1141,6 +1171,13 @@ fn trace_ancestors_for_node(id: &str) -> Result<Vec<host::TraceRow>, String> {
     Ok(ancestors)
 }
 
+fn trace_root_from_ancestors<'a>(
+    node: &'a host::TraceRow,
+    ancestors: &'a [host::TraceRow],
+) -> &'a host::TraceRow {
+    ancestors.first().unwrap_or(node)
+}
+
 fn trace_frontend(payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let command = trace_required_string(payload, "name")?;
@@ -1153,14 +1190,14 @@ fn trace_frontend(payload: &Value) -> Value {
             .unwrap_or(started_ns)
             .max(started_ns);
         let route = trace_string(payload, "route")?;
-        let rpc_duration_ms = trace_i64(payload, "rpcDurationMs")?.unwrap_or(0).max(0);
+        let rpc_duration_ns = trace_i64(payload, "rpcDurationNs")?.unwrap_or(0).max(0);
         let data = json!({
             "scope": "global",
             "source": "frontend",
             "command": command,
             "route": route,
             "frontendDurationMs": ended_ns.saturating_sub(started_ns) / 1_000_000,
-            "rpcDurationMs": rpc_duration_ms,
+            "rpcDurationNs": rpc_duration_ns,
             "status": status,
             "error": trace_string(payload, "error")?,
         });
@@ -1197,7 +1234,7 @@ fn trace_frontend(payload: &Value) -> Value {
 fn trace_chats(_db: &str, payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let limit = trace_limit(payload, 50, 200)?;
-        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
+        let before_ns = trace_ns(payload, "beforeNs")?;
         Ok(json!({ "chats": trace_rows_json(host::trace_chat_roots(limit, before_ns)?) }))
     })();
     match result {
@@ -1209,22 +1246,12 @@ fn trace_chats(_db: &str, payload: &Value) -> Value {
 fn trace_roots(_db: &str, payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let limit = trace_limit(payload, 100, 500)?;
-        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
+        let before_ns = trace_ns(payload, "beforeNs")?;
         let query = trace_string(payload, "query")?;
-        let started_after_ns = trace_ns(
-            payload,
-            "startedAfterNs",
-            "startedAfterUs",
-            "startedAfterMs",
-        )?;
-        let started_before_ns = trace_ns(
-            payload,
-            "startedBeforeNs",
-            "startedBeforeUs",
-            "startedBeforeMs",
-        )?;
-        let min_duration_ns = trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?;
-        let max_duration_ns = trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?;
+        let started_after_ns = trace_ns(payload, "startedAfterNs")?;
+        let started_before_ns = trace_ns(payload, "startedBeforeNs")?;
+        let min_duration_ns = trace_ns(payload, "minDurationNs")?;
+        let max_duration_ns = trace_ns(payload, "maxDurationNs")?;
         let kind = trace_string(payload, "kind")?;
         let status = trace_string(payload, "status")?;
         let scope = trace_string(payload, "scope")?;
@@ -1257,10 +1284,12 @@ fn trace_node(_db: &str, payload: &Value) -> Value {
         let children = host::trace_children(Some(&id), None)?;
         let ancestors = trace_ancestors_for_node(&id)?;
         let events = host::trace_events(&id, 1000, None)?;
+        let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
         Ok(json!({
             "node": trace_row_to_json_with_objects(&node, true),
             "children": trace_rows_json(children),
             "ancestors": trace_rows_json(ancestors),
+            "root": root,
             "events": trace_events_json(events),
         }))
     })();
@@ -1274,7 +1303,9 @@ fn trace_subtree_command(_db: &str, payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let id = trace_required_string(payload, "id")?;
         let max_depth = trace_depth(payload, 4, 10)?;
-        Ok(json!({ "nodes": trace_rows_json(host::trace_subtree(&id, max_depth)?) }))
+        let nodes = host::trace_subtree(&id, max_depth)?;
+        let root = nodes.first().map(trace_row_to_json);
+        Ok(json!({ "root": root, "nodes": trace_rows_json(nodes) }))
     })();
     match result {
         Ok(value) => trace_ok(value),
@@ -1286,7 +1317,7 @@ fn trace_events_command(_db: &str, payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let span_id = trace_required_string(payload, "spanId")?;
         let limit = trace_limit(payload, 200, 1000)?;
-        let before_ns = trace_i64(payload, "beforeUs")?.map(|us| us.saturating_mul(1_000));
+        let before_ns = trace_i64(payload, "beforeNs")?;
         Ok(json!({ "events": trace_events_json(host::trace_events(&span_id, limit, before_ns)?) }))
     })();
     match result {
@@ -1307,28 +1338,19 @@ fn trace_search(_db: &str, payload: &Value) -> Value {
             scope: trace_string(payload, "scope")?,
             has_error: trace_bool(payload, "hasError")?.unwrap_or(false),
             limit,
-            before_ns: trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?,
-            started_after_ns: trace_ns(
-                payload,
-                "startedAfterNs",
-                "startedAfterUs",
-                "startedAfterMs",
-            )?,
-            started_before_ns: trace_ns(
-                payload,
-                "startedBeforeNs",
-                "startedBeforeUs",
-                "startedBeforeMs",
-            )?,
-            min_duration_ns: trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?,
-            max_duration_ns: trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?,
+            before_ns: trace_ns(payload, "beforeNs")?,
+            started_after_ns: trace_ns(payload, "startedAfterNs")?,
+            started_before_ns: trace_ns(payload, "startedBeforeNs")?,
+            min_duration_ns: trace_ns(payload, "minDurationNs")?,
+            max_duration_ns: trace_ns(payload, "maxDurationNs")?,
             roots_only: false,
         };
         let nodes = host::trace_search(query)?;
         let mut hits = Vec::with_capacity(nodes.len());
         for node in nodes {
             let ancestors = trace_ancestors_for_node(&node.id)?;
-            hits.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+            let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
+            hits.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors), "root": root }));
         }
         Ok(json!({ "hits": hits }))
     })();
@@ -1342,21 +1364,11 @@ fn trace_failed(_db: &str, payload: &Value) -> Value {
     let result: Result<Value, String> = (|| {
         let limit = trace_limit(payload, 50, 200)?;
         let chat_id = trace_string(payload, "chatId")?;
-        let before_ns = trace_ns(payload, "beforeNs", "beforeUs", "beforeMs")?;
-        let started_after_ns = trace_ns(
-            payload,
-            "startedAfterNs",
-            "startedAfterUs",
-            "startedAfterMs",
-        )?;
-        let started_before_ns = trace_ns(
-            payload,
-            "startedBeforeNs",
-            "startedBeforeUs",
-            "startedBeforeMs",
-        )?;
-        let min_duration_ns = trace_ns(payload, "minDurationNs", "minDurationUs", "minDurationMs")?;
-        let max_duration_ns = trace_ns(payload, "maxDurationNs", "maxDurationUs", "maxDurationMs")?;
+        let before_ns = trace_ns(payload, "beforeNs")?;
+        let started_after_ns = trace_ns(payload, "startedAfterNs")?;
+        let started_before_ns = trace_ns(payload, "startedBeforeNs")?;
+        let min_duration_ns = trace_ns(payload, "minDurationNs")?;
+        let max_duration_ns = trace_ns(payload, "maxDurationNs")?;
         let nodes = host::trace_failed(
             limit,
             chat_id.as_deref(),
@@ -1369,7 +1381,8 @@ fn trace_failed(_db: &str, payload: &Value) -> Value {
         let mut failures = Vec::with_capacity(nodes.len());
         for node in nodes {
             let ancestors = trace_ancestors_for_node(&node.id)?;
-            failures.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors) }));
+            let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
+            failures.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors), "root": root }));
         }
         Ok(json!({ "failures": failures }))
     })();
@@ -1631,6 +1644,33 @@ mod tests {
     }
 
     #[test]
+    fn llm_auth_save_persists_server_base_url() {
+        let mut db = std::env::temp_dir();
+        db.push(format!(
+            "moo-llm-auth-server-base-url-{}-{}.db",
+            std::process::id(),
+            util::now_ms()
+        ));
+        let db = db.to_string_lossy().to_string();
+        let save = llm_auth_save(
+            &db,
+            &json!({
+                "serverBaseUrl": " https://moo.example.com/ "
+            }),
+        );
+        assert_eq!(save.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            save["value"]["settings"]["serverBaseUrl"],
+            "https://moo.example.com"
+        );
+        let get = llm_auth_get(&db);
+        assert_eq!(
+            get["value"]["settings"]["serverBaseUrl"],
+            "https://moo.example.com"
+        );
+    }
+
+    #[test]
     fn trace_config_test_disabled_does_not_require_clickhouse() {
         let result = trace_config_test(
             ":memory:",
@@ -1728,40 +1768,13 @@ mod tests {
             "env"
         );
 
-        let saved = llm_auth_save(
-            db_path,
-            &json!({
-                "openai": { "authMode": "apiKey", "apiKey": "sk-test-1234", "baseUrl": " https://example.test/v1/ " },
-                "anthropic": { "authMode": "oauth", "apiKey": "anthropic-key" },
-                "compaction": { "thresholdPercent": 250 },
-                "retries": { "maxAttempts": 0, "baseDelayMs": 42 },
-            }),
-        );
+        let settings = json!({
+            "compaction": { "thresholdPercent": 100 },
+            "retries": { "maxAttempts": 1, "baseDelayMs": 42 },
+        });
+        let saved = llm_auth_save(db_path, &settings);
         assert_eq!(saved["ok"], true);
         let settings = &saved["value"]["settings"];
-        assert_eq!(settings["providers"]["openai"]["authMode"], "apiKey");
-        assert_eq!(settings["providers"]["openai"]["apiKey"], "••••1234");
-        assert_eq!(settings["providers"]["openai"]["hasApiKey"], true);
-        assert_eq!(
-            settings["providers"]["openai"]["baseUrl"],
-            "https://example.test/v1/"
-        );
-        assert_eq!(settings["providers"]["anthropic"]["authMode"], "env");
-
-        let saved = llm_auth_save(
-            db_path,
-            &json!({
-                "anthropic": { "authMode": "subscription", "apiKey": "sk-ant-oat01-test" },
-            }),
-        );
-        assert_eq!(saved["ok"], true);
-        let settings = &saved["value"]["settings"];
-        assert_eq!(
-            settings["providers"]["anthropic"]["authMode"],
-            "subscription"
-        );
-        assert_eq!(settings["providers"]["anthropic"]["apiKey"], "••••test");
-        assert_eq!(settings["providers"]["anthropic"]["hasApiKey"], true);
 
         assert_eq!(settings["compaction"]["thresholdPercent"], 100);
         assert_eq!(settings["retries"]["maxAttempts"], 1);

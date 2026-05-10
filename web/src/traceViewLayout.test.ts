@@ -87,6 +87,8 @@ describe("hierarchical trace view", () => {
     expect(css).toContain(".trace-selector-pane");
     expect(css).toContain(".trace-direct-filter");
     expect(css).toContain(".trace-selector-results");
+    expect(css).toContain("overflow: auto");
+    expect(css).toContain(".trace-root-row {\n  display: flex;\n  flex: 0 0 auto;");
     expect(css).toContain(".trace-load-more");
     expect(css).toContain(".trace-panel-resizer-column");
     expect(css).toContain(".trace-timeline-grid");
@@ -96,17 +98,23 @@ describe("hierarchical trace view", () => {
     expect(css).toContain("var(--trace-timeline-fr, 1fr)");
     expect(css).toContain(".trace-detail-panel .trace-event-card");
     expect(css).toContain(".trace-row-right");
+    expect(tracesView).toContain('class="trace-root-name"');
+    expect(tracesView).toContain('class="trace-root-meta-text"');
+    expect(tracesView).toContain('class="trace-root-age"');
+    expect(css).toContain("flex-direction: column");
+    expect(css).toContain(".trace-root-name");
+    expect(css).toContain(".trace-root-meta-text");
+    expect(css).toContain("text-overflow: ellipsis");
   });
 
-  test("reroots focused trace timelines to show loaded ancestors", () => {
-    expect(tracesView).toContain("currentRootIsFocusedNode");
-    expect(tracesView).toContain("currentRootIsInAncestorChain");
-    expect(tracesView).toContain("loadedAncestors[0]");
-    expect(tracesView).toContain("setRootId(loadedAncestors[0].id)");
-    expect(tracesView).toContain("for (const ancestor of loadedAncestors) next.add(ancestor.id)");
-    expect(tracesView).toContain("const parent = node.parentId && ids.has(node.parentId) ? node.parentId : node.parentId ? undefined : null;");
-    expect(tracesView).toContain("if (parent !== undefined)");
-    expect(tracesView).toContain("const roots = rootId() && nodeById().has(rootId()!) ? [nodeById().get(rootId()!)!] : (byParent.get(null) || [])");
+  test("opens focused traces from their canonical root", () => {
+    expect(tracesView).toContain("function isCanonicalRoot");
+    expect(tracesView).toContain("loadTraceTreeFromRoot");
+    expect(tracesView).toContain("const canonicalRoot = value.root || value.nodes.find(isCanonicalRoot) || value.nodes[0] || root");
+    expect(tracesView).toContain("const pathIds = new Set(opts.expandIds || [])");
+    expect(tracesView).toContain("for (const id of pathIds) open.add(id)");
+    expect(tracesView).toContain("const preferredRoot = preferredRootId ? nodeById().get(preferredRootId) : null");
+    expect(tracesView).toContain("const roots = preferredRoot ? [preferredRoot] : (byParent.get(null) || []).filter(isCanonicalRoot)");
   });
 
   test("applies trace filters to the selector result list directly", () => {
@@ -114,7 +122,7 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("filteredTraceRoots");
     expect(tracesView).toContain("filteredFailures");
     expect(tracesView).toContain("filteredSearchHits");
-    expect(tracesView).toContain('traceRoots().filter((root) => rowMatchesTraceFilters(root))');
+    expect(tracesView).toContain('traceRoots().filter((root) => isCanonicalRoot(root) && rowMatchesTraceFilters(root))');
     expect(tracesView).toContain('searchHits().filter((hit) => hitMatchesFilters(hit, { restrictChatToSelection: true }))');
     expect(tracesView).toContain('activeTab() === "search" ? filteredSearchHits().length : activeTab() === "failed" ? filteredFailures().length : filteredTraceRoots().length');
     expect(tracesView).toContain('<For each={filteredTraceRoots()}');
@@ -138,7 +146,7 @@ describe("hierarchical trace view", () => {
   });
 
   test("paginates roots by started time", () => {
-    expect(tracesView).toContain("const t = rowStartedUs(row) || 0");
+    expect(tracesView).toContain("const t = rowStartedNs(row) || 0");
     expect(tracesView).not.toContain("const t = rowEndedNs(row) || rowStartedNs(row) || 0");
   });
 
@@ -169,10 +177,30 @@ describe("hierarchical trace view", () => {
 
   test("keeps automatic frontend spans off the RPC wait path", () => {
     expect(transport).not.toContain("FRONTEND_TRACE_MAX_DURATION_MS");
-    expect(transport).not.toContain("endedMs - startedMs >");
-    expect(transport).toContain("recordFrontendTrace(name, receivedMs, receivedMs, result, receivedMs - rpcStartedMs)");
-    expect(transport).toContain("rpcDurationMs");
-    expect(tracesApi).toContain("rpcDurationMs?: number");
+    expect(transport).not.toContain("startedMs");
+    expect(transport).not.toContain("endedMs");
+    expect(transport).toContain("recordFrontendTrace(name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs)");
+    expect(transport).toContain("rpcDurationNs");
+    expect(tracesApi).toContain("rpcDurationNs?: number");
+  });
+
+  test("uses nanosecond end timestamps when microseconds are absent", () => {
+    expect(tracesView).toContain("function rowStartedNs(row: TraceRow): number { return Number(row.t0Ns); }");
+    expect(tracesView).toContain("function rowEndedNs(row: TraceRow, now = nowNs()): number { return row.t1Ns == null ? now : Number(row.t1Ns); }");
+    expect(tracesView).toContain('function rowIsRunning(row: TraceRow): boolean { return row.t1Ns == null && row.status === "running"; }');
+    expect(tracesView).toContain('function rowDisplayStatus(row: TraceRow): TraceRow["status"] { return row.t1Ns != null && row.status === "running" ? "ok" : row.status; }');
+    expect(tracesView).toContain("running: rowIsRunning(row.node)");
+    expect(tracesView).toContain("<StatusBadge status={rowDisplayStatus(row.node)} />");
+    expect(tracesView).not.toContain("rowEndedUs");
+    expect(tracesView).not.toContain("t1Us");
+  });
+
+  test("refreshes active running trace rows until end timestamps arrive", () => {
+    expect(tracesView).toContain("function refreshActiveRunningTrace()");
+    expect(tracesView).toContain("if (!root || !nodes().some(rowIsRunning)) return;");
+    expect(tracesView).toContain("const hasRunningRows = nodes().some(rowIsRunning);");
+    expect(tracesView).toContain("window.setInterval(() => { void refreshActiveRunningTrace(); }, 2_000)");
+    expect(tracesView).toContain("setNodes(mergeRows(nodes(), value.nodes));");
   });
 
   test("records and filters frontend global traces", () => {
@@ -211,7 +239,7 @@ describe("hierarchical trace view", () => {
 
   test("selecting a non-chat trace root does not switch to the whole chat trace", () => {
     expect(tracesView).toContain('if (root.kind === "chat" && root.chatId)');
-    expect(tracesView).toContain('<span>{nodeTitle(root)}</span>');
+    expect(tracesView).toContain('<span class="trace-root-name">{nodeTitle(root)}</span>');
     expect(tracesView).toContain('props.bag.showTrace?.(root.id)');
     expect(tracesView).toContain('setSelectedRootKey(root.id)');
     expect(tracesView).toContain('let selectionRequest = 0');
@@ -225,6 +253,7 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("function revealHitInTree(hit: SearchHit)");
     expect(tracesView).toContain("revealHitInTree(hit)");
     expect(tracesView).toContain("selectTraceRoot(root, { request, focusId: hit.node.id, expandIds, preserveTab: true })");
+    expect(tracesView).toContain("const root = hit.root || traceRootOf(hit.node, hit.ancestors)");
     expect(tracesView).toContain("setRootId(root.id)");
     expect(tracesView).toContain("setSelectedId(hit.node.id)");
     expect(tracesView).toContain("scrollTraceRowIntoView(hit.node.id)");
@@ -238,8 +267,12 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("props.bag.activeRightSidebarTab?.()");
     expect(tracesView).toContain('if (!tab || tab.kind !== "trace") return');
     expect(tracesView).toContain('unwrap(api.traces.node({ id: trace.id }), "trace sidebar trace load")');
-    expect(tracesView).toContain("revealHitInTree({ node: value.node, ancestors: value.ancestors })");
-    expect(tracesView).toContain("await loadSubtree(ancestor.id, { focus: value.node.id, append: true, request })");
+    expect(tracesView).toContain("const root = value.root || traceRootOf(value.node, value.ancestors)");
+    expect(tracesView).toContain("await selectTraceRoot(root, { request, focusId: value.node.id, expandIds, preserveTab: true })");
+  });
+
+  test("does not synthesize timeline file-link diffs while the file is loading", () => {
+    expect(sidebar).toContain("if (file.loading) return null;");
   });
 
   test("keeps detail input, output, and errors hash sections hidden when empty", () => {
@@ -299,4 +332,25 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("if (props.bag.traceId?.() || props.bag.traceChatId?.()) return");
   });
 
+});
+
+describe("right sidebar diff tabs", () => {
+  test("repo file previews wait for timeline diff hydration before rendering current diffs", () => {
+    expect(sidebar).toContain("const readyTimelineDiff = (item: FileDiffItem | null | undefined) =>");
+    expect(sidebar).toContain("item && !expandedFileDiffNeedsHydration(item) ? item : null");
+    expect(sidebar).toContain("const timelineDiffHydrating = () =>");
+    expect(sidebar).toContain("if (timelineDiffHydrating()) return null;");
+    expect(sidebar).toContain("const browserTimelineDiffHydrating = () =>");
+    expect(sidebar).toContain("if (browserTimelineDiffHydrating()) return null;");
+    expect(sidebar).not.toContain(
+      "setHydratedTimelineDiff(current);\n        if (!current || !expandedFileDiffNeedsHydration(current)) return;",
+    );
+  });
+
+  test("keeps separate timeline diff tabs for different diffs on the same file", () => {
+    expect(state).toContain('a.scope === "timeline"');
+    expect(state).toContain("? a.diffId === diff.diffId");
+    expect(state).toContain('scope === "history" &&');
+    expect(state).not.toContain("tab.scope === scope && sameDiffPath(tab.path, diff.path)");
+  });
 });
