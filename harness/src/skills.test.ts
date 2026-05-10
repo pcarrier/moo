@@ -123,6 +123,15 @@ describe("moo.skills", () => {
     expect(parsed.frontmatter.notes).toBe("line one\nline two");
   });
 
+  test("exposes builtin workflow skill", async () => {
+    const skill = await skills.load("workflows");
+
+    expect(skill?.builtin).toBe(true);
+    expect(skill?.source).toEqual({ kind: "builtin" });
+    expect(skill?.frontmatter.description).toContain("Moo workflows");
+    expect(skill?.content).toContain("moo.workflows.inspectRun");
+  });
+
   test("saves editable skills in pointers and objects", async () => {
     const skill = await skills.save({
       name: "Code Review",
@@ -140,8 +149,9 @@ describe("moo.skills", () => {
     expect(objects.get(skill.contentHash)?.kind).toBe("skill:content");
 
     const listed = await skills.list();
-    expect(listed).toHaveLength(1);
-    expect("content" in listed[0]!).toBe(false);
+    expect(listed.map((item) => item.id)).toEqual(["code-review", "workflows"]);
+    expect("content" in listed.find((item) => item.id === "code-review")!).toBe(false);
+    expect(listed.find((item) => item.id === "workflows")?.builtin).toBe(true);
 
     const loaded = await skills.load("Code Review");
     expect(loaded?.content).toContain("Use a checklist.");
@@ -208,13 +218,14 @@ describe("moo.skills", () => {
     ].join("\n"));
 
     const listed = await skills.list({ root: "/repo" });
-    expect(listed.map((skill) => skill.id)).toEqual(["code-review", "deploy"]);
+    expect(listed.map((skill) => skill.id)).toEqual(["code-review", "deploy", "workflows"]);
     expect(listed[0]?.repo).toBe(true);
     expect(listed[0]?.source).toEqual({ kind: "repo", path: ".skills/review/skill.md", root: "/repo" });
     expect(listed[1]?.frontmatter.description).toBe("Ship the repo");
+    expect(listed[2]?.builtin).toBe(true);
     expect(await skills.content("deploy", { root: "/repo" })).toContain("deployment runbook");
     expect((await skills.load("Code Review", { root: "/repo" }))?.content).toContain("Review carefully");
-    expect((await skills.list({ root: "/repo", enabled: true })).map((skill) => skill.id)).toEqual(["deploy"]);
+    expect((await skills.list({ root: "/repo", enabled: true })).map((skill) => skill.id)).toEqual(["deploy", "workflows"]);
     expect(await skills.delete("deploy")).toBe(false);
 
     const refreshed = await skills.refresh("deploy", { root: "/repo" });
@@ -228,8 +239,9 @@ describe("moo.skills", () => {
     await skills.save({ name: "Deploy", content: "Manual deploy." });
 
     const listed = await skills.list({ root: "/repo" });
-    expect(listed).toHaveLength(1);
+    expect(listed.map((skill) => skill.id)).toEqual(["deploy", "workflows"]);
     expect(listed[0]?.repo).toBeUndefined();
+    expect(listed[1]?.builtin).toBe(true);
     expect(await skills.content("deploy", { root: "/repo" })).toBe("Manual deploy.");
   });
 
@@ -250,6 +262,6 @@ describe("moo.skills", () => {
     expect(await skills.content("deploy")).toBe("ship carefully");
     expect(await skills.delete("Deploy")).toBe(true);
     expect(await skills.get("deploy")).toBeNull();
-    expect(await skills.list()).toEqual([]);
+    expect((await skills.list()).map((skill) => skill.id)).toEqual(["workflows"]);
   });
 });
