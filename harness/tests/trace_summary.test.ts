@@ -171,6 +171,7 @@ describe("trace root inference", () => {
   test("falls back to a missing-parent root when a step lacks chat context", async () => {
     const previousEnsure = (globalThis as any).__op_trace_ensure_root;
     const previousEnsureSpan = (globalThis as any).__op_trace_ensure_span;
+    const previousCurrent = (globalThis as any).__op_trace_current;
     const previousEnter = (globalThis as any).__op_trace_enter;
     const ensured: any[] = [];
     const ensuredSpans: any[] = [];
@@ -180,6 +181,7 @@ describe("trace root inference", () => {
     (globalThis as any).__op_trace_ensure_span = (raw: string) => {
       ensuredSpans.push(JSON.parse(raw));
     };
+    (globalThis as any).__op_trace_current = () => null;
     (globalThis as any).__op_trace_enter = (raw: string) => JSON.stringify({ traceId: JSON.parse(raw).rootId, rootId: JSON.parse(raw).rootId, id: JSON.parse(raw).id });
     try {
       await startRunJSTraceRoot("step:test", { label: "Run JS" });
@@ -192,6 +194,8 @@ describe("trace root inference", () => {
       else delete (globalThis as any).__op_trace_ensure_root;
       if (previousEnsureSpan) (globalThis as any).__op_trace_ensure_span = previousEnsureSpan;
       else delete (globalThis as any).__op_trace_ensure_span;
+      if (previousCurrent) (globalThis as any).__op_trace_current = previousCurrent;
+      else delete (globalThis as any).__op_trace_current;
       if (previousEnter) (globalThis as any).__op_trace_enter = previousEnter;
       else delete (globalThis as any).__op_trace_enter;
     }

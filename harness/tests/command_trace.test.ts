@@ -91,6 +91,11 @@ function installOps() {
   g.__op_trace_start_root = () => { throw new Error("legacy trace root API should not be used"); };
   g.__op_trace_enter = (optsJson: string) => {
     const opts = JSON.parse(optsJson || "{}");
+    if (!rows.has(opts.id)) {
+      if (!opts.rootId || !rows.has(opts.rootId)) return null;
+      currentTrace = { id: opts.id, traceId: opts.rootId, rootId: opts.rootId, parentId: opts.id };
+      return JSON.stringify(currentTrace);
+    }
     currentTrace = { id: opts.id, traceId: opts.rootId, rootId: opts.rootId, parentId: opts.id };
     return JSON.stringify(currentTrace);
   };
@@ -118,5 +123,25 @@ describe("command tracing", () => {
     expect(finished.map((row) => row.id)).toEqual(["command:unknown-test-command:trace:1"]);
     expect(finished.every((row) => row.status === "error")).toBe(true);
     expect(currentTrace).toBeNull();
+  });
+
+  test("falls back to the command root when trace_enter cannot see the command span", async () => {
+    const originalEnsureSpan = (globalThis as any).__op_trace_ensure_span;
+    (globalThis as any).__op_trace_ensure_span = (optsJson: string) => {
+      const span = JSON.parse(optsJson) as Span;
+      spans.set(span.id, span);
+    };
+    try {
+      const result = await dispatch({ command: "llm-stream-accumulate", chatId: "chat1", state: {}, events: [] } as any);
+
+      expect(result).toEqual({ ok: true, value: expect.any(Object) });
+      expect(roots.get("chattrace:chat1")?.kind).toBe("chat");
+      expect(spans.has("command:llm-stream-accumulate:trace:1")).toBe(true);
+      expect(currentTrace).toBeNull();
+      expect(finished.some((row) => row.id === "command:llm-stream-accumulate:trace:1" && row.status === "ok")).toBe(true);
+      expect(finished.some((row) => row.id === "chattrace:chat1")).toBe(false);
+    } finally {
+      (globalThis as any).__op_trace_ensure_span = originalEnsureSpan;
+    }
   });
 });

@@ -287,7 +287,8 @@ export async function startRunJSTraceRoot(parentId: string | null, data: Record<
   if (plan.activeId !== plan.rootId) await host.ensureTraceSpan(JSON.stringify(plan.active));
   const raw = await host.enterTrace(JSON.stringify({ id: plan.activeId, rootId: plan.rootId }));
   const entered = raw ? JSON.parse(raw) : null;
-  if (activeRunJSContext && (entered?.id || entered?.traceId || entered?.rootId)) activeRunJSContext.traceId = entered.id || entered.traceId || entered.rootId;
+  if (!entered) return null;
+  if (activeRunJSContext && (entered.id || entered.traceId || entered.rootId)) activeRunJSContext.traceId = entered.id || entered.traceId || entered.rootId;
   return entered;
 }
 export const startTraceRoot = startRunJSTraceRoot;

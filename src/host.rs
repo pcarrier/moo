@@ -1053,6 +1053,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn trace_roots_sql_only_selects_null_parent_rows() {
         let sql = ch_latest_trace_rows_sql(
             "moo_traces",

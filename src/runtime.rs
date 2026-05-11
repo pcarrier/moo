@@ -1359,19 +1359,32 @@ fn op_trace_enter(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
     let row = match host::trace_get(id) {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            throw(scope, &format!("trace_enter target not found: {id}"));
-            return;
-        }
+        Ok(row) => row,
         Err(e) => {
             throw(scope, &format!("trace_enter: {e}"));
             return;
         }
     };
-    let root_id = requested_root_id.unwrap_or_else(|| row.root_id.clone());
-    let active_id = id.to_string();
-    let is_open = row.status == "running";
+    let fallback_root = requested_root_id.as_deref().and_then(|root_id| {
+        host::trace_get(root_id)
+            .ok()
+            .flatten()
+            .map(|_| root_id.to_string())
+    });
+    let (root_id, active_id, is_open) = match row {
+        Some(row) => (
+            requested_root_id.unwrap_or_else(|| row.root_id.clone()),
+            id.to_string(),
+            row.status == "running",
+        ),
+        None => match fallback_root {
+            Some(root_id) => (root_id, id.to_string(), true),
+            None => {
+                set_string_return(scope, &mut rv, "null");
+                return;
+            }
+        },
+    };
     TRACE_STATE.with(|cell| {
         let previous = cell.borrow_mut().take();
         finish_open_trace_state(previous, "replaced");
@@ -2222,6 +2235,59 @@ globalThis.main = () => {
             "{}",
         );
         assert_eq!(report.result.as_deref(), Ok("\"null\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trace_enter_missing_target_attaches_to_requested_root() {
+        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "moo-runtime-trace-enter-missing-{}-{}",
+            std::process::id(),
+            crate::util::now_ms(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("store.sqlite");
+        crate::host::install_fresh(db_path.to_str().unwrap()).unwrap();
+
+        init_v8();
+        let mut isolate = v8::Isolate::new(Default::default());
+        isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
+
+        let source = r#"
+globalThis.main = () => {
+  __op_trace_ensure_root(JSON.stringify({ id: 'chattrace:missing', chatId: 'missing', kind: 'chat', name: 'chat missing', startedNs: 5_000_000, status: 'running' }));
+  const entered = JSON.parse(__op_trace_enter(JSON.stringify({ id: 'command:missing:1', rootId: 'chattrace:missing' })));
+  const mark = __op_trace_insert(JSON.stringify({ kind: 'mark', name: 'checkpoint', status: 'ok', data: { message: 'inside' } }));
+  return {
+    entered,
+    rows: JSON.parse(__op_trace_events(JSON.stringify({ parentId: 'chattrace:missing' }))),
+    mark: JSON.parse(__op_trace_get(JSON.stringify({ id: mark })))
+  };
+};
+"#;
+        let report = run_js_report_in(&mut isolate, source, "{}");
+        let result_str = report.result.unwrap();
+        assert!(
+            result_str.starts_with('{'),
+            "unexpected result: {result_str}"
+        );
+        let out: Value = serde_json::from_str(&result_str).unwrap();
+        assert_eq!(
+            out.pointer("/entered/id").and_then(Value::as_str),
+            Some("command:missing:1")
+        );
+        assert_eq!(
+            out.pointer("/mark/parentId").and_then(Value::as_str),
+            Some("chattrace:missing")
+        );
+        let rows = out.get("rows").and_then(Value::as_array).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name").and_then(Value::as_str),
+            Some("checkpoint")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
