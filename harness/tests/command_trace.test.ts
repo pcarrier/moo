@@ -33,6 +33,7 @@ function installOps() {
   g.__op_http_stream_close = () => {};
   g.__op_fs_read = () => { throw new Error("unexpected read"); };
   g.__op_fs_write = () => {};
+  g.__op_fs_delete = () => {};
   g.__op_fs_mkdir = () => {};
   g.__op_fs_list = () => [];
   g.__op_fs_glob = () => [];

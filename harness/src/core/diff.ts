@@ -19,12 +19,13 @@ type DiffAnchor = { oldIndex: number; newIndex: number };
 type UniqueLineInfo = { oldCount: number; oldIndex: number; newCount: number; newIndex: number };
 type UnifiedDiffBody = { lines: string[]; added: number; removed: number };
 
-export function unifiedDiffWithStats(path: string, before: string | null, after: string): { diff: string; stats: DiffStats } {
+export function unifiedDiffWithStats(path: string, before: string | null, after: string | null): { diff: string; stats: DiffStats } {
   const oldLines = splitLinesForDiff(before ?? "");
-  const newLines = splitLinesForDiff(after);
+  const newLines = splitLinesForDiff(after ?? "");
   const ops = patienceLineDiff(oldLines, newLines);
   const from = before == null ? "/dev/null" : "a/" + path;
-  const header = ["--- " + from, "+++ b/" + path];
+  const to = after == null ? "/dev/null" : "b/" + path;
+  const header = ["--- " + from, "+++ " + to];
   const body = unifiedDiffBody(ops, DIFF_CONTEXT_LINES);
 
   if (body.added === 0 && body.removed === 0) {

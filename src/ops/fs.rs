@@ -13,6 +13,7 @@ use crate::runtime::{install_fn, throw};
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_fs_read", op_fs_read)?;
     install_fn(scope, "__op_fs_write", op_fs_write)?;
+    install_fn(scope, "__op_fs_delete", op_fs_delete)?;
     install_fn(scope, "__op_fs_mkdir", op_fs_mkdir)?;
     install_fn(scope, "__op_fs_list", op_fs_list)?;
     install_fn(scope, "__op_fs_glob", op_fs_glob)?;
@@ -58,6 +59,20 @@ fn op_fs_write(
     }
     if let Err(e) = fs::write(&path, content.as_bytes()) {
         throw(scope, &format!("fs_write {path}: {e}"));
+    }
+}
+
+fn op_fs_delete(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if !required_args(scope, &args, 1, "fs_delete requires (path)") {
+        return;
+    }
+    let path = args.get(0).to_rust_string_lossy(scope);
+    if let Err(e) = fs::remove_file(&path) {
+        throw(scope, &format!("fs_delete {path}: {e}"));
     }
 }
 

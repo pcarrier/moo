@@ -42,6 +42,7 @@ let now = 1_000;
 (globalThis as any).__op_http_stream_close = () => {};
 (globalThis as any).__op_fs_read = () => { throw new Error("unexpected read"); };
 (globalThis as any).__op_fs_write = () => {};
+(globalThis as any).__op_fs_delete = () => {};
 (globalThis as any).__op_fs_mkdir = () => {};
 (globalThis as any).__op_fs_list = () => [];
 (globalThis as any).__op_fs_glob = () => [];

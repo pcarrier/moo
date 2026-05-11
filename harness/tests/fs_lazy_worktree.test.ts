@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 const dirs = new Map<string, string[]>();
 const stats = new Map<string, { kind: string; size: number; mtime: number }>();
 const refs = new Map<string, string>();
+const files = new Map<string, string>();
 const procCalls: Array<{ cmd: string; args?: string[]; cwd?: string }> = [];
 
 function normalize(path: string): string {
@@ -13,6 +14,17 @@ function addDir(path: string, names: string[] = []) {
   const normalized = normalize(path);
   dirs.set(normalized, names);
   stats.set(normalized, { kind: "dir", size: 0, mtime: 0 });
+}
+
+function addFile(path: string, content: string) {
+  const normalized = normalize(path);
+  files.set(normalized, content);
+  stats.set(normalized, { kind: "file", size: content.length, mtime: 0 });
+  const slash = normalized.lastIndexOf("/");
+  const parent = slash > 0 ? normalized.slice(0, slash) : "/";
+  const name = normalized.slice(slash + 1);
+  const names = dirs.get(parent);
+  if (names && !names.includes(name)) names.push(name);
 }
 
 (globalThis as any).__op_env_get = (name: string) => name === "HOME" ? "/home/test" : null;
@@ -45,8 +57,17 @@ function addDir(path: string, names: string[] = []) {
 (globalThis as any).__op_fs_stat = (path: string) => stats.get(normalize(path)) ?? null;
 (globalThis as any).__op_fs_canonical = (path: string) => normalize(path);
 (globalThis as any).__op_fs_mkdir = (path: string) => addDir(path, []);
-(globalThis as any).__op_fs_read = () => { throw new Error("unexpected read"); };
-(globalThis as any).__op_fs_write = () => {};
+(globalThis as any).__op_fs_read = (path: string) => {
+  const normalized = normalize(path);
+  if (!files.has(normalized)) throw new Error("unexpected read");
+  return files.get(normalized) ?? "";
+};
+(globalThis as any).__op_fs_write = (path: string, content: string) => addFile(path, content);
+(globalThis as any).__op_fs_delete = (path: string) => {
+  const normalized = normalize(path);
+  if (!files.delete(normalized)) throw new Error("not found");
+  stats.delete(normalized);
+};
 (globalThis as any).__op_fs_glob = () => [];
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
@@ -83,6 +104,7 @@ describe("fsListCommand", () => {
     dirs.clear();
     stats.clear();
     refs.clear();
+    files.clear();
     procCalls.length = 0;
     addDir("/repo", [".git"]);
     addDir("/repo/.git", []);
@@ -121,6 +143,7 @@ describe("recentChatPathsCommand", () => {
     dirs.clear();
     stats.clear();
     refs.clear();
+    files.clear();
     procCalls.length = 0;
     addDir("/repo", [".git"]);
     addDir("/repo/.git", []);
@@ -159,10 +182,68 @@ describe("recentChatPathsCommand", () => {
 
 
 describe("filesystem API", () => {
-  test("does not expose patch helpers", async () => {
+  beforeEach(() => {
+    dirs.clear();
+    stats.clear();
+    refs.clear();
+    files.clear();
+    procCalls.length = 0;
+    addDir("/repo", []);
+  });
+
+  test("exposes applyPatch without legacy patch helper", async () => {
     expect("patch" in moo.fs).toBe(false);
+    expect("applyPatch" in moo.fs).toBe(true);
 
     const workspace = await moo.workspace.current({ root: "/repo" });
     expect("patch" in workspace.fs).toBe(false);
+    expect("applyPatch" in workspace.fs).toBe(true);
+  });
+
+  test("applies create, update, and delete patches within scoped workspace", async () => {
+    const workspace = await moo.workspace.current({ root: "/repo" });
+
+    await expect(workspace.fs.applyPatch({
+      operation_type: "create_file",
+      path: "src/example.txt",
+      diff: "@@ -0,0 +1,2 @@\n+hello\n+world\n",
+    })).resolves.toMatchObject({ status: "completed" });
+    expect(files.get("/repo/src/example.txt")).toBe("hello\nworld\n");
+
+    await expect(workspace.fs.applyPatch({
+      operation_type: "update_file",
+      path: "src/example.txt",
+      diff: "@@ -1,2 +1,2 @@\n hello\n-world\n+moo\n",
+    })).resolves.toMatchObject({ status: "completed" });
+    expect(files.get("/repo/src/example.txt")).toBe("hello\nmoo\n");
+
+    await expect(workspace.fs.applyPatch({
+      operation_type: "delete_file",
+      path: "src/example.txt",
+    })).resolves.toMatchObject({ status: "completed" });
+    expect(files.has("/repo/src/example.txt")).toBe(false);
+  });
+
+  test("returns apply_patch failures for invalid paths and mismatched hunks", async () => {
+    const workspace = await moo.workspace.current({ root: "/repo" });
+    addFile("/repo/example.txt", "alpha\n");
+
+    await expect(workspace.fs.applyPatch({
+      operation_type: "update_file",
+      path: "../example.txt",
+      diff: "",
+    })).resolves.toMatchObject({
+      status: "failed",
+      output: "apply_patch paths must stay within the workspace root.",
+    });
+
+    await expect(workspace.fs.applyPatch({
+      operation_type: "update_file",
+      path: "example.txt",
+      diff: "@@ -1 +1 @@\n-beta\n+gamma\n",
+    })).resolves.toMatchObject({
+      status: "failed",
+    });
+    expect(files.get("/repo/example.txt")).toBe("alpha\n");
   });
 });

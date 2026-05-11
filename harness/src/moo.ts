@@ -1,7 +1,8 @@
 import * as host from "./host_ops";
-import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic } from "./types";
+import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, ApplyPatchInput, ApplyPatchResult } from "./types";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
+import { ApplyPatchError, applyUnifiedDiff } from "./core/applyPatch";
 import { encodeObject, stringBytes, term, validate } from "./core/terms";
 import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
@@ -631,7 +632,7 @@ async function displayPathForChat(chatId: string, path: string): Promise<string>
   return normalizedPath;
 }
 
-async function recordFileWriteDiff(path: string, before: string | null, after: string): Promise<void> {
+async function recordFileWriteDiff(path: string, before: string | null, after: string | null): Promise<void> {
   const chatId = activeChatId;
   if (!chatId) return;
   const displayPath = await displayPathForChat(chatId, path);
@@ -1203,6 +1204,118 @@ async function resolveActiveCwd(cwd?: string | null): Promise<string | null> {
   return raw ? resolveWorkspacePath(root, raw) : root;
 }
 
+function normalizeAbsolutePosixPath(candidate: string): string {
+  const parts: string[] = [];
+  for (const part of candidate.split("/")) {
+    if (part === "" || part === ".") continue;
+    parts.push(part);
+  }
+  return parts.length === 0 ? "/" : "/" + parts.join("/");
+}
+
+function resolveApplyPatchPaths(rawPath: string, workingDirectory: string | null): [string, string] {
+  const candidate = String(rawPath ?? "").trim();
+  if (!candidate) throw new ApplyPatchError("apply_patch paths must not be empty.");
+  if (candidate.includes("\\")) throw new ApplyPatchError("apply_patch paths must use forward slashes.");
+  if (candidate.startsWith("/")) {
+    const normalized = normalizeAbsolutePosixPath(candidate);
+    return [normalized, normalized];
+  }
+  const parts: string[] = [];
+  for (const part of candidate.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") throw new ApplyPatchError("apply_patch paths must stay within the workspace root.");
+    parts.push(part);
+  }
+  if (parts.length === 0) throw new ApplyPatchError("apply_patch paths must point to a file inside the workspace root.");
+  const display = parts.join("/");
+  return [display, workingDirectory ? joinPath(workingDirectory, display) : display];
+}
+
+function applyPatchResult(status: string, output: string): ApplyPatchResult {
+  return { tool_name: "apply_patch", status, output };
+}
+
+async function executeApplyPatch(input: ApplyPatchInput, workingDirectory: string | null): Promise<ApplyPatchResult> {
+  let display: string;
+  let absolute: string;
+  try {
+    [display, absolute] = resolveApplyPatchPaths(input.path, workingDirectory);
+  } catch (e) {
+    return applyPatchResult("failed", (e as Error).message);
+  }
+
+  const operation = String(input.operation_type || "");
+  if (operation === "create_file") {
+    if ((await fs.stat(absolute)) !== null) {
+      return applyPatchResult("failed", "Cannot create '" + display + "' because it already exists.");
+    }
+    let content: string;
+    try {
+      content = applyUnifiedDiff("", input.diff ?? "");
+    } catch (e) {
+      return applyPatchResult("failed", "Could not build '" + display + "' from the patch: " + (e as Error).message);
+    }
+    try {
+      await fs.write(absolute, content);
+    } catch (e) {
+      return applyPatchResult("failed", "Could not write '" + display + "': " + (e as Error).message);
+    }
+    return applyPatchResult("completed", "Applied patch to create '" + display + "'.");
+  }
+
+  if (operation === "update_file") {
+    const stat = await fs.stat(absolute);
+    if (stat === null) {
+      return applyPatchResult("failed", "Could not read '" + display + "' before applying the patch: File not found");
+    }
+    if (stat.kind === "dir") {
+      return applyPatchResult("failed", "Could not read '" + display + "' before applying the patch: " + absolute + " is a directory");
+    }
+    let original: string;
+    try {
+      original = await fs.read(absolute);
+    } catch (e) {
+      return applyPatchResult("failed", "Could not read '" + display + "' before applying the patch: " + (e as Error).message);
+    }
+    let content: string;
+    try {
+      content = applyUnifiedDiff(original, input.diff ?? "");
+    } catch (e) {
+      return applyPatchResult("failed", "Could not apply the patch to '" + display + "': " + (e as Error).message);
+    }
+    try {
+      await fs.write(absolute, content);
+    } catch (e) {
+      return applyPatchResult("failed", "Could not write '" + display + "': " + (e as Error).message);
+    }
+    return applyPatchResult("completed", "Applied patch to update '" + display + "'.");
+  }
+
+  if (operation === "delete_file") {
+    if ((await fs.stat(absolute)) === null) {
+      return applyPatchResult("failed", "Cannot delete '" + display + "' because it does not exist.");
+    }
+    let before: string | null = null;
+    try {
+      before = await fs.read(absolute);
+    } catch (_) {
+      before = null;
+    }
+    try {
+      await traceObserved("moo.fs.delete", { path: input.path, resolved: absolute }, () => host.deleteFile(absolute));
+    } catch (e) {
+      return applyPatchResult("failed", "Could not delete '" + display + "': " + (e as Error).message);
+    }
+    if (before !== null) {
+      await traceObserved("moo.fs.record_diff", { path: input.path, resolved: absolute }, () => recordFileWriteDiff(absolute, before, null));
+    }
+    return applyPatchResult("completed", "Applied patch to delete '" + display + "'.");
+  }
+
+  return applyPatchResult("failed", "apply_patch received an unknown operation type: " + input.operation_type);
+}
+
 const fs: Moo["fs"] = {
   async read(path) {
     const resolved = await resolveActivePath(path);
@@ -1251,6 +1364,10 @@ const fs: Moo["fs"] = {
   async ensureDir(path) {
     const resolved = await resolveActivePath(path);
     await traceObserved("moo.fs.ensureDir", { path, resolved }, () => host.makeDir(resolved), () => ({ path: resolved }));
+  },
+  async applyPatch(input) {
+    const root = await activeScratchRoot();
+    return await traceObserved("moo.fs.applyPatch", { path: input?.path, operation_type: input?.operation_type, root }, () => executeApplyPatch(input, root), (value) => ({ status: value.status, output: value.output ?? null }));
   },
 };
 
@@ -1329,6 +1446,7 @@ const workspace: Moo["workspace"] = {
         canonical: (path = ".") => fs.canonical(resolveWorkspacePath(root, path)),
         exists: (path = ".") => fs.exists(resolveWorkspacePath(root, path)),
         ensureDir: (path = ".") => fs.ensureDir(resolveWorkspacePath(root, path)),
+        applyPatch: (input) => executeApplyPatch(input, root),
       },
       proc: {
         run: (input: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }) => proc.run({ ...input, cwd: input.cwd ? resolveWorkspacePath(root, input.cwd) : root }),

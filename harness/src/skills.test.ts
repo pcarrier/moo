@@ -80,6 +80,9 @@ globalThis.__op_fs_read = (path: string) => {
 globalThis.__op_fs_write = (path: string, content: string) => {
   files.set(normalizePath(path), { content, mtime: now });
 };
+globalThis.__op_fs_delete = (path: string) => {
+  files.delete(normalizePath(path));
+};
 globalThis.__op_fs_mkdir = () => {};
 globalThis.__op_fs_list = (path: string) => dirChildren(path);
 globalThis.__op_fs_glob = () => [];

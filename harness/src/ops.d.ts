@@ -74,6 +74,7 @@ declare global {
     | { type: "construct"; result: Array<[string, string, string, string]> };
   function __op_fs_read(path: string): string;
   function __op_fs_write(path: string, content: string): void;
+  function __op_fs_delete(path: string): void;
   function __op_fs_mkdir(path: string): void;
   function __op_fs_list(path: string): string[];
   function __op_fs_glob(pattern: string): string[];

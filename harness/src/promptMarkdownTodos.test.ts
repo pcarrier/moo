@@ -16,9 +16,10 @@ describe("filesystem editing prompt", () => {
   test("documents readLines and applyPatch guidance", () => {
     expect(prompt).toContain("readLines(path:string,ranges:[number,number][],opts?:{numbered?:boolean})");
     expect(prompt).toContain("1-based inclusive ranges; sorted/collapsed overlaps");
-    expect(prompt).toContain("no `applyPatch` helper in runJS");
-    expect(prompt).toContain("pass patch text via `args`");
-    expect(prompt).toContain("git apply --check <file>");
-    expect(prompt).toContain("git apply <file>");
+    expect(prompt).toContain("applyPatch({operation_type,path,diff?})");
+    expect(prompt).toContain("operation_type=create_file|update_file|delete_file");
+    expect(prompt).toContain("failures return status=\'failed\' plus output");
+    expect(prompt).toContain("check result.status/output and stop on failed");
+    expect(prompt).toContain("prefer fs.applyPatch for create/update/delete patch operations");
   });
 });
