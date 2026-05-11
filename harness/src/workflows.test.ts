@@ -173,7 +173,7 @@ describe("workflows", () => {
       const s = w.state;
       return w.flow(
         w.step("approve").ui.ask({ spec: { title: "Approve", fields: [{ name: "ok", type: "boolean" }] }, context: { plan: "ship" } }).out(s.approval),
-        w.stopUnless(s.approval.ok, "rejected"),
+        w.when(w.not(s.approval.ok), w.stop("rejected")),
         w.done({ ok: s.approval.ok }),
       );
     }) });
@@ -188,6 +188,23 @@ describe("workflows", () => {
     expect(done.status).toBe("done");
     expect(done.output).toEqual({ ok: true });
     expect((done.state as any).approval).toEqual({ ok: true });
+  });
+
+  test("stop cancels run and generic op backs expression helpers", async () => {
+    const api = createWorkflowsApi(deps());
+    await api.save({ definition: createWorkflowDsl("stopper", (w) => w.flow(
+      w.set(w.state.ok, w.op("eq", w.input.answer, "yes")),
+      w.when(w.not(w.state.ok), w.stop("nope")),
+      w.done({ ok: w.state.ok }),
+    )) });
+
+    const cancelled = await api.start("stopper", { input: { answer: "no" } });
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.output).toBeUndefined();
+
+    const done = await api.start("stopper", { input: { answer: "yes" } });
+    expect(done.status).toBe("done");
+    expect(done.output).toEqual({ ok: true });
   });
 
   test("failed step is inspectable and retry invalidates from failure", async () => {

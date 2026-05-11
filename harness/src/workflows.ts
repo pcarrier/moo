@@ -28,7 +28,6 @@ type ExecSignal =
   | { kind: "wait"; stepPath: string }
   | { kind: "done"; output: unknown }
   | { kind: "break" }
-  | { kind: "goto"; target: string }
   | { kind: "stop"; reason: string };
 
 type ExecCtx = {
@@ -172,10 +171,10 @@ export function createWorkflowDsl(id: string, build: ((w: any) => unknown) | Wor
     return normalizeWorkflowIr({ kind: "workflow", id, body: normalizeBody(Array.isArray(build) ? build : [build]) });
   }
   if (typeof build !== "function") throw new Error("moo.workflow requires a builder function or workflow IR");
+  const op = (name: string, ...args: unknown[]) => ({ op: name, args });
   const w: any = {
     input: makeRefProxy("input"),
     state: makeRefProxy("state"),
-    chatId: { ref: "chatId" },
     flow: (...nodes: unknown[]) => ({ kind: "flow", body: normalizeBody(nodes) }),
     step: (stepId: string) => createStepBuilder(stepId),
     loop: (loopId: string, optsOrFirst?: unknown, ...rest: unknown[]) => {
@@ -186,14 +185,14 @@ export function createWorkflowDsl(id: string, build: ((w: any) => unknown) | Wor
     },
     when: (test: unknown, ...nodes: unknown[]) => ({ kind: "when", test, body: normalizeBody(nodes) }),
     break: (test?: unknown) => ({ kind: "break", ...(test === undefined ? {} : { test }) }),
-    goto: (target: string) => ({ kind: "goto", target }),
     set: (ref: WorkflowRef, value: unknown, idValue?: string) => ({ kind: "set", ...(idValue ? { id: idValue } : {}), ref, value }),
-    stopUnless: (test: unknown, reason?: string) => ({ kind: "stopUnless", test, reason }),
+    stop: (reason?: string) => ({ kind: "stop", reason }),
     done: (value?: unknown) => ({ kind: "done", value }),
-    eq: (a: unknown, b: unknown) => ({ op: "eq", args: [a, b] }),
-    not: (value: unknown) => ({ op: "not", args: [value] }),
-    concat: (...args: unknown[]) => ({ op: "concat", args }),
-    trim: (value: unknown) => ({ op: "trim", args: [value] }),
+    op,
+    eq: (a: unknown, b: unknown) => op("eq", a, b),
+    not: (value: unknown) => op("not", value),
+    concat: (...args: unknown[]) => op("concat", ...args),
+    trim: (value: unknown) => op("trim", value),
   };
   const built = build(w);
   const node = nodeFrom(built);
@@ -247,9 +246,8 @@ function truthy(value: unknown): boolean {
   return !!value;
 }
 
-function evalValue(value: unknown, ctx: Pick<ExecCtx, "input" | "state"> & { chatId?: string | null }): unknown {
+function evalValue(value: unknown, ctx: Pick<ExecCtx, "input" | "state">): unknown {
   if (isRef(value)) {
-    if (value.ref === "chatId") return ctx.chatId ?? null;
     if (value.ref === "input") return ctx.input;
     if (value.ref.startsWith("input.")) return getPath(ctx.input, value.ref.slice("input.".length));
     if (value.ref === "state") return ctx.state;
@@ -610,23 +608,7 @@ function normalizeAgentArgs(args: unknown): JsonRecord {
 }
 
 async function executeBody(ctx: ExecCtx, nodes: WorkflowNode[]): Promise<void> {
-  let index = 0;
-  while (index < nodes.length) {
-    const node = nodes[index]!;
-    try {
-      await executeNode(ctx, node);
-      index += 1;
-    } catch (signal) {
-      if (isSignal(signal, "goto")) {
-        const targetIndex = nodes.findIndex((candidate) => (candidate as any).id === signal.target);
-        if (targetIndex >= 0) {
-          index = targetIndex;
-          continue;
-        }
-      }
-      throw signal;
-    }
-  }
+  for (const node of nodes) await executeNode(ctx, node);
 }
 
 async function executeNode(ctx: ExecCtx, node: WorkflowNode): Promise<void> {
@@ -647,11 +629,7 @@ async function executeNode(ctx: ExecCtx, node: WorkflowNode): Promise<void> {
     if (node.test === undefined || truthy(evalValue(node.test, { input: ctx.input, state: ctx.state }))) throw { kind: "break" } as ExecSignal;
     return;
   }
-  if (node.kind === "goto") throw { kind: "goto", target: node.target } as ExecSignal;
-  if (node.kind === "stopUnless") {
-    if (!truthy(evalValue(node.test, { input: ctx.input, state: ctx.state }))) throw { kind: "stop", reason: node.reason || "workflow stopped" } as ExecSignal;
-    return;
-  }
+  if (node.kind === "stop") throw { kind: "stop", reason: node.reason || "workflow stopped" } as ExecSignal;
   if (node.kind === "done") throw { kind: "done", output: evalValue(node.value, { input: ctx.input, state: ctx.state }) } as ExecSignal;
   if (node.kind === "loop") {
     const max = Math.max(1, Math.floor(Number(node.opts?.max ?? DEFAULT_LOOP_MAX) || DEFAULT_LOOP_MAX));

@@ -45,7 +45,7 @@ export default moo.workflow('linear', w => {
       })
       .out(s.approval),
 
-    w.stopUnless(s.approval.ok, 'Plan rejected.'),
+    w.when(w.not(s.approval.ok), w.stop('Plan rejected.')),
 
     w.loop('checks', { max: 5 },
       w.step('check')
@@ -98,11 +98,11 @@ node.out(w.state.x)
 w.loop(id, opts, ...nodes)
 w.when(expr, ...nodes)
 w.break(expr)
-w.goto(id)
 w.set(ref, value)
-w.stopUnless(expr, reason)
+w.stop(reason)
 w.done(value)
 
+w.op(name, ...args)       // primitive expression form
 w.eq(a, b)
 w.not(x)
 w.concat(...xs)

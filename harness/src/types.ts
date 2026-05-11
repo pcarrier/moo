@@ -585,9 +585,8 @@ export type WorkflowNode =
   | { kind: "loop"; id: string; opts?: { max?: number }; body: WorkflowNode[] }
   | { kind: "when"; test: unknown; body: WorkflowNode[] }
   | { kind: "break"; test?: unknown }
-  | { kind: "goto"; target: string }
   | { kind: "set"; id?: string; ref: WorkflowRef; value: unknown }
-  | { kind: "stopUnless"; test: unknown; reason?: string }
+  | { kind: "stop"; reason?: string }
   | { kind: "done"; value?: unknown };
 export type WorkflowIr = {
   kind: "workflow";
