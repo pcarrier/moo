@@ -30,7 +30,6 @@ static DB: Mutex<Option<Connection>> = Mutex::new(None);
 static DB_INIT_LOCK: Mutex<()> = Mutex::new(());
 static TRACE_BACKEND: Mutex<Option<ClickHouseTraceClient>> = Mutex::new(None);
 static TRACE_INITIALIZING: Mutex<Option<settings::TraceConfig>> = Mutex::new(None);
-static NEXT_TRACE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE_STATE_VERSION: AtomicU64 = AtomicU64::new(1);
 static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQueue::start);
@@ -194,17 +193,6 @@ impl ClickHouseTraceClient {
             "output_hash": row.output_hash, "error_hash": row.error_hash,
             "data_json": row.data_json, "data_hash": row.data_hash, "_version": version,
         })
-    }
-
-    fn event_json(
-        span_id: &str,
-        id: i64,
-        ts_ns: i64,
-        level: &str,
-        message: &str,
-        data_hash: Option<&str>,
-    ) -> serde_json::Value {
-        serde_json::json!({ "id": id as u64, "span_id": span_id, "ts_ns": ts_ns, "level": level, "message": message, "data_hash": data_hash })
     }
 
     fn blob_json(
@@ -409,77 +397,6 @@ impl ClickHouseTraceClient {
             }
         }
         Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn roots(
-        &self,
-        limit: i64,
-        before_ns: Option<i64>,
-        query: Option<&str>,
-        started_after_ns: Option<i64>,
-        started_before_ns: Option<i64>,
-        min_duration_ns: Option<i64>,
-        max_duration_ns: Option<i64>,
-        kind: Option<&str>,
-        status: Option<&str>,
-        scope: Option<&str>,
-    ) -> Result<Vec<TraceRow>, String> {
-        let limit = limit.clamp(1, 500);
-        let mut clauses = vec![TRACE_ROOT_FILTER_SQL.to_string()];
-        let mut having_clauses: Vec<String> = Vec::new();
-        if let Some(before_ns) = before_ns {
-            clauses.push(format!("started_ns < {before_ns}"));
-        }
-        if let Some(started_after_ns) = started_after_ns {
-            clauses.push(format!("started_ns >= {started_after_ns}"));
-        }
-        if let Some(started_before_ns) = started_before_ns {
-            clauses.push(format!("started_ns <= {started_before_ns}"));
-        }
-        let min_duration_ns = min_duration_ns.unwrap_or(0).max(0);
-        let max_duration_ns = max_duration_ns.unwrap_or(i64::MAX);
-        let now = now_ns();
-        if min_duration_ns > 0 {
-            having_clauses.push(format!(
-                "(ifNull(ended_ns, {now}) - started_ns) >= {min_duration_ns}"
-            ));
-        }
-        if max_duration_ns < i64::MAX {
-            having_clauses.push(format!(
-                "(ifNull(ended_ns, {now}) - started_ns) <= {max_duration_ns}"
-            ));
-        }
-        let text = query.unwrap_or("").trim();
-        if !text.is_empty() {
-            clauses.push(ch_text_filter(&["name", "id", "ifNull(chat_id, '')"], text));
-        }
-        let kind = kind.unwrap_or("").trim();
-        if !kind.is_empty() && kind != "any" {
-            if kind == "chat" {
-                clauses.push(TRACE_CHAT_KIND_FILTER_SQL.to_string());
-            } else {
-                clauses.push(format!("kind = {}", ch_sql_string(kind)));
-            }
-        }
-        let status = status.unwrap_or("").trim();
-        if !status.is_empty() && status != "any" {
-            having_clauses.push(format!("status = {}", ch_sql_string(status)));
-        }
-        match scope.unwrap_or("").trim() {
-            "" | "any" => {}
-            "chat" => clauses.push("chat_id IS NOT NULL".to_string()),
-            "global" => clauses.push("chat_id IS NULL".to_string()),
-            other => return Err(format!("invalid trace root scope: {other}")),
-        }
-        self.select_latest_trace_rows(
-            &format!(
-                "WHERE {} ORDER BY started_ns DESC LIMIT {limit}",
-                clauses.join(" AND ")
-            ),
-            Some(&having_clauses.join(" AND ")),
-            true,
-        )
     }
 
     fn search(&self, query: &TraceSearch, limit: i64, now: i64) -> Result<Vec<TraceRow>, String> {
@@ -701,14 +618,6 @@ fn brotli_decompress(input: &[u8]) -> Result<Vec<u8>, String> {
 enum TraceWrite {
     Span(Box<TraceRow>),
     State(Box<TraceRow>),
-    Event {
-        span_id: String,
-        id: i64,
-        ts_ns: i64,
-        level: String,
-        message: String,
-        data_hash: Option<String>,
-    },
     Blob {
         hash: String,
         kind: String,
@@ -774,27 +683,11 @@ fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
     };
     let mut spans = Vec::new();
     let mut states = Vec::new();
-    let mut events = Vec::new();
     let mut blobs = Vec::new();
     for write in writes {
         match write {
             TraceWrite::Span(row) => spans.push(ClickHouseTraceClient::span_json(row)),
             TraceWrite::State(row) => states.push(ClickHouseTraceClient::state_json(row)),
-            TraceWrite::Event {
-                span_id,
-                id,
-                ts_ns,
-                level,
-                message,
-                data_hash,
-            } => events.push(ClickHouseTraceClient::event_json(
-                span_id,
-                *id,
-                *ts_ns,
-                level,
-                message,
-                data_hash.as_deref(),
-            )),
             TraceWrite::Blob {
                 hash,
                 kind,
@@ -815,7 +708,6 @@ fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
     client.insert_json_batch(&client.blob_table, &blobs)?;
     client.insert_json_batch(&client.trace_table, &spans)?;
     client.insert_json_batch(&client.state_table, &states)?;
-    client.insert_json_batch(&client.event_table, &events)?;
     Ok(())
 }
 
@@ -870,14 +762,14 @@ fn register_trace_in_flight_write(write: &TraceWrite) {
                     pending_writes: 1,
                 });
         }
-        TraceWrite::Event { .. } | TraceWrite::Blob { .. } => {}
+        TraceWrite::Blob { .. } => {}
     }
 }
 
 fn trace_write_row_id(write: &TraceWrite) -> Option<&str> {
     match write {
         TraceWrite::Span(row) | TraceWrite::State(row) => Some(row.id.as_str()),
-        TraceWrite::Event { .. } | TraceWrite::Blob { .. } => None,
+        TraceWrite::Blob { .. } => None,
     }
 }
 
@@ -1537,7 +1429,6 @@ pub fn install_fresh(db_path: &str) -> Result<(), String> {
         rows.clear();
     }
     NEXT_TRACE_SEQ.store(1, Ordering::Relaxed);
-    NEXT_TRACE_EVENT_ID.store(1, Ordering::Relaxed);
     NEXT_TRACE_STATE_VERSION.store(1, Ordering::Relaxed);
     *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = None;
     Ok(())
@@ -2024,28 +1915,6 @@ pub fn trace_finish(
     row.data_hash = prepared.hash;
     enqueue_trace_write(TraceWrite::State(Box::new(row)))?;
     Ok(true)
-}
-
-pub fn trace_event(
-    span_id: &str,
-    ts_ns: i64,
-    level: &str,
-    message: &str,
-    data_hash: Option<&str>,
-) -> Result<i64, String> {
-    if current_trace_client().is_none() {
-        return Ok(0);
-    }
-    let id = NEXT_TRACE_EVENT_ID.fetch_add(1, Ordering::Relaxed) as i64;
-    enqueue_trace_write(TraceWrite::Event {
-        span_id: span_id.to_string(),
-        id,
-        ts_ns,
-        level: level.to_string(),
-        message: message.to_string(),
-        data_hash: data_hash.map(ToString::to_string),
-    })?;
-    Ok(id)
 }
 
 pub fn trace_get(id: &str) -> Result<Option<TraceRow>, String> {
