@@ -517,7 +517,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   >
                     <div class="settings-grid trace-settings-grid">
                       <Card class="settings-card">
-                        <h2>ClickHouse tracing</h2>
+                        <h2 class="settings-heading-with-badge">ClickHouse tracing <span class="settings-experimental-badge">Experimental</span></h2>
                         <Show when={traceSettings()}>
                           {(trace) => <>
                             <label class="toggle-row">

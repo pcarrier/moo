@@ -214,7 +214,7 @@ describe("settings layout", () => {
     expect(settingsView).toContain("createSignal<V8SettingsValue | null>");
     expect(settingsView).toContain("createSignal<TraceSettingsValue | null>");
     expect(settingsView).toContain('<h2>V8 runtime</h2>');
-    expect(settingsView).toContain('<h2>ClickHouse tracing</h2>');
+    expect(settingsView).toContain('<h2 class="settings-heading-with-badge">ClickHouse tracing <span class="settings-experimental-badge">Experimental</span></h2>');
   });
 
   it("hydrates independent settings as each request completes", () => {
