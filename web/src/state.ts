@@ -2311,6 +2311,7 @@ export function createState() {
     | { view: "skills" }
     | { view: "apps"; instanceId: string | null }
     | { view: "mcp" }
+    | { view: "workflows" }
     | { view: "v8" }
     | { view: "traces"; traceId: string | null; chatId: string | null }
     | { view: "settings" };
@@ -2348,6 +2349,7 @@ export function createState() {
     if (path === "/skills" || path.startsWith("/skills/"))
       return { view: "skills" };
     if (path === "/mcp" || path.startsWith("/mcp/")) return { view: "mcp" };
+    if (path === "/workflows" || path.startsWith("/workflows/")) return { view: "workflows" };
     if (path === "/v8" || path.startsWith("/v8/")) return { view: "v8" };
     if (path === "/traces" || path.startsWith("/traces/")) {
       const parts = path
@@ -2373,6 +2375,7 @@ export function createState() {
       | "skills"
       | "apps"
       | "mcp"
+      | "workflows"
       | "v8"
       | "traces"
       | "settings",
@@ -2394,6 +2397,7 @@ export function createState() {
     if (v === "pointers") return "/pointers";
     if (v === "skills") return "/skills";
     if (v === "mcp") return "/mcp";
+    if (v === "workflows") return "/workflows";
     if (v === "v8") return "/v8";
     if (v === "traces")
       return traceChat
@@ -2443,6 +2447,7 @@ export function createState() {
     | "skills"
     | "apps"
     | "mcp"
+    | "workflows"
     | "v8"
     | "traces"
     | "settings"
@@ -2548,6 +2553,15 @@ export function createState() {
     pushUrl();
   }
 
+  function showWorkflows() {
+    setOpenUiId(null);
+    setOpenUiInstanceId(null);
+    setView("workflows");
+    setFocusedSubject(null);
+    setFocusedGraph(null);
+    pushUrl();
+  }
+
   function showSkills() {
     setOpenUiId(null);
     setOpenUiInstanceId(null);
@@ -2630,6 +2644,12 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
+    } else if (loc.view === "workflows") {
+      setView("workflows");
+      setFocusedSubject(null);
+      setFocusedGraph(null);
+      setOpenUiId(null);
+      setOpenUiInstanceId(null);
     } else if (loc.view === "skills") {
       setView("skills");
       setFocusedSubject(null);
@@ -2664,10 +2684,7 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
-      const target =
-        loc.view === "chat"
-          ? (loc.chatId ?? chats()[0]?.chatId ?? null)
-          : (chats()[0]?.chatId ?? null);
+      const target = loc.view === "chat" ? (loc.chatId ?? chats()[0]?.chatId ?? null) : (chats()[0]?.chatId ?? null);
       if (target && target !== chatId()) {
         void selectChat(target, true);
       } else if (!target) {
@@ -5496,6 +5513,7 @@ export function createState() {
         loc.view === "skills" ||
         loc.view === "apps" ||
         loc.view === "mcp" ||
+        loc.view === "workflows" ||
         loc.view === "v8" ||
         loc.view === "traces" ||
         loc.view === "settings"
@@ -5515,6 +5533,7 @@ export function createState() {
         if (loc.view === "new") setView("new");
         else if (loc.view === "apps") setView("apps");
         else if (loc.view === "mcp") setView("mcp");
+        else if (loc.view === "workflows") setView("workflows");
         else if (loc.view === "skills") {
           setView("skills");
           void refreshSkills();
@@ -5680,6 +5699,7 @@ export function createState() {
     showPointers,
     showApps,
     showMcp,
+    showWorkflows,
     showSkills,
     showV8,
     showTraces,

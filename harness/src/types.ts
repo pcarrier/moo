@@ -568,6 +568,107 @@ export type MemoryScope = {
   }): Promise<Quad[]>;
 };
 
+
+export type WorkflowRunStatus = "queued" | "running" | "waiting" | "blocked" | "failed" | "done" | "cancelled";
+export type WorkflowStepStatus = "todo" | "running" | "waiting" | "done" | "failed" | "skipped";
+export type WorkflowEffectKind = "proc.run" | "mcp.call" | "agent.run" | "ui.ask";
+export type WorkflowRef = { ref: string };
+export type WorkflowExpr = WorkflowRef | { op: string; args?: unknown[]; value?: unknown };
+export type WorkflowStepEffect =
+  | { kind: "proc.run"; args?: unknown }
+  | { kind: "mcp.call"; server: string; tool: string; args?: unknown }
+  | { kind: "agent.run"; args?: unknown }
+  | { kind: "ui.ask"; args?: unknown };
+export type WorkflowNode =
+  | { kind: "flow"; id?: string; body: WorkflowNode[] }
+  | { kind: "step"; id: string; effect: WorkflowStepEffect; out?: WorkflowRef }
+  | { kind: "loop"; id: string; opts?: { max?: number }; body: WorkflowNode[] }
+  | { kind: "when"; test: unknown; body: WorkflowNode[] }
+  | { kind: "break"; test?: unknown }
+  | { kind: "goto"; target: string }
+  | { kind: "set"; id?: string; ref: WorkflowRef; value: unknown }
+  | { kind: "stopUnless"; test: unknown; reason?: string }
+  | { kind: "done"; value?: unknown };
+export type WorkflowIr = {
+  kind: "workflow";
+  id: string;
+  title?: string;
+  version?: string;
+  body: WorkflowNode[];
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  metadata?: Record<string, unknown>;
+};
+export type WorkflowDefinitionSummary = {
+  id: string;
+  title?: string;
+  version?: string;
+  hash: string;
+  currentPointer: string;
+  steps: number;
+  uses: { mcp: string[]; proc: string[]; agent: string[]; ui: string[] };
+  updatedAt?: string | null;
+};
+export type WorkflowInspection = WorkflowDefinitionSummary & {
+  definition: WorkflowIr;
+  mermaid: string;
+};
+export type WorkflowStepRun = {
+  id: string;
+  path: string;
+  kind: string;
+  status: WorkflowStepStatus;
+  argsHash?: string | null;
+  outputHash?: string | null;
+  errorHash?: string | null;
+  args?: unknown;
+  output?: unknown;
+  error?: unknown;
+  startedAt?: string | null;
+  endedAt?: string | null;
+};
+export type WorkflowRunSummary = {
+  runId: string;
+  workflowId: string;
+  definitionHash: string;
+  status: WorkflowRunStatus;
+  currentStep?: string | null;
+  chatIds: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+export type WorkflowRunInspection = WorkflowRunSummary & {
+  input: unknown;
+  state: unknown;
+  output?: unknown;
+  events: unknown[];
+  steps: WorkflowStepRun[];
+  definition?: WorkflowIr | null;
+  mermaid: string;
+};
+export type WorkflowSaveArgs = { definition: WorkflowIr; source?: unknown; current?: boolean };
+export type WorkflowStartArgs = { input?: unknown; state?: unknown; chatId?: string | null; autoResume?: boolean };
+export type WorkflowRunFilter = { status?: WorkflowRunStatus; workflowId?: string; chatId?: string };
+export type WorkflowRetryArgs = { from?: string | null; resume?: boolean };
+export type WorkflowForkArgs = { from?: string | null; input?: unknown; state?: unknown; autoResume?: boolean };
+export type MooWorkflowsApi = {
+  save(args: WorkflowSaveArgs): Promise<WorkflowInspection>;
+  list(args?: { includeArchived?: boolean }): Promise<WorkflowDefinitionSummary[]>;
+  inspect(id: string): Promise<WorkflowInspection | null>;
+  runs(args?: WorkflowRunFilter): Promise<WorkflowRunSummary[]>;
+  waiting(args?: { chatId?: string }): Promise<WorkflowRunSummary[]>;
+  inspectRun(runId: string): Promise<WorkflowRunInspection | null>;
+  start(id: string, args?: WorkflowStartArgs): Promise<WorkflowRunInspection>;
+  resume(runId: string): Promise<WorkflowRunInspection>;
+  submit(runId: string, stepPath: string, value: unknown): Promise<WorkflowRunInspection>;
+  cancel(runId: string, reason?: string): Promise<WorkflowRunInspection>;
+  retry(runId: string, args?: WorkflowRetryArgs): Promise<WorkflowRunInspection>;
+  fork(runId: string, args?: WorkflowForkArgs): Promise<WorkflowRunInspection>;
+  linkChat(runId: string, chatId: string): Promise<WorkflowRunInspection>;
+  unlinkChat(runId: string, chatId: string): Promise<WorkflowRunInspection>;
+  renderMermaid(runId: string): Promise<string>;
+};
+
 export type Moo = {
   try: MooTry;
   time: { nowMs(): Promise<number>; nowISO(): Promise<string>; datetime(d?: Date | string | number): Promise<Term>; nowPlus(ms: number): Promise<number> };
@@ -590,6 +691,8 @@ export type Moo = {
     clear(args?: { statuses?: TodoStatus[] }): Promise<AgentTodoState>;
   };
   skills: MooSkillsApi;
+  workflow(id: string, build: ((w: any) => unknown) | WorkflowIr | WorkflowNode[] | WorkflowNode): WorkflowIr;
+  workflows: MooWorkflowsApi;
   pointers: {
     get(name: string): Promise<string | null>;
     set(name: string, target: string): Promise<RefSetReceipt>;

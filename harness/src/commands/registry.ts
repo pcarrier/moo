@@ -95,6 +95,23 @@ import {
 } from "./llm_auth";
 import { messageDeleteCommand, messageRestoreCommand } from "./messages";
 import { skillDownloadCommand, skillGetCommand, skillRefreshCommand, skillRemoveCommand, skillSaveCommand, skillsListCommand } from "./skills";
+import {
+  workflowCancelCommand,
+  workflowForkCommand,
+  workflowInspectCommand,
+  workflowInspectRunCommand,
+  workflowLinkChatCommand,
+  workflowListCommand,
+  workflowMermaidCommand,
+  workflowResumeCommand,
+  workflowRetryCommand,
+  workflowRunCommand,
+  workflowRunsCommand,
+  workflowSaveCommand,
+  workflowSubmitCommand,
+  workflowUnlinkChatCommand,
+  workflowWaitingCommand,
+} from "./workflows";
 
 export type CommandHandler = (input: Input) => unknown | Promise<unknown> | Effect<unknown, unknown>;
 type CommandGroup = { name: string; handlers: Record<string, CommandHandler> };
@@ -195,6 +212,25 @@ const UI_COMMANDS: Record<string, CommandHandler> = {
   "ui-call": uiCallCommand,
 };
 
+
+const WORKFLOW_COMMANDS: Record<string, CommandHandler> = {
+  "workflows-list": workflowListCommand,
+  "workflow-save": workflowSaveCommand,
+  "workflow-inspect": workflowInspectCommand,
+  "workflow-runs": workflowRunsCommand,
+  "workflow-inspect-run": workflowInspectRunCommand,
+  "workflow-waiting": workflowWaitingCommand,
+  "workflow-run": workflowRunCommand,
+  "workflow-resume": workflowResumeCommand,
+  "workflow-submit": workflowSubmitCommand,
+  "workflow-cancel": workflowCancelCommand,
+  "workflow-retry": workflowRetryCommand,
+  "workflow-fork": workflowForkCommand,
+  "workflow-link-chat": workflowLinkChatCommand,
+  "workflow-unlink-chat": workflowUnlinkChatCommand,
+  "workflow-mermaid": workflowMermaidCommand,
+};
+
 const MESSAGE_COMMANDS: Record<string, CommandHandler> = {
   "message-delete": messageDeleteCommand,
   "message-restore": messageRestoreCommand,
@@ -227,6 +263,7 @@ const COMMAND_GROUPS: CommandGroup[] = [
   { name: "llm", handlers: LLM_COMMANDS },
   { name: "mcp", handlers: MCP_COMMANDS },
   { name: "ui", handlers: UI_COMMANDS },
+  { name: "workflow", handlers: WORKFLOW_COMMANDS },
 ];
 
 export const COMMAND_HANDLERS = buildCommandRegistry(COMMAND_GROUPS);

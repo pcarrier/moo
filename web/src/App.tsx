@@ -38,6 +38,7 @@ import { McpView } from "./McpView";
 import { SkillsView } from "./SkillsView";
 import { V8View } from "./V8View";
 import { TracesView } from "./TracesView";
+import { WorkflowsView } from "./WorkflowsView";
 import { SettingsView } from "./SettingsView";
 import { type Bag } from "./state";
 import { startMermaidRenderer } from "./mermaid";
@@ -231,6 +232,8 @@ export function App(props: { bag: Bag }) {
         return <AppsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "mcp":
         return <McpView bag={bag} onToggleSidebar={toggleSidebar} />;
+      case "workflows":
+        return <WorkflowsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "skills":
         return <SkillsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "settings":

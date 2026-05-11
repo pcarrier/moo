@@ -1,0 +1,168 @@
+.workflows-body {
+  padding: 1rem;
+}
+
+.workflow-grid {
+  display: grid;
+  grid-template-columns: minmax(14rem, 0.75fr) minmax(14rem, 0.75fr) minmax(28rem, 2fr);
+  gap: 1rem;
+  min-height: 0;
+}
+
+.workflow-panel {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+.workflow-panel > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.workflow-panel h2,
+.workflow-panel h3 {
+  margin: 0;
+}
+
+.workflow-input-label,
+.workflow-waiting-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.workflow-input-label textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.workflow-panel textarea,
+.workflow-panel input {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.45rem;
+  border-radius: 0;
+}
+
+.workflow-list,
+.workflow-run-list,
+.workflow-steps {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.workflow-list li,
+.workflow-run-list button,
+.workflow-steps button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem;
+  border-radius: 0;
+}
+
+.workflow-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.workflow-list li > div,
+.workflow-run-list button,
+.workflow-steps button {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.workflow-run-list button.selected,
+.workflow-steps button.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.workflow-actions button,
+.workflow-list button,
+.workflow-waiting-form button {
+  border: 1px solid var(--line);
+  background: var(--button-bg);
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  border-radius: 0;
+}
+
+.workflow-status {
+  display: inline-block;
+  width: max-content;
+  border: 1px solid var(--line);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.75rem;
+}
+
+.status-done { background: rgba(34, 197, 94, 0.16); }
+.status-running { background: rgba(250, 204, 21, 0.18); }
+.status-waiting { background: rgba(59, 130, 246, 0.18); }
+.status-failed { background: rgba(239, 68, 68, 0.18); }
+.status-cancelled { opacity: 0.7; }
+
+.workflow-diagram {
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+  overflow: auto;
+  margin-bottom: 0.75rem;
+  background: var(--bg);
+}
+
+.workflow-waiting-form {
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.workflow-detail-columns {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(16rem, 1.2fr);
+  gap: 0.75rem;
+}
+
+.workflow-panel pre {
+  overflow: auto;
+  max-height: 22rem;
+  border: 1px solid var(--line);
+  padding: 0.5rem;
+  background: color-mix(in srgb, var(--bg) 94%, var(--fg));
+}
+
+.workflow-error {
+  border: 1px solid #b91c1c;
+  background: rgba(239, 68, 68, 0.14);
+  padding: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 70rem) {
+  .workflow-grid,
+  .workflow-detail-columns {
+    grid-template-columns: 1fr;
+  }
+}

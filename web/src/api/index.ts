@@ -4,6 +4,7 @@ export * from "./contract";
 export type { LlmAuthMode, LlmAuthSettings, LlmCompactionSettings, LlmProviderId, LlmRetrySettings } from "./llmAuth";
 export type { TraceCommands } from "./traces";
 export type { SkillCommands } from "./skills";
+export type { WorkflowCommands, WorkflowDefinitionSummary, WorkflowInspection, WorkflowRunInspection, WorkflowRunSummary, WorkflowStepRun } from "./workflows";
 
 import { chatApi } from "./chat";
 import { fsApi } from "./fs";
@@ -15,6 +16,7 @@ import { v8Api } from "./v8";
 import { llmAuthApi } from "./llmAuth";
 import { tracesApi } from "./traces";
 import { skillsApi } from "./skills";
+import { workflowsApi } from "./workflows";
 
 export const api = {
   chat: chatApi,
@@ -27,4 +29,5 @@ export const api = {
   llmAuth: llmAuthApi,
   traces: tracesApi,
   skills: skillsApi,
+  workflows: workflowsApi,
 };

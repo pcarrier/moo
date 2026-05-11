@@ -5133,6 +5133,14 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       <button
         type="button"
         class="sidebar-tab"
+        classList={{ active: bag.view() === "workflows" }}
+        onClick={() => navigate(() => bag.showWorkflows())}
+      >
+        <span class="sidebar-tab-label">workflows</span>
+      </button>
+      <button
+        type="button"
+        class="sidebar-tab"
         classList={{ active: bag.view() === "mcp" }}
         onClick={() => navigate(() => bag.showMcp())}
       >

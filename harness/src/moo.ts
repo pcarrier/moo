@@ -8,6 +8,7 @@ import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encod
 import { appendStep } from "./steps";
 import { addTodo, clearTodos, getTodos, patchTodos, updateTodo, withTodoDiffBatch } from "./todos";
 import { setSkillRootProvider, skills } from "./skills";
+import { createWorkflowDsl, createWorkflowsApi } from "./workflows";
 
 const time: Moo["time"] = {
   async nowMs() {
@@ -3192,6 +3193,9 @@ const vocab: Moo["vocab"] = {
   },
 };
 
+const workflow: Moo["workflow"] = createWorkflowDsl;
+const workflows: Moo["workflows"] = createWorkflowsApi({ objects, pointers, facts, proc, mcp, agent, time, id });
+
 export const tryApi: Moo["try"] = async (fn) => {
   try {
     return ok(await fn());
@@ -3209,6 +3213,8 @@ const rawMoo: Moo = {
   objects,
   todos,
   skills,
+  workflow,
+  workflows,
   pointers,
   sparql,
   facts,
