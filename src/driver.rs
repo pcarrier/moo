@@ -800,6 +800,7 @@ async fn drive_subagent(
         "chatId": child_chat_id.clone(),
         "mode": "step",
         "message": task,
+        "artificial": true,
         "lifecycleEvents": {
             "start": { "kind": "step-start", "chatId": child_chat_id },
             "end": { "kind": "step-end", "chatId": child_chat_id }

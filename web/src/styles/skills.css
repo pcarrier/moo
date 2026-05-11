@@ -117,6 +117,17 @@
   padding-bottom: 0.4rem;
 }
 
+.skills-message {
+  margin: 0 0 0.65rem;
+  border: 1px solid var(--line);
+  background: var(--sidebar-active);
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
+  padding: 0.5rem 0.65rem;
+  overflow-wrap: anywhere;
+}
+
 .skills-editor-status {
   display: flex;
   align-items: baseline;

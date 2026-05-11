@@ -36,10 +36,41 @@ describe("header control icons", () => {
     expect(css).not.toContain(".right-sidebar-size-icon");
   });
 
+  test("app bridge listens before posting requests", () => {
+    const requestStart = chatApps.indexOf("request(method, payload) {");
+    const requestEnd = chatApps.indexOf("state: { get:", requestStart);
+    const requestBlock = chatApps.slice(requestStart, requestEnd);
+
+    expect(requestBlock.indexOf("window.addEventListener('message', onMessage);")).toBeGreaterThan(-1);
+    expect(requestBlock.indexOf("parent.postMessage({ source: 'moo-ui'")).toBeGreaterThan(-1);
+    expect(requestBlock.indexOf("window.addEventListener('message', onMessage);")).toBeLessThan(
+      requestBlock.indexOf("parent.postMessage({ source: 'moo-ui'"),
+    );
+  });
+
+  test("app bridge accepts messages from any live frame in the stack", () => {
+    expect(chatApps).toContain("let frameStack: HTMLDivElement | undefined;");
+    expect(chatApps).toContain("const isUiFrameSource = (source: MessageEventSource | null) => {");
+    expect(chatApps).toContain('frameStack?.querySelectorAll("iframe")');
+    expect(chatApps).toContain('ref={frameStack}');
+    expect(chatApps).not.toContain("frame = pendingFrame;");
+  });
+
   test("chat burger menu button has no hairline frame", () => {
     const menuRule = css.slice(css.indexOf(".chat-menu {"), css.indexOf(".chat-action-menu"));
     expect(menuRule).toContain("border: 0;");
     expect(menuRule).not.toContain("border: 1px solid var(--line);");
+  });
+
+  test("agent-opened apps materialize as right-sidebar app tabs", () => {
+    const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
+
+    expect(state).toContain('if (ev.kind === "ui-open")');
+    expect(state).toContain("openAppRightSidebarTab(uiId, instanceId);");
+    expect(state).toContain("openAppRightSidebarTab(primaryUiId, instanceId, !hasTab);");
+    expect(state).toContain("function hasAppRightSidebarTab");
+    expect(state).toContain('kind: "app",');
+    expect(state).toContain("collapsed: activate ? false : state.collapsed");
   });
 
   test("plus and maximize controls use the smaller header button frame", () => {

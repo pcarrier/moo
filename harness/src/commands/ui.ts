@@ -170,7 +170,16 @@ export async function uiOpenCommand(input: Input) {
     instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await moo.id.new("uiinst"));
   }
   const inst = `uiinst:${instanceId}`;
+  const primaryRows = await moo.facts.match({
+    store: refs.facts,
+    graph: refs.graph,
+    subject: `chat:${chatId}`,
+    predicate: "ui:primary",
+  });
   await moo.facts.update({ store: refs.facts, fn: (txn) => {
+    for (const [graph, subject, predicate, object] of primaryRows) {
+      txn.remove({ graph, subject, predicate, object });
+    }
     txn.add({ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:involves", object: `ui:${uiId}` });
     txn.add({ graph: refs.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
     txn.add({ graph: refs.graph, subject: inst, predicate: "rdf:type", object: "ui:Instance" });
@@ -178,9 +187,13 @@ export async function uiOpenCommand(input: Input) {
     txn.add({ graph: refs.graph, subject: inst, predicate: "ui:chat", object: `chat:${chatId}` });
     txn.add({ graph: refs.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
   } });
-  if (!(await moo.pointers.get(`uiinst/${instanceId}/state`))) {
-    await moo.pointers.set(`uiinst/${instanceId}/state`, encodeJsonPointer(input.state ?? {}));
+  const stateRef = `uiinst/${instanceId}/state`;
+  let stateTarget = await moo.pointers.get(stateRef);
+  if (!stateTarget) {
+    stateTarget = encodeJsonPointer(input.state ?? {});
+    await moo.pointers.set(stateRef, stateTarget);
   }
+  moo.events.publish({ kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await moo.time.nowMs() });
   return { ok: true, value: { chatId, uiId, instanceId } };
 }
 

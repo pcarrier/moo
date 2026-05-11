@@ -11,13 +11,18 @@ export const COMPACTION_SUMMARY_REQUEST_PROMPT =
 export const COMPACTION_CONTINUATION_INSTRUCTION =
   "Resume after compaction. Summary = prior state. First reply: act. Execute `Next action:` or infer next concrete step. Do not wait, acknowledge, or say ready. If done, report result. Do not mention compaction unless asked.";
 
-export function compactionContinuationSystemMessage(summary: string): string {
-  return [
+export function compactionContinuationSystemMessage(summary: string, currentTodos?: string | null): string {
+  const parts = [
     COMPACTION_CONTINUATION_INSTRUCTION,
     "",
     "Summary of earlier conversation:",
     summary,
-  ].join("\n");
+  ];
+  const todos = String(currentTodos ?? "").trim();
+  if (todos) {
+    parts.push("", "Current TODO reminders:", todos);
+  }
+  return parts.join("\n");
 }
 
 export function buildCompactionSummaryPromptMessages(messages: any[]): any[] {
@@ -174,12 +179,6 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "Mermaid: for diagrams/flows/sequences, prefer native ```mermaid fences over ASCII art; keep diagrams small and label edges/nodes clearly.",
     "ambiguity: don't assume it away; ask targeted Qs with concise choices/tradeoffs when decisions matter.",
     "questions: use ui.ask/choose forms, not prose questions, whenever soliciting user input; group related fields in one form.",
-    "apps=harness UI apps (right sidebar/apps view), not product advice. id /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/; manifest {id,title,description?,icon?,entry?,api?}; bundle {html?,css?,js?,files?}.",
-    "apps create/register in runJS: prefer moo.ui.apps.register({manifest,bundle,handler?}); lower-level storage uses moo.objects.putJSON({kind,value})/putText({kind,text}).",
-    "apps index facts in memory: moo.memory.assert({facts:[...]}) ui:<id> rdf:type ui:App, ui:title, optional ui:description, ui:manifest, ui:bundle, optional ui:handler, ui:updatedAt datetime.",
-    "apps open in chat: moo.facts.addAll({store:'chat/<chatId>/facts',quads:[...]}) graph chat:<chatId>: chat:<id> ui:involves/ui:primary ui:<id>; uiinst:<instanceId> ui:statePointer pointer:uiinst/<instanceId>/state; moo.pointers.set state pointer.",
-    "apps runtime iframe exposes window.moo: state.get/set, call(name,input)->handler, open(uiId,instanceId?), memory.{query,triples,assert,retract,patch,project(project)}.",
-    "apps handler source runs async with (moo, request, context); request={command,input,context}; context={uiId,chatId,instanceId}; return JSON-ish; no imports.",
     "repo/file refs: use markdown links, e.g. [path](relative/path.ts); relative links open in sidebar.",
     ...(cliLine ? [cliLine] : []),
     "",
@@ -206,7 +205,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "env: get(name:string)→Promise<string|null>; getMany(names:string[])→Promise<Record<string,string|null>>.",
     "chat: refs({chatId:string})→Promise<ChatRefs>; scratch(chatId:string)→Promise<string>; touch(chatId:string)→Promise<void>; list()→Promise<ChatSummary[]>; create(chatId?:string,path?:string|null,{branch?:string|null}?)→Promise<string>; remove(chatId:string)→Promise<{chatId,refsDeleted,quadsCleared}>; setTitle({chatId,title:string|null,manual?:boolean})→Promise<{chatId,previousTitle,title,changed}>; recordSummary({chatId?:string,summary:string,title:string})→Promise<{chatId,entryId,title?}>; archive(chatId:string)→Promise<number>; unarchive(chatId:string)→Promise<null>.",
     "  trail sidebar = title updates + recordSummary entries. TITLE OCCASIONALLY: on a new chat's first substantive turn, call moo.chat.setTitle({chatId,title:'<2-5 word title>'}) before other work (skip purely trivial chitchat). Later, update the title when the subject changes, the user's goal becomes clearer, or the current title is stale/misleading; still do not retitle for routine progress or every response. At each milestone call moo.chat.recordSummary({summary:'<1-2 sentence outcome>',title:'<short outcome title>'}); include chatId only for cross-chat/admin summaries. Summaries describe outcomes, not plans. Don't use runJS labels as a progress trail.",
-    "ui: ask({chatId:string,spec:{title?:string,fields:UiFormField[],submitLabel?:string}})→Promise<string>; choose({chatId:string,spec:{title?:string,items:{id,label?,description?,input?}[]}})→Promise<string>; say({chatId:string,text:string})→Promise<{chatId,stepId,payloadHash}>; apps.register({id?,manifest,bundle,handler?:string|null})→Promise<{uiId,ui,manifestHash,bundleHash,handlerHash,refs}>; apps.open({chatId,uiId,instanceId?:string|null,state?:unknown})→Promise<{chatId,uiId,instanceId,stateTarget,stateRef,createdState,facts}>.",
+    "ui: ask({chatId:string,spec:{title?:string,fields:UiFormField[],submitLabel?:string}})→Promise<string>; choose({chatId:string,spec:{title?:string,items:{id,label?,description?,input?}[]}})→Promise<string>; say({chatId:string,text:string})→Promise<{chatId,stepId,payloadHash}>.",
     "  ask/choose pause until submit; return request/step id. field type ∈ text|textarea|url|number|boolean|select|secretRef; fields/items non-empty.",
     "mcp: discover/call servers via `moo.mcp`; prefer MCP over ad-hoc HTTP/env creds; don't change server/auth config unless asked.",
     "  dynamic tools: await moo.mcp.<serverId>.<toolName>(args?:unknown)→Promise<unknown>; list() / listServers()→Promise<McpServerConfig[]>; tools(server?:string) / listTools(serverId?:string)→Promise<McpTool[]> where McpTool={serverId,server,name,title?,description?,denseDescription,inputSchema?}.",

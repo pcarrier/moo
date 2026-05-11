@@ -31,6 +31,7 @@ export type KnownApiCommand =
   | V8Commands
   | LlmAuthCommands
   | TraceCommands
+  | SkillCommands
   | SkillCommands;
 
 export type ApiCommandMap = {

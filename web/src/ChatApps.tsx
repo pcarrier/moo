@@ -44,10 +44,10 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   const activeUiId = () => activeAppTab()?.uiId ?? bag.openUiId();
   const activeInstanceId = () => activeAppTab()?.instanceId ?? bag.openUiInstanceId();
   const activeAppKey = () => activeUiId() ? `${activeUiId()}::${activeInstanceId() ?? ""}` : null;
-  const [srcdoc, setSrcdoc] = createSignal<string>("");
   const [title, setTitle] = createSignal<string>("app");
-  const [frameKey, setFrameKey] = createSignal(0);
-  const frameDoc = createMemo(() => srcdoc() ? { key: frameKey(), doc: srcdoc() } : null);
+  const [visibleFrameDoc, setVisibleFrameDoc] = createSignal<{ key: number; appKey: string | null; doc: string } | null>(null);
+  const [pendingFrameDoc, setPendingFrameDoc] = createSignal<{ key: number; appKey: string | null; doc: string } | null>(null);
+  let nextFrameKey = 0;
   const [panelWidth, setPanelWidth] = createSignal(
     Number.isFinite(storedPanelWidth) && storedPanelWidth > 0
       ? storedPanelWidth
@@ -56,6 +56,8 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   const [maximized, setMaximized] = createSignal(false);
   const [resizing, setResizing] = createSignal(false);
   let frame: HTMLIFrameElement | undefined;
+  let pendingFrame: HTMLIFrameElement | undefined;
+  let frameStack: HTMLDivElement | undefined;
   let dragging = false;
   let startX = 0;
   let startWidth = 0;
@@ -103,34 +105,54 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     stopResize();
   });
 
+  const showFrameDoc = (appKey: string | null, doc: string) => {
+    const visible = visibleFrameDoc();
+    const pending = pendingFrameDoc();
+    if ((visible?.appKey === appKey && visible.doc === doc) || (pending?.appKey === appKey && pending.doc === doc)) return;
+    setPendingFrameDoc({ key: ++nextFrameKey, appKey, doc });
+  };
+
   createEffect(on(
     activeAppKey,
     async (appKey) => {
       const uiId = activeUiId();
       if (!uiId) {
-        setSrcdoc("");
         setTitle("app");
-        setFrameKey((key) => key + 1);
+        setPendingFrameDoc(null);
+        setVisibleFrameDoc(null);
         return;
       }
       const r = await api.ui.bundle(uiId);
       if (activeAppKey() !== appKey) return;
-      if (!r.ok) { setSrcdoc(`<p>${r.error.message}</p>`); setFrameKey((key) => key + 1); return; }
+      if (!r.ok) {
+        showFrameDoc(appKey, buildUiSrcdoc(`<p>${escapeHtml(r.error.message)}</p>`, "", ""));
+        return;
+      }
       setTitle(r.value.manifest.title || uiId);
       const b = r.value.bundle;
       const html = b.html ?? b.files?.[r.value.manifest.entry || "index.html"] ?? "";
       const css = b.css ?? b.files?.["style.css"] ?? "";
       const js = b.js ?? b.files?.["client.js"] ?? "";
-      setSrcdoc(buildUiSrcdoc(html, css, js));
-      setFrameKey((key) => key + 1);
+      showFrameDoc(appKey, buildUiSrcdoc(html, css, js));
     },
   ));
 
+  const isUiFrameSource = (source: MessageEventSource | null) => {
+    if (!source) return false;
+    if (source === frame?.contentWindow || source === pendingFrame?.contentWindow) return true;
+    const iframes = frameStack?.querySelectorAll("iframe") ?? [];
+    for (const iframe of Array.from(iframes)) {
+      if (source === iframe.contentWindow) return true;
+    }
+    return false;
+  };
+
   const onMessage = async (ev: MessageEvent) => {
-    if (ev.source !== frame?.contentWindow) return;
+    if (!isUiFrameSource(ev.source)) return;
+    const source = ev.source as Window | null;
     const msg = ev.data || {};
     if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id) return;
-    const reply = (payload: Record<string, unknown>) => frame?.contentWindow?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
+    const reply = (payload: Record<string, unknown>) => source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
     try {
       if (msg.method === "state:get") {
         const inst = activeInstanceId();
@@ -214,11 +236,40 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
         </Show>
         <button class="header-icon-button" title="close app" onClick={() => bag.closeUi()}><CloseIcon /></button>
       </header>
-      <Show when={frameDoc()} keyed>
-        {(doc) => <iframe ref={frame} class="ui-frame" data-ui-frame-key={doc.key} srcdoc={doc.doc} />}
-      </Show>
+      <div class="ui-frame-stack" ref={frameStack}>
+        <Show when={visibleFrameDoc()} keyed>
+          {(doc) => (
+            <iframe
+              ref={frame}
+              class="ui-frame"
+              classList={{ loading: !!pendingFrameDoc() }}
+              data-ui-frame-key={doc.key}
+              srcdoc={doc.doc}
+            />
+          )}
+        </Show>
+        <Show when={pendingFrameDoc()} keyed>
+          {(doc) => (
+            <iframe
+              ref={pendingFrame}
+              class="ui-frame pending"
+              data-ui-frame-key={doc.key}
+              srcdoc={doc.doc}
+              onLoad={() => {
+                setVisibleFrameDoc(doc);
+                setPendingFrameDoc(null);
+                pendingFrame = undefined;
+              }}
+            />
+          )}
+        </Show>
+      </div>
     </aside>
   );
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char] || char));
 }
 
 function disableParserAutofocus(html: string): string {
@@ -250,7 +301,6 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
     window.moo = {
       request(method, payload) {
         const id = Math.random().toString(36).slice(2);
-        parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, '*');
         return new Promise((resolve, reject) => {
           const onMessage = (ev) => {
             const msg = ev.data || {};
@@ -259,6 +309,12 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
             msg.ok ? resolve(msg.value) : reject(new Error(msg.error?.message || 'moo request failed'));
           };
           window.addEventListener('message', onMessage);
+          try {
+            parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, '*');
+          } catch (err) {
+            window.removeEventListener('message', onMessage);
+            reject(err);
+          }
         });
       },
       state: { get: () => window.moo.request('state:get'), set: (state) => window.moo.request('state:set', { state }) },
@@ -278,5 +334,6 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
       open: (uiId, instanceId) => window.moo.request('open', { uiId, instanceId }),
     };
   `;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${appHtml}<script>${autofocus}<\/script><script>${sdk}<\/script><script>${js}<\/script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>:root{background:#0b0b0b;}html,body{background:#0b0b0b;}@media (prefers-color-scheme: light){:root,html,body{background:#ffffff;}}
+${css}</style></head><body>${appHtml}<script>${autofocus}<\/script><script>${sdk}<\/script><script>${js}<\/script></body></html>`;
 }

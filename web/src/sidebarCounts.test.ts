@@ -38,6 +38,31 @@ describe("left sidebar memory counts", () => {
     expect(ws).toContain('"graph-summaries" => graph_summaries_command(db, payload)');
   });
 
+
+  test("skills route startup does not wait for chat list or chat preload", () => {
+    expect(state).toContain("const chatsLoad = refreshChats();");
+    const sideViewBranchStart = state.indexOf('loc.view === "new" ||');
+    expect(sideViewBranchStart).toBeGreaterThan(0);
+    const sideViewBranchEnd = state.indexOf('const desired = loc.chatId;', sideViewBranchStart);
+    const sideViewReturn = state.lastIndexOf('return;', sideViewBranchEnd);
+    const sideViewBranch = state.slice(sideViewBranchStart, sideViewReturn);
+    expect(sideViewBranch).toContain('loc.view === "skills"');
+    expect(sideViewBranch).toContain('void chatsLoad');
+    expect(sideViewReturn).toBeGreaterThan(sideViewBranchStart);
+    expect(sideViewBranch).not.toContain('await chatsLoad');
+    expect(sideViewBranch).not.toContain('await Promise.all([refreshTimeline(), refreshChatModel()])');
+  });
+
+  test("skills loaded flips even when refresh throws", () => {
+    const refreshStart = state.indexOf("async function refreshSkills");
+    expect(refreshStart).toBeGreaterThan(0);
+    const refresh = state.slice(refreshStart, state.indexOf("async function refreshSettingsCache", refreshStart));
+    expect(refresh).toContain("try {");
+    expect(refresh).toContain("catch (err)");
+    expect(refresh).toContain("finally {");
+    expect(refresh).toContain("setSkillsLoaded(true);");
+  });
+
   test("pointer refresh cannot leave the sidebar loading forever after failure", () => {
     const refreshStart = state.indexOf("async function refreshPointers");
     expect(refreshStart).toBeGreaterThan(0);

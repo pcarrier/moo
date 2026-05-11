@@ -8,6 +8,7 @@ import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encod
 import { appendStep } from "./steps";
 import { addTodo, clearTodos, getTodos, patchTodos, updateTodo, withTodoDiffBatch } from "./todos";
 import { setSkillRootProvider, skills } from "./skills";
+import { applyDefaultChatSettings } from "./commands/models";
 
 const time: Moo["time"] = {
   async nowMs() {
@@ -2252,7 +2253,16 @@ const ui: Moo["ui"] = {
         instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await id.new("uiinst"));
       }
       const inst = `uiinst:${instanceId}`;
+      const primaryRows = await facts.match({
+        store: c.facts,
+        graph: c.graph,
+        subject: `chat:${chatId}`,
+        predicate: "ui:primary",
+      });
       const factReceipt = await facts.update({ store: c.facts, fn: (txn) => {
+        for (const [graph, subject, predicate, object] of primaryRows) {
+          txn.remove({ graph, subject, predicate, object });
+        }
         txn.add({ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:involves", object: `ui:${uiId}` });
         txn.add({ graph: c.graph, subject: `chat:${chatId}`, predicate: "ui:primary", object: `ui:${uiId}` });
         txn.add({ graph: c.graph, subject: inst, predicate: "rdf:type", object: "ui:Instance" });
@@ -2268,6 +2278,7 @@ const ui: Moo["ui"] = {
         await pointers.set(stateRef, stateTarget);
         createdState = true;
       }
+      events.publish({ kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await time.nowMs() });
       return { chatId, uiId, instanceId, stateTarget, stateRef, createdState, facts: factReceipt };
     },
   },
@@ -2795,6 +2806,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   await pointers.set(`chat/${childChatId}/parent`, parentChatId);
   await pointers.set(`chat/${childChatId}/subagent-depth`, String(ctx.depth + 1));
   await pointers.set(`chat/${childChatId}/subagent-parent-runjs`, ctx.runJsStepId);
+  await applyDefaultChatSettings(childChatId);
   if (spec.model) await pointers.set(chatRefs(childChatId).model, spec.model);
   if (spec.effort) await pointers.set(chatRefs(childChatId).effort, spec.effort);
 

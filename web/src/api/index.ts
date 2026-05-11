@@ -4,7 +4,6 @@ export * from "./contract";
 export type { LlmAuthMode, LlmAuthSettings, LlmCompactionSettings, LlmProviderId, LlmRetrySettings } from "./llmAuth";
 export type { TraceCommands } from "./traces";
 export type { SkillCommands } from "./skills";
-
 import { chatApi } from "./chat";
 import { fsApi } from "./fs";
 import { objectApi } from "./objects";

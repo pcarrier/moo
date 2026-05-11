@@ -21,6 +21,24 @@ function clean(value: unknown): string {
   return value == null ? "" : String(value).trim();
 }
 
+function stripTrailingSlash(path: string): string {
+  const stripped = path.replace(/\/+$/g, "");
+  return stripped || path;
+}
+
+function joinPath(base: string, child: string): string {
+  const b = stripTrailingSlash(String(base || ".")) || ".";
+  return b + "/" + String(child || "").replace(/^\/+/, "");
+}
+
+async function canonicalIfPossible(path: string): Promise<string> {
+  try {
+    return stripTrailingSlash(await moo.fs.canonical(path));
+  } catch {
+    return stripTrailingSlash(path);
+  }
+}
+
 function nameFromContent(content: string, frontmatter: SkillFrontmatter): string | undefined {
   const raw = frontmatter.name ?? frontmatter.title;
   if (typeof raw === "string" && raw.trim()) return raw.trim();
@@ -28,16 +46,28 @@ function nameFromContent(content: string, frontmatter: SkillFrontmatter): string
   return heading || undefined;
 }
 
+async function existingChatRoot(chatId: string): Promise<string | undefined> {
+  const home = clean(await moo.env.get("HOME"));
+  const worktree = joinPath(home ? joinPath(home, "moo") : "moo", chatId);
+  try {
+    if (await moo.fs.exists(worktree)) return await canonicalIfPossible(worktree);
+  } catch {
+    // Fall through to the chat's source repo path. Skill reads should never
+    // materialize or repair the per-chat worktree just to populate /skills.
+  }
+  try {
+    const root = clean(await moo.pointers.get(`chat/${chatId}/path`));
+    return root ? await canonicalIfPossible(root) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function skillRoot(input: Input): Promise<string | undefined> {
   const root = clean(input.root);
   if (root) return root;
   const chatId = clean(input.chatId);
-  if (!chatId) return undefined;
-  try {
-    return await moo.chat.scratch(chatId);
-  } catch {
-    return undefined;
-  }
+  return chatId ? existingChatRoot(chatId) : undefined;
 }
 
 async function skillQueryOptions(input: Input): Promise<{ root?: string }> {

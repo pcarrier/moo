@@ -4,7 +4,7 @@ import { finishRunJSTraceRoot, moo, startRunJSTraceRoot, withMooChatContext, wit
 import { appendStep } from "./steps";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
 import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
-import { formatTodosForDynamicContext } from "./todos";
+import { formatTodosForPrompt } from "./todos";
 import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, normalizeProvider as normalizeProviderName } from "./llm_models";
 export { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 import { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
@@ -17,7 +17,7 @@ export const TOOLS = [
     function: {
       name: "runJS",
       description:
-        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
+        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope; `setTimeout` and `setImmediate` are available. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
       parameters: {
         type: "object",
         properties: {
@@ -72,47 +72,20 @@ type TraceMetadata = Record<string, unknown>;
 
 export const DYNAMIC_CONTEXT_MESSAGE_ROLE = "dynamic_context" as const;
 
-const DYNAMIC_CONTEXT_USER_PREFIX =
-  "Private dynamic context for the assistant (not a user request). Use it for the next response; do not mention it unless relevant.";
-
-type DynamicContextMessage = {
-  role: typeof DYNAMIC_CONTEXT_MESSAGE_ROLE;
-  content: string;
-};
-
 export function isDynamicContextMessage(message: any): boolean {
   return Boolean(message && typeof message === "object" && message.role === DYNAMIC_CONTEXT_MESSAGE_ROLE);
 }
 
-function formatDynamicContextMessage(content: string): string {
-  return DYNAMIC_CONTEXT_USER_PREFIX + "\n\n" + content;
+export function messageForProvider(message: any): any | null {
+  return isDynamicContextMessage(message) ? null : message;
 }
 
-export function dynamicContextMessageForProvider(message: DynamicContextMessage): any {
-  return { role: "user", content: message.content };
-}
-
-export function messageForProvider(message: any): any {
-  return isDynamicContextMessage(message) ? dynamicContextMessageForProvider(message) : message;
-}
-
-export function appendDynamicContextMessages(messages: any[], content: string | null | undefined): any[] {
-  const base = Array.isArray(messages) ? messages.filter((message) => !isDynamicContextMessage(message)) : [];
-  const text = String(content ?? "").trim();
-  if (!text) return base;
-  const message: DynamicContextMessage = {
-    role: DYNAMIC_CONTEXT_MESSAGE_ROLE,
-    content: formatDynamicContextMessage(text),
-  };
-  return [...base, message];
-}
-
-export async function refreshDynamicContextMessages(chatId: string, messages: any[]): Promise<any[]> {
-  return appendDynamicContextMessages(messages, await formatTodosForDynamicContext(chatId));
+export function stripDynamicContextMessages(messages: any[]): any[] {
+  return Array.isArray(messages) ? messages.filter((message) => !isDynamicContextMessage(message)) : [];
 }
 
 function messagesForProvider(messages: any[]): any[] {
-  return Array.isArray(messages) ? messages.map(messageForProvider) : [];
+  return Array.isArray(messages) ? messages.map(messageForProvider).filter((message) => message != null) : [];
 }
 
 export function messagesForTrace(messages: any[] | null | undefined, tools?: any[] | null): TraceMetadata {
@@ -494,6 +467,7 @@ export function toAnthropicMessages(messages: any[]): { system: string; messages
   const out: any[] = [];
   for (const rawMsg of messages) {
     const msg = messageForProvider(rawMsg);
+    if (!msg) continue;
     if (msg?.role === "system") {
       const text = contentText(msg.content);
       if (text) systemParts.push(text);
@@ -1503,11 +1477,11 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
   if (compaction.summary && !summaryMayContainDeletedUserInput) {
     messages.push({
       role: "system",
-      content: compactionContinuationSystemMessage(compaction.summary),
+      content: compactionContinuationSystemMessage(compaction.summary, await formatTodosForPrompt(chatId)),
     });
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });
-  return await refreshDynamicContextMessages(chatId, messages);
+  return messages;
 }
 
 async function transcriptMessages(chatId: string, afterAt: number): Promise<any[]> {

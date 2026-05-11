@@ -218,7 +218,13 @@ export function planStepDriverEffects(state: StepDriverState): StepDriverEffect[
         mode,
         input: mode === "resume" || mode === "compact"
           ? { chatId: state.chatId, mode }
-          : { chatId: state.chatId, mode, message: state.message ?? "", attachments: state.attachments },
+          : {
+              chatId: state.chatId,
+              mode,
+              message: state.message ?? "",
+              attachments: state.attachments,
+              ...(state.artificial === true ? { artificial: true } : {}),
+            },
       }];
     }
     case "prepare":

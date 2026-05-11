@@ -308,6 +308,11 @@ describe("hierarchical trace view", () => {
     expect(kbdBlockEnd).toBeLessThan(workbenchStart);
   });
 
+  test("app right sidebar tabs use the app title", () => {
+    expect(sidebar).toContain('if (tab.kind === "app") return tab.title || tab.uiId;');
+    expect(sidebar).not.toContain('if (tab.kind === "app") return tab.uiId;');
+  });
+
   test("sidebar traces item opens the current chat without a split separator", () => {
     expect(sidebar).toContain("bag.showTraces(bag.chatId())");
     expect(sidebar).not.toContain("sidebar-tab-pair");

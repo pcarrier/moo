@@ -487,6 +487,7 @@ export type V8RuntimeSettings = {
   maxWorkers: number | null;
   readMaxWorkers: number | null;
   scanMaxWorkers: number | null;
+  uiMaxWorkers: number | null;
   toolMaxWorkers: number | null;
   maxOldGenerationBytes: number | null;
   maxYoungGenerationBytes: number | null;
@@ -495,6 +496,7 @@ export type V8RuntimeSettings = {
   mainPool: V8PoolRuntimeSettings | null;
   readPool: V8PoolRuntimeSettings | null;
   scanPool: V8PoolRuntimeSettings | null;
+  uiPool: V8PoolRuntimeSettings | null;
   toolPool: V8PoolRuntimeSettings | null;
 };
 

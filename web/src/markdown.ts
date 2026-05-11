@@ -1,5 +1,5 @@
 import { Marked, Renderer } from "marked";
-import { displayCodeLanguage, highlightMarkdownCode } from "./syntax";
+import { displayCodeLanguage, highlightHjson, highlightMarkdownCode, maybeFormatHjsonTextForView } from "./syntax";
 
 // Shared marked setup. Keep these options in sync with the timeline/store
 // preview rendering instead of choosing per-call settings.
@@ -22,6 +22,7 @@ userRenderer.image = ({ href, title, text }) => {
 };
 
 const marked = new Marked({ gfm: true, breaks: false, renderer });
+const markedWithBreaks = new Marked({ gfm: true, breaks: true, renderer });
 const userMarked = new Marked({ gfm: true, breaks: true, renderer: userRenderer });
 
 const MARKDOWN_CACHE_MAX_ENTRIES = 512;
@@ -29,7 +30,9 @@ const MARKDOWN_CACHE_MAX_CONTENT_LENGTH = 128 * 1024;
 
 const markdownCache = new Map<string, string>();
 const markdownInlineCache = new Map<string, string>();
+const markdownWithBreaksCache = new Map<string, string>();
 const userMessageCache = new Map<string, string>();
+const markdownToolDescriptionCache = new Map<string, string>();
 
 function cachedRender(cache: Map<string, string>, content: string, render: () => string): string {
   if (content.length > MARKDOWN_CACHE_MAX_CONTENT_LENGTH) return render();
@@ -66,6 +69,161 @@ export function renderMarkdown(content: string): string {
 
 export function renderMarkdownInline(content: string): string {
   return cachedRender(markdownInlineCache, content, () => marked.parseInline(content) as string);
+}
+
+export function renderMarkdownWithBreaks(content: string): string {
+  return cachedRender(markdownWithBreaksCache, content, () => markedWithBreaks.parse(content) as string);
+}
+
+export function renderToolDescriptionMarkdown(content: string): string {
+  return cachedRender(markdownToolDescriptionCache, content, () => {
+    const normalized = normalizeExampleBlocks(content);
+    return markedWithBreaks.parse(normalized) as string;
+  });
+}
+
+function normalizeExampleBlocks(content: string): string {
+  return content.replace(/<example(?:\s[^>]*)?>([\s\S]*?)<\/example>/gi, (_match, body: string) => {
+    const code = normalizeExampleCode(trimExampleBlock(String(body)));
+    return "\n\n" + renderExampleBlock(code) + "\n\n";
+  });
+}
+
+function renderExampleBlock(code: string): string {
+  return '<div class="mcp-example-title">EXAMPLE</div>\n' +
+    '<pre class="trace-json-block mcp-example-json"><code>' +
+    highlightHjson(code, { force: true }) +
+    '</code></pre>';
+}
+
+function trimExampleBlock(content: string): string {
+  return content.replace(/^\s*\n/, "").replace(/\n\s*$/, "");
+}
+
+function normalizeExampleCode(content: string): string {
+  const escaped = escapeRawStringLineBreaks(content);
+  const formatted = maybeFormatHjsonTextForView(escaped);
+  if (formatted !== null) return formatted;
+  const repaired = escapeRawStringLineBreaks(repairUnescapedStringQuotes(content));
+  return maybeFormatHjsonTextForView(repaired) ?? expandEscapedLineBreaksForLooseExample(repaired);
+}
+
+// Some MCP examples are JSON-ish rather than JSON: multiline content strings may
+// contain markdown attributes such as {color="blue"} without escaping the quotes.
+// Repair quotes inside strings when they are not followed by JSON/HJSON string
+// terminators, so the structured HJSON renderer can still expand multiline text.
+function repairUnescapedStringQuotes(content: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]!;
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (inString && ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch !== '"') {
+      out += ch;
+      continue;
+    }
+    if (!inString) {
+      out += ch;
+      inString = true;
+      continue;
+    }
+    if (isLikelyStringTerminator(content, i + 1)) {
+      out += ch;
+      inString = false;
+    } else {
+      out += '\\"';
+    }
+  }
+
+  return out;
+}
+
+function isLikelyStringTerminator(content: string, start: number): boolean {
+  let i = start;
+  while (content[i] === " " || content[i] === "\t") i++;
+  const ch = content[i];
+  if (ch === ":" || ch === "," || ch === "]" || ch === undefined || ch === "\n" || ch === "\r") return true;
+  if (ch === "}") {
+    return !hasNonStructuralTokenBeforeLineEnd(content, i + 1) && !hasEscapedLineBreakBeforeLineEnd(content, i + 1);
+  }
+  return false;
+}
+
+function hasEscapedLineBreakBeforeLineEnd(content: string, start: number): boolean {
+  for (let i = start; i < content.length - 1; i++) {
+    const ch = content[i]!;
+    if (ch === "\n" || ch === "\r") return false;
+    if (ch === "\\" && content[i + 1] === "n") return true;
+  }
+  return false;
+}
+
+function hasNonStructuralTokenBeforeLineEnd(content: string, start: number): boolean {
+  for (let i = start; i < content.length; i++) {
+    const ch = content[i]!;
+    if (ch === " " || ch === "\t" || ch === "," || ch === "}" || ch === "]") continue;
+    return ch !== "\n" && ch !== "\r";
+  }
+  return false;
+}
+
+function expandEscapedLineBreaksForLooseExample(content: string): string {
+  return content.replace(/\\n/g, "\n");
+}
+
+// Some MCP descriptions include JSON examples with literal line breaks inside
+// quoted strings. Browsers preserve those line breaks in <pre>, but JSON/HJSON
+// highlighters cannot parse them as strings, so continuation lines drift to the
+// left. Convert only raw line breaks encountered inside double-quoted strings
+// to \n escapes; the HJSON renderer then displays those values as readable multiline
+// strings.
+function escapeRawStringLineBreaks(content: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]!;
+    if (inString && ch === "\r") {
+      if (content[i + 1] === "\n") i++;
+      out += "\\n";
+      escaped = false;
+      continue;
+    }
+    if (inString && ch === "\n") {
+      out += "\\n";
+      escaped = false;
+      continue;
+    }
+
+    out += ch;
+    if (escaped) {
+      escaped = false;
+    } else if (inString && ch === "\\") {
+      escaped = true;
+    } else if (ch === '"') {
+      inString = !inString;
+    }
+  }
+
+  return out;
+}
+
+function markdownFenceFor(content: string): string {
+  let longest = 0;
+  for (const match of content.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  return "`".repeat(Math.max(3, longest + 1));
 }
 
 function unescapeMarkedCode(text: string): string {

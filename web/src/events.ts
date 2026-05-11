@@ -12,6 +12,7 @@ type DiffStats = { added: number; removed: number; lines: number };
 export type Event =
   | { kind: "pointer"; pointer: string }
   | { kind: "facts"; store: string }
+  | { kind: "ui-open"; chatId: string; uiId: string; instanceId: string; stateRef?: string; stateTarget?: string | null; at?: number }
   | { kind: "file-diff"; chatId: string; path: string; diff: string; stats?: DiffStats; before?: string | null; after?: string | null; hash?: string; stepId?: string; at: number }
   | { kind: "todo-diff"; chatId: string; changes?: import("./api").TodoDiffChange[]; hash?: string; stepId?: string; at: number; todos?: import("./api").AgentTodo[] }
   | { kind: "memory-diff"; chatId: string; store: string; graph: string; action?: "assert" | "retract"; path: string; diff: string; stats?: DiffStats; before?: string; after?: string; hash?: string; stepId?: string; at: number; count?: number }

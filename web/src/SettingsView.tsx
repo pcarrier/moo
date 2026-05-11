@@ -268,7 +268,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setV8Settings((prev) => prev ? ({ ...prev, settings: { ...prev.settings, ...patch } }) : prev);
   }
 
-  function patchV8Pool(key: "mainPool" | "readPool" | "scanPool" | "toolPool", patch: Partial<V8PoolRuntimeSettings>) {
+  function patchV8Pool(key: "mainPool" | "readPool" | "scanPool" | "uiPool" | "toolPool", patch: Partial<V8PoolRuntimeSettings>) {
     setV8Settings((prev) => {
       if (!prev) return prev;
       const current = prev.settings[key] ?? { maxWorkers: null, maxOldGenerationBytes: null, maxYoungGenerationBytes: null, recycleUsedHeapBytes: null };
@@ -305,6 +305,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         maxWorkers: 4,
         readMaxWorkers: 1,
         scanMaxWorkers: 1,
+        uiMaxWorkers: 1,
         toolMaxWorkers: 1,
         maxOldGenerationBytes: 64 * 1024 * 1024,
         maxYoungGenerationBytes: 8 * 1024 * 1024,
@@ -313,12 +314,14 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         mainPool: { maxWorkers: 4, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
         readPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
         scanPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
+        uiPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
         toolPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
       },
       balanced: {
         maxWorkers: 16,
         readMaxWorkers: 4,
         scanMaxWorkers: 1,
+        uiMaxWorkers: 4,
         toolMaxWorkers: 4,
         maxOldGenerationBytes: 128 * 1024 * 1024,
         maxYoungGenerationBytes: 16 * 1024 * 1024,
@@ -327,12 +330,14 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         mainPool: { maxWorkers: 16, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
         readPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
         scanPool: { maxWorkers: 1, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
+        uiPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
         toolPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
       },
       roomy: {
         maxWorkers: 16,
         readMaxWorkers: 6,
         scanMaxWorkers: 2,
+        uiMaxWorkers: 6,
         toolMaxWorkers: 6,
         maxOldGenerationBytes: 256 * 1024 * 1024,
         maxYoungGenerationBytes: 32 * 1024 * 1024,
@@ -341,6 +346,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         mainPool: { maxWorkers: 16, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
         readPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
         scanPool: { maxWorkers: 2, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
+        uiPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
         toolPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
       },
     };
@@ -466,6 +472,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                                 { key: "mainPool" as const, title: "Main pool" },
                                 { key: "readPool" as const, title: "Read pool" },
                                 { key: "scanPool" as const, title: "Scan pool" },
+                                { key: "uiPool" as const, title: "UI app pool" },
                                 { key: "toolPool" as const, title: "Async tool pool" },
                               ]}>
                                 {(pool) => {
@@ -517,7 +524,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   >
                     <div class="settings-grid trace-settings-grid">
                       <Card class="settings-card">
-                        <h2>ClickHouse tracing</h2>
+                        <h2 class="settings-heading-with-badge">ClickHouse tracing <span class="settings-experimental-badge">Experimental</span></h2>
                         <Show when={traceSettings()}>
                           {(trace) => <>
                             <label class="toggle-row">

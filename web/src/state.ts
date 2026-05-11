@@ -12,6 +12,7 @@ import {
   type ApiResult,
   type ChatSummary,
   type ChatId,
+  type StepId,
   type CompactionsValue,
   type ImageAttachment,
   type AgentTodo,
@@ -44,7 +45,7 @@ import {
   type V8SettingsValue,
 } from "./api";
 import { collapseHome, setHomeDir_ } from "./paths";
-import { EventStream, type Event } from "./events";
+import { EventStream } from "./events";
 import { createChatSettingsWriteBarrier } from "./chatSettingsBarrier";
 import { checkPsk, getPsk, setPsk } from "./auth";
 import {
@@ -808,7 +809,6 @@ export function createState() {
     if (cached.ui) {
       setChatUiApps(cached.ui.apps);
       setUiInstances(cached.ui.instances);
-      restorePrimaryUi(cached.ui.primaryUiId ?? null, cached.ui.instances);
     }
     if (cached.rightSidebar) {
       const layout = rightSidebarLayoutForScope(id);
@@ -817,6 +817,8 @@ export function createState() {
         [id]: normalizeRightSidebarState(cached.rightSidebar, layout),
       }));
     }
+    if (cached.ui)
+      restorePrimaryUi(cached.ui.primaryUiId ?? null, cached.ui.instances);
     touchChatCache(id, {});
     return !!snapshot;
   }
@@ -1280,9 +1282,17 @@ export function createState() {
     return `app-code:${uiId}`;
   }
 
+  function appManifest(uiId: string): UiApp | undefined {
+    return uiApps().find((candidate) => candidate.id === uiId) ??
+      chatUiApps().find((candidate) => candidate.id === uiId);
+  }
+
   function appTitle(uiId: string): string {
-    const app = uiApps().find((candidate) => candidate.id === uiId);
-    return app?.title || uiId;
+    return appManifest(uiId)?.title || uiId;
+  }
+
+  function appIcon(uiId: string): string | null | undefined {
+    return appManifest(uiId)?.icon;
   }
 
   function normalizeBrowserNavState(
@@ -2664,10 +2674,7 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
-      const target =
-        loc.view === "chat"
-          ? (loc.chatId ?? chats()[0]?.chatId ?? null)
-          : (chats()[0]?.chatId ?? null);
+      const target = loc.view === "chat" ? (loc.chatId ?? chats()[0]?.chatId ?? null) : (chats()[0]?.chatId ?? null);
       if (target && target !== chatId()) {
         void selectChat(target, true);
       } else if (!target) {
@@ -2828,6 +2835,8 @@ export function createState() {
   async function refreshChatModel(opts?: { force?: boolean }) {
     const id = chatId();
     if (!id) return;
+    if (!(await waitForChatCreation(id))) return;
+    if (chatId() !== id) return;
     const requestSeq = ++chatModelRequestSeq;
     const bypassSingleFlight = Boolean(
       opts?.force ||
@@ -3485,12 +3494,21 @@ export function createState() {
     else reportError("mcp", r.error);
   }
 
-  async function refreshSkills() {
+  function skillContext(): { enabled?: boolean; chatId?: string | null; root?: string | null } {
     const current = chatId();
-    const r = await skillsListSingle(current ? { chatId: current } : {});
-    setSkillsLoaded(true);
-    if (r.ok) setSkills(r.value.skills);
-    else reportError("skills", r.error);
+    return current ? { chatId: current } : {};
+  }
+
+  async function refreshSkills() {
+    try {
+      const r = await skillsListSingle(skillContext());
+      if (r.ok) setSkills(r.value.skills);
+      else reportError("skills", r.error);
+    } catch (err) {
+      reportError("skills", err);
+    } finally {
+      setSkillsLoaded(true);
+    }
   }
 
   async function refreshSettingsCache() {
@@ -3605,8 +3623,10 @@ export function createState() {
     if (current && current !== primaryUiId) return;
     const instanceId =
       instances.find((inst) => inst.uiId === primaryUiId)?.instanceId ?? null;
+    const hasTab = hasAppRightSidebarTab(primaryUiId, instanceId);
     setOpenUiId(primaryUiId);
     setOpenUiInstanceId(instanceId);
+    openAppRightSidebarTab(primaryUiId, instanceId, !hasTab);
   }
 
   async function resolveUiInstance(
@@ -3771,21 +3791,29 @@ export function createState() {
     // timeline request in small worker pools.
     if (restored) {
       queueMicrotask(() => {
-        if (chatId() !== id) return;
-        void refreshTimeline({
-          showRefreshing: cachedDescribeNeedsRefresh(id, summary),
-        });
-        void refreshChatModel();
-        void refreshChatUis();
+        void (async () => {
+          if (!(await waitForChatCreation(id))) return;
+          if (chatId() !== id) return;
+          void refreshTimeline({
+            showRefreshing: cachedDescribeNeedsRefresh(id, summary),
+          });
+          void refreshChatModel();
+          void refreshChatUis();
+        })();
       });
       return;
     }
+    if (!(await waitForChatCreation(id))) return;
+    if (chatId() !== id) return;
     await refreshTimeline();
     if (chatId() !== id) return;
     queueMicrotask(() => {
-      if (chatId() !== id) return;
-      void refreshChatModel();
-      void refreshChatUis();
+      void (async () => {
+        if (!(await waitForChatCreation(id))) return;
+        if (chatId() !== id) return;
+        void refreshChatModel();
+        void refreshChatUis();
+      })();
     });
   }
 
@@ -3892,18 +3920,6 @@ export function createState() {
       ...current.filter((c) => c.chatId !== summary.chatId),
     ]);
     setChatsLoaded(true);
-    if (opts?.select === false) {
-      setChatId(requestedChatId);
-      showTodosForChat(requestedChatId);
-      setDraftReply(null);
-      loadWipText(requestedChatId);
-    } else {
-      await selectChat(requestedChatId, false, { hydrate: false });
-      queueMicrotask(() => {
-        refreshChatModel();
-        refreshChatUis();
-      });
-    }
 
     const creation = (async () => {
       const r = await api.chat.new({
@@ -3943,6 +3959,19 @@ export function createState() {
     })();
     pendingChatCreations.set(requestedChatId, creation);
     void creation.finally(() => pendingChatCreations.delete(requestedChatId));
+
+    if (opts?.select === false) {
+      setChatId(requestedChatId);
+      showTodosForChat(requestedChatId);
+      setDraftReply(null);
+      loadWipText(requestedChatId);
+    } else {
+      await selectChat(requestedChatId, false, { hydrate: false });
+      queueMicrotask(() => {
+        refreshChatModel();
+        refreshChatUis();
+      });
+    }
 
     return requestedChatId;
   }
@@ -4027,6 +4056,31 @@ export function createState() {
     await Promise.all([refreshFactsView(), refreshVocabulary()]);
   }
 
+  function hasAppRightSidebarTab(uiId: string, instanceId: string | null): boolean {
+    return rightSidebarTabs().some(
+      (tab) =>
+        tab.kind === "app" &&
+        tab.uiId === uiId &&
+        tab.instanceId === instanceId,
+    );
+  }
+
+  function openAppRightSidebarTab(
+    uiId: string,
+    instanceId: string | null,
+    activate = true,
+  ) {
+    upsertRightSidebarTab({
+      id: appTabId(uiId, instanceId),
+      kind: "app",
+      title: appTitle(uiId),
+      uiId,
+      instanceId,
+      icon: appIcon(uiId),
+    }, activate);
+    setFocusedSubject(null);
+  }
+
   function openAppCodeInSidebar(uiId: string) {
     const trimmed = uiId.trim();
     if (!trimmed) return;
@@ -4042,7 +4096,6 @@ export function createState() {
     setOpenUiInstanceId(null);
     setFocusedSubject(null);
   }
-
   async function openUi(
     uiId: string,
     instanceId?: string,
@@ -4106,7 +4159,7 @@ export function createState() {
         title: appTitle(r.value.uiId),
         uiId: r.value.uiId,
         instanceId: r.value.instanceId,
-        icon: uiApps().find((candidate) => candidate.id === r.value.uiId)?.icon,
+        icon: appIcon(r.value.uiId),
       };
       const withoutPending = state.tabs.filter(
         (candidate) =>
@@ -4144,7 +4197,6 @@ export function createState() {
     }
     await Promise.all([refreshUis(), refreshChatUis()]);
   }
-
   async function closeUi() {
     setOpenUiId(null);
     setOpenUiInstanceId(null);
@@ -4501,17 +4553,184 @@ export function createState() {
     void refreshTimeline();
   }
 
+  function forkTitle(title: string | null, id: string): string {
+    const base = (title || displayChatId(id)).trim() || id;
+    const suffix = " fork";
+    const maxBase = 80 - suffix.length;
+    return (base.length > maxBase ? base.slice(0, maxBase).trimEnd() : base) + suffix;
+  }
+
+  function seededForkTimeline(step: string): {
+    items: TimelineItem[];
+    hiddenItems: number;
+    totalSteps: number;
+    totalTurns: number;
+    totalCodeCalls: number;
+  } | null {
+    const current = timeline();
+    const targetIndex = current.findIndex(
+      (item) => item.type === "step" && item.step === step,
+    );
+    if (targetIndex < 0) return null;
+    const items = current.slice(0, targetIndex + 1);
+    const after = current.slice(targetIndex + 1);
+    const stepsAfter = after.filter((item) => item.type === "step").length;
+    const turnsAfter = after.filter(
+      (item) => item.type === "step" && item.kind === "agent:UserInput",
+    ).length;
+    const runJsAfter = after.filter(
+      (item) => item.type === "step" && item.kind === "agent:RunJS",
+    ).length;
+    return {
+      items,
+      hiddenItems: hiddenTimelineItems(),
+      totalSteps: Math.max(0, totalSteps() - stepsAfter),
+      totalTurns: Math.max(0, totalTurns() - turnsAfter),
+      totalCodeCalls: Math.max(0, totalCodeCalls() - runJsAfter),
+    };
+  }
+
+  function seedForkChatCache(
+    forkChatId: ChatId,
+    sourceChatId: string,
+    step: string,
+    summary: ChatSummary,
+    page: NonNullable<ReturnType<typeof seededForkTimeline>>,
+  ) {
+    const now = Date.now();
+    const timelineKey = timelineCacheKey(
+      Math.max(INITIAL_TIMELINE_LIMIT, page.items.length),
+    );
+    const trailItems = trail().filter((item) => {
+      const target = page.items[page.items.length - 1];
+      return !target || item.at <= target.at;
+    });
+    const trailKey = trailCacheKey(Math.max(INITIAL_TIMELINE_LIMIT, trailItems.length));
+    const overview: DescribeOverviewValue = {
+      chatId: forkChatId,
+      title: summary.title,
+      path: summary.path,
+      worktreePath: summary.worktreePath,
+      createdAt: summary.createdAt,
+      lastAt: summary.lastAt,
+      parentChatId: sourceChatId as ChatId,
+      head: step,
+      totalFacts: summary.totalFacts,
+      totalTurns: summary.totalTurns,
+      totalSteps: summary.totalSteps,
+      totalCodeCalls: page.totalCodeCalls,
+      tokens: tokens() ?? {
+        used: 0,
+        budget: 0,
+        threshold: 0,
+        fraction: 0,
+        estimated: true,
+      },
+      todos: currentTodosForChat(sourceChatId),
+      totalTimelineItems: page.hiddenItems + page.items.length,
+      compaction: null,
+    };
+    const model = chatModel();
+    touchChatCache(forkChatId, {
+      overview,
+      timelinePages: {
+        [timelineKey]: {
+          items: page.items,
+          hiddenItems: page.hiddenItems,
+          limit: Math.max(INITIAL_TIMELINE_LIMIT, page.items.length),
+          cachedAt: now,
+          accessedAt: now,
+        },
+      },
+      trailPages: {
+        [trailKey]: {
+          items: trailItems,
+          limit: Math.max(INITIAL_TIMELINE_LIMIT, trailItems.length),
+          cachedAt: now,
+          accessedAt: now,
+        },
+      },
+      activeTimelineKey: timelineKey,
+      activeTrailKey: trailKey,
+      ...(model ? { model: { ...model, chatId: forkChatId } } : {}),
+    });
+    applyTodosForChat(forkChatId, currentTodosForChat(sourceChatId));
+  }
+
   async function forkChatAtStep(step: string) {
     const id = chatId();
     if (!id) return null;
-    const r = await api.chat.fork(id, step);
-    if (!r.ok) {
-      reportError("fork chat", r.error);
-      return null;
-    }
-    await refreshChats();
-    await selectChat(r.value.chatId, false);
-    return r.value.chatId;
+    const sourceSummary = chats().find((chat) => chat.chatId === id);
+    const page = seededForkTimeline(step);
+    if (!page) return null;
+
+    const requestedChatId = optimisticChatId();
+    const now = Date.now();
+    const summary: ChatSummary = {
+      chatId: requestedChatId,
+      createdAt: now,
+      lastAt: now,
+      head: step,
+      title: forkTitle(sourceSummary?.title ?? null, id),
+      path: sourceSummary?.path ?? null,
+      worktreePath: expectedChatWorktreePath({
+        chatId: requestedChatId,
+        path: sourceSummary?.path ?? null,
+      }),
+      status: "agent:Done",
+      totalFacts: totalFacts(),
+      totalTurns: page.totalTurns,
+      totalSteps: page.totalSteps,
+      usage: null,
+      costUsd: 0,
+      costEstimated: true,
+      unpricedModels: [],
+      selectedModel: chatModel()?.selectedModel ?? sourceSummary?.selectedModel ?? null,
+      archived: false,
+      archivedAt: null,
+      parentChatId: id as ChatId,
+    };
+
+    seedForkChatCache(requestedChatId, id, step, summary, page);
+    setChats((current) => [
+      summary,
+      ...current.filter((chat) => chat.chatId !== requestedChatId),
+    ]);
+    setChatsLoaded(true);
+
+    const creation = (async () => {
+      const r = await api.chat.fork(id as ChatId, step as StepId, requestedChatId);
+      if (!r.ok) {
+        reportError("fork chat", r.error);
+        setChats((current) =>
+          current.filter((chat) => chat.chatId !== requestedChatId),
+        );
+        forgetChatCache(requestedChatId);
+        forgetTodosForChat(requestedChatId);
+        if (chatId() === requestedChatId) void selectChat(id);
+        return false;
+      }
+      setChats((current) =>
+        current.map((chat) =>
+          chat.chatId === requestedChatId
+            ? {
+                ...chat,
+                chatId: r.value.chatId,
+                path: r.value.path ?? chat.path,
+                worktreePath: r.value.worktreePath ?? chat.worktreePath,
+                lastAt: Date.now(),
+              }
+            : chat,
+        ),
+      );
+      void refreshChats();
+      return true;
+    })();
+    pendingChatCreations.set(requestedChatId, creation);
+    void creation.finally(() => pendingChatCreations.delete(requestedChatId));
+
+    await selectChat(requestedChatId, false);
+    return requestedChatId;
   }
 
   async function setSelectedModel(model: string | null) {
@@ -4811,6 +5030,20 @@ export function createState() {
   void refreshSkills();
   const offEvents = events.on((ev: any) => {
     if (ev.kind === "ping") return;
+    if (ev.kind === "ui-open") {
+      if (ev.chatId === chatId()) {
+        refreshUisSoon();
+        const uiId = typeof ev.uiId === "string" ? ev.uiId : "";
+        const instanceId = typeof ev.instanceId === "string" ? ev.instanceId : null;
+        if (uiId && view() === "chat") {
+          setOpenUiId(uiId);
+          setOpenUiInstanceId(instanceId);
+          openAppRightSidebarTab(uiId, instanceId);
+        }
+        refreshChatUisSoon();
+      }
+      return;
+    }
     if (ev.kind === "trace-write-error") {
       const rows = typeof ev.rows === "number" ? ev.rows : undefined;
       notify(
@@ -5481,14 +5714,13 @@ export function createState() {
         void chatsLoad;
         return;
       }
-      await refreshChats();
+      const chatsLoad = refreshChats();
       if (initialView !== "facts") refreshGraphSummaries();
       if (initialView === "apps") {
         await refreshUis();
       } else refreshUis();
       refreshMcpServers();
       const loc = parseLocation();
-      const list = chats();
       if (
         loc.view === "new" ||
         loc.view === "facts" ||
@@ -5500,17 +5732,26 @@ export function createState() {
         loc.view === "traces" ||
         loc.view === "settings"
       ) {
+        const hydrateFirstChat = () => {
+          if (chatId()) return;
+          const list = chats();
+          if (list.length === 0) return;
+          setChatId(list[0]!.chatId);
+          showTodosForChat(list[0]!.chatId);
+          loadWipText(list[0]!.chatId);
+        };
+        void chatsLoad
+          .then(() => {
+            hydrateFirstChat();
+            if (view() === "skills") void refreshSkills();
+            if (pending().length > 0) drain();
+          })
+          .catch((err) => reportError("chats", err));
         if (loc.view === "apps" && loc.instanceId) {
           setView("apps");
           await openUiFromRoute(loc.instanceId, "replace");
           if (pending().length > 0) drain();
           return;
-        }
-        if (list.length > 0) {
-          setChatId(list[0]!.chatId);
-          showTodosForChat(list[0]!.chatId);
-          loadWipText(list[0]!.chatId);
-          await Promise.all([refreshTimeline(), refreshChatModel()]);
         }
         if (loc.view === "new") setView("new");
         else if (loc.view === "apps") setView("apps");
@@ -5530,6 +5771,8 @@ export function createState() {
         if (pending().length > 0) drain();
         return;
       }
+      await chatsLoad;
+      const list = chats();
       const desired = loc.chatId;
       let target: string | null = null;
       // Respect an explicit /chat/<id> even if the chat summary list is stale

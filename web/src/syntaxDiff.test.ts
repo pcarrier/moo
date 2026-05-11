@@ -235,13 +235,13 @@ describe("HJSON text formatting", () => {
 
   test("keeps markdown documents out of code auto-detection", () => {
     const html = highlightAuto([
-      "# Workflow plan",
+      "# Project plan",
       "",
-      "Moo workflows are first-class run objects with their own view. They are authored with a compact DSL.",
+      "Moo docs are first-class markdown documents with examples.",
       "",
       "## Authoring shape",
       "",
-      "- workflows do **not** spawn chats as steps.",
+      "- docs do **not** need code detection.",
       "- examples can include fenced code.",
       "",
       "```python",
@@ -251,7 +251,7 @@ describe("HJSON text formatting", () => {
       "",
     ].join("\n"));
 
-    expect(html).toContain('<span class="token title important"><span class="token punctuation">#</span> Workflow plan</span>');
+    expect(html).toContain('<span class="token title important"><span class="token punctuation">#</span> Project plan</span>');
     expect(html).toContain('<span class="token bold"><span class="token punctuation">**</span><span class="token content">not</span><span class="token punctuation">**</span></span>');
     expect(html).not.toContain('first-<span class="token keyword">class</span>');
     expect(html).not.toContain('<span class="token keyword">with</span>');

@@ -180,7 +180,6 @@ export function FactsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     search();
     pageSize();
     bag.triplesRemovedMode();
-    bag.triples();
     selectedGraph();
     setPage(1);
   });

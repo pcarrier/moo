@@ -81,8 +81,12 @@ export const chatApi = {
     callCommand("chat-rm", { chatId }),
   rename: (chatId: ChatId, title: string | null) =>
     callCommand("chat-rename", { chatId, title }),
-  fork: (chatId: ChatId, step: StepId) =>
-    callCommand("chat-fork", { chatId, step }),
+  fork: (chatId: ChatId, step: StepId, forkChatId?: ChatId) =>
+    callCommand("chat-fork", {
+      chatId,
+      step,
+      ...(forkChatId ? { forkChatId } : {}),
+    }),
   archive: (chatId: ChatId, archived: boolean) =>
     callCommand("chat-archive", { chatId, archived }),
   models: (chatId: ChatId) =>

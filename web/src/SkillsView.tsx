@@ -114,6 +114,11 @@ function toSaveInput(draft: Draft): SkillSaveInput {
   };
 }
 
+function skillContext(bag: Bag): { chatId?: string | null; root?: string | null } | undefined {
+  const id = bag.chatId();
+  return id ? { chatId: id } : undefined;
+}
+
 function frontmatterPreview(content: string) {
   if (!content.startsWith("---\n")) return "No frontmatter block.";
   const end = content.indexOf("\n---", 4);
@@ -140,6 +145,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const [savedDraft, setSavedDraft] = createSignal<Draft | null>(null);
   const [selected, setSelected] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
+  const [fetching, setFetching] = createSignal(false);
   const [message, setMessage] = createSignal<string | null>(null);
 
   const url = createMemo(() => draft().url.trim());
@@ -168,7 +174,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.skills.get(id, bag.chatId() ? { chatId: bag.chatId() } : undefined);
+      const result = await api.skills.get(id, skillContext(bag));
       if (!result.ok) return setMessage(result.error.message);
       if (!result.value.skill) return setMessage("skill not found");
       const next = draftFromSkill(result.value.skill);
@@ -191,7 +197,6 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
       setSelected(result.value.skill.id);
       setSavedDraft(next);
       setDraft(next);
-      setMessage("saved");
       await bag.refreshSkills();
     } finally {
       setBusy(false);
@@ -206,17 +211,17 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     const base = savedDraft();
     const canPersistRefresh = !!selectedId && !!base && !isDirty() && value === base.url.trim();
     setBusy(true);
+    setFetching(true);
     setMessage(null);
     try {
       if (canPersistRefresh) {
-        const result = await api.skills.refresh(selectedId, bag.chatId() ? { chatId: bag.chatId() } : undefined);
+        const result = await api.skills.refresh(selectedId, skillContext(bag));
         if (!result.ok) return setMessage(result.error.message || "fetch failed");
         if (!result.value.ok || !result.value.skill) return setMessage(result.value.error || "fetch failed");
         const next = draftFromSkill(result.value.skill);
         setSelected(result.value.skill.id);
         setSavedDraft(next);
         setDraft(next);
-        setMessage("fetched");
         await bag.refreshSkills();
         return;
       }
@@ -229,8 +234,8 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
         name: current.name.trim() || result.value.name || current.name,
         content: result.value.content,
       }));
-      setMessage(selectedId ? "fetched; save to keep it" : "fetched; review and save");
     } finally {
+      setFetching(false);
       setBusy(false);
     }
   }
@@ -278,10 +283,6 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
         }
       />
       <PageBody class="skills-page">
-        <Show when={message()}>
-          <Notice class="skills-message">{message()}</Notice>
-        </Show>
-
         <div class="skills-grid">
           <Card class="skills-list-card">
             <div class="skills-card-title">
@@ -326,6 +327,9 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                 <button class="primary" onClick={() => void save()} disabled={!canSave()}>save</button>
               </div>
             </div>
+            <Show when={message()}>
+              <Notice class="skills-message">{message()}</Notice>
+            </Show>
 
             <div class="skills-form">
               <label class="skills-field skills-name-field" for="skill-name-input">
@@ -356,7 +360,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                       setDraft((current) => ({ ...current, url: nextUrl }));
                     }}
                   />
-                  <button onClick={() => void fetchUrl()} disabled={!canFetchUrl()}>fetch</button>
+                  <button onClick={() => void fetchUrl()} disabled={!canFetchUrl()}>{fetching() ? "fetching…" : "fetch"}</button>
                 </div>
               </div>
 

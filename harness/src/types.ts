@@ -568,6 +568,7 @@ export type MemoryScope = {
   }): Promise<Quad[]>;
 };
 
+
 export type Moo = {
   try: MooTry;
   time: { nowMs(): Promise<number>; nowISO(): Promise<string>; datetime(d?: Date | string | number): Promise<Term>; nowPlus(ms: number): Promise<number> };

@@ -16,7 +16,11 @@ import prettierPostcss from "prettier/plugins/postcss";
 import prettierTypescript from "prettier/plugins/typescript";
 import prettierYaml from "prettier/plugins/yaml";
 
-import { api, type UiApp, type UiBundle } from "./api";
+import {
+  api,
+  type UiApp,
+  type UiBundle,
+} from "./api";
 import type { Bag } from "./state";
 import { highlightByPath } from "./syntax";
 
@@ -27,7 +31,7 @@ function EmptyState(props: { children: JSX.Element }) {
 type AppSourceFile = {
   path: string;
   text: string;
-  kind: "manifest" | "bundle" | "file";
+  kind: string;
   highlightPath?: string;
 };
 
@@ -76,6 +80,36 @@ function lineCount(text: string): number {
 }
 
 type FormatResult = { text: string; error?: string };
+
+function isMermaidSourcePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".mmd") || lower.endsWith(".mermaid");
+}
+
+function SourcePreview(props: {
+  path: string;
+  text: string;
+  highlighted: string;
+  pretty: boolean;
+}) {
+  return (
+    <Show
+      when={props.pretty && isMermaidSourcePath(props.path)}
+      fallback={
+        <pre class="apps-code-block">
+          <code innerHTML={props.highlighted} />
+        </pre>
+      }
+    >
+      <div
+        class="apps-code-rendered apps-code-mermaid mermaid"
+        data-mermaid-source={props.text}
+      >
+        {props.text}
+      </div>
+    </Show>
+  );
+}
 
 function parserForPath(path: string): string | null {
   const lower = path.toLowerCase();
@@ -277,14 +311,32 @@ export function AppCodeExplorer(props: { bag: Bag; uiId: string }) {
                             </span>
                           )}
                         </Show>
-                        <button
-                          type="button"
-                          class="apps-format-toggle"
-                          classList={{ active: formatEnabled() }}
-                          onClick={() => setFormatEnabled((value) => !value)}
+                        <div
+                          class="apps-source-tabs"
+                          role="tablist"
+                          aria-label="source view"
                         >
-                          {formatEnabled() ? "raw" : "pretty"}
-                        </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={!formatEnabled()}
+                            class="apps-source-tab"
+                            classList={{ active: !formatEnabled() }}
+                            onClick={() => setFormatEnabled(false)}
+                          >
+                            Source
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={formatEnabled()}
+                            class="apps-source-tab"
+                            classList={{ active: formatEnabled() }}
+                            onClick={() => setFormatEnabled(true)}
+                          >
+                            Preview
+                          </button>
+                        </div>
                       </div>
                     </header>
                     <div class="apps-code-browser">
@@ -297,9 +349,12 @@ export function AppCodeExplorer(props: { bag: Bag; uiId: string }) {
                             class="apps-code-pane"
                             aria-label={source().path}
                           >
-                            <pre class="apps-code-block">
-                              <code innerHTML={highlightedSource()} />
-                            </pre>
+                            <SourcePreview
+                              path={source().path}
+                              text={sourceText()}
+                              highlighted={highlightedSource()}
+                              pretty={formatEnabled()}
+                            />
                           </section>
                         )}
                       </Show>
@@ -322,3 +377,13 @@ export function AppCodeExplorer(props: { bag: Bag; uiId: string }) {
     </section>
   );
 }
+
+function sourceAsText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+

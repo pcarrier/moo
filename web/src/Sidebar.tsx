@@ -2884,7 +2884,7 @@ function tabTitle(tab: RightSidebarTab, root?: string | null): string {
   if (tab.kind === "json") return tab.title;
   if (tab.kind === "diff") return collapseHome(tab.path);
   if (tab.kind === "memory-diff") return tab.graph || tab.store;
-  if (tab.kind === "app") return tab.uiId;
+  if (tab.kind === "app") return tab.title || tab.uiId;
   if (tab.kind === "app-code") return `Code · ${tab.title}`;
   if (tab.kind === "trace") return traceTabTitle(tab.trace);
   if (tab.kind === "diffs") return "Diff";
@@ -4784,19 +4784,16 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
   );
   const factsCountLabel = createMemo(() => {
     if (!bag.graphSummariesLoaded()) return "loading";
-    const count = factsCount();
-    return `${count} fact${count === 1 ? "" : "s"}`;
+    return String(factsCount());
   });
   const pointerCount = createMemo(() => bag.pointers().length);
   const pointerCountLabel = createMemo(() => {
     if (!bag.pointersLoaded()) return "loading";
-    const count = pointerCount();
-    return `${count} pointer${count === 1 ? "" : "s"}`;
+    return String(pointerCount());
   });
   const skillCountLabel = createMemo(() => {
     if (!bag.skillsLoaded()) return "loading";
-    const count = bag.skills().length;
-    return `${count} skill${count === 1 ? "" : "s"}`;
+    return String(bag.skills().length);
   });
 
   const reduceMotion =
@@ -5099,9 +5096,7 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
         onClick={() => navigate(() => bag.showApps())}
       >
         <span class="sidebar-tab-label">apps</span>
-        <span class="sidebar-tab-count">
-          {bag.uiApps().length} app{bag.uiApps().length === 1 ? "" : "s"}
-        </span>
+        <span class="sidebar-tab-count">{bag.uiApps().length}</span>
       </button>
       <button
         type="button"
@@ -5137,10 +5132,7 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
         onClick={() => navigate(() => bag.showMcp())}
       >
         <span class="sidebar-tab-label">mcp</span>
-        <span class="sidebar-tab-count">
-          {bag.mcpServers().length} server
-          {bag.mcpServers().length === 1 ? "" : "s"}
-        </span>
+        <span class="sidebar-tab-count">{bag.mcpServers().length}</span>
       </button>
       <button
         type="button"

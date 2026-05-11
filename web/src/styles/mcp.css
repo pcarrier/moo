@@ -251,7 +251,6 @@
 
 .mcp-server-meta,
 .mcp-server-url,
-.mcp-tool-list span,
 .mcp-message {
   color: var(--muted);
   font-size: 0.85rem;
@@ -274,6 +273,27 @@
 .mcp-tool-list li:first-child {
   border-top: 0;
   padding-top: 0;
+}
+
+.mcp-tool-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.mcp-tool-title {
+  color: var(--fg);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.mcp-tool-name {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .mcp-tool-signature {
@@ -303,6 +323,54 @@
   color: color-mix(in srgb, dodgerblue 72%, var(--fg));
   font-weight: 500;
 }
+
+.mcp-tool-description,
+.mcp-tool-description.markdown {
+  color: var(--fg);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-width: 68rem;
+}
+
+.mcp-tool-description.markdown pre {
+  white-space: pre-wrap;
+}
+
+.mcp-tool-description.markdown :first-child {
+  margin-top: 0;
+}
+
+.mcp-tool-description.markdown :last-child {
+  margin-bottom: 0;
+}
+
+.mcp-tool-description.markdown p,
+.mcp-tool-description.markdown ul,
+.mcp-tool-description.markdown ol,
+.mcp-tool-description.markdown blockquote,
+.mcp-tool-description.markdown pre {
+  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.mcp-tool-description.markdown h1,
+.mcp-tool-description.markdown h2,
+.mcp-tool-description.markdown h3,
+.mcp-tool-description.markdown h4,
+.mcp-tool-description.markdown h5,
+.mcp-tool-description.markdown h6 {
+  color: var(--fg);
+  font-weight: 650;
+  line-height: 1.25;
+  margin: 0.65rem 0 0.35rem;
+}
+
+.mcp-tool-description.markdown h1 { font-size: 1.15rem; }
+.mcp-tool-description.markdown h2 { font-size: 1.08rem; }
+.mcp-tool-description.markdown h3,
+.mcp-tool-description.markdown h4,
+.mcp-tool-description.markdown h5,
+.mcp-tool-description.markdown h6 { font-size: 1rem; }
 
 .mcp-message {
   border: 1px solid var(--line);

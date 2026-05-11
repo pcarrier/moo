@@ -37,6 +37,7 @@ const V8_LANES: &[&str] = &[
     "moo-worker",
     "moo-read-worker",
     "moo-scan-worker",
+    "moo-ui-worker",
     "moo-tool-worker",
 ];
 
@@ -62,6 +63,7 @@ pub struct V8RuntimeSettings {
     pub max_workers: Option<usize>,
     pub read_max_workers: Option<usize>,
     pub scan_max_workers: Option<usize>,
+    pub ui_max_workers: Option<usize>,
     pub tool_max_workers: Option<usize>,
     pub max_old_generation_bytes: Option<usize>,
     pub max_young_generation_bytes: Option<usize>,
@@ -70,6 +72,7 @@ pub struct V8RuntimeSettings {
     pub main_pool: Option<V8PoolRuntimeSettings>,
     pub read_pool: Option<V8PoolRuntimeSettings>,
     pub scan_pool: Option<V8PoolRuntimeSettings>,
+    pub ui_pool: Option<V8PoolRuntimeSettings>,
     pub tool_pool: Option<V8PoolRuntimeSettings>,
 }
 
@@ -92,6 +95,7 @@ pub fn default_v8_runtime_settings() -> V8RuntimeSettings {
         max_workers: Some(DEFAULT_MAX_WORKERS),
         read_max_workers: Some(default_read_max_workers(DEFAULT_MAX_WORKERS)),
         scan_max_workers: Some(1),
+        ui_max_workers: Some(default_ui_max_workers(DEFAULT_MAX_WORKERS)),
         tool_max_workers: Some(default_tool_max_workers(DEFAULT_MAX_WORKERS)),
         max_old_generation_bytes: Some(DEFAULT_MAX_OLD_GENERATION_BYTES),
         max_young_generation_bytes: Some(DEFAULT_MAX_YOUNG_GENERATION_BYTES),
@@ -115,6 +119,12 @@ pub fn default_v8_runtime_settings() -> V8RuntimeSettings {
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
         )),
+        ui_pool: Some(pool_settings(
+            default_ui_max_workers(DEFAULT_MAX_WORKERS),
+            DEFAULT_MAX_OLD_GENERATION_BYTES,
+            DEFAULT_MAX_YOUNG_GENERATION_BYTES,
+            DEFAULT_RECYCLE_USED_HEAP_BYTES,
+        )),
         tool_pool: Some(pool_settings(
             default_tool_max_workers(DEFAULT_MAX_WORKERS),
             DEFAULT_MAX_OLD_GENERATION_BYTES,
@@ -129,6 +139,7 @@ pub fn effective_v8_runtime_settings() -> V8RuntimeSettings {
         max_workers: Some(configured_max_workers()),
         read_max_workers: Some(configured_read_max_workers()),
         scan_max_workers: Some(configured_scan_max_workers()),
+        ui_max_workers: Some(configured_ui_max_workers()),
         tool_max_workers: Some(configured_tool_max_workers()),
         max_old_generation_bytes: Some(max_old_generation_bytes_for_lane("moo-worker")),
         max_young_generation_bytes: Some(max_young_generation_bytes_for_lane("moo-worker")),
@@ -137,6 +148,7 @@ pub fn effective_v8_runtime_settings() -> V8RuntimeSettings {
         main_pool: Some(effective_pool_settings("moo-worker")),
         read_pool: Some(effective_pool_settings("moo-read-worker")),
         scan_pool: Some(effective_pool_settings("moo-scan-worker")),
+        ui_pool: Some(effective_pool_settings("moo-ui-worker")),
         tool_pool: Some(effective_pool_settings("moo-tool-worker")),
     }
 }
@@ -169,6 +181,9 @@ pub fn normalize_v8_runtime_settings(mut settings: V8RuntimeSettings) -> V8Runti
     if let Some(value) = settings.scan_max_workers.as_mut() {
         *value = (*value).max(1);
     }
+    if let Some(value) = settings.ui_max_workers.as_mut() {
+        *value = (*value).max(1);
+    }
     if let Some(value) = settings.tool_max_workers.as_mut() {
         *value = (*value).max(1);
     }
@@ -184,6 +199,7 @@ pub fn normalize_v8_runtime_settings(mut settings: V8RuntimeSettings) -> V8Runti
     normalize_pool_runtime_settings(&mut settings.main_pool);
     normalize_pool_runtime_settings(&mut settings.read_pool);
     normalize_pool_runtime_settings(&mut settings.scan_pool);
+    normalize_pool_runtime_settings(&mut settings.ui_pool);
     normalize_pool_runtime_settings(&mut settings.tool_pool);
     settings
 }
@@ -822,6 +838,9 @@ pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     if let Some(value) = settings.scan_max_workers {
         overrides.insert("MOO_V8_SCAN_WORKERS".to_string(), value.to_string());
     }
+    if let Some(value) = settings.ui_max_workers {
+        overrides.insert("MOO_V8_UI_WORKERS".to_string(), value.to_string());
+    }
     if let Some(value) = settings.tool_max_workers {
         overrides.insert("MOO_V8_TOOL_WORKERS".to_string(), value.to_string());
     }
@@ -852,6 +871,7 @@ pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     apply_v8_pool_runtime_settings(&mut overrides, "MOO_V8_MAIN", settings.main_pool.as_ref());
     apply_v8_pool_runtime_settings(&mut overrides, "MOO_V8_READ", settings.read_pool.as_ref());
     apply_v8_pool_runtime_settings(&mut overrides, "MOO_V8_SCAN", settings.scan_pool.as_ref());
+    apply_v8_pool_runtime_settings(&mut overrides, "MOO_V8_UI", settings.ui_pool.as_ref());
     apply_v8_pool_runtime_settings(&mut overrides, "MOO_V8_TOOL", settings.tool_pool.as_ref());
 }
 
@@ -898,6 +918,10 @@ fn default_read_max_workers(main_workers: usize) -> usize {
     (main_workers / 4).max(2)
 }
 
+fn default_ui_max_workers(main_workers: usize) -> usize {
+    (main_workers / 4).max(2)
+}
+
 fn default_tool_max_workers(main_workers: usize) -> usize {
     (main_workers / 4).max(2)
 }
@@ -914,6 +938,14 @@ pub fn configured_scan_max_workers() -> usize {
     read_usize_env("MOO_V8_SCAN_WORKERS", 1).max(1)
 }
 
+pub fn configured_ui_max_workers() -> usize {
+    read_usize_env(
+        "MOO_V8_UI_WORKERS",
+        default_ui_max_workers(configured_max_workers()),
+    )
+    .max(1)
+}
+
 pub fn configured_tool_max_workers() -> usize {
     read_usize_env(
         "MOO_V8_TOOL_WORKERS",
@@ -926,6 +958,7 @@ fn configured_workers_for_lane(lane: &str) -> usize {
     match lane {
         "moo-read-worker" => configured_read_max_workers(),
         "moo-scan-worker" => configured_scan_max_workers(),
+        "moo-ui-worker" => configured_ui_max_workers(),
         "moo-tool-worker" => configured_tool_max_workers(),
         _ => configured_max_workers(),
     }
@@ -948,6 +981,7 @@ fn lane_env_prefix(lane: &str) -> &'static str {
     match lane {
         "moo-read-worker" => "MOO_V8_READ",
         "moo-scan-worker" => "MOO_V8_SCAN",
+        "moo-ui-worker" => "MOO_V8_UI",
         "moo-tool-worker" => "MOO_V8_TOOL",
         _ => "MOO_V8_MAIN",
     }
@@ -1039,6 +1073,7 @@ pub struct Pool {
     tx: Sender<Job>,
     read_tx: Sender<Job>,
     scan_tx: Sender<Job>,
+    ui_tx: Sender<Job>,
     async_tool_tx: Sender<AsyncToolJob>,
     // Outer std::sync::Mutex protects the map and is only held while the
     // inner Arc is cloned (microseconds). The inner per-chat lock is
@@ -1068,6 +1103,13 @@ impl Pool {
         let (scan_tx, scan_rx) = mpsc::channel::<Job>();
         spawn_workers("moo-scan-worker", scan_workers, scan_rx, db);
 
+        // UI app handler calls can include slow external MCP requests. Keep
+        // them off the main write lane so agent streaming/turn work cannot
+        // starve app RPCs, and app RPCs cannot starve agent bookkeeping.
+        let ui_workers = configured_ui_max_workers();
+        let (ui_tx, ui_rx) = mpsc::channel::<Job>();
+        spawn_workers("moo-ui-worker", ui_workers, ui_rx, db);
+
         let async_tool_workers = configured_tool_max_workers();
         let (async_tool_tx, async_tool_rx) = mpsc::channel::<AsyncToolJob>();
         spawn_async_tool_workers("moo-tool-worker", async_tool_workers, async_tool_rx, db);
@@ -1076,6 +1118,7 @@ impl Pool {
             tx,
             read_tx,
             scan_tx,
+            ui_tx,
             async_tool_tx,
             chat_locks: Arc::new(Mutex::new(HashMap::new())),
             server_base_url,
@@ -1107,6 +1150,9 @@ impl Pool {
             }
             Lane::ScanRead => {
                 return self.dispatch_on("moo-scan-worker", &self.scan_tx, bundle, input);
+            }
+            Lane::Ui => {
+                return self.dispatch_on("moo-ui-worker", &self.ui_tx, bundle, input);
             }
             Lane::Write => {}
         }
@@ -1831,6 +1877,7 @@ enum Lane {
     Write,
     FastRead,
     ScanRead,
+    Ui,
 }
 
 const FAST_READ_ONLY_COMMANDS: &[&str] = &[
@@ -1860,12 +1907,20 @@ const FAST_READ_ONLY_COMMANDS: &[&str] = &[
     "help",
     "v8-stats",
     "pointers",
+    "skills-list",
+    "skill-get",
 ];
 
 const SCAN_READ_ONLY_COMMANDS: &[&str] =
     &["graph-summaries", "memory-query", "triples", "vocabulary"];
 
 const FRESH_CONTEXT_COMMANDS: &[&str] = &["run-js-tool", "ui-call"];
+
+// UI app handlers can be invoked from the browser while an agent turn for the
+// same chat still owns the per-chat write lock. Do not make app RPCs wait for
+// that lock: handlers run in a fresh V8 context and their individual host calls
+// still use the normal storage transaction boundaries.
+const CHAT_LOCK_BYPASS_COMMANDS: &[&str] = &["ui-call"];
 
 fn needs_fresh_context(input: &str) -> bool {
     parse_input(input)
@@ -1880,7 +1935,8 @@ fn route_input(input: &str) -> (Lane, Option<String>) {
     };
     let command = command_from(&v);
     let lane = lane_for(command);
-    let lock_key = (lane == Lane::Write).then(|| write_lock_key(command, &v));
+    let lock_key = (lane == Lane::Write && !CHAT_LOCK_BYPASS_COMMANDS.contains(&command))
+        .then(|| write_lock_key(command, &v));
     (lane, lock_key)
 }
 
@@ -1889,6 +1945,8 @@ fn lane_for(command: &str) -> Lane {
         Lane::FastRead
     } else if SCAN_READ_ONLY_COMMANDS.contains(&command) {
         Lane::ScanRead
+    } else if command == "ui-call" {
+        Lane::Ui
     } else {
         Lane::Write
     }
@@ -1999,6 +2057,29 @@ mod tests {
 
         let outcome = run_snapshot_bundle_job(&mut rt, "{}", true);
         assert_eq!(outcome.result.unwrap(), r#"{"ok":true,"value":"two"}"#);
+    }
+
+    #[test]
+    fn skill_read_commands_use_fast_read_lane_without_chat_lock() {
+        assert_eq!(
+            route_input(r#"{"command":"skills-list","chatId":"abc"}"#),
+            (Lane::FastRead, None)
+        );
+        assert_eq!(
+            route_input(r#"{"command":"skill-get","chatId":"abc","id":"apps"}"#),
+            (Lane::FastRead, None)
+        );
+    }
+
+    #[test]
+    fn ui_call_uses_dedicated_lane_without_chat_lock() {
+        assert_eq!(
+            route_input(r#"{"command":"ui-call","chatId":"abc","uiId":"linear-active-tickets","name":"refresh"}"#),
+            (Lane::Ui, None)
+        );
+        assert!(needs_fresh_context(
+            r#"{"command":"ui-call","chatId":"abc","uiId":"linear-active-tickets"}"#
+        ));
     }
 
     #[test]

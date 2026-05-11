@@ -190,9 +190,17 @@ export async function rememberChatEffort(effort: string | null): Promise<void> {
   else await moo.pointers.delete(LAST_EFFORT_REF);
 }
 
+export async function applyDefaultChatSettings(chatId: string): Promise<void> {
+  const [model, effort, configuredEffort] = await Promise.all([lastChatModel(), lastChatEffort(), defaultChatEffort()]);
+  const effective = await resolveProvider(null, effort || configuredEffort, model ? splitModelId(model).provider : null);
+  await Promise.all([
+    setChatModel(chatId, model || modelOptionId(effective.name, effective.model)),
+    setChatEffort(chatId, effort || configuredEffort),
+  ]);
+}
+
 export async function applyLastChatSettings(chatId: string): Promise<void> {
-  const [model, effort] = await Promise.all([lastChatModel(), lastChatEffort()]);
-  await Promise.all([setChatModel(chatId, model), setChatEffort(chatId, effort)]);
+  await applyDefaultChatSettings(chatId);
 }
 
 export function effortAllowedForModel(efforts: readonly string[], effort: string | null | undefined): string | null {

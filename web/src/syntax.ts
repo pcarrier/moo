@@ -93,6 +93,7 @@ type HjsonFormatOptions = {
   maxDepth?: number;
   linkStoreHashes?: boolean;
   comments?: HjsonCommentMap;
+  collapsible?: boolean;
 };
 
 type RenderContext = Required<Omit<HjsonFormatOptions, "linkStoreHashes" | "comments">> & {
@@ -122,8 +123,10 @@ type EmbeddedCodeText = {
 export function highlightMarkdownCode(text: string, language: string | null | undefined, maxBytes = DEFAULT_HIGHLIGHT_MAX_BYTES): string {
   if (text.length > maxBytes) return escapeHtml(text);
   const lang = normalizeCodeLanguage(language);
-  return cachedHighlight("md:" + lang + "\0" + text, text.length, () => {
+  const cacheLang = lang === "hjson-example" ? lang + ":expanded" : lang;
+  return cachedHighlight("md:" + cacheLang + "\0" + text, text.length, () => {
     if (lang === "diff" || lang === "patch") return highlightDiff(text, null);
+    if (lang === "hjson-example") return highlightHjson(text, { force: true, collapsible: false });
     if (DATA_LANGUAGES.has(lang)) {
       return highlightHjson(text, { force: true, jsonLines: lang === "jsonl" });
     }
@@ -144,7 +147,7 @@ export function isHjsonCodeLanguage(language: string | null | undefined): boolea
 
 export function displayCodeLanguage(language: string | null | undefined): string {
   const normalized = normalizeCodeLanguage(language);
-  return DATA_LANGUAGES.has(normalized) ? "hjson" : normalized;
+  return DATA_LANGUAGES.has(normalized) || normalized === "hjson-example" ? "hjson" : normalized;
 }
 
 export function highlightByPath(text: string, path: string, maxBytes = DEFAULT_HIGHLIGHT_MAX_BYTES): string {
@@ -295,14 +298,14 @@ export function formatJsonTextForView(text: string): string {
   return formatHjsonTextForView(text);
 }
 
-export function highlightHjson(text: string, options: { force?: boolean; jsonLines?: boolean } = {}): string {
+export function highlightHjson(text: string, options: { force?: boolean; jsonLines?: boolean; collapsible?: boolean } = {}): string {
   if (text.length > DEFAULT_HIGHLIGHT_MAX_BYTES) return escapeHtml(text);
   if (options.jsonLines) {
     const highlightedLines = highlightHjsonLines(text);
     if (highlightedLines !== null) return highlightedLines;
   }
   const parsed = parseStructuredText(text, options.force === true);
-  if (parsed.ok) return highlightHjsonValue(parsed.value, { comments: parsed.comments ?? undefined });
+  if (parsed.ok) return highlightHjsonValue(parsed.value, { comments: parsed.comments ?? undefined, collapsible: options.collapsible });
   return highlightWithPrism(text, "json");
 }
 
@@ -336,6 +339,7 @@ function createRenderContext(options: HjsonFormatOptions, html: boolean): Render
     maxDepth: options.maxDepth ?? 40,
     linkStoreHashes: options.linkStoreHashes === true,
     comments: options.comments ?? null,
+    collapsible: options.collapsible !== false,
     seen: new WeakSet<object>(),
     embeddedDepth: 0,
   };
@@ -487,7 +491,7 @@ function renderHjsonMultilineString(value: string, pad: string, ctx: RenderConte
 }
 
 function hjsonCollapsible(ctx: RenderContext, kind: "object" | "array" | "string", html: string): string {
-  if (!ctx.html) return html;
+  if (!ctx.html || !ctx.collapsible) return html;
   return (
     '<span class="hjson-collapsible hjson-' + kind + '" data-hjson-kind="' + kind + '">' +
     '<button type="button" class="hjson-toggle" aria-expanded="true" aria-label="collapse ' + kind + '" title="collapse ' + kind + '"></button>' +
@@ -501,17 +505,17 @@ function hjsonBody(ctx: RenderContext, html: string): string {
 }
 
 function hjsonCollapsedPreview(ctx: RenderContext, text: string): string {
-  return ctx.html ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + escapeHtml(text) + "</span>" : "";
+  return ctx.html && ctx.collapsible ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + escapeHtml(text) + "</span>" : "";
 }
 
 function hjsonStringCollapsedPreview(ctx: RenderContext, value: string): string {
   return ctx.html
-    ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + span(ctx, "json-str", collapsedHjsonStringPreview(value)) + "</span>"
+    && ctx.collapsible ? '<span class="hjson-collapsed-preview" aria-hidden="true">' + span(ctx, "json-str", collapsedHjsonStringPreview(value)) + "</span>"
     : "";
 }
 
 function maybeCollapsibleHjsonString(value: string, rendered: string, hasEmbedded: boolean, ctx: RenderContext): string {
-  if (!ctx.html || (!hasEmbedded && value.length < HJSON_COLLAPSIBLE_STRING_MIN_CHARS && !hasLineBreak(value))) return rendered;
+  if (!ctx.html || !ctx.collapsible || (!hasEmbedded && value.length < HJSON_COLLAPSIBLE_STRING_MIN_CHARS && !hasLineBreak(value))) return rendered;
   return hjsonCollapsible(
     ctx,
     "string",

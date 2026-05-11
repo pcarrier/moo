@@ -36,7 +36,7 @@ import {
   traceMark,
   traceSpan,
   buildStreamingLLMRequest,
-  refreshDynamicContextMessages,
+  stripDynamicContextMessages,
   compactionProviderForRequest,
   compactionRequestTokenLimit,
   fitCompactionSummaryMessages,
@@ -509,15 +509,18 @@ export async function stepPreludeCommand(input: Input) {
   // was hidden in the archived section before the user sent the message.
   await moo.chat.unarchive(chatId);
 
+  const artificial = input.artificial === true;
   const payloadHash = await moo.objects.putJSON({ kind: "agent:UserInput", value: {
       message,
       at: await moo.time.nowMs(),
       ...(attachments.length ? { attachments } : {}),
+      ...(artificial ? { artificial: true } : {}),
     } });
   await appendStep(chatId, {
     kind: "agent:UserInput",
     status: "agent:Done",
     payloadHash,
+    ...(artificial ? { extras: [["agent:artificial", "true"]] } : {}),
   });
 
   const selectedModel = await getChatModel(chatId);
@@ -926,7 +929,7 @@ export async function stepPrepareCommand(input: Input) {
       };
     }
   } else {
-    messages = await traceSpan("llm.refresh_dynamic_context", { chatId, messages: passedMessages.length }, () => refreshDynamicContextMessages(chatId, passedMessages));
+    messages = stripDynamicContextMessages(passedMessages);
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
     await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
   }

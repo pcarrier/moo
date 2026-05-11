@@ -2,18 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { inferProviderForModel, modelContextBudget, resolveProvider } from "../src/agent";
 import { llmAuthGetCommand } from "../src/commands/llm_auth";
-import { modelOptionsFor, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
+import { applyDefaultChatSettings, modelOptionsFor, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
 import { modelLongContextUsageKey, modelMetadataFor } from "../src/llm_models";
 
 const refs = new Map<string, string>();
 const objects = new Map<string, any>();
 let objectId = 0;
+let envValues = new Map<string, string>();
 
-(globalThis as any).__op_env_get = () => null;
+(globalThis as any).__op_env_get = (name: string) => envValues.get(name) ?? null;
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
 (globalThis as any).__op_ref_delete = (name: string) => refs.delete(name);
+(globalThis as any).__op_facts_match = () => [];
+(globalThis as any).__op_facts_swap = () => ({ store: "test", added: 0, removed: 0 });
 (globalThis as any).__op_object_put = (kind: string, content: string) => {
   const hash = "sha256:" + String(++objectId).padStart(64, "0");
   objects.set(hash, { kind, value: JSON.parse(content) });
@@ -24,6 +27,7 @@ let objectId = 0;
 afterEach(() => {
   refs.clear();
   objects.clear();
+  envValues.clear();
 });
 
 describe("Grok/xAI provider support", () => {
@@ -36,6 +40,36 @@ describe("Grok/xAI provider support", () => {
     const options = await modelOptionsFor("xai", "grok-4-fast");
     expect(options.map((option) => option.id)).toContain("xai:grok-4-fast");
     expect(options.map((option) => option.id)).not.toContain("xai:grok-code-fast-1");
+  });
+
+
+  test("applies configured defaults to fresh chats without last picker state", async () => {
+    envValues = new Map([
+      ["OPENAI_MODEL", "gpt-5.5"],
+      ["OPENAI_REASONING_EFFORT", "high"],
+    ]);
+
+    await applyDefaultChatSettings("fresh");
+
+    expect(refs.get("chat/fresh/provider")).toBe("openai");
+    expect(refs.get("chat/fresh/model")).toBe("gpt-5.5");
+    expect(refs.get("chat/fresh/effort")).toBe("high");
+  });
+
+  test("last picker state wins over configured fresh-chat defaults", async () => {
+    envValues = new Map([
+      ["OPENAI_MODEL", "gpt-5.5"],
+      ["OPENAI_REASONING_EFFORT", "high"],
+    ]);
+    refs.set("ui/last-provider", "anthropic");
+    refs.set("ui/last-model", "claude-sonnet-4-5");
+    refs.set("ui/last-effort", "medium");
+
+    await applyDefaultChatSettings("fresh");
+
+    expect(refs.get("chat/fresh/provider")).toBe("anthropic");
+    expect(refs.get("chat/fresh/model")).toBe("claude-sonnet-4-5");
+    expect(refs.get("chat/fresh/effort")).toBe("medium");
   });
 
   test("defaults xAI credentials to x.ai API and Grok 4 Fast", async () => {

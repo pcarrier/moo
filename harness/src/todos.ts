@@ -291,7 +291,7 @@ function truncateText(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-export async function formatTodosForDynamicContext(chatId: string): Promise<string | null> {
+export async function formatTodosForPrompt(chatId: string): Promise<string | null> {
   const state = await getTodos(chatId);
   const active = state.items.filter((item) => item.status !== "done" && item.status !== "dropped");
   if (!active.length) return null;
@@ -303,9 +303,9 @@ export async function formatTodosForDynamicContext(chatId: string): Promise<stri
       const count = counts.get(status) ?? 0;
       if (count) parts.push(`${count} ${status}`);
     }
-    return `Private TODOs: ${parts.join(", ")}. Use moo.todos.list() if needed.`;
+    return `${parts.join(", ")}. Use moo.todos.list() if needed.`;
   }
-  const lines = ["Private TODOs (dynamic, non-cacheable):"];
+  const lines: string[] = [];
   for (const item of active) {
     const priority = item.priority && item.priority !== "normal" ? ` !${item.priority}` : "";
     const note = item.note ? ` — ${truncateText(item.note, 80)}` : "";

@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createSignal, onMount } from "solid-js";
 
 import { api, type ApiResult, type McpServerConfig, type McpTool } from "./api";
+import { renderToolDescriptionMarkdown } from "./markdown";
 import { highlightByPath } from "./syntax";
 import type { Bag } from "./state";
 import { RefreshIcon } from "./icons";
@@ -70,9 +71,9 @@ function prettyTitleFromUrl(url: string): string {
 function splitDenseDescription(tool: McpTool): { shape: string; summary: string } {
   const text = tool.denseDescription || "";
   const idx = text.indexOf(": ");
-  if (idx >= 0) return { shape: text.slice(0, idx), summary: text.slice(idx + 2) };
-  if (text) return { shape: text, summary: "" };
-  return { shape: "{}", summary: tool.description || "" };
+  const shape = idx >= 0 ? text.slice(0, idx) : text || "{}";
+  const denseSummary = idx >= 0 ? text.slice(idx + 2) : "";
+  return { shape, summary: tool.description || denseSummary };
 }
 
 function splitTopLevel(value: string): string[] {
@@ -516,14 +517,18 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                   const detail = splitDenseDescription(tool);
                   return (
                     <li>
+                      <div class="mcp-tool-header">
+                        <div class="mcp-tool-title">{tool.title || tool.name}</div>
+                        <div class="mcp-tool-name">{tool.name}</div>
+                      </div>
+                      <Show when={detail.summary}>
+                        <div class="mcp-tool-description markdown" innerHTML={renderToolDescriptionMarkdown(detail.summary)} />
+                      </Show>
                       <code
                         class="mcp-tool-signature"
                         aria-label={signatureText(tool, detail.shape)}
                         innerHTML={signatureHtml(tool, detail.shape)}
                       />
-                      <Show when={detail.summary}>
-                        <span class="mcp-tool-summary">{detail.summary}</span>
-                      </Show>
                     </li>
                   );
                 }}</For>

@@ -15,6 +15,16 @@ function cssRuleBody(selector: string) {
   return css.slice(bodyStart, end);
 }
 
+function cssBlockContaining(selector: string) {
+  const start = css.indexOf(selector);
+  if (start < 0) throw new Error(`missing CSS selector: ${selector}`);
+  const bodyStart = css.indexOf("{", start);
+  if (bodyStart < 0) throw new Error(`missing CSS block: ${selector}`);
+  const end = css.indexOf("}\n", bodyStart);
+  if (end < 0) throw new Error(`unterminated CSS block: ${selector}`);
+  return css.slice(start, end);
+}
+
 describe("timeline loading header layout", () => {
   test("keeps the loaded header aligned with sidebar chrome", () => {
     const body = cssRuleBody(".conv-header");
@@ -62,6 +72,63 @@ describe("timeline loading header layout", () => {
     expect(body).toContain("align-items: center");
     expect(body).toContain("justify-content: center");
     expect(body).toContain("border-radius: 0");
+  });
+
+  test("sizes timeline app code buttons with the app pills", () => {
+    expect(timeline).toContain('class="timeline-header-app-group"');
+    expect(timeline).toContain('class="timeline-header-app-code"');
+
+    const groupBody = cssRuleBody(".timeline-header-app-group");
+    expect(groupBody).toContain("display: inline-flex");
+    expect(groupBody).toContain("align-items: stretch");
+    expect(groupBody).toContain("flex: 0 0 auto");
+
+    const appBody = cssRuleBody(".timeline-header-app");
+    const codeBody = cssRuleBody(".timeline-header-app-code");
+    expect(appBody).toContain("block-size: 1.55rem");
+    expect(appBody).toContain("font-size: 0.72rem");
+    expect(codeBody).toContain("block-size: 1.55rem");
+    expect(codeBody).toContain("font-size: 0.72rem");
+    expect(codeBody).toContain("line-height: 1");
+    expect(codeBody).toContain("padding: 0 0.45rem");
+    expect(codeBody).toContain("display: inline-flex");
+    expect(codeBody).toContain("align-items: center");
+    expect(codeBody).toContain("justify-content: center");
+    expect(codeBody).toContain("border-radius: 0");
+    expect(codeBody).toContain("margin-left: -1px");
+    expect(codeBody).toContain("position: relative");
+    expect(codeBody).not.toContain("border-left: 0");
+
+    const iconBody = cssRuleBody(".timeline-header-app .app-icon");
+    expect(iconBody).toContain("display: inline-block");
+    expect(iconBody).toContain("inline-size: 1.15em");
+    expect(iconBody).toContain("max-inline-size: 1.15em");
+    expect(iconBody).toContain("overflow: hidden");
+    expect(iconBody).toContain("white-space: nowrap");
+  });
+
+  test("keeps timeline app code hover from falling back to generic button hover", () => {
+    const appHoverBody = cssBlockContaining(
+      ".timeline-header-app:hover:not(:disabled),",
+    );
+    expect(appHoverBody).toContain(".timeline-header-app:focus-visible,");
+    expect(appHoverBody).toContain(".timeline-header-app.active");
+    expect(appHoverBody).toContain(
+      "background: color-mix(in srgb, dodgerblue 12%, var(--button-hover-bg))",
+    );
+    expect(appHoverBody).toContain("z-index: 1");
+
+    const codeHoverBody = cssBlockContaining(
+      ".timeline-header-app-code:hover:not(:disabled),",
+    );
+    expect(codeHoverBody).toContain(".timeline-header-app-code:focus-visible");
+    expect(codeHoverBody).toContain(
+      "border-color: color-mix(in srgb, dodgerblue 65%, var(--line-strong))",
+    );
+    expect(codeHoverBody).toContain(
+      "background: color-mix(in srgb, dodgerblue 12%, var(--button-hover-bg))",
+    );
+    expect(codeHoverBody).toContain("z-index: 2");
   });
 });
 

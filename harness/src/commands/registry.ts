@@ -95,7 +95,6 @@ import {
 } from "./llm_auth";
 import { messageDeleteCommand, messageRestoreCommand } from "./messages";
 import { skillDownloadCommand, skillGetCommand, skillRefreshCommand, skillRemoveCommand, skillSaveCommand, skillsListCommand } from "./skills";
-
 export type CommandHandler = (input: Input) => unknown | Promise<unknown> | Effect<unknown, unknown>;
 type CommandGroup = { name: string; handlers: Record<string, CommandHandler> };
 
@@ -194,6 +193,7 @@ const UI_COMMANDS: Record<string, CommandHandler> = {
   "ui-state-set": uiStateSetCommand,
   "ui-call": uiCallCommand,
 };
+
 
 const MESSAGE_COMMANDS: Record<string, CommandHandler> = {
   "message-delete": messageDeleteCommand,

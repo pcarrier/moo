@@ -163,7 +163,8 @@ async function buildChatAutocompleteIndex(meta: ChatAutocompleteChatMeta): Promi
     await mapWithConcurrency(rows, CHAT_AUTOCOMPLETE_PAYLOAD_CONCURRENCY, async (row) => {
       const payloadHash = row["?payload"];
       if (!payloadHash) return null;
-      const payload = await moo.objects.getJSON<{ message?: string }>({ hash: payloadHash });
+      const payload = await moo.objects.getJSON<{ message?: string; artificial?: boolean }>({ hash: payloadHash });
+      if (payload?.value?.artificial === true) return null;
       const text = normalizeAutocompleteText(payload?.value?.message);
       if (!text) return null;
       return {

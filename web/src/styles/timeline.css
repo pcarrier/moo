@@ -159,13 +159,25 @@
   gap: 0.28rem;
   cursor: pointer;
   flex: 0 0 auto;
+  position: relative;
 }
 
-.timeline-header-app:hover,
+.timeline-header-app:hover:not(:disabled),
 .timeline-header-app:focus-visible,
 .timeline-header-app.active {
   border-color: color-mix(in srgb, dodgerblue 65%, var(--line-strong));
   background: color-mix(in srgb, dodgerblue 12%, var(--button-hover-bg));
+  z-index: 1;
+}
+
+.timeline-header-app .app-icon {
+  display: inline-block;
+  inline-size: 1.15em;
+  max-inline-size: 1.15em;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .timeline-header-app-title {
@@ -173,6 +185,44 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.timeline-header-app-group {
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  min-inline-size: 0;
+}
+
+.timeline-header-app-group .timeline-header-app {
+  max-inline-size: 11rem;
+}
+
+.timeline-header-app-code {
+  block-size: 1.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-left: -1px;
+  position: relative;
+}
+
+.timeline-header-app-code:hover:not(:disabled),
+.timeline-header-app-code:focus-visible {
+  border-color: color-mix(in srgb, dodgerblue 65%, var(--line-strong));
+  background: color-mix(in srgb, dodgerblue 12%, var(--button-hover-bg));
+  color: var(--fg);
+  z-index: 2;
 }
 
 .model-picker {

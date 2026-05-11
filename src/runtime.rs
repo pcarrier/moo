@@ -879,6 +879,9 @@ impl Drop for AsyncCancelWatchdog {
 pub(crate) fn install_globals(scope: &mut v8::PinScope) -> Result<(), String> {
     install_console(scope)?;
     install_fn(scope, "__op_agent_run", op_agent_run)?;
+    install_fn(scope, "__op_timer_start", op_timer_start)?;
+    install_fn(scope, "__op_timer_clear", op_timer_clear)?;
+    install_timers(scope)?;
     install_fn(scope, "__op_trace_ensure_root", op_trace_ensure_root)?;
     install_fn(scope, "__op_trace_ensure_span", op_trace_ensure_span)?;
     install_fn(scope, "__op_trace_start_root", op_trace_start_root)?;
@@ -903,6 +906,80 @@ pub fn install_minimal_globals(scope: &mut v8::PinScope) -> Result<(), String> {
     install_console(scope)?;
     install_web_base64(scope)?;
     Ok(())
+}
+
+fn install_timers(scope: &mut v8::PinScope) -> Result<(), String> {
+    eval_no_output(
+        scope,
+        r#"
+(() => {
+  const nativeStart = globalThis.__op_timer_start;
+  const nativeClear = globalThis.__op_timer_clear;
+  delete globalThis.__op_timer_start;
+  delete globalThis.__op_timer_clear;
+  const active = new Map();
+
+  const toDelay = (delay) => {
+    const n = Number(delay ?? 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(Math.trunc(n), 0x7fffffff);
+  };
+
+  const startTimer = (callback, delay, args) => {
+    if (typeof callback !== "function") {
+      throw new TypeError("timer callback must be a function");
+    }
+    const timer = nativeStart(toDelay(delay));
+    active.set(timer.id, timer);
+    timer.promise.then(() => {
+      if (!active.delete(timer.id)) return;
+      callback(...args);
+    });
+    return timer.id;
+  };
+
+  if (typeof globalThis.setTimeout !== "function") {
+    Object.defineProperty(globalThis, "setTimeout", {
+      value(callback, delay, ...args) {
+        return startTimer(callback, delay, args);
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof globalThis.clearTimeout !== "function") {
+    Object.defineProperty(globalThis, "clearTimeout", {
+      value(id) {
+        if (active.delete(Number(id))) nativeClear(Number(id));
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof globalThis.setImmediate !== "function") {
+    Object.defineProperty(globalThis, "setImmediate", {
+      value(callback, ...args) {
+        return startTimer(callback, 0, args);
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof globalThis.clearImmediate !== "function") {
+    Object.defineProperty(globalThis, "clearImmediate", {
+      value(id) {
+        globalThis.clearTimeout(id);
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+})();
+"#,
+    )
 }
 
 fn install_web_base64(scope: &mut v8::PinScope) -> Result<(), String> {
@@ -1678,6 +1755,112 @@ fn set_string_return(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, value: 
     }
 }
 
+fn op_timer_start(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        throw(scope, "timer_start: could not create PromiseResolver");
+        return;
+    };
+    let promise = resolver.get_promise(scope);
+    let delay_ms = if args.length() > 0 {
+        args.get(0)
+            .integer_value(scope)
+            .unwrap_or(0)
+            .clamp(0, 0x7fffffff) as u64
+    } else {
+        0
+    };
+
+    let resolver_global = v8::Global::new(scope.as_ref(), resolver);
+    let start = ASYNC_HOST_STATE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let Some(state) = borrow.as_mut() else {
+            return Err("timers are only available while executing runJS".to_string());
+        };
+        let id = state.next_id;
+        state.next_id = state.next_id.saturating_add(1);
+        let completion_tx = state.completion_tx.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_for_thread = cancelled.clone();
+        thread::spawn(move || {
+            if delay_ms > 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            } else {
+                thread::yield_now();
+            }
+            if !cancelled_for_thread.load(Ordering::SeqCst) {
+                let _ = completion_tx.send(AsyncOpCompletion {
+                    id,
+                    result: Ok("null".to_string()),
+                });
+            }
+        });
+        state.pending.insert(
+            id,
+            PendingAsyncOp {
+                resolver: resolver_global,
+                cancel: Arc::new(move || {
+                    cancelled.store(true, Ordering::SeqCst);
+                }),
+                trace_event_id: None,
+            },
+        );
+        Ok(id)
+    });
+
+    let id = match start {
+        Ok(id) => id,
+        Err(error) => {
+            let msg = match v8::String::new(scope, &error) {
+                Some(msg) => msg,
+                None => return,
+            };
+            let err = v8::Exception::error(scope, msg);
+            let _ = resolver.reject(scope, err);
+            return;
+        }
+    };
+
+    let obj = v8::Object::new(scope);
+    let Some(id_key) = v8::String::new(scope, "id") else {
+        return;
+    };
+    let Some(promise_key) = v8::String::new(scope, "promise") else {
+        return;
+    };
+    let id_value = v8::Number::new(scope, id as f64);
+    let _ = obj.set(scope, id_key.into(), id_value.into());
+    let _ = obj.set(scope, promise_key.into(), promise.into());
+    rv.set(obj.into());
+}
+
+fn op_timer_clear(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let id = if args.length() > 0 {
+        args.get(0).integer_value(scope).unwrap_or(0) as u64
+    } else {
+        0
+    };
+    let pending = ASYNC_HOST_STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()
+            .and_then(|state| state.pending.remove(&id))
+    });
+    if let Some(pending) = pending {
+        (pending.cancel)();
+        rv.set(v8::Boolean::new(scope, true).into());
+    } else {
+        rv.set(v8::Boolean::new(scope, false).into());
+    }
+}
+
 fn op_agent_run(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -2084,5 +2267,78 @@ globalThis.main = () => {
         assert_eq!(second.status, "ok");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn noop_agent_handler() -> AgentRunHandler {
+        Arc::new(|id, _request, completion_tx| {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_for_cancel = cancelled.clone();
+            thread::spawn(move || {
+                if !cancelled.load(Ordering::SeqCst) {
+                    let _ = completion_tx.send(AsyncOpCompletion {
+                        id,
+                        result: Ok("null".to_string()),
+                    });
+                }
+            });
+            AsyncOpHandle {
+                cancel: Arc::new(move || {
+                    cancelled_for_cancel.store(true, Ordering::SeqCst);
+                }),
+            }
+        })
+    }
+
+    fn run_async_source(source: &str) -> Result<String, String> {
+        init_v8();
+        let mut isolate = v8::Isolate::new(Default::default());
+        let mut cache = LoadedBundleCache::new();
+        let bundle = Arc::new(source.to_string());
+        cache
+            .run_async_report_in(
+                &mut isolate,
+                &bundle,
+                "{}",
+                noop_agent_handler(),
+                None,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .result
+    }
+
+    #[test]
+    fn timers_resolve_async_runjs_promises() {
+        let source = r#"
+globalThis.main = async () => {
+  const events = [];
+  await new Promise((resolve) => {
+    setTimeout((value) => {
+      events.push(value);
+      resolve();
+    }, 1, "timeout");
+    setImmediate((value) => events.push(value), "immediate");
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  return events;
+};
+"#;
+
+        let out = run_async_source(source).expect("timer run succeeds");
+        assert_eq!(out, r#"["immediate","timeout"]"#);
+    }
+
+    #[test]
+    fn clear_timer_prevents_callback() {
+        let source = r#"
+globalThis.main = async () => {
+  const events = [];
+  const id = setTimeout(() => events.push("cancelled"), 1);
+  clearTimeout(id);
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  return events;
+};
+"#;
+
+        let out = run_async_source(source).expect("timer run succeeds");
+        assert_eq!(out, "[]");
     }
 }

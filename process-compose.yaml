@@ -46,7 +46,7 @@ processes:
   backend:
     description: "Rust agent server (--watch live bundle)"
     working_dir: .
-    command: "./target/profiling/moo serve --port 7777 --host 127.0.0.1 --bind-cdp [::1]:9222 --watch --bundle harness/dist/harness.js $${MOO_ARGS:-}"
+    command: "./target/profiling/moo serve --port 7777 --host 127.0.0.1 --bind-cdp 0.0.0.0:9222 --watch --bundle harness/dist/harness.js $${MOO_ARGS:-}"
     availability:
       restart: on_failure
       backoff_seconds: 1
