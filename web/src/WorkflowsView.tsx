@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 
 import { api, type WorkflowDefinitionSummary, type WorkflowRunInspection, type WorkflowRunSummary, type WorkflowStepRun } from "./api";
 import type { Bag } from "./state";
@@ -11,11 +11,6 @@ function pretty(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function parseJson(text: string): unknown {
-  const trimmed = text.trim();
-  return trimmed ? JSON.parse(trimmed) : {};
 }
 
 function fieldName(field: any): string {
@@ -34,6 +29,129 @@ function waitingStep(run: WorkflowRunInspection | null): WorkflowStepRun | null 
   return run?.steps.find((step) => step.status === "waiting") ?? null;
 }
 
+type InputField = { name: string; type: string; label: string; required: boolean; description?: string; options?: Array<{ label: string; value: string }>; defaultValue?: unknown };
+
+function workflowSchema(workflow: WorkflowDefinitionSummary | null): any {
+  const schema = workflow?.inputSchema;
+  return schema && typeof schema === "object" ? schema as any : null;
+}
+
+function fieldLabel(name: string, schema: any): string {
+  return String(schema?.title ?? name);
+}
+
+function inputFields(workflow: WorkflowDefinitionSummary | null): InputField[] {
+  const schema = workflowSchema(workflow);
+  if (!schema || schema.type !== "object" || !schema.properties || typeof schema.properties !== "object") return [];
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : []);
+  return Object.entries(schema.properties).map(([name, raw]) => {
+    const prop = raw && typeof raw === "object" ? raw as any : {};
+    const type = Array.isArray(prop.enum) ? "select" : String(Array.isArray(prop.type) ? prop.type.find((item: unknown) => item !== "null") ?? "string" : prop.type ?? "string");
+    return {
+      name,
+      type,
+      label: fieldLabel(name, prop),
+      required: required.has(name),
+      description: typeof prop.description === "string" ? prop.description : undefined,
+      options: Array.isArray(prop.enum) ? prop.enum.map((value: unknown) => ({ value: String(value), label: String(value) })) : undefined,
+      defaultValue: prop.default,
+    };
+  });
+}
+
+function initialInput(workflow: WorkflowDefinitionSummary | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of inputFields(workflow)) if (field.defaultValue !== undefined) out[field.name] = field.defaultValue;
+  return out;
+}
+
+function coerceInputField(field: InputField, value: FormDataEntryValue | null): unknown {
+  if (field.type === "boolean") return value === "on";
+  const text = String(value ?? "");
+  if (!text && !field.required) return undefined;
+  if (field.type === "number" || field.type === "integer") return Number(text || 0);
+  if (field.type === "array" || field.type === "object") return text.trim() ? JSON.parse(text) : field.type === "array" ? [] : {};
+  return text;
+}
+
+function setInputValue(root: Record<string, unknown>, name: string, value: unknown): void {
+  const parts = name.split(".").filter(Boolean);
+  if (!parts.length) return;
+  let cur: any = root;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const part = parts[i]!;
+    if (!cur[part] || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+    cur = cur[part];
+  }
+  cur[parts[parts.length - 1]!] = value;
+}
+
+function formInput(workflow: WorkflowDefinitionSummary | null, form: HTMLFormElement): Record<string, unknown> {
+  const data = new FormData(form);
+  const fields = inputFields(workflow);
+  if (!fields.length) return {};
+  const out = initialInput(workflow);
+  for (const field of fields) {
+    const value = coerceInputField(field, data.get(field.name));
+    if (value !== undefined) setInputValue(out, field.name, value);
+  }
+  return out;
+}
+
+function inputDefault(field: InputField): string {
+  if (field.defaultValue === undefined) return "";
+  if (field.type === "array" || field.type === "object") return pretty(field.defaultValue);
+  return String(field.defaultValue);
+}
+
+function inputKind(field: InputField): string {
+  if (field.type === "number" || field.type === "integer") return "number";
+  return "text";
+}
+
+function WorkflowInputFields(props: { workflow: WorkflowDefinitionSummary }) {
+  const fields = createMemo(() => inputFields(props.workflow));
+  return (
+    <Show when={fields().length} fallback={<div class="workflow-empty-note">No inputs declared.</div>}>
+      <For each={fields()}>
+        {(field) => (
+          <label class="workflow-start-field">
+            <span>{field.label}{field.required ? " *" : ""}</span>
+            <Show when={field.description}>
+              {(description) => <small>{description()}</small>}
+            </Show>
+            <Show
+              when={field.type === "boolean"}
+              fallback={
+                <Show
+                  when={field.type === "select"}
+                  fallback={
+                    <Show
+                      when={field.type === "array" || field.type === "object"}
+                      fallback={<input name={field.name} type={inputKind(field)} required={field.required} value={inputDefault(field)} />}
+                    >
+                      <textarea name={field.name} required={field.required} value={inputDefault(field)} spellcheck={false} />
+                    </Show>
+                  }
+                >
+                  <select name={field.name} required={field.required} value={inputDefault(field)}>
+                    <option value="">{field.required ? "Select…" : "None"}</option>
+                    <For each={field.options ?? []}>
+                      {(option) => <option value={option.value}>{option.label}</option>}
+                    </For>
+                  </select>
+                </Show>
+              }
+            >
+              <input name={field.name} type="checkbox" checked={Boolean(field.defaultValue)} />
+            </Show>
+          </label>
+        )}
+      </For>
+    </Show>
+  );
+}
+
 export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   const { bag } = props;
   const [workflows, setWorkflows] = createSignal<WorkflowDefinitionSummary[]>([]);
@@ -41,9 +159,24 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
   const [selectedRunId, setSelectedRunId] = createSignal<string | null>(null);
   const [selectedRun, setSelectedRun] = createSignal<WorkflowRunInspection | null>(null);
   const [selectedStepPath, setSelectedStepPath] = createSignal<string | null>(null);
-  const [inputDraft, setInputDraft] = createSignal("{}");
+  const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+
+  const selectedWorkflow = createMemo(() => {
+    const id = selectedWorkflowId();
+    return workflows().find((workflow) => workflow.id === id) ?? workflows()[0] ?? null;
+  });
+
+  createEffect(() => {
+    const list = workflows();
+    const current = selectedWorkflowId();
+    if (!list.length) {
+      if (current) setSelectedWorkflowId(null);
+      return;
+    }
+    if (!current || !list.some((workflow) => workflow.id === current)) setSelectedWorkflowId(list[0]!.id);
+  });
 
   const selectedStep = createMemo(() => {
     const path = selectedStepPath();
@@ -112,11 +245,12 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
     }
   }
 
-  async function startWorkflow(workflow: WorkflowDefinitionSummary) {
+  async function startWorkflow(workflow: WorkflowDefinitionSummary, ev: SubmitEvent) {
+    ev.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const input = parseJson(inputDraft());
+      const input = formInput(workflow, ev.currentTarget as HTMLFormElement);
       const result = await api.workflows.run(workflow.id, { input, autoResume: true });
       if (!result.ok) throw new Error(result.error.message);
       setSelectedRunId(result.value.run.runId);
@@ -197,25 +331,38 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
               <h2>Library</h2>
               <span>{workflows().length}</span>
             </header>
-            <label class="workflow-input-label">
-              input JSON
-              <textarea value={inputDraft()} onInput={(ev) => setInputDraft(ev.currentTarget.value)} spellcheck={false} />
-            </label>
             <Show when={workflows().length} fallback={<EmptyState>no workflow definitions</EmptyState>}>
-              <ul class="workflow-list">
-                <For each={workflows()}>
+              <>
+                <ul class="workflow-list">
+                  <For each={workflows()}>
+                    {(workflow) => (
+                      <li>
+                        <button
+                          type="button"
+                          class={workflow.id === selectedWorkflowId() ? "selected" : ""}
+                          onClick={() => setSelectedWorkflowId(workflow.id)}
+                        >
+                          <strong>{workflow.title || workflow.id}</strong>
+                          <code>{workflow.id}</code>
+                          <span>{workflow.steps} steps</span>
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+                <Show when={selectedWorkflow()}>
                   {(workflow) => (
-                    <li>
-                      <div>
-                        <strong>{workflow.title || workflow.id}</strong>
-                        <code>{workflow.id}</code>
-                        <span>{workflow.steps} steps</span>
-                      </div>
-                      <button type="button" disabled={busy()} onClick={() => void startWorkflow(workflow)}>run</button>
-                    </li>
+                    <form class="workflow-start-form" onSubmit={(ev) => void startWorkflow(workflow(), ev)}>
+                      <header>
+                        <h3>Run {workflow().title || workflow().id}</h3>
+                        <code>{workflow().id}</code>
+                      </header>
+                      <WorkflowInputFields workflow={workflow()} />
+                      <button type="submit" disabled={busy()}>run</button>
+                    </form>
                   )}
-                </For>
-              </ul>
+                </Show>
+              </>
             </Show>
           </section>
 

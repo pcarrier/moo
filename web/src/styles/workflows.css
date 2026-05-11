@@ -30,19 +30,39 @@
 }
 
 .workflow-input-label,
+.workflow-start-field,
 .workflow-waiting-form label {
   display: grid;
   gap: 0.35rem;
   font-size: 0.85rem;
 }
 
-.workflow-input-label textarea {
+.workflow-start-form {
+  border: 1px solid var(--line);
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.workflow-start-form > header {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.workflow-start-field small {
+  color: var(--muted);
+}
+
+.workflow-input-label textarea,
+.workflow-start-field textarea {
   min-height: 5rem;
   resize: vertical;
 }
 
 .workflow-panel textarea,
-.workflow-panel input {
+.workflow-panel input,
+.workflow-panel select {
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--fg);
@@ -61,6 +81,7 @@
 }
 
 .workflow-list li,
+.workflow-list li > button,
 .workflow-run-list button,
 .workflow-steps button {
   border: 1px solid var(--line);
@@ -73,19 +94,17 @@
 }
 
 .workflow-list li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
+  padding: 0;
 }
 
-.workflow-list li > div,
+.workflow-list li > button,
 .workflow-run-list button,
 .workflow-steps button {
   display: grid;
   gap: 0.25rem;
 }
 
+.workflow-list li > button.selected,
 .workflow-run-list button.selected,
 .workflow-steps button.selected {
   outline: 2px solid var(--accent);
@@ -101,6 +120,7 @@
 
 .workflow-actions button,
 .workflow-list button,
+.workflow-start-form button,
 .workflow-waiting-form button {
   border: 1px solid var(--line);
   background: var(--button-bg);

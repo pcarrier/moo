@@ -226,4 +226,41 @@ describe("workflows", () => {
     expect(retried.steps.map((step) => step.status)).toEqual(["done"]);
     expect(procCalls.length).toBe(2);
   });
+
+  test("list exposes input schema for UI forms", async () => {
+    const api = createWorkflowsApi(deps());
+    const definition = {
+      ...createWorkflowDsl("schema", (w) => w.flow(w.done({ ok: true }))),
+      inputSchema: {
+        type: "object",
+        required: ["issue"],
+        properties: {
+          issue: { type: "string", title: "Issue" },
+          dryRun: { type: "boolean", default: true },
+        },
+      },
+    };
+    await api.save({ definition });
+    const [summary] = await api.list();
+    expect(summary?.inputSchema).toEqual(definition.inputSchema);
+    const inspection = await api.inspect("schema");
+    expect(inspection?.inputSchema).toEqual(definition.inputSchema);
+  });
+
+  test("list infers input schema from input refs", async () => {
+    const api = createWorkflowsApi(deps());
+    await api.save({ definition: createWorkflowDsl("inferred", (w) => w.flow(
+      w.step("echo").proc.run({ cmd: "echo", args: [w.input.issue, w.input.notes] }),
+      w.done({ ok: true }),
+    )) });
+    const [summary] = await api.list();
+    expect(summary?.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        issue: { type: "string", title: "issue" },
+        notes: { type: "string", title: "notes" },
+      },
+    });
+  });
+
 });

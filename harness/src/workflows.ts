@@ -397,6 +397,30 @@ function flattenDefinitionSteps(definition: WorkflowIr): Array<{ id: string; kin
   return out;
 }
 
+function collectInputRefs(value: unknown, refs: Set<string>): void {
+  if (isRef(value)) {
+    if (value.ref.startsWith("input.")) refs.add(value.ref.slice("input.".length));
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectInputRefs(item, refs);
+    return;
+  }
+  if (isObject(value)) {
+    for (const child of Object.values(value)) collectInputRefs(child, refs);
+  }
+}
+
+function inferInputSchema(definition: WorkflowIr): unknown | undefined {
+  const refs = new Set<string>();
+  collectInputRefs(definition.body, refs);
+  const names = [...refs].filter(Boolean).sort(compareStrings);
+  if (!names.length) return undefined;
+  const properties: Record<string, unknown> = {};
+  for (const name of names) properties[name] = { type: "string", title: name };
+  return { type: "object", properties };
+}
+
 function summarizeDefinition(definition: WorkflowIr, hash: string): WorkflowDefinitionSummary {
   const uses = { mcp: [] as string[], proc: [] as string[], agent: [] as string[], ui: [] as string[] };
   const seen = { mcp: new Set<string>(), proc: new Set<string>(), agent: new Set<string>(), ui: new Set<string>() };
@@ -424,7 +448,18 @@ function summarizeDefinition(definition: WorkflowIr, hash: string): WorkflowDefi
   };
   visit(definition.body);
   for (const key of Object.keys(uses) as Array<keyof typeof uses>) uses[key].sort(compareStrings);
-  return { id: definition.id, title: definition.title, version: definition.version, hash, currentPointer: currentPointer(definition.id), steps, uses };
+  const inputSchema = definition.inputSchema ?? inferInputSchema(definition);
+  return {
+    id: definition.id,
+    title: definition.title,
+    version: definition.version,
+    hash,
+    currentPointer: currentPointer(definition.id),
+    steps,
+    uses,
+    ...(inputSchema !== undefined ? { inputSchema } : {}),
+    ...(definition.outputSchema !== undefined ? { outputSchema: definition.outputSchema } : {}),
+  };
 }
 
 async function loadDefinitionByHash(deps: WorkflowDeps, hash: string): Promise<WorkflowIr | null> {

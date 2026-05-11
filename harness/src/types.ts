@@ -606,6 +606,8 @@ export type WorkflowDefinitionSummary = {
   currentPointer: string;
   steps: number;
   uses: { mcp: string[]; proc: string[]; agent: string[]; ui: string[] };
+  inputSchema?: unknown;
+  outputSchema?: unknown;
   updatedAt?: string | null;
 };
 export type WorkflowInspection = WorkflowDefinitionSummary & {
