@@ -29,6 +29,20 @@ function waitingStep(run: WorkflowRunInspection | null): WorkflowStepRun | null 
   return run?.steps.find((step) => step.status === "waiting") ?? null;
 }
 
+function shortId(id: string | null | undefined): string {
+  const text = String(id ?? "");
+  return text.length > 18 ? text.slice(0, 8) + "…" + text.slice(-6) : text;
+}
+
+function statusCounts(steps: WorkflowStepRun[]): string {
+  const counts: Record<string, number> = {};
+  for (const step of steps) counts[step.status] = (counts[step.status] ?? 0) + 1;
+  return ["done", "running", "waiting", "failed", "skipped"]
+    .filter((key) => counts[key])
+    .map((key) => `${key[0]}:${counts[key]}`)
+    .join(" ");
+}
+
 type InputField = { name: string; type: string; label: string; required: boolean; description?: string; options?: Array<{ label: string; value: string }>; defaultValue?: unknown };
 
 function workflowSchema(workflow: WorkflowDefinitionSummary | null): any {
@@ -327,13 +341,13 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
         </Show>
         <div class="workflow-grid">
           <section class="workflow-panel workflow-library">
-            <header>
+            <header class="workflow-panel-head">
               <h2>Library</h2>
               <span>{workflows().length}</span>
             </header>
             <Show when={workflows().length} fallback={<EmptyState>no workflow definitions</EmptyState>}>
               <>
-                <ul class="workflow-list">
+                <ul class="workflow-list workflow-table-list">
                   <For each={workflows()}>
                     {(workflow) => (
                       <li>
@@ -342,9 +356,9 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
                           class={workflow.id === selectedWorkflowId() ? "selected" : ""}
                           onClick={() => setSelectedWorkflowId(workflow.id)}
                         >
-                          <strong>{workflow.title || workflow.id}</strong>
+                          <span class="workflow-name">{workflow.title || workflow.id}</span>
                           <code>{workflow.id}</code>
-                          <span>{workflow.steps} steps</span>
+                          <span>{workflow.steps}</span>
                         </button>
                       </li>
                     )}
@@ -354,7 +368,7 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
                   {(workflow) => (
                     <form class="workflow-start-form" onSubmit={(ev) => void startWorkflow(workflow(), ev)}>
                       <header>
-                        <h3>Run {workflow().title || workflow().id}</h3>
+                        <span>run</span>
                         <code>{workflow().id}</code>
                       </header>
                       <WorkflowInputFields workflow={workflow()} />
@@ -367,12 +381,12 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
           </section>
 
           <section class="workflow-panel workflow-runs">
-            <header>
+            <header class="workflow-panel-head">
               <h2>Runs</h2>
               <span>{runs().length}</span>
             </header>
             <Show when={runs().length} fallback={<EmptyState>no workflow runs</EmptyState>}>
-              <ul class="workflow-run-list">
+              <ul class="workflow-run-list workflow-table-list">
                 <For each={runs()}>
                   {(run) => (
                     <li>
@@ -380,10 +394,12 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
                         type="button"
                         classList={{ selected: selectedRunId() === run.runId }}
                         onClick={() => void loadRun(run.runId)}
+                        title={run.runId}
                       >
-                        <span><strong>{run.workflowId}</strong> <code>{run.runId}</code></span>
+                        <span class="workflow-name">{run.workflowId}</span>
                         <span class={`workflow-status ${statusClass(run.status)}`}>{run.status}</span>
-                        <Show when={run.currentStep}><small>{run.currentStep}</small></Show>
+                        <code>{shortId(run.runId)}</code>
+                        <small>{run.currentStep ?? ""}</small>
                       </button>
                     </li>
                   )}
@@ -396,10 +412,13 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
             <Show when={selectedRun()} fallback={<EmptyState>select a run</EmptyState>} keyed>
               {(run) => (
                 <>
-                  <header>
+                  <header class="workflow-run-head">
                     <div>
                       <h2>{run.workflowId}</h2>
-                      <code>{run.runId}</code>
+                      <code title={run.runId}>{shortId(run.runId)}</code>
+                      <Show when={run.currentStep}><span>{run.currentStep}</span></Show>
+                      <span>{run.steps.length} steps</span>
+                      <Show when={statusCounts(run.steps)}><span>{statusCounts(run.steps)}</span></Show>
                     </div>
                     <span class={`workflow-status ${statusClass(run.status)}`}>{run.status}</span>
                   </header>
@@ -409,66 +428,74 @@ export function WorkflowsView(props: { bag: Bag; onToggleSidebar?: () => void })
                     <button type="button" disabled={busy()} onClick={() => void runAction(() => api.workflows.fork(run.runId, { autoResume: false }))}>fork</button>
                     <button type="button" disabled={busy()} onClick={() => void runAction(() => api.workflows.cancel(run.runId))}>cancel</button>
                   </div>
-                  <div class="workflow-diagram mermaid" data-mermaid-source={run.mermaid}>{run.mermaid}</div>
 
-                  <Show when={waitingStep(run)} keyed>
-                    {(step) => (
-                      <form class="workflow-waiting-form" onSubmit={submitWaiting}>
-                        <h3>{String((step.args as any)?.spec?.title ?? step.path)}</h3>
-                        <Show when={(step.args as any)?.context}>
-                          <pre>{pretty((step.args as any).context)}</pre>
-                        </Show>
-                        <For each={((step.args as any)?.spec?.fields ?? []) as any[]}>
-                          {(field) => {
-                            const name = fieldName(field);
-                            const type = fieldType(field);
-                            return (
-                              <label>
-                                <span>{String(field?.label ?? name)}</span>
-                                <Show when={type === "textarea"} fallback={
-                                  <Show when={type === "boolean"} fallback={<input name={name} type={type === "number" ? "number" : "text"} required={field?.required === true} />}>
-                                    <input name={name} type="checkbox" />
-                                  </Show>
-                                }>
-                                  <textarea name={name} required={field?.required === true} />
-                                </Show>
-                              </label>
-                            );
-                          }}
-                        </For>
-                        <button type="submit" disabled={busy()}>submit</button>
-                      </form>
-                    )}
-                  </Show>
-
-                  <div class="workflow-detail-columns">
-                    <section>
-                      <h3>Steps</h3>
-                      <ul class="workflow-steps">
-                        <For each={run.steps}>
-                          {(step) => (
-                            <li>
-                              <button type="button" classList={{ selected: selectedStep()?.path === step.path }} onClick={() => setSelectedStepPath(step.path)}>
-                                <span>{step.path}</span>
-                                <span class={`workflow-status ${statusClass(step.status)}`}>{step.status}</span>
-                              </button>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
-                    </section>
-                    <section>
-                      <h3>State</h3>
-                      <pre>{pretty(run.state)}</pre>
-                      <Show when={selectedStep()} keyed>
+                  <div class="workflow-run-split">
+                    <div class="workflow-left-stack">
+                      <div class="workflow-diagram mermaid" data-mermaid-source={run.mermaid}>{run.mermaid}</div>
+                      <Show when={waitingStep(run)} keyed>
                         {(step) => (
-                          <>
-                            <h3>Selected step</h3>
-                            <pre>{pretty(step)}</pre>
-                          </>
+                          <form class="workflow-waiting-form" onSubmit={submitWaiting}>
+                            <header>
+                              <h3>{String((step.args as any)?.spec?.title ?? step.path)}</h3>
+                              <code>{step.path}</code>
+                            </header>
+                            <Show when={(step.args as any)?.context}>
+                              <pre>{pretty((step.args as any).context)}</pre>
+                            </Show>
+                            <For each={((step.args as any)?.spec?.fields ?? []) as any[]}>
+                              {(field) => {
+                                const name = fieldName(field);
+                                const type = fieldType(field);
+                                return (
+                                  <label>
+                                    <span>{String(field?.label ?? name)}</span>
+                                    <Show when={type === "textarea"} fallback={
+                                      <Show when={type === "boolean"} fallback={<input name={name} type={type === "number" ? "number" : "text"} required={field?.required === true} />}>
+                                        <input name={name} type="checkbox" />
+                                      </Show>
+                                    }>
+                                      <textarea name={name} required={field?.required === true} />
+                                    </Show>
+                                  </label>
+                                );
+                              }}
+                            </For>
+                            <button type="submit" disabled={busy()}>submit</button>
+                          </form>
                         )}
                       </Show>
-                    </section>
+                    </div>
+
+                    <div class="workflow-detail-columns">
+                      <section>
+                        <h3>Steps</h3>
+                        <ul class="workflow-steps workflow-table-list">
+                          <For each={run.steps}>
+                            {(step) => (
+                              <li>
+                                <button type="button" classList={{ selected: selectedStep()?.path === step.path }} onClick={() => setSelectedStepPath(step.path)}>
+                                  <span class="workflow-name">{step.path}</span>
+                                  <span class={`workflow-status ${statusClass(step.status)}`}>{step.status}</span>
+                                  <code>{step.kind}</code>
+                                </button>
+                              </li>
+                            )}
+                          </For>
+                        </ul>
+                      </section>
+                      <section>
+                        <h3>State</h3>
+                        <pre>{pretty(run.state)}</pre>
+                        <Show when={selectedStep()} keyed>
+                          {(step) => (
+                            <>
+                              <h3>Step</h3>
+                              <pre>{pretty(step)}</pre>
+                            </>
+                          )}
+                        </Show>
+                      </section>
+                    </div>
                   </div>
                 </>
               )}
