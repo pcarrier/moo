@@ -4798,6 +4798,11 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
     const count = bag.skills().length;
     return `${count} skill${count === 1 ? "" : "s"}`;
   });
+  const workflowCountLabel = createMemo(() => {
+    if (!bag.workflowDefinitionsLoaded()) return "loading";
+    const count = bag.workflowDefinitions().length;
+    return `${count} workflow${count === 1 ? "" : "s"}`;
+  });
 
   const reduceMotion =
     typeof window !== "undefined" &&
@@ -5106,6 +5111,15 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       <button
         type="button"
         class="sidebar-tab"
+        classList={{ active: bag.view() === "workflows" }}
+        onClick={() => navigate(() => bag.showWorkflows())}
+      >
+        <span class="sidebar-tab-label">workflows</span>
+        <span class="sidebar-tab-count">{workflowCountLabel()}</span>
+      </button>
+      <button
+        type="button"
+        class="sidebar-tab"
         classList={{ active: bag.view() === "facts" }}
         onClick={() => navigate(() => bag.showFacts(null))}
       >
@@ -5129,14 +5143,6 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       >
         <span class="sidebar-tab-label">skills</span>
         <span class="sidebar-tab-count">{skillCountLabel()}</span>
-      </button>
-      <button
-        type="button"
-        class="sidebar-tab"
-        classList={{ active: bag.view() === "workflows" }}
-        onClick={() => navigate(() => bag.showWorkflows())}
-      >
-        <span class="sidebar-tab-label">workflows</span>
       </button>
       <button
         type="button"

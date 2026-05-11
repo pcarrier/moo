@@ -38,6 +38,7 @@ import {
   type UiInstance,
   type McpServerConfig,
   type SkillSummary,
+  type WorkflowDefinitionSummary,
   type V8StatsValue,
   type LlmAuthSettings,
   type TraceSettingsValue,
@@ -161,6 +162,10 @@ export function createState() {
     api.skills.list,
     (opts?: { enabled?: boolean; chatId?: string | null; root?: string | null }) =>
       `skills:${opts?.chatId ?? ""}:${opts?.root ?? ""}:${opts?.enabled ?? ""}`,
+  );
+  const workflowsListSingle = createSingleFlight(
+    api.workflows.list,
+    () => "workflows-list",
   );
   const [startupLoading, setStartupLoading] = createSignal(true);
   const [chats, setChats] = createSignal<ChatSummary[]>([]);
@@ -419,6 +424,10 @@ export function createState() {
   const [mcpServersLoaded, setMcpServersLoaded] = createSignal(false);
   const [skills, setSkills] = createSignal<SkillSummary[]>([]);
   const [skillsLoaded, setSkillsLoaded] = createSignal(false);
+  const [workflowDefinitions, setWorkflowDefinitions] =
+    createSignal<WorkflowDefinitionSummary[]>([]);
+  const [workflowDefinitionsLoaded, setWorkflowDefinitionsLoaded] =
+    createSignal(false);
   const [v8Stats, setV8Stats] = createSignal<V8StatsValue | null>(null);
   const [v8StatsLoaded, setV8StatsLoaded] = createSignal(false);
   const [settingsCache, setSettingsCacheSignal] =
@@ -2559,6 +2568,7 @@ export function createState() {
     setView("workflows");
     setFocusedSubject(null);
     setFocusedGraph(null);
+    void refreshWorkflows();
     pushUrl();
   }
 
@@ -3508,6 +3518,13 @@ export function createState() {
     setSkillsLoaded(true);
     if (r.ok) setSkills(r.value.skills);
     else reportError("skills", r.error);
+  }
+
+  async function refreshWorkflows() {
+    const r = await workflowsListSingle();
+    setWorkflowDefinitionsLoaded(true);
+    if (r.ok) setWorkflowDefinitions(r.value.workflows);
+    else reportError("workflows", r.error);
   }
 
   async function refreshSettingsCache() {
@@ -4810,6 +4827,7 @@ export function createState() {
   const refreshChatUisSoon = debounce(refreshChatUis);
   const refreshPointersSoon = debounce(refreshPointers);
   const refreshSkillsSoon = debounce(refreshSkills);
+  const refreshWorkflowsSoon = debounce(refreshWorkflows);
   const refreshV8StatsSoon = debounce(refreshV8Stats, 1000);
   const pendingRepoFileRefreshPaths = new Set<string>();
   const refreshPendingRepoFilesSoon = debounce(() => {
@@ -4826,6 +4844,7 @@ export function createState() {
   bindWS(events);
   void refreshSettingsCache();
   void refreshSkills();
+  void refreshWorkflows();
   const offEvents = events.on((ev: any) => {
     if (ev.kind === "ping") return;
     if (ev.kind === "trace-write-error") {
@@ -4893,6 +4912,7 @@ export function createState() {
       refreshChatUis();
       refreshPointers();
       refreshMcpServers();
+      refreshWorkflows();
       if (view() === "v8" || v8StatsLoaded()) refreshV8Stats();
       return;
     }
@@ -5263,6 +5283,13 @@ export function createState() {
     if (ev.kind === "pointer") {
       refreshPointersSoon();
       if (typeof ref === "string" && (ref === "skills/index" || ref.startsWith("skills/"))) refreshSkillsSoon();
+      if (
+        typeof ref === "string" &&
+        ref.startsWith("workflow/") &&
+        !ref.startsWith("workflow/run/")
+      ) {
+        refreshWorkflowsSoon();
+      }
     }
     if (ref.startsWith("ui/") || ref.startsWith("uiinst/")) {
       refreshUisSoon();
@@ -5362,6 +5389,7 @@ export function createState() {
     refreshChatUisSoon.cancel();
     refreshPointersSoon.cancel();
     refreshSkillsSoon.cancel();
+    refreshWorkflowsSoon.cancel();
     refreshV8StatsSoon.cancel();
     if (chatMemoryRefreshTimer !== null)
       window.clearTimeout(chatMemoryRefreshTimer);
@@ -5628,6 +5656,8 @@ export function createState() {
     mcpServersLoaded,
     skills,
     skillsLoaded,
+    workflowDefinitions,
+    workflowDefinitionsLoaded,
     v8Stats,
     v8StatsLoaded,
     settingsCache,
