@@ -263,4 +263,22 @@ describe("workflows", () => {
     });
   });
 
+
+  test("malformed stored workflow definitions do not crash list or inspect", async () => {
+    const d = deps();
+    const api = createWorkflowsApi(d);
+    await api.save({ definition: createWorkflowDsl("valid", (w) => w.flow(w.done({ ok: true }))) });
+    const badHash = await d.objects.putJSON({ kind: "workflow:IR", value: { kind: "workflow", id: "bad", body: [{ kind: "step", id: "broken" }] } });
+    await d.pointers.set("workflow/bad/current", badHash);
+
+    expect((await api.list()).map((workflow) => workflow.id)).toEqual(["valid"]);
+    expect(await api.inspect("bad")).toBeNull();
+  });
+
+  test("save rejects invalid workflow IR with a targeted message", async () => {
+    const api = createWorkflowsApi(deps());
+    await expect(api.save({ definition: { kind: "workflow", id: "bad", body: [{ kind: "step", id: "broken" }] } as any }))
+      .rejects.toThrow("invalid workflow IR at body[0].effect: step effect must be an object");
+  });
+
 });

@@ -156,11 +156,76 @@ function createStepBuilder(id: string): any {
   };
 }
 
-function normalizeBody(values: unknown[]): WorkflowNode[] {
-  return compact(values).flatMap((value) => {
-    const node = nodeFrom(value);
-    if (!node) return [];
-    return [node];
+function invalidWorkflow(path: string, message: string): never {
+  throw new Error(`invalid workflow IR at ${path}: ${message}`);
+}
+
+function normalizeString(value: unknown, path: string, label: string): string {
+  if (typeof value !== "string" || !value.trim()) invalidWorkflow(path, `${label} must be a non-empty string`);
+  return value;
+}
+
+function normalizeRef(value: unknown, path: string): WorkflowRef {
+  if (!isRef(value)) invalidWorkflow(path, "expected workflow ref");
+  return { ref: value.ref };
+}
+
+function normalizeEffect(value: unknown, path: string): WorkflowStepEffect {
+  if (!isObject(value)) invalidWorkflow(path, "step effect must be an object");
+  const kind = value.kind;
+  if (typeof kind !== "string") invalidWorkflow(path, "step effect requires kind");
+  const args = Object.prototype.hasOwnProperty.call(value, "args") ? value.args : (value as any).input;
+  if (kind === "proc.run") return { kind, ...(args !== undefined ? { args } : {}) };
+  if (kind === "agent.run") return { kind, ...(args !== undefined ? { args } : {}) };
+  if (kind === "ui.ask") return { kind, ...(args !== undefined ? { args } : {}) };
+  if (kind === "mcp.call") {
+    return {
+      kind,
+      server: normalizeString(value.server, `${path}.server`, "server"),
+      tool: normalizeString(value.tool, `${path}.tool`, "tool"),
+      ...(args !== undefined ? { args } : {}),
+    };
+  }
+  invalidWorkflow(path, `unsupported step effect kind: ${kind}`);
+}
+
+function normalizeNode(value: unknown, path: string): WorkflowNode {
+  const node = nodeFrom(value);
+  if (!isObject(node)) invalidWorkflow(path, "node must be an object");
+  const kind = node.kind;
+  if (typeof kind !== "string") invalidWorkflow(path, "node requires kind");
+  if (kind === "flow") return { kind, ...(node.id ? { id: String(node.id) } : {}), body: normalizeBody((node as any).body ?? [], `${path}.body`) };
+  if (kind === "step") {
+    const out = (node as any).out;
+    return {
+      kind,
+      id: normalizeString((node as any).id, `${path}.id`, "step id"),
+      effect: normalizeEffect((node as any).effect, `${path}.effect`),
+      ...(out !== undefined ? { out: normalizeRef(out, `${path}.out`) } : {}),
+    };
+  }
+  if (kind === "loop") {
+    const opts = isObject((node as any).opts) ? { ...((node as any).opts as JsonRecord) } : {};
+    return {
+      kind,
+      id: normalizeString((node as any).id, `${path}.id`, "loop id"),
+      ...(Object.keys(opts).length ? { opts: { ...(opts.max !== undefined ? { max: Number(opts.max) } : {}) } } : {}),
+      body: normalizeBody((node as any).body ?? [], `${path}.body`),
+    };
+  }
+  if (kind === "when") return { kind, test: (node as any).test, body: normalizeBody((node as any).body ?? [], `${path}.body`) };
+  if (kind === "break") return { kind, ...(Object.prototype.hasOwnProperty.call(node, "test") ? { test: (node as any).test } : {}) };
+  if (kind === "set") return { kind, ...((node as any).id ? { id: String((node as any).id) } : {}), ref: normalizeRef((node as any).ref, `${path}.ref`), value: (node as any).value };
+  if (kind === "stop") return { kind, ...((node as any).reason !== undefined ? { reason: String((node as any).reason) } : {}) };
+  if (kind === "done") return { kind, ...(Object.prototype.hasOwnProperty.call(node, "value") ? { value: (node as any).value } : Object.prototype.hasOwnProperty.call(node, "output") ? { value: (node as any).output } : {}) };
+  invalidWorkflow(path, `unknown node kind: ${kind}`);
+}
+
+function normalizeBody(values: unknown[] | unknown, path = "body"): WorkflowNode[] {
+  if (!Array.isArray(values)) invalidWorkflow(path, "body must be an array");
+  return compact(values).flatMap((value, index) => {
+    if (Array.isArray(value)) return normalizeBody(value, `${path}[${index}]`);
+    return [normalizeNode(value, `${path}[${index}]`)];
   });
 }
 
@@ -201,11 +266,12 @@ export function createWorkflowDsl(id: string, build: ((w: any) => unknown) | Wor
 }
 
 function normalizeWorkflowIr(input: WorkflowIr, fallbackId?: string): WorkflowIr {
+  if (!isObject(input)) throw new Error("workflow definition must be an object");
   const id = String(input.id || fallbackId || "").trim();
   if (!id || /\s/.test(id)) throw new Error("workflow definition requires id without whitespace");
-  const body = normalizeBody(input.body ?? []);
+  const body = normalizeBody((input as any).body ?? [], "body");
   return {
-    ...input,
+    ...(input as any),
     kind: "workflow",
     id,
     body,
@@ -465,7 +531,11 @@ function summarizeDefinition(definition: WorkflowIr, hash: string): WorkflowDefi
 async function loadDefinitionByHash(deps: WorkflowDeps, hash: string): Promise<WorkflowIr | null> {
   const row = await deps.objects.getJSON<WorkflowIr>({ hash });
   if (!row) return null;
-  return normalizeWorkflowIr(row.value);
+  try {
+    return normalizeWorkflowIr(row.value);
+  } catch {
+    return null;
+  }
 }
 
 async function loadCurrentDefinition(deps: WorkflowDeps, id: string): Promise<{ hash: string; definition: WorkflowIr } | null> {
