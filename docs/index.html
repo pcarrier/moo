@@ -141,9 +141,13 @@
         <div class="code-grid code-grid--install">
           <article class="code-card reveal">
             <h3>Install a release</h3>
-            <pre><code>curl -L https://github.com/pcarrier/moo/releases/latest/download/moo-linux-x86_64 -o moo
-chmod +x moo
-./moo serve</code></pre>
+            <pre><code># macOS / Linux
+curl -sf https://moo.pcarrier.com/install | sh
+moo serve
+
+# Windows PowerShell
+irm https://moo.pcarrier.com/install.ps1 | iex
+moo serve</code></pre>
           </article>
           <article class="code-card reveal">
             <h3>Hack on Moo</h3>
