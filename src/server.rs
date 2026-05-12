@@ -560,23 +560,7 @@ fn legacy_facts_route_redirect(path: &str, query: Option<&str>) -> Option<String
 
 fn serves_ui_route(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
-    path == "/"
-        || path == "/index.html"
-        || path == "/facts"
-        || path.starts_with("/facts/")
-        || path == "/apps"
-        || path.starts_with("/apps/")
-        || path == "/mcp"
-        || path.starts_with("/mcp/")
-        || path == "/skills"
-        || path.starts_with("/skills/")
-        || path == "/v8"
-        || path.starts_with("/v8/")
-        || path == "/traces"
-        || path.starts_with("/traces/")
-        || path == "/settings"
-        || path.starts_with("/settings/")
-        || path.starts_with("/chat/")
+    path.starts_with('/') && !path.starts_with("/api/")
 }
 
 fn accepts_encoding(value: &str, coding: &str) -> bool {
@@ -779,6 +763,16 @@ mod tests {
         assert_eq!(raw.psk, None);
         assert_eq!(raw.root, "/tmp/site");
         assert_eq!(raw.rest, "docs/index.html");
+    }
+
+    #[test]
+    fn serves_ui_route_falls_back_for_any_non_api_path() {
+        assert!(serves_ui_route("/"));
+        assert!(serves_ui_route("/new"));
+        assert!(serves_ui_route("/new?from=chat"));
+        assert!(serves_ui_route("/chat/abc"));
+        assert!(!serves_ui_route("/api/ws"));
+        assert!(!serves_ui_route("/api/fs/raw/tmp/site/-/index.html"));
     }
 
     #[test]
