@@ -1414,6 +1414,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
   const steps = await moo.facts.matchAll({ patterns: [
       ["?step", "rdf:type", "agent:Step"],
       ["?step", "agent:kind", "?kind"],
+      ["?step", "agent:status", "?status"],
       ["?step", "agent:createdAt", "?at"],
     ], ...{ store: c.facts, graph: c.graph } });
 
@@ -1452,6 +1453,14 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
       const p = await loadPayloadJSON(c.facts, c.graph, s["?step"]!);
       const text = p?.value?.text;
       if (text) entries.push({ at, role: "assistant", content: text });
+    } else {
+      const text = await formatStepForLLMContext(c.facts, c.graph, {
+        step: s["?step"]!,
+        kind: s["?kind"]!,
+        status: s["?status"] ?? "",
+        at,
+      });
+      if (text) entries.push({ at, role: "assistant", content: text });
     }
   }
 
@@ -1482,6 +1491,23 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });
   return messages;
+}
+
+const LLM_CONTEXT_STEP_KINDS = new Set([
+  "agent:RunJS",
+  "agent:Subagent",
+  "agent:ShellCommand",
+  "agent:Error",
+]);
+
+async function formatStepForLLMContext(facts: string, graph: string, item: any): Promise<string> {
+  if (!LLM_CONTEXT_STEP_KINDS.has(item.kind)) return "";
+  const payload = await loadPayloadJSON(facts, graph, item.step);
+  const result = await loadResultJSON(facts, graph, item.step);
+  const text = formatStepForCompaction(item, payload, result);
+  if (!text) return "";
+  const status = item.status ? ` · ${item.status.replace(/^agent:/, "")}` : "";
+  return `[${item.kind.replace(/^agent:/, "")}${status}]\n${text}`;
 }
 
 async function transcriptMessages(chatId: string, afterAt: number): Promise<any[]> {
