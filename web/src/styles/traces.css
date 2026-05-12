@@ -2351,6 +2351,10 @@
   pointer-events: none;
 }
 
+.chat-terminal:not(.open) .chat-terminal-tabs::after {
+  z-index: 2;
+}
+
 .chat-terminal-tab,
 .chat-terminal-action {
   display: inline-flex;
@@ -2360,7 +2364,6 @@
   min-width: 0;
   flex: 0 1 auto;
   border: 0;
-  border-block-start: 0.5px solid var(--line);
   border-inline-end: 0.5px solid var(--line);
   border-radius: 0;
   background: color-mix(in srgb, var(--sidebar-active) 72%, var(--bg));
