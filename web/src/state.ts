@@ -2990,229 +2990,34 @@ export function createState() {
     return `file-diff:${item.id}`;
   }
 
-  function jsonEqual(a: unknown, b: unknown): boolean {
-    return a === b || JSON.stringify(a) === JSON.stringify(b);
-  }
-
-  function imageAttachmentsEqual(
-    a: ImageAttachment[] | undefined,
-    b: ImageAttachment[] | undefined,
-  ): boolean {
+  function deepEqual(a: unknown, b: unknown): boolean {
     if (a === b) return true;
-    if (!a || !b) return !a && !b;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      const left = a[i] as any;
-      const right = b[i] as any;
-      if (
-        left?.name !== right?.name ||
-        left?.type !== right?.type ||
-        left?.mimeType !== right?.mimeType ||
-        left?.dataUrl !== right?.dataUrl ||
-        left?.size !== right?.size
-      )
-        return false;
+    if (a == null || b == null) return a === b;
+    if (typeof a !== "object" || typeof b !== "object") return false;
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) {
+        if (!deepEqual(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    if (Array.isArray(b)) return false;
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const keys = Object.keys(ao);
+    if (keys.length !== Object.keys(bo).length) return false;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(bo, key)) return false;
+      if (!deepEqual(ao[key], bo[key])) return false;
     }
     return true;
   }
 
-  function diffStatsEqual(
-    a: FileDiffItem["stats"] | MemoryDiffItem["stats"] | undefined,
-    b: FileDiffItem["stats"] | MemoryDiffItem["stats"] | undefined,
-  ): boolean {
-    if (a === b) return true;
-    if (!a || !b) return !a && !b;
-    return (
-      (a as any).added === (b as any).added &&
-      (a as any).removed === (b as any).removed &&
-      (a as any).lines === (b as any).lines
-    );
-  }
-
-  function stepErrorEqual(a: unknown, b: unknown): boolean {
-    if (a === b) return true;
-    if (!a || !b) return !a && !b;
-    const left = a as any;
-    const right = b as any;
-    return (
-      left.kind === right.kind &&
-      left.at === right.at &&
-      jsonEqual(left.detail, right.detail)
-    );
-  }
-
-  function runJsDetailsEqual(a: unknown, b: unknown): boolean {
-    if (a === b) return true;
-    if (!a || !b) return !a && !b;
-    const left = a as any;
-    const right = b as any;
-    return (
-      left.label === right.label &&
-      left.description === right.description &&
-      left.code === right.code &&
-      left.result === right.result &&
-      left.error === right.error &&
-      left.durationNs === right.durationNs &&
-      jsonEqual(left.args, right.args)
-    );
-  }
-
-  function subagentDetailsEqual(a: unknown, b: unknown): boolean {
-    if (a === b) return true;
-    if (!a || !b) return !a && !b;
-    const left = a as any;
-    const right = b as any;
-    const leftResult = left.result;
-    const rightResult = right.result;
-    const resultEqual =
-      leftResult === rightResult ||
-      (!leftResult || !rightResult
-        ? !leftResult && !rightResult
-        : leftResult.status === rightResult.status &&
-          leftResult.childChatId === rightResult.childChatId &&
-          leftResult.text === rightResult.text &&
-          leftResult.error === rightResult.error &&
-          leftResult.durationNs === rightResult.durationNs &&
-          jsonEqual(leftResult.usage, rightResult.usage));
-    return (
-      left.label === right.label &&
-      left.task === right.task &&
-      left.childChatId === right.childChatId &&
-      left.parentRunJsStepId === right.parentRunJsStepId &&
-      resultEqual
-    );
-  }
-
   function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean {
-    // Avoid serializing every row on each describe refresh. Large RunJS results
-    // and diffs dominate timeline cost; compare hot fields directly so unchanged
-    // objects can still be reused without allocating a full JSON copy per row.
-    if (a === b) return true;
-    if (a.type !== b.type || a.at !== b.at) return false;
-    switch (a.type) {
-      case "step": {
-        if (b.type !== "step") return false;
-        const right = b;
-        return (
-          a.step === right.step &&
-          a.kind === right.kind &&
-          a.status === right.status &&
-          a.text === right.text &&
-          a.model === right.model &&
-          a.effort === right.effort &&
-          a.thoughtDurationNs === right.thoughtDurationNs &&
-          a.draftId === right.draftId &&
-          a.deletedAt === right.deletedAt &&
-          a.lazyRunjsResult === right.lazyRunjsResult &&
-          a.resultHash === right.resultHash &&
-          imageAttachmentsEqual(a.attachments, right.attachments) &&
-          stepErrorEqual(a.error, right.error) &&
-          runJsDetailsEqual(a.runjs, right.runjs) &&
-          subagentDetailsEqual(a.subagent, right.subagent)
-        );
-      }
-      case "input": {
-        if (b.type !== "input") return false;
-        const right = b;
-        return (
-          a.requestId === right.requestId &&
-          a.kind === right.kind &&
-          a.status === right.status &&
-          jsonEqual(a.spec, right.spec) &&
-          jsonEqual(a.response, right.response)
-        );
-      }
-      case "input-response": {
-        if (b.type !== "input-response") return false;
-        const right = b;
-        return (
-          a.responseId === right.responseId &&
-          a.requestId === right.requestId &&
-          a.kind === right.kind &&
-          jsonEqual(a.spec, right.spec) &&
-          jsonEqual(a.response, right.response)
-        );
-      }
-      case "file-diff": {
-        if (b.type !== "file-diff") return false;
-        const right = b;
-        return (
-          a.id === right.id &&
-          a.step === right.step &&
-          a.chatId === right.chatId &&
-          a.path === right.path &&
-          a.hash === right.hash &&
-          a.diff === right.diff &&
-          a.before === right.before &&
-          a.after === right.after &&
-          diffStatsEqual(a.stats, right.stats)
-        );
-      }
-      case "todo-diff": {
-        if (b.type !== "todo-diff") return false;
-        const right = b;
-        return (
-          a.id === right.id &&
-          a.step === right.step &&
-          a.chatId === right.chatId &&
-          a.hash === right.hash &&
-          a.at === right.at &&
-          jsonEqual(a.changes, right.changes) &&
-          jsonEqual(a.todos, right.todos)
-        );
-      }
-      case "memory-diff": {
-        if (b.type !== "memory-diff") return false;
-        const right = b;
-        return (
-          a.id === right.id &&
-          a.step === right.step &&
-          a.chatId === right.chatId &&
-          a.store === right.store &&
-          a.graph === right.graph &&
-          a.action === right.action &&
-          a.count === right.count &&
-          a.path === right.path &&
-          a.hash === right.hash &&
-          a.diff === right.diff &&
-          a.before === right.before &&
-          a.after === right.after &&
-          diffStatsEqual(a.stats, right.stats) &&
-          jsonEqual(a.changes, right.changes)
-        );
-      }
-      case "blob-add": {
-        if (b.type !== "blob-add") return false;
-        const right = b;
-        return (
-          a.id === right.id &&
-          a.step === right.step &&
-          a.chatId === right.chatId &&
-          a.objectKind === right.objectKind &&
-          a.hash === right.hash &&
-          a.size === right.size &&
-          a.chars === right.chars &&
-          a.encoding === right.encoding
-        );
-      }
-      case "log": {
-        if (b.type !== "log") return false;
-        const right = b;
-        return a.id === right.id && a.message === right.message;
-      }
-      case "trail": {
-        if (b.type !== "trail") return false;
-        const right = b;
-        return (
-          a.id === right.id &&
-          a.kind === right.kind &&
-          a.title === right.title &&
-          a.body === right.body &&
-          a.summary === right.summary
-        );
-      }
-    }
-    return false;
+    // Reuse the previous object when the server-rendered row is unchanged so
+    // Solid signals don't churn. A generic structural compare keeps this honest
+    // as TimelineItem grows new fields.
+    return deepEqual(a, b);
   }
 
   function preserveTimelineItems(

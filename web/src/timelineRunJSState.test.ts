@@ -5,10 +5,15 @@ const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 
 describe("timeline runJS state merging", () => {
   test("replaces rows when lazy result metadata changes", () => {
-    expect(state).toContain("a.lazyRunjsResult === right.lazyRunjsResult");
-    expect(state).toContain("a.resultHash === right.resultHash");
+    // The structural deepEqual compares every key; verify it is wired in and
+    // that the legacy field-by-field comparator was retired. Future schema
+    // changes (e.g. new step fields) are automatically covered without test
+    // churn.
+    expect(state).toContain("function deepEqual(a: unknown, b: unknown): boolean");
+    expect(state).toContain("function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean");
+    expect(state).toContain("return deepEqual(a, b);");
+    expect(state).not.toContain("a.lazyRunjsResult === right.lazyRunjsResult");
   });
-
 
   test("uses update-aware timeline watermarks", () => {
     expect(state).toContain("function newestTimelineWatermark(items: TimelineItem[]): number");
