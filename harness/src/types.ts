@@ -457,11 +457,10 @@ export type TraceDiagnosis = { total?: number; groups?: TraceDiagnosisGroup[]; r
 export type TraceDiagnostic = TraceDiagnosis;
 export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export type TodoPriority = "high" | "normal" | "low";
 export type TodoIdInput = string | number;
-export type AgentTodo = { id: string; text: string; status: TodoStatus; priority?: TodoPriority; note?: string; createdAt: string; updatedAt: string };
+export type AgentTodo = { id: string; text: string; status: TodoStatus; note?: string; createdAt: string; updatedAt: string };
 export type AgentTodoState = { version: 1; updatedAt: string; items: AgentTodo[] };
-export type TodoPatch = { add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>; update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
+export type TodoPatch = { add?: Array<{ text: string; status?: TodoStatus; note?: string }>; update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
 
 export type MooTracesApi = {
   current(args?: {}): Promise<TraceCurrent | null>;
@@ -593,8 +592,8 @@ export type Moo = {
   };
   todos: {
     list(): Promise<AgentTodoState>;
-    add(args: { text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }): Promise<AgentTodo>;
-    update(args: { id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }): Promise<AgentTodo>;
+    add(args: { text: string; status?: TodoStatus; note?: string }): Promise<AgentTodo>;
+    update(args: { id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null }): Promise<AgentTodo>;
     done(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
     drop(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
     patch(args: TodoPatch): Promise<AgentTodoState>;

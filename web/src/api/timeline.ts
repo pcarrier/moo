@@ -110,7 +110,6 @@ export type AgentTodo = {
   id: string;
   text: string;
   status: TodoStatus;
-  priority?: "high" | "normal" | "low";
   note?: string;
   createdAt?: string;
   updatedAt?: string;

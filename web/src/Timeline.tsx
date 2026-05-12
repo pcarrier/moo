@@ -991,18 +991,10 @@ const imageAttachmentsFromFiles = async (files: File[]) => {
   return Promise.all(images.map(readImageAttachment));
 };
 
-function todoPriorityLabel(priority?: AgentTodo["priority"]) {
-  return priority || "normal";
-}
-
 function TodoMetaBubbles(props: { item: AgentTodo }) {
-  const priority = () => todoPriorityLabel(props.item.priority);
   return (
     <span class="todo-bubbles" aria-label="TODO metadata">
       <span class="todo-bubble todo-status-bubble">{props.item.status}</span>
-      <Show when={priority() !== "normal"}>
-        <span class="todo-bubble todo-priority-bubble">{priority()}</span>
-      </Show>
     </span>
   );
 }

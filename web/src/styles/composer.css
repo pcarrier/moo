@@ -95,7 +95,7 @@
   align-items: baseline;
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 0.42rem;
+  gap: 0;
 }
 
 .todo-bubble {
@@ -115,9 +115,6 @@
   color: var(--fg);
 }
 
-.todo-priority-bubble {
-  color: var(--warning-fg, #b08800);
-}
 
 .ongoing-todo-details,
 .todo-diff-details {
