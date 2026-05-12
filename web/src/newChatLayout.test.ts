@@ -167,18 +167,30 @@ describe("new chat layout", () => {
     const panel = cssBlock(".new-chat-panel");
     expect(panel).toContain("flex: 1 1 auto");
     expect(panel).toContain("inline-size: 100%");
+    expect(panel).toContain("block-size: 100%");
+    expect(panel).toContain("overflow: hidden");
     expect(panel).toContain("border: 0");
     expect(panel).not.toContain("48rem");
   });
 
-  it("caps only the long project lists", () => {
+  it("lets the file browser take the full available height", () => {
     const recent = cssBlock(".fs-explorer-main .fs-recent-list");
     expect(recent).toContain("max-block-size: 14rem");
     expect(recent).toContain("overflow: auto");
 
+    const explorer = cssBlock(".fs-explorer.fs-explorer-main");
+    expect(explorer).toContain("flex: 1 1 auto");
+    expect(explorer).toContain("block-size: 100%");
+    expect(explorer).toContain("max-block-size: none");
+
+    const picker = cssBlock(".fs-explorer-main .fs-picker");
+    expect(picker).toContain("flex: 1 1 auto");
+    expect(picker).toContain("min-block-size: 0");
+
     const entries = cssBlock(".fs-explorer-main .fs-entries");
-    expect(entries).toContain("max-block-size: 18rem");
-    expect(entries).toContain("flex: 0 1 auto");
+    expect(entries).toContain("flex: 1 1 auto");
+    expect(entries).toContain("max-block-size: none");
+    expect(entries).toContain("max-height: none");
   });
 });
 

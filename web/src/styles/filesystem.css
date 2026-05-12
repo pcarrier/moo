@@ -30,6 +30,7 @@
   --fs-start-action-width: 4.75rem;
   flex: 1 1 auto;
   inline-size: 100%;
+  block-size: 100%;
   max-block-size: 100%;
   min-block-size: 0;
   display: flex;
@@ -37,13 +38,14 @@
   border: 0;
   background: var(--bg);
   color: var(--fg);
-  overflow: auto;
+  overflow: hidden;
 }
 
 
 .fs-explorer.fs-explorer-main {
   inline-size: 100%;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  block-size: 100%;
   max-block-size: none;
   max-height: none;
   margin: 0;
@@ -392,7 +394,7 @@
 }
 
 .fs-explorer-main .fs-picker {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-block-size: 0;
   display: flex;
   flex-direction: column;
@@ -406,9 +408,9 @@
 }
 
 .fs-explorer-main .fs-entries {
-  flex: 0 1 auto;
-  max-block-size: 18rem;
-  max-height: 18rem;
+  flex: 1 1 auto;
+  max-block-size: none;
+  max-height: none;
   min-height: 0;
 }
 
