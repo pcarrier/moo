@@ -57,6 +57,10 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err || "unknown error");
 }
 
+function BareTraceLoading(props: { label: string }): JSX.Element {
+  return <div class="trace-loading-bare" aria-live="polite"><LoadingDots class="trace-loading-dots" label={props.label} /></div>;
+}
+
 async function unwrap<T>(promise: Promise<{ ok: true; value: T } | { ok: false; error: { message?: string } }>, label: string): Promise<T> {
   const result = await withTimeout(promise, TRACE_LOAD_TIMEOUT_MS, label);
   if (!result.ok) throw new Error(result.error?.message || `${label} failed`);
@@ -1476,7 +1480,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
             <Show when={ageFilterError()}>{(message) => <Notice tone="error" class="trace-filter-error">{message()}</Notice>}</Show>
             <div class="trace-selector-results" ref={installTraceSelectorAutoLoad}>
               <Show when={activeTab() === "all"}>
-                <For each={filteredTraceRoots()} fallback={<EmptyState class="trace-empty"><Show when={rootsState() === "loading"} fallback={"No traces found."}>Loading traces <LoadingDots class="trace-loading-dots" label="loading traces" /></Show></EmptyState>}>
+                <For each={filteredTraceRoots()} fallback={<Show when={rootsState() === "loading"} fallback={<EmptyState class="trace-empty">No traces found.</EmptyState>}><BareTraceLoading label="loading traces" /></Show>}>
                   {(root) => (
                     <button type="button" class="trace-root-row" classList={{ selected: rootMatchesSelection(root) }} onClick={() => selectTraceRoot(root)}>
                       <div class="trace-root-title" title={rootTitle(root)}>
@@ -1493,12 +1497,12 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
                 <Show when={rootsState() === "loading" && filteredTraceRoots().length > 0}><div class="trace-load-more" aria-live="polite"><LoadingDots class="trace-loading-dots" label="loading traces" /></div></Show>
               </Show>
               <Show when={activeTab() === "failed"}>
-                <For each={filteredFailures()} fallback={<EmptyState class="trace-empty"><Show when={failedState() === "loading"} fallback={"No failed spans match the filters."}>Loading failures <LoadingDots class="trace-loading-dots" label="loading failed spans" /></Show></EmptyState>}>
+                <For each={filteredFailures()} fallback={<Show when={failedState() === "loading"} fallback={<EmptyState class="trace-empty">No failed spans match the filters.</EmptyState>}><BareTraceLoading label="loading failed spans" /></Show>}>
                   {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span class="trace-root-name">{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span class="trace-root-meta-text">{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
                 </For>
               </Show>
               <Show when={activeTab() === "search"}>
-                <For each={filteredSearchHits()} fallback={<EmptyState class="trace-empty"><Show when={searchState() === "loading"} fallback={"No spans match the filters."}>Loading spans <LoadingDots class="trace-loading-dots" label="loading spans" /></Show></EmptyState>}>
+                <For each={filteredSearchHits()} fallback={<Show when={searchState() === "loading"} fallback={<EmptyState class="trace-empty">No spans match the filters.</EmptyState>}><BareTraceLoading label="loading spans" /></Show>}>
                   {(hit) => (<button type="button" class="trace-root-row trace-hit-row" classList={{ selected: selectedId() === hit.node.id }} onClick={() => focusHit(hit)}><div class="trace-root-title"><KindBadge kind={hit.node.kind} /><span class="trace-root-name">{nodeTitle(hit.node)}</span><StatusBadge status={hit.node.status} /></div><div class="trace-root-meta"><span class="trace-root-meta-text">{crumbText([...hit.ancestors, hit.node])}</span></div></button>)}
                 </For>
               </Show>
@@ -1509,7 +1513,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
 
           <main class="trace-pane trace-timeline-pane">
             <div class="trace-timeline-head"><div><span class="trace-eyebrow">Tree timeline</span><strong class="trace-loading-label"><span>{`${nodes().length} spans`}</span><Show when={treeState() === "loading"}><LoadingDots class="trace-loading-dots" label="loading trace tree" /></Show></strong></div><div class="trace-timeline-range"><span>{formatTimeNs(timelineBounds()?.startNs ?? NaN)}</span><strong>{formatDurationNs(timelineBounds()?.durationNs)}</strong><span>{formatTimeNs(timelineBounds()?.endNs ?? NaN)}</span></div></div>
-            <div class="trace-timeline-grid"><div class="trace-timeline-columns" aria-hidden="true"><span /><span><TraceTimelineRuler bounds={timelineBounds()} /></span><span /></div><div class="trace-tree-list" role="tree" aria-label="trace tree timeline"><For each={treeRows()} fallback={<EmptyState class="trace-empty"><Show when={treeState() === "loading"} fallback={"Select a trace on the left."}>Loading tree <LoadingDots class="trace-loading-dots" label="loading trace tree" /></Show></EmptyState>}>{(row) => renderTreeRow(row)}</For></div></div>
+            <div class="trace-timeline-grid"><div class="trace-timeline-columns" aria-hidden="true"><span /><span><TraceTimelineRuler bounds={timelineBounds()} /></span><span /></div><div class="trace-tree-list" role="tree" aria-label="trace tree timeline"><For each={treeRows()} fallback={<Show when={treeState() === "loading"} fallback={<EmptyState class="trace-empty">Select a trace on the left.</EmptyState>}><BareTraceLoading label="loading trace tree" /></Show>}>{(row) => renderTreeRow(row)}</For></div></div>
           </main>
 
           <div class="trace-panel-resizer trace-panel-resizer-row" title="resize trace detail" ref={(el) => installRowResizer(el)} />
@@ -1517,7 +1521,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
           <section class="trace-pane trace-detail-panel trace-inspector-pane">
             <div class="trace-pane-header"><span>Detail</span><span>{detailState() === "loading" ? "loading…" : selectedNode()?.id || "—"}</span></div>
             <div class="trace-detail-scroll">
-              <Show when={detail()} fallback={<EmptyState class="trace-empty">Select a tree entry to inspect input, output, errors, and events.</EmptyState>}>
+              <Show when={detail()} fallback={<Show when={detailState() === "loading"} fallback={<EmptyState class="trace-empty">Select a tree entry to inspect input, output, errors, and events.</EmptyState>}><BareTraceLoading label="loading trace detail" /></Show>}>
                 {(state) => (
                   <>
                     <div class="trace-detail-title"><KindBadge kind={state().node.kind} /><h2>{nodeTitle(state().node)}</h2><StatusBadge status={rowDisplayStatus(state().node)} /></div>

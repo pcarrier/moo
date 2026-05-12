@@ -45,6 +45,19 @@ describe("hierarchical trace view", () => {
     expect(tracesView).not.toContain('activeTab() === "failed" && failures().length === 0 && failedState() === "idle"');
   });
 
+  test("renders trace loading states as bare dots without empty chrome", () => {
+    expect(tracesView).toContain("function BareTraceLoading");
+    expect(tracesView).toContain('class="trace-loading-bare"');
+    expect(css).toContain(".trace-loading-bare");
+    expect(tracesView).not.toContain('fallback={<EmptyState class="trace-empty"><Show when={rootsState() === "loading"}');
+    expect(tracesView).not.toContain('fallback={<EmptyState class="trace-empty"><Show when={failedState() === "loading"}');
+    expect(tracesView).not.toContain('fallback={<EmptyState class="trace-empty"><Show when={searchState() === "loading"}');
+    expect(tracesView).not.toContain('Loading traces <LoadingDots');
+    expect(tracesView).not.toContain('Loading failures <LoadingDots');
+    expect(tracesView).not.toContain('Loading spans <LoadingDots');
+    expect(tracesView).not.toContain('Loading tree <LoadingDots');
+  });
+
   test("renders a vertical all-traces selector and selectable tree timeline", () => {
     expect(tracesView).toContain("trace-workbench");
     expect(tracesView).toContain("trace-selector-pane");

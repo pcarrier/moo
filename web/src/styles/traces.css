@@ -2683,8 +2683,11 @@
   color: var(--muted, #8f98a8);
 }
 
-.trace-empty .trace-loading-dots {
-  margin-left: 0.18rem;
+.trace-loading-bare {
+  display: grid;
+  place-items: center;
+  min-height: 3rem;
+  padding: 0.5rem;
 }
 
 .trace-eyebrow {
