@@ -535,10 +535,14 @@ export type ProcRunArgs = {
   maxOutputBytes?: number | null;
 };
 
+export type LineRange = [from: number, to: number];
+export type ReadLinesOptions = { numbered?: boolean };
+
 export type WorkspaceScope = {
   root: string;
   fs: {
     read(path: string): Promise<string>;
+    readLines(path: string, ranges: LineRange[], opts?: ReadLinesOptions): Promise<string[]>;
     write(path: string, content: string): Promise<void>;
     list(path?: string): Promise<string[]>;
     glob(pattern: string): Promise<string[]>;
@@ -623,6 +627,7 @@ export type Moo = {
   };
   fs: {
     read(path: string): Promise<string>;
+    readLines(path: string, ranges: LineRange[], opts?: ReadLinesOptions): Promise<string[]>;
     write(path: string, content: string): Promise<void>;
     list(path: string): Promise<string[]>;
     glob(pattern: string): Promise<string[]>;

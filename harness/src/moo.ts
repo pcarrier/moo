@@ -1133,6 +1133,68 @@ async function resolveActivePath(path: string = "."): Promise<string> {
   return root ? resolveWorkspacePath(root, raw) : raw;
 }
 
+type NormalizedLineRange = { from: number; to: number };
+
+function splitReadableLines(text: string): string[] {
+  if (text.length === 0) return [];
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function normalizeLineRanges(ranges: [number, number][]): NormalizedLineRange[] {
+  if (!Array.isArray(ranges)) throw new MooApiError("invalid_argument", "moo.fs.readLines ranges must be an array", { ranges });
+  const sorted = ranges.map((range, index) => {
+    if (!Array.isArray(range) || range.length !== 2) {
+      throw new MooApiError("invalid_argument", "moo.fs.readLines range must be [from, to]", { index, range });
+    }
+    const from = Number(range[0]);
+    const to = Number(range[1]);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1 || from > to) {
+      throw new MooApiError("invalid_argument", "moo.fs.readLines ranges must use 1-based inclusive line numbers with from <= to", { index, range });
+    }
+    return { from, to };
+  }).sort((a, b) => a.from - b.from || a.to - b.to);
+
+  const normalized: NormalizedLineRange[] = [];
+  for (const range of sorted) {
+    const previous = normalized[normalized.length - 1];
+    if (previous && range.from <= previous.to + 1) {
+      previous.to = Math.max(previous.to, range.to);
+    } else {
+      normalized.push({ ...range });
+    }
+  }
+  return normalized;
+}
+
+function formatReadLines(text: string, ranges: [number, number][], opts: { numbered?: boolean } = {}): string[] {
+  const normalizedRanges = normalizeLineRanges(ranges);
+  if (!normalizedRanges.length) return [];
+  const lines = splitReadableLines(text);
+  if (!lines.length) return [];
+  const maxLine = lines.length;
+  const width = Math.max(4, String(maxLine).length);
+  const out: string[] = [];
+  let previousLineNo = 0;
+  let wroteLine = false;
+  for (const range of normalizedRanges) {
+    const from = Math.max(1, range.from);
+    const to = Math.min(range.to, maxLine);
+    if (from > to) continue;
+    if (previousLineNo + 1 < from) out.push("…");
+    for (let lineNo = Math.max(from, previousLineNo + 1); lineNo <= to; lineNo++) {
+      const line = lines[lineNo - 1] ?? "";
+      out.push(opts.numbered ? String(lineNo).padStart(width) + ": " + line : line);
+      wroteLine = true;
+    }
+    previousLineNo = Math.max(previousLineNo, to);
+  }
+  if (wroteLine && previousLineNo < maxLine) out.push("…");
+  return out;
+}
+
 async function resolveActiveCwd(cwd?: string | null): Promise<string | null> {
   const raw = cwd == null ? null : String(cwd || ".");
   if (raw?.startsWith("/")) return raw;
@@ -1145,6 +1207,10 @@ const fs: Moo["fs"] = {
   async read(path) {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.read", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
+  },
+  async readLines(path, ranges, opts = {}) {
+    const content = await fs.read(path);
+    return await traceObserved("moo.fs.readLines", { path, ranges, numbered: !!opts.numbered }, () => formatReadLines(content, ranges, opts), (value) => ({ lines: value.length }));
   },
   async write(path, content) {
     const resolved = await resolveActivePath(path);
@@ -1255,6 +1321,7 @@ const workspace: Moo["workspace"] = {
       root,
       fs: {
         read: (path) => fs.read(resolveWorkspacePath(root, path)),
+        readLines: (path, ranges, opts) => fs.readLines(resolveWorkspacePath(root, path), ranges, opts),
         write: (path, content) => fs.write(resolveWorkspacePath(root, path), content),
         list: (path = ".") => fs.list(resolveWorkspacePath(root, path)),
         glob: (pattern) => fs.glob(resolveWorkspacePath(root, pattern)),
