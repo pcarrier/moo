@@ -31,7 +31,7 @@ export async function objectGetCommand(input: Input) {
 
 export async function pointersCommand(input: Input) {
   const prefix = typeof input.prefix === "string" ? input.prefix : "";
-  const entries = (await moo.pointers.entries(prefix))
+  const entries = (await moo.pointers.entries({ prefix: prefix }))
     .map(([name, target]) => [String(name), String(target)] as [string, string])
     .filter(([name]) => name.trim().length > 0 && !/\[object\s+Promise\]/i.test(name));
   entries.sort((a, b) => compareStrings(String(a[0]), String(b[0])));
@@ -43,17 +43,17 @@ export async function pointerRemoveCommand(input: Input) {
   if (!name) return { ok: false, error: { message: "pointer-rm requires name" } };
   const recursive = input.recursive === true;
   if (!recursive) {
-    const removed = await moo.pointers.delete(name);
+    const removed = await moo.pointers.delete({ name: name });
     return { ok: true, value: { name, removed, removedCount: removed ? 1 : 0, recursive: false } };
   }
 
   const names = new Set<string>([name]);
   const prefix = name.endsWith("/") ? name : name + "/";
-  for (const child of await moo.pointers.list(prefix)) names.add(String(child));
+  for (const child of await moo.pointers.list({ prefix: prefix })) names.add(String(child));
 
   let removedCount = 0;
   for (const pointerName of Array.from(names).sort(compareStrings)) {
-    if (await moo.pointers.delete(pointerName)) removedCount += 1;
+    if (await moo.pointers.delete({ name: pointerName })) removedCount += 1;
   }
   return { ok: true, value: { name, removed: removedCount > 0, removedCount, recursive: true } };
 }
@@ -315,7 +315,7 @@ export async function projectMemoryStoreFor(project: unknown): Promise<string> {
     ) + "/facts";
   }
   const git = await moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
-  const raw = git.code === 0 && git.stdout.trim() ? git.stdout.trim() : (await moo.env.get("PWD")) || ".";
+  const raw = git.code === 0 && git.stdout.trim() ? git.stdout.trim() : (await moo.env.get({ name: "PWD" })) || ".";
   return projectMemoryStoreFor(raw);
 }
 

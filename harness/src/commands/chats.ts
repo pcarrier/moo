@@ -339,7 +339,7 @@ export async function chatsListCommand() {
       unpricedModels: cost.unpricedModels,
     });
   }
-  const homeDir = (await moo.env.get("HOME")) || null;
+  const homeDir = (await moo.env.get({ name: "HOME" })) || null;
   return { ok: true, value: { chats: enriched, homeDir } };
 }
 
@@ -347,7 +347,7 @@ export const RECENT_CHAT_PATHS_REF = "user/recent-chat-paths";
 export const RECENT_CHAT_PATHS_LIMIT = 8;
 
 async function chatWorktreePath(chatId: string): Promise<string> {
-  const home = String((await moo.env.get("HOME")) || "").trim().replace(/\/+$/, "");
+  const home = String((await moo.env.get({ name: "HOME" })) || "").trim().replace(/\/+$/, "");
   const base = home ? home + "/moo" : "moo";
   return base + "/" + String(chatId).replace(/^\/+/, "");
 }
@@ -357,7 +357,7 @@ async function expandHomeDir(path: string): Promise<string> {
   // Allow callers to pass shell-style "~" / "~/foo" — the backend resolves
   // them against $HOME so the UI can show tilde paths and round-trip them.
   if (raw === "~" || raw.startsWith("~/")) {
-    const home = (await moo.env.get("HOME")) || "";
+    const home = (await moo.env.get({ name: "HOME" })) || "";
     if (home) raw = home + raw.slice(1);
   }
   return raw;
@@ -365,14 +365,14 @@ async function expandHomeDir(path: string): Promise<string> {
 
 export async function normalizeDir(path: string): Promise<string> {
   const raw = await expandHomeDir(path);
-  const stat = await moo.fs.stat(raw);
+  const stat = await moo.fs.stat({ path: raw });
   if (!stat || stat.kind !== "dir") throw new Error(`not a directory: ${raw}`);
-  return await moo.fs.canonical(raw);
+  return await moo.fs.canonical({ path: raw });
 }
 
 async function lazyWorktreePathParts(path: string): Promise<{ chatId: string; rest: string } | null> {
   const normalized = String(path || "").replace(/\\/g, "/").replace(/\/+$/, "");
-  const home = String((await moo.env.get("HOME")) || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const home = String((await moo.env.get({ name: "HOME" })) || "").replace(/\\/g, "/").replace(/\/+$/, "");
   if (home) {
     const prefix = home + "/moo/";
     if (normalized.startsWith(prefix)) {
@@ -390,9 +390,9 @@ async function normalizeDirMaterializingChatWorktree(path: string): Promise<stri
     return await normalizeDir(raw);
   } catch (originalError: any) {
     const lazy = await lazyWorktreePathParts(raw);
-    if (!lazy || !(await moo.pointers.get(`chat/${lazy.chatId}/created-at`))) throw originalError;
+    if (!lazy || !(await moo.pointers.get({ name: `chat/${lazy.chatId}/created-at` }))) throw originalError;
     try {
-      const worktree = await moo.chat.scratch(lazy.chatId);
+      const worktree = await moo.chat.scratch({ chatId: lazy.chatId });
       const materialized = lazy.rest ? worktree.replace(/\/+$/, "") + "/" + lazy.rest.replace(/^\/+/, "") : worktree;
       return await normalizeDir(materialized);
     } catch {
@@ -402,7 +402,7 @@ async function normalizeDirMaterializingChatWorktree(path: string): Promise<stri
 }
 
 export async function loadRecentChatPaths(): Promise<string[]> {
-  const raw = await moo.pointers.get(RECENT_CHAT_PATHS_REF);
+  const raw = await moo.pointers.get({ name: RECENT_CHAT_PATHS_REF });
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -416,7 +416,7 @@ export async function rememberChatPath(path: string, alreadyNormalized = false):
   const normalized = alreadyNormalized ? path : await normalizeDir(path);
   const rest = (await loadRecentChatPaths()).filter((p) => p !== normalized);
   const next = [normalized, ...rest].slice(0, RECENT_CHAT_PATHS_LIMIT);
-  await moo.pointers.set(RECENT_CHAT_PATHS_REF, JSON.stringify(next));
+  await moo.pointers.set({ name: RECENT_CHAT_PATHS_REF, target: JSON.stringify(next) });
   return next;
 }
 
@@ -455,7 +455,7 @@ export async function removeRecentChatPathCommand(input: Input = {}) {
   }
   const paths = await loadRecentChatPaths();
   const next = paths.filter((path) => path !== normalized && path !== input.path);
-  await moo.pointers.set(RECENT_CHAT_PATHS_REF, JSON.stringify(next));
+  await moo.pointers.set({ name: RECENT_CHAT_PATHS_REF, target: JSON.stringify(next) });
   return { ok: true, value: { removed: next.length !== paths.length, paths: next } };
 }
 
@@ -468,7 +468,7 @@ export async function fsListCommand(input: Input) {
   }
   let names: string[];
   try {
-    names = await moo.fs.list(path);
+    names = await moo.fs.list({ path: path });
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }
@@ -476,7 +476,7 @@ export async function fsListCommand(input: Input) {
   const entries = await Promise.all(
     names.map(async (name) => {
       const child = path === "/" ? "/" + name : path + "/" + name;
-      const stat = await moo.fs.stat(child);
+      const stat = await moo.fs.stat({ path: child });
       const relative = normalizeFsRelativePath(name);
       const changed = relative ? changeStats?.get(relative) : null;
       return { name, path: child, kind: stat?.kind || "unknown", size: stat?.size || 0, mtime: stat?.mtime || 0, ...(changed ? changed : {}) };
@@ -784,9 +784,9 @@ function addFsChange(stats: Map<string, FsChangeStats>, relativePath: string, ad
 
 async function countTextFileLines(path: string): Promise<number> {
   try {
-    const stat = await moo.fs.stat(path);
+    const stat = await moo.fs.stat({ path: path });
     if (stat?.kind !== "file" || stat.size > 1_000_000) return 0;
-    const content = await moo.fs.read(path);
+    const content = await moo.fs.read({ path: path });
     if (!content) return 0;
     const lines = content.split(/\r?\n/);
     if (lines[lines.length - 1] === "") lines.pop();
@@ -1103,14 +1103,14 @@ async function fallbackFsSearchCandidates(base: string): Promise<Map<string, { r
     const absDir = dir ? joinChildPath(base, dir) : base;
     let names: string[];
     try {
-      names = await moo.fs.list(absDir);
+      names = await moo.fs.list({ path: absDir });
     } catch {
       continue;
     }
     for (const name of names) {
       if (!name || name.includes("/")) continue;
       const relativePath = dir ? dir + "/" + name : name;
-      const stat = await moo.fs.stat(joinChildPath(base, relativePath));
+      const stat = await moo.fs.stat({ path: joinChildPath(base, relativePath) });
       const kind = stat?.kind || "unknown";
       addFsSearchCandidate(candidates, relativePath, kind);
       visited += 1;
@@ -1207,7 +1207,7 @@ export async function fsReadCommand(input: Input) {
   const relativePath = normalizedBasePath ? relativePathWithin(normalizedBasePath, path) : null;
   const changed = relativePath === null ? null : changeStats?.get(relativePath);
 
-  const stat = await moo.fs.stat(path);
+  const stat = await moo.fs.stat({ path: path });
   if (!stat) {
     return { ok: false, error: { message: `File not found: ${requestedPath}` } };
   }
@@ -1218,13 +1218,13 @@ export async function fsReadCommand(input: Input) {
 
     let names: string[];
     try {
-      names = await moo.fs.list(path);
+      names = await moo.fs.list({ path: path });
     } catch (e: any) {
       return { ok: false, error: { message: e?.message || String(e) } };
     }
     const entries = await Promise.all(names.map(async (name) => {
       const child = joinChildPath(path, name);
-      const childStat = await moo.fs.stat(child);
+      const childStat = await moo.fs.stat({ path: child });
       const childRelative = relativePath === null ? null : normalizeFsRelativePath(relativePath ? relativePath + "/" + name : name);
       const childChanged = childRelative ? changeStats?.get(childRelative) : null;
       return { name, path: child, kind: childStat?.kind || "unknown", size: childStat?.size || 0, mtime: childStat?.mtime || 0, ...(childChanged ? childChanged : {}) };
@@ -1234,7 +1234,7 @@ export async function fsReadCommand(input: Input) {
   }
 
   try {
-    const content = await moo.fs.read(path);
+    const content = await moo.fs.read({ path: path });
     const currentDiff = includeDiff && normalizedBasePath && changed?.changed
       ? await currentFileDiff(normalizedBasePath, path, content)
       : null;
@@ -1254,7 +1254,7 @@ export async function chatNewCommand(input: Input) {
     }
   }
   const branch = path && typeof input.branch === "string" && input.branch.trim() ? input.branch.trim() : null;
-  const cid = await moo.chat.create(input.chatId, path, { branch });
+  const cid = await moo.chat.create({ chatId: input.chatId, path: path, ...{ branch } });
   const hasModel = Object.prototype.hasOwnProperty.call(input, "model");
   const hasEffort = Object.prototype.hasOwnProperty.call(input, "effort");
   if (!hasModel && !hasEffort) {
@@ -1309,8 +1309,8 @@ function forkTitle(title: string | null, chatId: string): string {
 }
 
 async function copyRefIfPresent(from: string, to: string) {
-  const value = await moo.pointers.get(from);
-  if (value != null) await moo.pointers.set(to, value);
+  const value = await moo.pointers.get({ name: from });
+  if (value != null) await moo.pointers.set({ name: to, target: value });
 }
 
 export async function chatForkCommand(input: Input) {
@@ -1324,8 +1324,8 @@ export async function chatForkCommand(input: Input) {
     store: sourceRefs.facts,
     ...{ graph: sourceRefs.graph, subject: stepId, predicate: "rdf:type", object: "agent:Step", limit: 1 },
   });
-  const sourcePathPromise = moo.pointers.get("chat/" + sourceChatId + "/path");
-  const sourceTitlePromise = moo.pointers.get("chat/" + sourceChatId + "/title");
+  const sourcePathPromise = moo.pointers.get({ name: "chat/" + sourceChatId + "/path" });
+  const sourceTitlePromise = moo.pointers.get({ name: "chat/" + sourceChatId + "/title" });
   const stepHistory = await stepHistoryPromise;
   const cutoffAt = stepAddedAt(stepHistory, stepId);
   if (!cutoffAt) {
@@ -1333,8 +1333,8 @@ export async function chatForkCommand(input: Input) {
   }
 
   const [sourcePath, sourceTitle] = await Promise.all([sourcePathPromise, sourceTitlePromise]);
-  const sourceBranch = await moo.pointers.get(sourceRefs.startBranch);
-  const forkChatId = await moo.chat.create(input.forkChatId || input.newChatId, sourcePath || null, { branch: sourceBranch });
+  const sourceBranch = await moo.pointers.get({ name: sourceRefs.startBranch });
+  const forkChatId = await moo.chat.create({ chatId: input.forkChatId || input.newChatId, path: sourcePath || null, ...{ branch: sourceBranch } });
   const forkRefs = chatRefs(forkChatId);
 
   const copiedFacts = snapshotCopyChatFacts(sourceRefs.facts, forkRefs.facts, cutoffAt, sourceRefs.graph, forkRefs.graph);
@@ -1345,10 +1345,10 @@ export async function chatForkCommand(input: Input) {
     copyRefIfPresent(sourceRefs.startBranch, forkRefs.startBranch),
   ]);
 
-  await moo.pointers.set(forkRefs.head, stepId);
-  await moo.pointers.set("chat/" + forkChatId + "/parent", sourceChatId);
-  await moo.pointers.set("chat/" + forkChatId + "/forked-from-step", stepId);
-  await moo.pointers.set("chat/" + forkChatId + "/forked-from-at", String(cutoffAt));
+  await moo.pointers.set({ name: forkRefs.head, target: stepId });
+  await moo.pointers.set({ name: "chat/" + forkChatId + "/parent", target: sourceChatId });
+  await moo.pointers.set({ name: "chat/" + forkChatId + "/forked-from-step", target: stepId });
+  await moo.pointers.set({ name: "chat/" + forkChatId + "/forked-from-at", target: String(cutoffAt) });
   await moo.chat.setTitle({ chatId: forkChatId, title: forkTitle(sourceTitle, sourceChatId) });
   await moo.chat.recordSummary({
     chatId: forkChatId,
@@ -1361,7 +1361,7 @@ export async function chatForkCommand(input: Input) {
     [forkRefs.graph, forkRefs.graph, "agent:forkedFromAt", String(cutoffAt)],
     [forkRefs.graph, forkRefs.graph, "agent:forkedFromTitle", literalString(sourceTitle || sourceChatId)],
   ] });
-  await moo.chat.touch(forkChatId);
+  await moo.chat.touch({ chatId: forkChatId });
 
   return { ok: true, value: {
     chatId: forkChatId,
@@ -1378,7 +1378,7 @@ export async function chatRemoveCommand(input: Input) {
   if (!input.chatId) {
     return { ok: false, error: { message: "chat-rm requires chatId" } };
   }
-  const result = await moo.chat.remove(input.chatId);
+  const result = await moo.chat.remove({ chatId: input.chatId });
   return { ok: true, value: result };
 }
 
@@ -1409,7 +1409,7 @@ export async function graphRemoveCommand(input: Input) {
   // exact graph name instead of interpreting the suffix as a chat id.
   if (/^chat:[A-Za-z0-9_-]+$/.test(graph)) {
     const chatId = graph.slice("chat:".length);
-    const result = await moo.chat.remove(chatId);
+    const result = await moo.chat.remove({ chatId: chatId });
     return { ok: true, value: { graph, ...result } };
   }
 
@@ -1435,7 +1435,7 @@ export async function chatArchiveCommand(input: Input) {
     return { ok: false, error: { message: "chat-archive requires chatId" } };
   }
   const archived = input.archived !== false;
-  const archivedAt = archived ? await moo.chat.archive(input.chatId) : await moo.chat.unarchive(input.chatId);
+  const archivedAt = archived ? await moo.chat.archive({ chatId: input.chatId }) : await moo.chat.unarchive({ chatId: input.chatId });
   return { ok: true, value: { chatId: input.chatId, archived, archivedAt } };
 }
 

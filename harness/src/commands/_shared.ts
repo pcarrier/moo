@@ -11,7 +11,7 @@ export function parseProjectArg(args: string[]): { project?: string; rest: strin
 }
 
 export function memoryScopeFor(input: Input) {
-  return input.project !== undefined ? moo.memory.project(String(input.project)) : moo.memory;
+  return input.project !== undefined ? moo.memory.project({ projectId: String(input.project) }) : moo.memory;
 }
 
 function compareStrings(a: string, b: string): number {

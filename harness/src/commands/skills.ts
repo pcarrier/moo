@@ -33,7 +33,7 @@ function joinPath(base: string, child: string): string {
 
 async function canonicalIfPossible(path: string): Promise<string> {
   try {
-    return stripTrailingSlash(await moo.fs.canonical(path));
+    return stripTrailingSlash(await moo.fs.canonical({ path: path }));
   } catch {
     return stripTrailingSlash(path);
   }
@@ -47,16 +47,16 @@ function nameFromContent(content: string, frontmatter: SkillFrontmatter): string
 }
 
 async function existingChatRoot(chatId: string): Promise<string | undefined> {
-  const home = clean(await moo.env.get("HOME"));
+  const home = clean(await moo.env.get({ name: "HOME" }));
   const worktree = joinPath(home ? joinPath(home, "moo") : "moo", chatId);
   try {
-    if (await moo.fs.exists(worktree)) return await canonicalIfPossible(worktree);
+    if (await moo.fs.exists({ path: worktree })) return await canonicalIfPossible(worktree);
   } catch {
     // Fall through to the chat's source repo path. Skill reads should never
     // materialize or repair the per-chat worktree just to populate /skills.
   }
   try {
-    const root = clean(await moo.pointers.get(`chat/${chatId}/path`));
+    const root = clean(await moo.pointers.get({ name: `chat/${chatId}/path` }));
     return root ? await canonicalIfPossible(root) : undefined;
   } catch {
     return undefined;

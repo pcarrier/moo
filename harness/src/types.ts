@@ -379,7 +379,7 @@ export class MooApiError extends Error {
   }
 }
 
-export type MooTry = <T>(fn: () => T | Promise<T>) => Promise<ApiResult<Awaited<T>>>;
+export type MooTry = <T>(args: { fn: () => T | Promise<T> }) => Promise<ApiResult<Awaited<T>>>;
 
 export type TraceStatus = "running" | "ok" | "error" | "cancelled" | "timeout";
 export type TraceKind = "trace" | "span" | "mark" | string;
@@ -464,7 +464,7 @@ export type AgentTodoState = { version: 1; updatedAt: string; items: AgentTodo[]
 export type TodoPatch = { add?: Array<{ text: string; priority?: TodoPriority; status?: TodoStatus; note?: string }>; update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority; note?: string | null }>; clearDone?: boolean; clearStatuses?: TodoStatus[] };
 
 export type MooTracesApi = {
-  current(): Promise<TraceCurrent | null>;
+  current(args?: {}): Promise<TraceCurrent | null>;
   get(args?: { traceId?: string; stepId?: string }): Promise<TraceRow | null>;
   events(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceRow[]>;
   tree(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceTreeNode | null>;
@@ -473,11 +473,10 @@ export type MooTracesApi = {
   failed(args?: TraceFailedArgs): Promise<TraceSearchRow[]>;
   summary(args?: { traceId?: string; stepId?: string; includeEvents?: boolean }): Promise<TraceSummary | null>;
   diagnose(args?: TraceFailedArgs & { examplesPerGroup?: number }): Promise<TraceDiagnosis>;
-  errorOf(row: TraceRow): string | null;
+  errorOf(args: { row: TraceRow }): string | null;
   errors(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceErrorInfo[]>;
-  mark(message: string, data?: Record<string, unknown>): Promise<string | null>;
-  span<T>(name: string, fn: () => T | Promise<T>): Promise<Awaited<T>>;
-  span<T>(name: string, data: TraceSpanOptions, fn: () => T | Promise<T>): Promise<Awaited<T>>;
+  mark(args: { message: string; data?: Record<string, unknown> }): Promise<string | null>;
+  span<T>(args: { name: string; data?: TraceSpanOptions; fn: () => T | Promise<T> }): Promise<Awaited<T>>;
 };
 
 export type MemoryFact = [string, string, ObjectInput] | { subject: string; predicate: string; object: ObjectInput };
@@ -515,12 +514,12 @@ export type ChatTitleReceipt = { chatId: string; previousTitle: string | null; t
 export type ChatSummaryReceipt = { chatId: string; entryId: string; title?: string | null };
 export type UiSayReceipt = { chatId: string; stepId: string; payloadHash: string };
 export type ValidateApi = {
-  pointerName(name: string): boolean;
-  factStoreName(name: string): boolean;
-  graphName(graph: string): boolean;
-  uiAppId(id: string): boolean;
-  hash(hash: string): boolean;
-  relativePath(path: string): boolean;
+  pointerName(args: { name: string }): boolean;
+  factStoreName(args: { name: string }): boolean;
+  graphName(args: { graph: string }): boolean;
+  uiAppId(args: { id: string }): boolean;
+  hash(args: { hash: string }): boolean;
+  relativePath(args: { path: string }): boolean;
 };
 
 
@@ -546,17 +545,17 @@ export type ReadLinesOptions = { numbered?: boolean };
 export type WorkspaceScope = {
   root: string;
   fs: {
-    read(path: string): Promise<string>;
-    readLines(path: string, ranges: LineRange[], opts?: ReadLinesOptions): Promise<string[]>;
-    write(path: string, content: string): Promise<void>;
-    list(path?: string): Promise<string[]>;
-    glob(pattern: string): Promise<string[]>;
-    stat(path?: string): Promise<{ kind: string; size: number; mtime: number } | null>;
-    canonical(path?: string): Promise<string>;
-    exists(path?: string): Promise<boolean>;
-    ensureDir(path?: string): Promise<void>;
-    patch(path: string, diff: string): Promise<PatchResult>;
-    delete(path: string): Promise<PatchResult>;
+    read(args: { path: string }): Promise<string>;
+    readLines(args: { path: string; ranges: LineRange[]; opts?: ReadLinesOptions }): Promise<string[]>;
+    write(args: { path: string; content: string }): Promise<void>;
+    list(args?: { path?: string }): Promise<string[]>;
+    glob(args: { pattern: string }): Promise<string[]>;
+    stat(args?: { path?: string }): Promise<{ kind: string; size: number; mtime: number } | null>;
+    canonical(args?: { path?: string }): Promise<string>;
+    exists(args?: { path?: string }): Promise<boolean>;
+    ensureDir(args?: { path?: string }): Promise<void>;
+    patch(args: { path: string; diff: string }): Promise<PatchResult>;
+    delete(args: { path: string }): Promise<PatchResult>;
   };
   proc: {
     run(args: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }): Promise<ProcResult>;
@@ -582,10 +581,10 @@ export type MemoryScope = {
 
 export type Moo = {
   try: MooTry;
-  time: { nowMs(): Promise<number>; nowISO(): Promise<string>; datetime(d?: Date | string | number): Promise<Term>; nowPlus(ms: number): Promise<number> };
+  time: { nowMs(args?: {}): Promise<number>; nowISO(args?: {}): Promise<string>; datetime(args?: { d?: Date | string | number }): Promise<Term>; nowPlus(args: { ms: number }): Promise<number> };
   validate: ValidateApi;
-  id: { new: (prefix?: string) => Promise<string> };
-  log: (...args: unknown[]) => void;
+  id: { new: (args?: { prefix?: string }) => Promise<string> };
+  log: (args: { args: unknown[] }) => void;
   objects: {
     putText(args: { kind: string; text: string }): Promise<string>;
     putJSON(args: { kind: string; value: unknown }): Promise<string>;
@@ -603,12 +602,12 @@ export type Moo = {
   };
   skills: MooSkillsApi;
   pointers: {
-    get(name: string): Promise<string | null>;
-    set(name: string, target: string): Promise<RefSetReceipt>;
-    cas(name: string, expected: string | null, next: string): Promise<boolean>;
-    list(prefix?: string): Promise<string[]>;
-    entries(prefix?: string): Promise<Array<[string, string]>>;
-    delete(name: string): Promise<boolean>;
+    get(args: { name: string }): Promise<string | null>;
+    set(args: { name: string; target: string }): Promise<RefSetReceipt>;
+    cas(args: { name: string; expected: string | null; next: string }): Promise<boolean>;
+    list(args?: { prefix?: string }): Promise<string[]>;
+    entries(args?: { prefix?: string }): Promise<Array<[string, string]>>;
+    delete(args: { name: string }): Promise<boolean>;
   };
   sparql: {
     query<F extends SparqlSelectFormat = "string">(args: (FactStoreArg & { query: string; graph?: string | null; limit?: number; format?: F })): Promise<SparqlQueryResult<F>>;
@@ -633,17 +632,17 @@ export type Moo = {
     deleteGraphEverywhere(args: FactDeleteGraphEverywhereArgs): Promise<FactClearReceipt>;
   };
   fs: {
-    read(path: string): Promise<string>;
-    readLines(path: string, ranges: LineRange[], opts?: ReadLinesOptions): Promise<string[]>;
-    write(path: string, content: string): Promise<void>;
-    list(path: string): Promise<string[]>;
-    glob(pattern: string): Promise<string[]>;
-    stat(path: string): Promise<{ kind: string; size: number; mtime: number } | null>;
-    canonical(path: string): Promise<string>;
-    exists(path: string): Promise<boolean>;
-    ensureDir(path: string): Promise<void>;
-    patch(path: string, diff: string): Promise<PatchResult>;
-    delete(path: string): Promise<PatchResult>;
+    read(args: { path: string }): Promise<string>;
+    readLines(args: { path: string; ranges: LineRange[]; opts?: ReadLinesOptions }): Promise<string[]>;
+    write(args: { path: string; content: string }): Promise<void>;
+    list(args: { path: string }): Promise<string[]>;
+    glob(args: { pattern: string }): Promise<string[]>;
+    stat(args?: { path?: string }): Promise<{ kind: string; size: number; mtime: number } | null>;
+    canonical(args: { path: string }): Promise<string>;
+    exists(args: { path: string }): Promise<boolean>;
+    ensureDir(args: { path: string }): Promise<void>;
+    patch(args: { path: string; diff: string }): Promise<PatchResult>;
+    delete(args: { path: string }): Promise<PatchResult>;
   };
   proc: {
     run(args: ProcRunArgs): Promise<ProcResult>;
@@ -674,17 +673,17 @@ export type Moo = {
     }>;
   };
   events: {
-    publish(payload: unknown): void;
+    publish(args: { payload: unknown }): void;
   };
   traces: MooTracesApi;
   env: {
-    get(name: string): Promise<string | null>;
-    getMany(names: string[]): Promise<Record<string, string | null>>;
+    get(args: { name: string }): Promise<string | null>;
+    getMany(args: { names: string[] }): Promise<Record<string, string | null>>;
   };
   chat: {
     refs(args: { chatId: string }): Promise<ChatRefs>;
-    scratch(chatId: string): Promise<string>;
-    touch(chatId: string): Promise<void>;
+    scratch(args: { chatId: string }): Promise<string>;
+    touch(args: { chatId: string }): Promise<void>;
     list(): Promise<
       Array<{
         chatId: string;
@@ -711,12 +710,12 @@ export type Moo = {
         childUsageIncluded?: number;
       }>
     >;
-    create(chatId?: string, path?: string | null, opts?: { branch?: string | null }): Promise<string>;
-    remove(chatId: string): Promise<{ chatId: string; refsDeleted: number; quadsCleared: number }>;
+    create(args?: { chatId?: string; path?: string | null; branch?: string | null }): Promise<string>;
+    remove(args: { chatId: string }): Promise<{ chatId: string; refsDeleted: number; quadsCleared: number }>;
     setTitle(args: { chatId: string; title: string | null; manual?: boolean }): Promise<ChatTitleReceipt>;
     recordSummary(args: { chatId?: string; summary: string; title: string }): Promise<ChatSummaryReceipt>;
-    archive(chatId: string): Promise<number>;
-    unarchive(chatId: string): Promise<null>;
+    archive(args: { chatId: string }): Promise<number>;
+    unarchive(args: { chatId: string }): Promise<null>;
   };
   ui: {
     ask(args: { chatId: string; spec: UiAskSpec }): Promise<string>;
@@ -733,14 +732,9 @@ export type Moo = {
    */
   mcp: Mcp;
   agent: {
-    claim(
-      store: string,
-      graph: string,
-      runId: string | null,
-      leaseMs?: number,
-    ): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;
-    complete(store: string, graph: string, stepId: string, status?: StepStatus): Promise<void>;
-    fork(chatId: string, fromStepId?: string | null): Promise<{ chatId: string; runId: string; forkedFrom: string | null }>;
+    claim(args: { store: string; graph: string; runId: string | null; leaseMs?: number }): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;
+    complete(args: { store: string; graph: string; stepId: string; status?: StepStatus }): Promise<void>;
+    fork(args: { chatId: string; fromStepId?: string | null }): Promise<{ chatId: string; runId: string; forkedFrom: string | null }>;
     run(spec: SubagentSpec): Promise<SubagentResult>;
   };
   /**
@@ -762,7 +756,7 @@ export type Moo = {
      * falling back to $PWD; pass a stable project id/path to address another
      * project explicitly.
      */
-    project(projectId?: string): MemoryScope;
+    project(args?: { projectId?: string }): MemoryScope;
   };
   /**
    * Term constructors. Each returns a `Term` whose toString() is its
@@ -770,12 +764,12 @@ export type Moo = {
    * need to disambiguate a raw string from an IRI / literal.
    */
   term: {
-    iri(uri: string): Term;
-    string(s: string, opts?: { lang?: string; type?: string }): Term;
-    int(n: number): Term;
-    decimal(n: number): Term;
-    bool(b: boolean): Term;
-    datetime(d: Date | string): Term;
+    iri(args: { uri: string }): Term;
+    string(args: { s: string; lang?: string; type?: string }): Term;
+    int(args: { n: number }): Term;
+    decimal(args: { n: number }): Term;
+    bool(args: { b: boolean }): Term;
+    datetime(args: { d: Date | string }): Term;
   };
   /**
    * Vocabulary registry: predicate metadata + observed-usage stats.
@@ -783,10 +777,7 @@ export type Moo = {
    * are read out of the memory graph by counting occurrences.
    */
   vocab: {
-    define(
-      name: string,
-      opts?: { description?: string; example?: string; label?: string },
-    ): Promise<void>;
+    define(args: { name: string; description?: string; example?: string; label?: string }): Promise<void>;
     list(): Promise<
       Array<{
         name: string;

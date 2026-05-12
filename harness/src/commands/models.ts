@@ -42,7 +42,7 @@ function inferProviderNameForModel(model: string | null | undefined): ProviderNa
 async function getChatSetting(chatId: string, key: "model" | "provider" | "effort", predicate: string): Promise<string | null> {
   const c = chatRefs(chatId);
   const ref = c[key];
-  const stored = String((await moo.pointers.get(ref)) ?? "").trim();
+  const stored = String((await moo.pointers.get({ name: ref })) ?? "").trim();
   if (stored) return stored;
   return getChatFact(chatId, predicate);
 }
@@ -51,8 +51,8 @@ async function setChatSetting(chatId: string, key: "model" | "provider" | "effor
   const c = chatRefs(chatId);
   const ref = c[key];
   const normalized = String(value ?? "").trim();
-  if (normalized) await moo.pointers.set(ref, normalized);
-  else await moo.pointers.delete(ref);
+  if (normalized) await moo.pointers.set({ name: ref, target: normalized });
+  else await moo.pointers.delete({ name: ref });
 
   const store = chatFactsRef(chatId);
   const graph = chatGraph(chatId);
@@ -152,42 +152,42 @@ export async function getChatEffort(chatId: string): Promise<string | null> {
 
 export async function defaultChatEffort(): Promise<string | null> {
   return normalizeEffort(
-    (await moo.env.get("MOO_LLM_EFFORT")) ||
-      (await moo.env.get("ANTHROPIC_EFFORT")) ||
-      (await moo.env.get("ANTHROPIC_THINKING_EFFORT")) ||
-      (await moo.env.get("OPENAI_REASONING_EFFORT")) ||
-      (await moo.env.get("OPENAI_EFFORT")),
+    (await moo.env.get({ name: "MOO_LLM_EFFORT" })) ||
+      (await moo.env.get({ name: "ANTHROPIC_EFFORT" })) ||
+      (await moo.env.get({ name: "ANTHROPIC_THINKING_EFFORT" })) ||
+      (await moo.env.get({ name: "OPENAI_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "OPENAI_EFFORT" })),
   );
 }
 
 export async function lastChatModel(): Promise<string | null> {
-  const stored = String((await moo.pointers.get(LAST_MODEL_REF)) ?? "").trim();
+  const stored = String((await moo.pointers.get({ name: LAST_MODEL_REF })) ?? "").trim();
   if (!stored) return null;
   const parsed = splitModelId(stored);
   if (!parsed.model) return null;
   if (parsed.provider) return modelOptionId(parsed.provider, parsed.model);
-  const provider = normalizeProvider(await moo.pointers.get(LAST_PROVIDER_REF));
+  const provider = normalizeProvider(await moo.pointers.get({ name: LAST_PROVIDER_REF }));
   return provider ? modelOptionId(provider, parsed.model) : parsed.model;
 }
 
 export async function lastChatEffort(): Promise<string | null> {
-  return normalizeEffort(await moo.pointers.get(LAST_EFFORT_REF));
+  return normalizeEffort(await moo.pointers.get({ name: LAST_EFFORT_REF }));
 }
 
 export async function rememberChatModel(model: string | null): Promise<void> {
   const parsed = splitModelId(model);
   const modelName = parsed.model || null;
   const provider = modelName ? (parsed.provider || inferProviderNameForModel(modelName)) : null;
-  if (modelName) await moo.pointers.set(LAST_MODEL_REF, modelName);
-  else await moo.pointers.delete(LAST_MODEL_REF);
-  if (provider) await moo.pointers.set(LAST_PROVIDER_REF, provider);
-  else await moo.pointers.delete(LAST_PROVIDER_REF);
+  if (modelName) await moo.pointers.set({ name: LAST_MODEL_REF, target: modelName });
+  else await moo.pointers.delete({ name: LAST_MODEL_REF });
+  if (provider) await moo.pointers.set({ name: LAST_PROVIDER_REF, target: provider });
+  else await moo.pointers.delete({ name: LAST_PROVIDER_REF });
 }
 
 export async function rememberChatEffort(effort: string | null): Promise<void> {
   const normalized = normalizeEffort(effort);
-  if (normalized) await moo.pointers.set(LAST_EFFORT_REF, normalized);
-  else await moo.pointers.delete(LAST_EFFORT_REF);
+  if (normalized) await moo.pointers.set({ name: LAST_EFFORT_REF, target: normalized });
+  else await moo.pointers.delete({ name: LAST_EFFORT_REF });
 }
 
 export async function applyDefaultChatSettings(chatId: string): Promise<void> {
@@ -231,15 +231,15 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
     out.push({ id: modelOptionId(provider, trimmed), provider, model: trimmed, label: provider + " / " + trimmed });
   };
 
-  for (const model of configuredModelsFrom(await moo.env.get("MOO_LLM_MODELS"))) {
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "MOO_LLM_MODELS" }))) {
     const parsed = splitModelId(model);
     const provider = parsed.provider || inferProviderNameForModel(parsed.model);
     if (provider) add(provider, parsed.model);
   }
-  for (const model of configuredModelsFrom(await moo.env.get("OPENAI_MODELS"))) add("openai", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get("QWEN_MODELS"))) add("qwen", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get("ANTHROPIC_MODELS"))) add("anthropic", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get("XAI_MODELS"))) add("xai", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "OPENAI_MODELS" }))) add("openai", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "QWEN_MODELS" }))) add("qwen", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) add("anthropic", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) add("xai", splitModelId(model).model);
   return out;
 }
 

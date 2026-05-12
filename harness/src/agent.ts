@@ -123,14 +123,14 @@ export function toolCallForTrace(tc: any): TraceMetadata {
 
 export async function traceMark(message: string, data: TraceMetadata = {}): Promise<void> {
   try {
-    await moo.traces.mark(message, data);
+    await moo.traces.mark({ message: message, data: data });
   } catch {
     // Trace writes are observational only.
   }
 }
 
 export async function traceSpan<T>(name: string, data: TraceMetadata, fn: () => T | Promise<T>): Promise<Awaited<T>> {
-  return await moo.traces.span(name, data, fn);
+  return await moo.traces.span({ name: name, data: data, fn: fn });
 }
 
 export async function reply(
@@ -141,7 +141,7 @@ export async function reply(
   thoughtDurationNs?: number | null,
   draftId?: string | null,
 ) {
-  const payloadBody: any = { text, at: await moo.time.nowMs() };
+  const payloadBody: any = { text, at: await moo.time.nowMs({}) };
   if (Number.isFinite(thoughtDurationNs) && thoughtDurationNs! >= 0) {
     payloadBody.thoughtDurationNs = Math.round(thoughtDurationNs!);
   }
@@ -165,7 +165,7 @@ export async function recordErrorStep(
   effort?: string | null,
 ) {
   await traceMark("timeline.error", { chatId, kind, model: model ?? null, effort: normalizeEffort(effort) ?? null, detailKeys: detail && typeof detail === "object" ? Object.keys(detail).sort() : [] });
-  const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: { kind, detail, at: await moo.time.nowMs() } });
+  const payloadHash = await moo.objects.putJSON({ kind: "agent:Error", value: { kind, detail, at: await moo.time.nowMs({}) } });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Error",
     status: "agent:Failed",
@@ -244,10 +244,10 @@ function effortAllowed(efforts: readonly string[], effort: string | null | undef
 
 async function defaultEffort(): Promise<string | null> {
   return normalizeEffort(
-    (await moo.env.get("ANTHROPIC_EFFORT")) ||
-      (await moo.env.get("ANTHROPIC_THINKING_EFFORT")) ||
-      (await moo.env.get("OPENAI_REASONING_EFFORT")) ||
-      (await moo.env.get("OPENAI_EFFORT")),
+    (await moo.env.get({ name: "ANTHROPIC_EFFORT" })) ||
+      (await moo.env.get({ name: "ANTHROPIC_THINKING_EFFORT" })) ||
+      (await moo.env.get({ name: "OPENAI_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "OPENAI_EFFORT" })),
   );
 }
 
@@ -650,15 +650,15 @@ export function normalizeUsage(usage: any): RawUsage | null {
 }
 
 async function defaultProviderName(): Promise<"openai" | "qwen" | "anthropic" | "xai"> {
-  if (await moo.env.get("OPENAI_MODEL")) return "openai";
-  if (await moo.env.get("QWEN_MODEL")) return "qwen";
-  if (await moo.env.get("ANTHROPIC_MODEL")) return "anthropic";
-  if (await moo.env.get("XAI_MODEL")) return "xai";
+  if (await moo.env.get({ name: "OPENAI_MODEL" })) return "openai";
+  if (await moo.env.get({ name: "QWEN_MODEL" })) return "qwen";
+  if (await moo.env.get({ name: "ANTHROPIC_MODEL" })) return "anthropic";
+  if (await moo.env.get({ name: "XAI_MODEL" })) return "xai";
 
-  if (await moo.env.get("OPENAI_API_KEY")) return "openai";
-  if (await moo.env.get("ANTHROPIC_API_KEY")) return "anthropic";
-  if ((await moo.env.get("QWEN_API_KEY")) || (await moo.env.get("DASHSCOPE_API_KEY"))) return "qwen";
-  if ((await moo.env.get("XAI_API_KEY")) || (await moo.env.get("GROK_API_KEY"))) return "xai";
+  if (await moo.env.get({ name: "OPENAI_API_KEY" })) return "openai";
+  if (await moo.env.get({ name: "ANTHROPIC_API_KEY" })) return "anthropic";
+  if ((await moo.env.get({ name: "QWEN_API_KEY" })) || (await moo.env.get({ name: "DASHSCOPE_API_KEY" }))) return "qwen";
+  if ((await moo.env.get({ name: "XAI_API_KEY" })) || (await moo.env.get({ name: "GROK_API_KEY" }))) return "xai";
   return "openai";
 }
 
@@ -923,7 +923,7 @@ function readChatUsageTarget(target: string | null): ChatUsage {
 }
 
 async function writeChatUsageTarget(ref: string, usage: ChatUsage): Promise<void> {
-  await moo.pointers.set(ref, encodeJsonPointer(usage));
+  await moo.pointers.set({ name: ref, target: encodeJsonPointer(usage) });
 }
 
 export async function recordUsage(
@@ -939,7 +939,7 @@ export async function recordUsage(
   const output = Number(usage.completion_tokens ?? 0);
   if (!promptTotal && !cached && !cacheWrite && !output) return;
   const ref = chatRefs(chatId).usage;
-  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
   const usageModel = modelLongContextUsageKey(model, promptTotal) || model;
   const slot = current.models[usageModel] ?? { input: 0, cachedInput: 0, cacheWriteInput: 0, output: 0 };
   if (slot.cacheWriteInput == null) slot.cacheWriteInput = 0;
@@ -970,7 +970,7 @@ function tokenCountOrZero(value: unknown): number {
 
 async function readChatUsage(chatId: string): Promise<{ ref: string; current: ChatUsage }> {
   const ref = chatRefs(chatId).usage;
-  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
   return { ref, current };
 }
 
@@ -993,13 +993,13 @@ export async function recordLastCompactionPromptTokens(chatId: string, tokens: n
 
 export async function readLastContextTokens(chatId: string): Promise<number> {
   const ref = chatRefs(chatId).usage;
-  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
   return tokenCountOrZero(current.lastContextTokens ?? 0);
 }
 
 export async function readLastTokenPressure(chatId: string): Promise<LastTokenPressure> {
   const ref = chatRefs(chatId).usage;
-  const current = readChatUsageTarget(await moo.pointers.get(ref));
+  const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
   const context = tokenCountOrZero(current.lastContextTokens ?? 0);
   const compaction = tokenCountOrZero(current.lastCompactionPromptTokens ?? 0);
   if (compaction > context) return { used: compaction, source: "compaction" };
@@ -1051,7 +1051,7 @@ function readCompactionPointerTarget(target: string | null): { target: string; h
 }
 
 async function readCompactionLayerHash(hash: string | null | undefined): Promise<{ target: string; hash: string; value: CompactionPointerValue } | null> {
-  if (!hash || !moo.validate.hash(hash)) return null;
+  if (!hash || !moo.validate.hash({ hash: hash })) return null;
   const obj = await moo.objects.getJSON<CompactionPointerValue>({ hash });
   if (!isObjectRecord(obj?.value)) return null;
   return { target: hash, hash, value: { ...obj.value, hash } };
@@ -1062,7 +1062,7 @@ async function readCompaction(chatId: string): Promise<{
   summary: string | null;
   hash: string | null;
 }> {
-  const layer = readCompactionPointerTarget(await moo.pointers.get(chatRefs(chatId).compaction));
+  const layer = readCompactionPointerTarget(await moo.pointers.get({ name: chatRefs(chatId).compaction }));
   if (!layer) return { throughAt: 0, summary: null, hash: null };
   return {
     throughAt: layer.value.throughAt ?? 0,
@@ -1073,10 +1073,10 @@ async function readCompaction(chatId: string): Promise<{
 
 export async function persistCompactionLayer(chatId: string, layer: Omit<CompactionPointerValue, "parent" | "hash"> & { summary: string; throughAt: number; at: number }): Promise<string> {
   const ref = chatRefs(chatId).compaction;
-  const parent = readCompactionPointerTarget(await moo.pointers.get(ref))?.hash ?? null;
+  const parent = readCompactionPointerTarget(await moo.pointers.get({ name: ref }))?.hash ?? null;
   const value: CompactionPointerValue = { ...layer, parent };
   const hash = await moo.objects.putJSON({ kind: "agent:Compaction", value });
-  await moo.pointers.set(ref, encodeJsonPointer({ ...value, hash }));
+  await moo.pointers.set({ name: ref, target: encodeJsonPointer({ ...value, hash }) });
   return hash;
 }
 
@@ -1108,7 +1108,7 @@ export async function readCompactionChain(chatId: string) {
     tokenBudget?: number | null;
     tokenThreshold?: number | null;
   }> = [];
-  let layer: { target: string; hash: string; value: CompactionPointerValue } | null = readCompactionPointerTarget(await moo.pointers.get(chatRefs(chatId).compaction));
+  let layer: { target: string; hash: string; value: CompactionPointerValue } | null = readCompactionPointerTarget(await moo.pointers.get({ name: chatRefs(chatId).compaction }));
   const seen = new Set<string>();
   while (layer && !seen.has(layer.hash)) {
     seen.add(layer.hash);
@@ -1195,7 +1195,7 @@ export async function recordCompactionFailure(chatId: string, reason: string, me
     trigger,
     ...meta,
     detail,
-    at: await moo.time.nowMs(),
+    at: await moo.time.nowMs({}),
   }) });
   await appendStep(chatId, {
     kind: "agent:Error",
@@ -1370,7 +1370,7 @@ export async function runCompaction(chatId: string, provider: LLMProvider, meta:
   }
   await recordUsage(chatId, body?.model || requestProvider.model, normalizeUsage(body?.usage) ?? estimateRawUsage(summaryMessages, summary), { updateLastContextTokens: false });
 
-  const now = await moo.time.nowMs();
+  const now = await moo.time.nowMs({});
   const compactionHash = await persistCompactionLayer(chatId, {
     summary,
     throughAt: now,
@@ -1390,13 +1390,13 @@ export async function runCompaction(chatId: string, provider: LLMProvider, meta:
   const postContextTokens = estimateTokens(postMessages, TOOLS);
   const postPressureTokens = await estimateCompactionPromptTokens(chatId, postMessages);
   await recordLastContextTokens(chatId, postContextTokens, { compactionPromptTokens: postPressureTokens });
-  moo.events.publish(tokenPressureEvent(chatId, postPressureTokens, {
+  moo.events.publish({ payload: tokenPressureEvent(chatId, postPressureTokens, {
     budget,
     threshold,
     source: "compaction",
     estimated: true,
     reset: true,
-  }));
+  }) });
   await traceMark("compaction.post_pressure", { chatId, postContextTokens, postPressureTokens, budget, threshold, trigger: tracking.trigger ?? "manual" });
   return "compacted";
 }
@@ -1713,25 +1713,21 @@ async function toolRunJS(
   let error: string | null = null;
   let serialized: string | null = null;
   try {
-    const fn = await moo.traces.span(
-      "v8.compile",
-      { code },
-      () => new Function(
+    const fn = await moo.traces.span({ name: "v8.compile", data: { code }, fn: () => new Function(
         "moo",
         "chatId",
         "repo",
         "scratch",
         "args",
         `return (async () => { ${code}\n})();`,
-      ),
-    );
-    const repo = (await moo.pointers.get(`chat/${chatId}/path`)) || ".";
-    const scratch = await moo.chat.scratch(chatId);
+      ) });
+    const repo = (await moo.pointers.get({ name: `chat/${chatId}/path` })) || ".";
+    const scratch = await moo.chat.scratch({ chatId: chatId });
     const depth = await subagentDepth(chatId);
     result = await withMooRunJSContext(chatId, runJsStep.stepId, depth, () =>
-      withMooChatContext(chatId, () => moo.traces.span("runjs.user", () => fn(moo, chatId, repo, scratch, runArgs))),
+      withMooChatContext(chatId, () => moo.traces.span({ name: "runjs.user", fn: () => fn(moo, chatId, repo, scratch, runArgs) })),
     );
-    serialized = await moo.traces.span("runjs.stringify", { resultType: typeof result }, () => serializeToolValue(result));
+    serialized = await moo.traces.span({ name: "runjs.stringify", data: { resultType: typeof result }, fn: () => serializeToolValue(result) });
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
@@ -1748,7 +1744,7 @@ async function toolRunJS(
 }
 
 async function subagentDepth(chatId: string): Promise<number> {
-  const raw = await moo.pointers.get(`chat/${chatId}/subagent-depth`);
+  const raw = await moo.pointers.get({ name: `chat/${chatId}/subagent-depth` });
   const n = Number(raw ?? 0);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
@@ -1807,7 +1803,7 @@ async function finishRunJSStep(
     if (resultHash) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:result", object: resultHash });
     if (error) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: error });
   } });
-  moo.events.publish({
+  moo.events.publish({ payload: {
     kind: "runjs-step-finished",
     chatId,
     stepId,
@@ -1816,7 +1812,7 @@ async function finishRunJSStep(
     error,
     at: endedAt,
     durationNs,
-  });
+  } });
   return resultHash;
 }
 
@@ -1881,7 +1877,7 @@ export async function runShellAndRecord(
   const argv = parseArgv(cmdline);
   const [cmd, ...args] = argv;
   if (!cmd) return await reply(chatId, "usage: /run <cmd> [args...]");
-  const wt = await moo.chat.scratch(chatId);
+  const wt = await moo.chat.scratch({ chatId: chatId });
   const payloadHash = await moo.objects.putJSON({ kind: "agent:ShellCommand", value: { cmd, args, cwd: wt } });
   let result: any = null;
   let status: "agent:Done" | "agent:Failed" = "agent:Done";

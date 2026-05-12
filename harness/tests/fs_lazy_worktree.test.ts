@@ -205,16 +205,15 @@ describe("filesystem API", () => {
   test("patches and deletes within scoped workspace", async () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
 
-    await workspace.fs.write("src/example.txt", "hello\nworld\n");
+    await workspace.fs.write({ path: "src/example.txt", content: "hello\nworld\n" });
     expect(files.get("/repo/src/example.txt")).toBe("hello\nworld\n");
-
-    await expect(workspace.fs.patch(
-      "src/example.txt",
-      "@@ -1,2 +1,2 @@\n hello\n-world\n+moo\n",
-    )).resolves.toMatchObject({ status: "completed" });
+    await expect(workspace.fs.patch({
+      path: "src/example.txt",
+      diff: "@@ -1,2 +1,2 @@\n hello\n-world\n+moo\n",
+    })).resolves.toMatchObject({ status: "completed" });
     expect(files.get("/repo/src/example.txt")).toBe("hello\nmoo\n");
 
-    await expect(workspace.fs.delete("src/example.txt")).resolves.toMatchObject({ status: "completed" });
+    await expect(workspace.fs.delete({ path: "src/example.txt" })).resolves.toMatchObject({ status: "completed" });
     expect(files.has("/repo/src/example.txt")).toBe(false);
   });
 
@@ -222,12 +221,12 @@ describe("filesystem API", () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
     addFile("/repo/example.txt", "alpha\n");
 
-    await expect(workspace.fs.patch("../example.txt", "")).resolves.toMatchObject({
+    await expect(workspace.fs.patch({ path: "../example.txt", diff: "" })).resolves.toMatchObject({
       status: "failed",
       output: "apply_patch paths must stay within the workspace root.",
     });
 
-    await expect(workspace.fs.patch("example.txt", "@@ -1 +1 @@\n-beta\n+gamma\n")).resolves.toMatchObject({
+    await expect(workspace.fs.patch({ path: "example.txt", diff: "@@ -1 +1 @@\n-beta\n+gamma\n" })).resolves.toMatchObject({
       status: "failed",
     });
     expect(files.get("/repo/example.txt")).toBe("alpha\n");

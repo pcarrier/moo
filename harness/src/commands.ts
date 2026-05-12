@@ -9,7 +9,7 @@ export async function dispatch(input: Input) {
 
 async function runDispatch(input: Input) {
   const { command, payload } = commandPayload(input);
-  const existingTrace = await moo.traces.current().catch(() => null);
+  const existingTrace = await moo.traces.current({}).catch(() => null);
   const shouldRoot = !existingTrace && shouldTraceCommand(command);
   const trace = shouldRoot ? await startTraceRoot(commandStepId(command, payload), {
     label: `command ${command}`,
@@ -34,17 +34,17 @@ async function runDispatch(input: Input) {
       .runScopedPromise(),
     );
     if (trace) {
-      await moo.traces.mark("command.result", {
+      await moo.traces.mark({ message: "command.result", data: {
         command,
         ok: commandResultOk(result),
         output: traceJsonValue(result),
-      });
+      } });
       await finishTraceRoot({ id: trace.id, status: commandResultOk(result) ? "ok" : "error" });
     }
     return result;
   } catch (error: any) {
     if (trace) {
-      await moo.traces.mark("command.error", { command, error: error?.message ?? String(error), stack: error?.stack ?? null });
+      await moo.traces.mark({ message: "command.error", data: { command, error: error?.message ?? String(error), stack: error?.stack ?? null } });
       await finishTraceRoot({ id: trace.id, status: "error", error: error?.message ?? String(error) });
     }
     throw error;

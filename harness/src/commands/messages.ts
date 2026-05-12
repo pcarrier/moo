@@ -32,12 +32,12 @@ export async function messageDeleteCommand(input: Input) {
   const found = await requireUserInputStep(chatId, stepId);
   if (!found.ok) return found;
   const c = found.value;
-  const deletedAt = String(await moo.time.nowMs());
+  const deletedAt = String(await moo.time.nowMs({}));
   await moo.facts.update({ store: c.facts, fn: async (txn) => {
     await removeDeletedAt(c.facts, c.graph, stepId, txn);
     txn.add({ graph: c.graph, subject: stepId, predicate: "agent:deletedAt", object: deletedAt });
   } });
-  await moo.chat.touch(chatId);
+  await moo.chat.touch({ chatId: chatId });
   return { ok: true, value: { chatId, step: stepId, deletedAt } };
 }
 
@@ -51,6 +51,6 @@ export async function messageRestoreCommand(input: Input) {
   await moo.facts.update({ store: c.facts, fn: async (txn) => {
     await removeDeletedAt(c.facts, c.graph, stepId, txn);
   } });
-  await moo.chat.touch(chatId);
+  await moo.chat.touch({ chatId: chatId });
   return { ok: true, value: { chatId, step: stepId, deletedAt: null } };
 }

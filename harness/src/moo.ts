@@ -12,28 +12,29 @@ import { setSkillRootProvider, skills } from "./skills";
 import { applyDefaultChatSettings } from "./commands/models";
 
 const time: Moo["time"] = {
-  async nowMs() {
+  async nowMs(_args = {}) {
     return host.now();
   },
-  async nowISO() {
+  async nowISO(_args = {}) {
     return new Date(host.now()).toISOString();
   },
-  async datetime(d) {
+  async datetime(args = {}) {
+    const d = args.d;
     const value = d == null ? new Date(host.now()) : typeof d === "number" ? new Date(d) : d;
-    return term.datetime(value);
+    return term.datetime({ d: value });
   },
-  async nowPlus(ms) {
+  async nowPlus({ ms }) {
     return host.now() + Number(ms);
   },
 };
 
 const id: Moo["id"] = {
-  async new(prefix = "id") {
-    return host.newId(prefix);
+  async new(args = {}) {
+    return host.newId(args.prefix ?? "id");
   },
 };
 
-const log: Moo["log"] = (...args) => {
+const log: Moo["log"] = ({ args }) => {
   const message = args.map(stringifyForLog).join(" ");
   const chatId = activeChatId;
   if (!chatId) return;
@@ -523,7 +524,7 @@ function buildTraceSummary(root: TraceRow | null, events: TraceRow[], includeEve
 }
 
 const traces: Moo["traces"] = {
-  async current() {
+  async current(_args = {}) {
     const raw = await host.currentTrace();
     return raw ? JSON.parse(raw) : null;
   },
@@ -569,7 +570,7 @@ const traces: Moo["traces"] = {
     for (const row of rows) out.push({ ...row, events: await traces.events({ traceId: row.traceId }) });
     return out;
   },
-  errorOf(row) {
+  errorOf({ row }) {
     return traceErrorOfRow(row);
   },
   async errors(args = {}) {
@@ -622,22 +623,19 @@ const traces: Moo["traces"] = {
       failureGroups: Array.from(failuresByCategory.entries()).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
     } as any;
   },
-  async mark(message, data = {}) {
+  async mark({ message, data = {} }) {
     const id = await host.insertTrace(JSON.stringify({ kind: "mark", name: "user.mark", status: "ok", data: traceJsonValue({ ...data, message }) }));
     return id === "null" ? null : id;
   },
-  async span(name: string, dataOrFn: any, maybeFn?: any) {
-    const hasData = typeof dataOrFn !== "function";
-    const fn = hasData ? maybeFn : dataOrFn;
+  async span({ name, data = {}, fn }) {
     if (typeof fn !== "function") throw new Error("moo.traces.span requires a callback");
-    const data = hasData ? dataOrFn : {};
     const rawSpanId = await host.insertTrace(JSON.stringify({ kind: "span", name, status: "running", data: traceJsonValue(data ?? {}) }));
     const spanId = rawSpanId === "null" ? null : rawSpanId;
     const previousParent = spanId ? host.setTraceParent(spanId) : null;
     try {
       const value = await fn();
       if (spanId) await host.finishTrace(spanId, "ok", traceDataJson({}));
-      return value;
+      return value as any;
     } catch (e: any) {
       if (spanId) await host.finishTrace(spanId, "error", traceErrorJson(name, e));
       throw e;
@@ -680,7 +678,7 @@ async function traceObserved<T>(
 const EMPTY_JSON_ARRAY = "[]";
 async function displayPathForChat(chatId: string, path: string): Promise<string> {
   const normalizedPath = String(path).replace(/\\/g, "/");
-  const scratch = (await chat.scratch(chatId)).replace(/\\/g, "/").replace(/\/+$/, "");
+  const scratch = (await chat.scratch({ chatId: chatId })).replace(/\\/g, "/").replace(/\/+$/, "");
   if (!scratch) return normalizedPath;
   if (normalizedPath === scratch) return ".";
   if (normalizedPath.startsWith(scratch + "/")) return normalizedPath.slice(scratch.length + 1) || ".";
@@ -692,7 +690,7 @@ async function recordFileWriteDiff(path: string, before: string | null, after: s
   if (!chatId) return;
   const displayPath = await displayPathForChat(chatId, path);
   const { diff, stats } = unifiedDiffWithStats(displayPath, before, after);
-  const at = await time.nowMs();
+  const at = await time.nowMs({});
   const hash = await objects.putJSON({ kind: "agent:FileDiff", value: { chatId, path: displayPath, beforeExists: before != null, before, after, diff, stats, at } });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:FileDiff",
@@ -700,7 +698,7 @@ async function recordFileWriteDiff(path: string, before: string | null, after: s
     payloadHash: hash,
     extras: [["agent:path", displayPath]],
   });
-  events.publish({ kind: "file-diff", chatId, path: displayPath, before, after, diff, stats, hash, stepId, at });
+  events.publish({ payload: { kind: "file-diff", chatId, path: displayPath, before, after, diff, stats, hash, stepId, at } });
 }
 
 
@@ -752,7 +750,7 @@ async function recordMemoryDiff(
   const before = action === "assert" ? "" : snapshot;
   const after = action === "assert" ? snapshot : "";
   const { diff, stats } = unifiedDiffWithStats(path, before, after);
-  const at = await time.nowMs();
+  const at = await time.nowMs({});
   const first = changes[0]!;
   const payload: Record<string, unknown> = {
     chatId,
@@ -776,7 +774,7 @@ async function recordMemoryDiff(
     payloadHash: hash,
     extras: [["agent:path", path], ["agent:graph", graph]],
   });
-  events.publish({ kind: "memory-diff", chatId, store, graph, action, path, diff, stats, hash, stepId, at, count: changes.length, changes });
+  events.publish({ payload: { kind: "memory-diff", chatId, store, graph, action, path, diff, stats, hash, stepId, at, count: changes.length, changes } });
 }
 
 const TIMELINE_OBJECT_KINDS = new Set([
@@ -802,7 +800,7 @@ function shouldRecordBlobAddition(kind: string): boolean {
 async function recordBlobAddition(kind: string, hash: string, content: string, encoding: "text" | "json"): Promise<void> {
   const chatId = activeChatId;
   if (!chatId) return;
-  const at = await time.nowMs();
+  const at = await time.nowMs({});
   const payload = {
     chatId,
     kind,
@@ -822,7 +820,7 @@ async function recordBlobAddition(kind: string, hash: string, content: string, e
       ["agent:objectKind", kind],
     ],
   });
-  events.publish({ kind: "blob-add", chatId, objectKind: kind, hash, size: payload.size, chars: payload.chars, encoding, stepId, at });
+  events.publish({ payload: { kind: "blob-add", chatId, objectKind: kind, hash, size: payload.size, chars: payload.chars, encoding, stepId, at } });
 }
 
 const objects: Moo["objects"] = {
@@ -882,28 +880,28 @@ const todos: Moo["todos"] = {
 };
 
 const pointers: Moo["pointers"] = {
-  async get(name) {
-    if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
+  async get({ name }) {
+    if (!validate.pointerName({ name })) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
     return host.getRef(name);
   },
-  async set(name, target) {
-    if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
+  async set({ name, target }) {
+    if (!validate.pointerName({ name })) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
     const previous = host.getRef(name);
     host.setRef(name, target);
     return { name, target, previous, changed: previous !== target };
   },
-  async cas(name, expected, next) {
-    if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
+  async cas({ name, expected, next }) {
+    if (!validate.pointerName({ name })) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
     return host.compareAndSetRef(name, expected ?? null, next);
   },
-  async list(prefix = "") {
-    return host.listRefs(prefix);
+  async list(args = {}) {
+    return host.listRefs(args.prefix ?? "");
   },
-  async entries(prefix = "") {
-    return JSON.parse(host.refEntries(prefix));
+  async entries(args = {}) {
+    return JSON.parse(host.refEntries(args.prefix ?? ""));
   },
-  async delete(name) {
-    if (!validate.pointerName(name)) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
+  async delete({ name }) {
+    if (!validate.pointerName({ name })) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
     return host.deleteRef(name);
   },
 };
@@ -1171,7 +1169,7 @@ const facts: Moo["facts"] = {
 };
 
 async function activeScratchRoot(): Promise<string | null> {
-  return activeChatId ? await chat.scratch(activeChatId) : null;
+  return activeChatId ? await chat.scratch({ chatId: activeChatId }) : null;
 }
 
 setSkillRootProvider(activeScratchRoot);
@@ -1179,7 +1177,7 @@ setSkillRootProvider(activeScratchRoot);
 function resolveWorkspacePath(root: string, path: string = "."): string {
   const raw = String(path || ".");
   if (raw.startsWith("/")) return raw;
-  if (!validate.relativePath(raw) && raw !== ".") throw new MooApiError("path_escape", "workspace paths must be relative and may not contain ..", { root, path: raw });
+  if (!validate.relativePath({ path: raw }) && raw !== ".") throw new MooApiError("path_escape", "workspace paths must be relative and may not contain ..", { root, path: raw });
   const parts = raw.split("/").filter((part) => part && part !== ".");
   return parts.length ? joinPath(root, parts.join("/")) : root;
 }
@@ -1302,7 +1300,7 @@ async function executePatch(path: string, diff: string | null | undefined, worki
     return patchResult("failed", (e as Error).message);
   }
 
-  const stat = await fs.stat(absolute);
+  const stat = await fs.stat({ path: absolute });
   if (stat === null) {
     return patchResult("failed", "Could not read '" + display + "' before applying the patch: File not found");
   }
@@ -1311,7 +1309,7 @@ async function executePatch(path: string, diff: string | null | undefined, worki
   }
   let original: string;
   try {
-    original = await fs.read(absolute);
+    original = await fs.read({ path: absolute });
   } catch (e) {
     return patchResult("failed", "Could not read '" + display + "' before applying the patch: " + (e as Error).message);
   }
@@ -1322,7 +1320,7 @@ async function executePatch(path: string, diff: string | null | undefined, worki
     return patchResult("failed", "Could not apply the patch to '" + display + "': " + (e as Error).message);
   }
   try {
-    await fs.write(absolute, content);
+    await fs.write({ path: absolute, content: content });
   } catch (e) {
     return patchResult("failed", "Could not write '" + display + "': " + (e as Error).message);
   }
@@ -1338,12 +1336,12 @@ async function executeDelete(path: string, workingDirectory: string | null): Pro
     return patchResult("failed", (e as Error).message);
   }
 
-  if ((await fs.stat(absolute)) === null) {
+  if ((await fs.stat({ path: absolute })) === null) {
     return patchResult("failed", "Cannot delete '" + display + "' because it does not exist.");
   }
   let before: string | null = null;
   try {
-    before = await fs.read(absolute);
+    before = await fs.read({ path: absolute });
   } catch (_) {
     before = null;
   }
@@ -1359,15 +1357,15 @@ async function executeDelete(path: string, workingDirectory: string | null): Pro
 }
 
 const fs: Moo["fs"] = {
-  async read(path) {
+  async read({ path }) {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.read", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
-  async readLines(path, ranges, opts = {}) {
-    const content = await fs.read(path);
+  async readLines({ path, ranges, opts = {} }) {
+    const content = await fs.read({ path });
     return await traceObserved("moo.fs.readLines", { path, ranges, numbered: !!opts.numbered }, () => formatReadLines(content, ranges, opts), (value) => ({ lines: value.length }));
   },
-  async write(path, content) {
+  async write({ path, content }) {
     const resolved = await resolveActivePath(path);
     const text = typeof content === "string" ? content : String(content);
     let before: string | null = null;
@@ -1384,34 +1382,35 @@ const fs: Moo["fs"] = {
     }, () => host.writeFile(resolved, text), () => ({ changed: before !== text }));
     await traceObserved("moo.fs.record_diff", { path, resolved }, () => recordFileWriteDiff(resolved, before, text));
   },
-  async list(path) {
+  async list({ path }) {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.list", { path, resolved }, () => host.listDir(resolved), (value) => ({ count: value.length }));
   },
-  async glob(pattern) {
+  async glob({ pattern }) {
     const resolved = await resolveActivePath(pattern);
     return await traceObserved("moo.fs.glob", { pattern, resolved }, () => host.globFiles(resolved), (value) => ({ count: value.length }));
   },
-  async stat(path) {
+  async stat(args = {}) {
+    const path = args.path ?? ".";
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.stat", { path, resolved }, () => host.statFile(resolved), (value) => ({ exists: value != null, kind: (value as any)?.kind ?? null, size: (value as any)?.size ?? null, mtime: (value as any)?.mtime ?? null }));
   },
-  async canonical(path) {
+  async canonical({ path }) {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.canonical", { path, resolved }, () => host.canonicalPath(resolved), (value) => ({ path: value }));
   },
-  async exists(path) {
-    return await traceObserved("moo.fs.exists", { path }, async () => (await fs.stat(path)) != null, (value) => ({ exists: value }));
+  async exists({ path }) {
+    return await traceObserved("moo.fs.exists", { path }, async () => (await fs.stat({ path })) != null, (value) => ({ exists: value }));
   },
-  async ensureDir(path) {
+  async ensureDir({ path }) {
     const resolved = await resolveActivePath(path);
     await traceObserved("moo.fs.ensureDir", { path, resolved }, () => host.makeDir(resolved), () => ({ path: resolved }));
   },
-  async patch(path, diff) {
+  async patch({ path, diff }) {
     const root = await activeScratchRoot();
     return await traceObserved("moo.fs.patch", { path, root }, () => executePatch(path, diff, root), (value) => ({ status: value.status, output: value.output ?? null }));
   },
-  async delete(path) {
+  async delete({ path }) {
     const root = await activeScratchRoot();
     return await traceObserved("moo.fs.delete", { path, root }, () => executeDelete(path, root), (value) => ({ status: value.status, output: value.output ?? null }));
   },
@@ -1479,21 +1478,21 @@ const proc: Moo["proc"] = {
 
 const workspace: Moo["workspace"] = {
   async current(args = {}) {
-    const root = args.root ? await fs.canonical(args.root) : await chat.scratch(args.chatId || activeChatId || "default");
+    const root = args.root ? await fs.canonical({ path: args.root }) : await chat.scratch({ chatId: args.chatId || activeChatId || "default" });
     return {
       root,
       fs: {
-        read: (path) => fs.read(resolveWorkspacePath(root, path)),
-        readLines: (path, ranges, opts) => fs.readLines(resolveWorkspacePath(root, path), ranges, opts),
-        write: (path, content) => fs.write(resolveWorkspacePath(root, path), content),
-        list: (path = ".") => fs.list(resolveWorkspacePath(root, path)),
-        glob: (pattern) => fs.glob(resolveWorkspacePath(root, pattern)),
-        stat: (path = ".") => fs.stat(resolveWorkspacePath(root, path)),
-        canonical: (path = ".") => fs.canonical(resolveWorkspacePath(root, path)),
-        exists: (path = ".") => fs.exists(resolveWorkspacePath(root, path)),
-        ensureDir: (path = ".") => fs.ensureDir(resolveWorkspacePath(root, path)),
-        patch: (path, diff) => executePatch(path, diff, root),
-        delete: (path) => executeDelete(path, root),
+        read: ({ path }) => fs.read({ path: resolveWorkspacePath(root, path) }),
+        readLines: ({ path, ranges, opts }) => fs.readLines({ path: resolveWorkspacePath(root, path), ranges, opts }),
+        write: ({ path, content }) => fs.write({ path: resolveWorkspacePath(root, path), content }),
+        list: (args = {}) => fs.list({ path: resolveWorkspacePath(root, args.path ?? ".") }),
+        glob: ({ pattern }) => fs.glob({ pattern: resolveWorkspacePath(root, pattern) }),
+        stat: (args = {}) => fs.stat({ path: resolveWorkspacePath(root, args.path ?? ".") }),
+        canonical: (args = {}) => fs.canonical({ path: resolveWorkspacePath(root, args.path ?? ".") }),
+        exists: (args = {}) => fs.exists({ path: resolveWorkspacePath(root, args.path ?? ".") }),
+        ensureDir: (args = {}) => fs.ensureDir({ path: resolveWorkspacePath(root, args.path ?? ".") }),
+        patch: ({ path, diff }) => executePatch(path, diff, root),
+        delete: ({ path }) => executeDelete(path, root),
       },
       proc: {
         run: (input: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }) => proc.run({ ...input, cwd: input.cwd ? resolveWorkspacePath(root, input.cwd) : root }),
@@ -1832,17 +1831,17 @@ async function discoverMcpOAuth(server: McpServerConfig): Promise<Required<Pick<
 async function loadMcpOAuthToken(serverId: string): Promise<McpOAuthToken | null> {
   const clean = cleanMcpId(serverId);
   if (!clean) return null;
-  const hash = await pointers.get(mcpOAuthTokenRef(clean));
+  const hash = await pointers.get({ name: mcpOAuthTokenRef(clean) });
   if (!hash) return null;
   const row = await objects.getJSON<McpOAuthToken>({ hash: hash });
   return row?.value?.access_token ? row.value : null;
 }
 
 async function saveMcpOAuthToken(serverId: string, token: McpOAuthToken): Promise<McpOAuthToken> {
-  const now = await time.nowMs();
+  const now = await time.nowMs({});
   if (token.expires_in && !token.expires_at) token.expires_at = now + Number(token.expires_in) * 1000;
   const hash = await objects.putJSON({ kind: "mcp:OAuthToken", value: token });
-  await pointers.set(mcpOAuthTokenRef(serverId), hash);
+  await pointers.set({ name: mcpOAuthTokenRef(serverId), target: hash });
   return token;
 }
 
@@ -1856,7 +1855,7 @@ function headerValue(headers: Record<string, string | string[]> | undefined, nam
 async function loadMcpSession(serverId: string): Promise<McpSession | null> {
   const clean = cleanMcpId(serverId);
   if (!clean) return null;
-  const target = await pointers.get(mcpSessionRef(clean));
+  const target = await pointers.get({ name: mcpSessionRef(clean) });
   if (!target) return null;
   const value = decodeJsonPointer<McpSession>(target);
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -1883,7 +1882,7 @@ async function saveMcpSession(serverId: string, session: McpSession): Promise<vo
     ...session,
   };
   const nextTarget = encodeMcpSessionPointerTarget(next);
-  if ((await pointers.get(ref)) !== nextTarget) await pointers.set(ref, nextTarget);
+  if ((await pointers.get({ name: ref })) !== nextTarget) await pointers.set({ name: ref, target: nextTarget });
 }
 
 async function loadMcpSessionId(serverId: string): Promise<string | null> {
@@ -1896,14 +1895,14 @@ async function saveMcpSessionId(serverId: string, sessionId: string): Promise<vo
 }
 
 async function markMcpInitialized(serverId: string, sessionId?: string | null): Promise<void> {
-  const session: McpSession = { initializedAt: await time.nowMs() };
+  const session: McpSession = { initializedAt: await time.nowMs({}) };
   if (sessionId?.trim()) session.id = sessionId.trim();
   await saveMcpSession(serverId, session);
 }
 
 async function clearMcpSessionId(serverId: string): Promise<void> {
   const clean = cleanMcpId(serverId);
-  if (clean) await pointers.delete(mcpSessionRef(clean));
+  if (clean) await pointers.delete({ name: mcpSessionRef(clean) });
 }
 
 function mcpInitializeParams() {
@@ -1963,7 +1962,7 @@ async function registerMcpOAuthClient(server: McpServerConfig, oauth: Awaited<Re
 
 async function refreshMcpOAuthToken(server: McpServerConfig, token: McpOAuthToken): Promise<McpOAuthToken | null> {
   if (!token.refresh_token) return token;
-  if (token.expires_at && token.expires_at - (await time.nowMs()) > 60_000) return token;
+  if (token.expires_at && token.expires_at - (await time.nowMs({})) > 60_000) return token;
   const oauth = await discoverMcpOAuth(server);
   const response = await http.fetch({
     method: "POST",
@@ -2032,7 +2031,7 @@ function denseMcpToolDescription(tool: any, inputSchema: unknown): string {
 const mcpCore = {
   async listServers(): Promise<McpServerConfig[]> {
     const ids = new Set<string>();
-    for (const pointer of await pointers.list("mcp/")) {
+    for (const pointer of await pointers.list({ prefix: "mcp/" })) {
       const m = /^mcp\/([^/]+)\/config$/.exec(pointer);
       if (m) ids.add(m[1]!);
     }
@@ -2046,7 +2045,7 @@ const mcpCore = {
   async getServer(id: string): Promise<McpServerConfig | null> {
     const clean = cleanMcpId(id);
     if (!clean) return null;
-    const hash = await pointers.get(mcpRef(clean));
+    const hash = await pointers.get({ name: mcpRef(clean) });
     if (!hash) return null;
     const row = await objects.getJSON<McpServerConfig>({ hash: hash });
     return row?.value ? normalizeMcpServer(row.value) : null;
@@ -2054,16 +2053,16 @@ const mcpCore = {
   async saveServer(config: McpServerConfig): Promise<McpServerConfig> {
     const server = normalizeMcpServer(config);
     const hash = await objects.putJSON({ kind: "mcp:ServerConfig", value: server });
-    await pointers.set(mcpRef(server.id), hash);
+    await pointers.set({ name: mcpRef(server.id), target: hash });
     await clearMcpSessionId(server.id);
     return server;
   },
   async removeServer(id: string): Promise<boolean> {
     const clean = cleanMcpId(id);
     if (!clean) return false;
-    await pointers.delete(mcpOAuthTokenRef(clean));
+    await pointers.delete({ name: mcpOAuthTokenRef(clean) });
     await clearMcpSessionId(clean);
-    return pointers.delete(mcpRef(clean));
+    return pointers.delete({ name: mcpRef(clean) });
   },
   async login(serverId: string, opts: McpOAuthStartOptions = {}): Promise<McpOAuthStart> {
     const server = await mcpCore.getServer(serverId);
@@ -2075,7 +2074,7 @@ const mcpCore = {
     const state = oauthSecret("mcpstate");
     const codeVerifier = oauthSecret("mcpverifier");
     const codeChallenge = host.sha256Base64Url(codeVerifier);
-    const expiresAt = (await time.nowMs()) + 10 * 60_000;
+    const expiresAt = (await time.nowMs({})) + 10 * 60_000;
     const returnChatId = String(opts.returnChatId || activeChatId || "").trim() || undefined;
     const pending: McpOAuthPending = {
       serverId: server.id,
@@ -2089,7 +2088,7 @@ const mcpCore = {
       returnChatId,
     };
     const hash = await objects.putJSON({ kind: "mcp:OAuthPending", value: pending });
-    await pointers.set(mcpOAuthPendingRef(state), hash);
+    await pointers.set({ name: mcpOAuthPendingRef(state), target: hash });
     return {
       serverId: server.id,
       state,
@@ -2109,13 +2108,13 @@ const mcpCore = {
   },
   async completeLogin(state: string, code: string): Promise<McpOAuthStatus> {
     const cleanState = String(state || "").trim();
-    const hash = cleanState ? await pointers.get(mcpOAuthPendingRef(cleanState)) : null;
+    const hash = cleanState ? await pointers.get({ name: mcpOAuthPendingRef(cleanState) }) : null;
     if (!hash) throw new Error("unknown or expired MCP OAuth state");
     const row = await objects.getJSON<McpOAuthPending>({ hash: hash });
     const pending = row?.value;
     if (!pending) throw new Error("invalid MCP OAuth state");
-    if (pending.expiresAt < await time.nowMs()) {
-      await pointers.delete(mcpOAuthPendingRef(cleanState));
+    if (pending.expiresAt < await time.nowMs({})) {
+      await pointers.delete({ name: mcpOAuthPendingRef(cleanState) });
       throw new Error("expired MCP OAuth state");
     }
     const response = await http.fetch({
@@ -2132,7 +2131,7 @@ const mcpCore = {
       }),
       timeoutMs: 60_000,
     });
-    await pointers.delete(mcpOAuthPendingRef(cleanState));
+    await pointers.delete({ name: mcpOAuthPendingRef(cleanState) });
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`MCP OAuth token exchange failed with HTTP ${response.status}: ${response.body}`);
     }
@@ -2147,7 +2146,7 @@ const mcpCore = {
     const clean = cleanMcpId(serverId);
     if (!clean) return false;
     await clearMcpSessionId(clean);
-    return pointers.delete(mcpOAuthTokenRef(clean));
+    return pointers.delete({ name: mcpOAuthTokenRef(clean) });
   },
   async authStatus(serverId: string): Promise<McpOAuthStatus> {
     const clean = cleanMcpId(serverId);
@@ -2162,7 +2161,7 @@ const mcpCore = {
     if (!opts.skipInitialize && method !== "initialize") {
       const session = await loadMcpSession(server.id);
       if (!session?.initializedAt) {
-        await traces.mark("mcp.initialize.required", { serverId: server.id, method });
+        await traces.mark({ message: "mcp.initialize.required", data: { serverId: server.id, method } });
         await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true, timeoutMs: opts.timeoutMs });
       }
     }
@@ -2183,26 +2182,26 @@ const mcpCore = {
       headers,
       body: {
         jsonrpc: "2.0",
-        id: await id.new("mcp"),
+        id: await id.new({ prefix: "mcp" }),
         method,
         params,
       },
       timeoutMs: opts.timeoutMs ?? server.timeoutMs ?? 60_000,
     });
     const responseSessionId = headerValue(response.headers, "mcp-session-id");
-    await traces.mark("mcp.http.response", {
+    await traces.mark({ message: "mcp.http.response", data: {
       serverId: server.id,
       method,
       response,
       responseSessionId: responseSessionId ?? null,
       retryingSession: !!opts.retryingSession,
-    });
+    } });
     if (responseSessionId && method !== "initialize") await saveMcpSessionId(server.id, responseSessionId);
     if (response.status === 401 && server.oauth && !token) {
       throw new Error(`MCP ${server.id} requires OAuth login; run moo.mcp.login("${server.id}") from the UI or use the MCP settings Login button`);
     }
     if (isMcpSessionError(response.status, response.body) && !opts.retryingSession && method !== "initialize") {
-      await traces.mark("mcp.session.retry", { serverId: server.id, method, status: response.status });
+      await traces.mark({ message: "mcp.session.retry", data: { serverId: server.id, method, status: response.status } });
       await clearMcpSessionId(server.id);
       await mcpCore.request(server.id, "initialize", mcpInitializeParams(), { skipInitialize: true, omitSession: true, timeoutMs: opts.timeoutMs });
       return mcpCore.request<T>(server.id, method, params, { ...opts, retryingSession: true });
@@ -2211,11 +2210,11 @@ const mcpCore = {
       throw new Error(`MCP ${method} failed with HTTP ${response.status}: ${response.body}`);
     }
     const payload = parseMcpBody(response.body);
-    await traces.mark("mcp.payload", {
+    await traces.mark({ message: "mcp.payload", data: {
       serverId: server.id,
       method,
       payload,
-    });
+    } });
     if (payload?.error) {
       throw new Error(payload.error.message || JSON.stringify(payload.error));
     }
@@ -2306,7 +2305,7 @@ function createMcpProxy(): Moo["mcp"] {
 const mcp: Moo["mcp"] = createMcpProxy();
 
 const events: Moo["events"] = {
-  publish(payload) {
+  publish({ payload }) {
     const text =
       typeof payload === "string" ? payload : JSON.stringify(payload);
     host.broadcast(text);
@@ -2314,10 +2313,10 @@ const events: Moo["events"] = {
 };
 
 const env: Moo["env"] = {
-  async get(name) {
+  async get({ name }) {
     return host.getEnv(name);
   },
-  async getMany(names) {
+  async getMany({ names }) {
     const out: Record<string, string | null> = {};
     for (const n of names) out[n] = host.getEnv(n);
     return out;
@@ -2346,9 +2345,9 @@ async function recordChatTrailEntry(
   if (!chatId) throw new Error("trail entry requires chatId");
   const factsRef = `chat/${chatId}/facts`;
   const graph = `chat:${chatId}`;
-  const now = await time.nowMs();
-  if (opts.touch) await chat.touch(chatId);
-  const entryId = await id.new("trail");
+  const now = await time.nowMs({});
+  if (opts.touch) await chat.touch({ chatId });
+  const entryId = await id.new({ prefix: "trail" });
   await facts.update({ store: factsRef, fn: (txn) => {
     txn.add({ graph: graph, subject: entryId, predicate: "rdf:type", object: "agent:TrailEntry" });
     txn.add({ graph: graph, subject: entryId, predicate: "agent:kind", object: kind });
@@ -2364,9 +2363,9 @@ async function recordChatTrailEntry(
 async function recordInputRequest(chatId: string, kind: string, spec: unknown): Promise<string> {
   const factsRef = `chat/${chatId}/facts`;
   const graph = `chat:${chatId}`;
-  const reqId = await id.new("uireq");
+  const reqId = await id.new({ prefix: "uireq" });
   const payload = await objects.putJSON({ kind: kind, value: spec || {} });
-  const now = await time.nowMs();
+  const now = await time.nowMs({});
   await facts.update({ store: factsRef, fn: (txn) => {
     txn.add({ graph: graph, subject: reqId, predicate: "rdf:type", object: "ui:InputRequest" });
     txn.add({ graph: graph, subject: reqId, predicate: "ui:kind", object: kind });
@@ -2443,7 +2442,7 @@ function cleanUiIdOrThrow(id: unknown): string {
 }
 
 async function uiManifestExists(uiId: string): Promise<boolean> {
-  return !!(await pointers.get(`ui/${uiId}/manifest`));
+  return !!(await pointers.get({ name: `ui/${uiId}/manifest` }));
 }
 
 const ui: Moo["ui"] = {
@@ -2454,7 +2453,7 @@ const ui: Moo["ui"] = {
     return recordInputRequest(chatId, "ui:Choice", validateChooseSpec(spec));
   },
   async say({ chatId, text }) {
-    const payload = await objects.putJSON({ kind: "agent:Reply", value: { text, at: await time.nowMs() } });
+    const payload = await objects.putJSON({ kind: "agent:Reply", value: { text, at: await time.nowMs({}) } });
     const { stepId } = await appendStep(chatId, {
       kind: "agent:Reply",
       status: "agent:Done",
@@ -2478,19 +2477,19 @@ const ui: Moo["ui"] = {
       };
       const manifestHash = await objects.putJSON({ kind: "ui:Manifest", value: manifest });
       const bundleHash = await objects.putJSON({ kind: "ui:Bundle", value: bundle });
-      await pointers.set(`ui/${id}/manifest`, manifestHash);
-      await pointers.set(`ui/${id}/bundle`, bundleHash);
+      await pointers.set({ name: `ui/${id}/manifest`, target: manifestHash });
+      await pointers.set({ name: `ui/${id}/bundle`, target: bundleHash });
       let handlerHash: string | null = null;
       if (handler != null) {
         handlerHash = await objects.putText({ kind: "ui:Handler", text: String(handler) });
-        await pointers.set(`ui/${id}/handler`, handlerHash);
+        await pointers.set({ name: `ui/${id}/handler`, target: handlerHash });
       }
       await memory.assert({ facts: [
         [`ui:${id}`, "rdf:type", "ui:App"],
         [`ui:${id}`, "ui:title", title],
         [`ui:${id}`, "ui:manifest", manifestHash],
         [`ui:${id}`, "ui:bundle", bundleHash],
-        [`ui:${id}`, "ui:updatedAt", term.datetime(new Date(await time.nowMs()).toISOString())],
+        [`ui:${id}`, "ui:updatedAt", new Date(await time.nowMs({})).toISOString()],
         ...(manifest.description ? [[`ui:${id}`, "ui:description", String(manifest.description)] as [string, string, ObjectInput]] : []),
         ...(handlerHash ? [[`ui:${id}`, "ui:handler", handlerHash] as [string, string, ObjectInput]] : []),
       ] });
@@ -2513,7 +2512,7 @@ const ui: Moo["ui"] = {
           graph: c.graph,
           limit: 1,
         });
-        instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await id.new("uiinst"));
+        instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await id.new({ prefix: "uiinst" }));
       }
       const inst = `uiinst:${instanceId}`;
       const primaryRows = await facts.match({
@@ -2534,14 +2533,14 @@ const ui: Moo["ui"] = {
         txn.add({ graph: c.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
       } });
       const stateRef = `uiinst/${instanceId}/state`;
-      let stateTarget = await pointers.get(stateRef);
+      let stateTarget = await pointers.get({ name: stateRef });
       let createdState = false;
       if (!stateTarget) {
         stateTarget = encodeJsonPointer(state ?? {});
-        await pointers.set(stateRef, stateTarget);
+        await pointers.set({ name: stateRef, target: stateTarget });
         createdState = true;
       }
-      events.publish({ kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await time.nowMs() });
+      events.publish({ payload: { kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await time.nowMs({}) } });
       return { chatId, uiId, instanceId, stateTarget, stateRef, createdState, facts: factReceipt };
     },
   },
@@ -2671,11 +2670,11 @@ function joinPath(base: string, child: string): string {
 }
 
 async function chatScratchRoot(chatId: string): Promise<string | null> {
-  return await pointers.get(`chat/${chatId}/path`);
+  return await pointers.get({ name: `chat/${chatId}/path` });
 }
 
 async function chatWorktreePath(chatId: string): Promise<string> {
-  const home = ((await env.get("HOME")) || "").trim();
+  const home = ((await env.get({ name: "HOME" })) || "").trim();
   const base = home ? joinPath(home, "moo") : "moo";
   return joinPath(base, chatId);
 }
@@ -2687,7 +2686,7 @@ async function canonicalDir(path: string): Promise<string> {
   if (!promise) {
     promise = (async () => {
       try {
-        return await fs.canonical(path);
+        return await fs.canonical({ path: path });
       } catch (_) {
         return path;
       }
@@ -2732,23 +2731,23 @@ const chat: Moo["chat"] = {
       startBranchRef: (c as any).startBranch ?? `chat/${chatId}/start-branch`,
     };
   },
-  async scratch(chatId) {
+  async scratch({ chatId }) {
     const root = await chatScratchRoot(chatId);
     const path = await chatWorktreePath(chatId);
-    if (await fs.exists(path)) return await canonicalDir(path);
+    if (await fs.exists({ path: path })) return await canonicalDir(path);
     const parentPath = path.split("/").slice(0, -1).join("/") || ".";
-    await fs.ensureDir(parentPath);
+    await fs.ensureDir({ path: parentPath });
     // Repo-less chats deliberately have no checkout root. Give them an empty
     // per-chat scratch directory instead of treating "." as an implicit repo.
     if (!root) {
-      await fs.ensureDir(path);
+      await fs.ensureDir({ path: path });
       return await canonicalDir(path);
     }
     // If the cwd is a JJ repo, prefer a real `jj workspace add` so the agent
     // gets an isolated checkout/workspace. Fall back to Git worktrees or a
     // plain mkdir when repo-specific workspace creation fails.
-    if (await fs.exists(joinPath(root, ".jj"))) {
-      const startRevision = (await pointers.get(`chat/${chatId}/start-branch`))?.trim() || "@";
+    if (await fs.exists({ path: joinPath(root, ".jj") })) {
+      const startRevision = (await pointers.get({ name: `chat/${chatId}/start-branch` }))?.trim() || "@";
       let result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", startRevision, path], ...{ cwd: root, timeoutMs: 10_000 } });
       if (result.code !== 0 && startRevision !== "@") {
         result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", "@", path], ...{ cwd: root, timeoutMs: 10_000 } });
@@ -2758,27 +2757,27 @@ const chat: Moo["chat"] = {
     // If the cwd is a git repo, prefer a real `git worktree add` from the
     // selected start branch (or HEAD) so the agent gets per-chat diffs and
     // clean state.
-    if (await fs.exists(joinPath(root, ".git"))) {
-      const startBranch = (await pointers.get(`chat/${chatId}/start-branch`))?.trim() || "HEAD";
+    if (await fs.exists({ path: joinPath(root, ".git") })) {
+      const startBranch = (await pointers.get({ name: `chat/${chatId}/start-branch` }))?.trim() || "HEAD";
       let result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, startBranch], ...{ cwd: root, timeoutMs: 10_000 } });
       if (result.code !== 0 && startBranch !== "HEAD") {
         result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, "HEAD"], ...{ cwd: root, timeoutMs: 10_000 } });
       }
       if (result.code === 0) return await canonicalDir(path);
     }
-    await fs.ensureDir(path);
+    await fs.ensureDir({ path: path });
     return await canonicalDir(path);
   },
-  async touch(chatId) {
+  async touch({ chatId }) {
     const createdRef = `chat/${chatId}/created-at`;
-    const existing = await pointers.get(createdRef);
+    const existing = await pointers.get({ name: createdRef });
     if (!existing) {
-      await pointers.set(createdRef, String(await time.nowMs()));
+      await pointers.set({ name: createdRef, target: String(await time.nowMs({})) });
     }
-    await pointers.set(`chat/${chatId}/last-at`, String(await time.nowMs()));
+    await pointers.set({ name: `chat/${chatId}/last-at`, target: String(await time.nowMs({})) });
   },
   async list() {
-    const all = await pointers.entries("chat/");
+    const all = await pointers.entries({ prefix: "chat/" });
     const ids = new Set<string>();
     const byChat = new Map<string, Record<string, string>>();
     for (const [name, target] of all) {
@@ -2877,20 +2876,22 @@ const chat: Moo["chat"] = {
 
     return chats.sort((a, b) => (b.lastAt || b.createdAt || 0) - (a.lastAt || a.createdAt || 0));
   },
-  async create(chatId, path = null, opts = {}) {
+  async create(args = {}) {
+    const { chatId, path = null, branch = null } = args;
+    const opts = { branch };
     let cid = chatId;
     if (!cid) {
-      const raw = await id.new("chat");
+      const raw = await id.new({ prefix: "chat" });
       // Host ids are `chat:<nanoid-ish payload>`; chat metadata stores just the payload.
       cid = raw.replace(/^chat:/, "");
     }
     if (path && String(path).trim()) {
-      await pointers.set(`chat/${cid}/path`, String(path).trim());
+      await pointers.set({ name: `chat/${cid}/path`, target: String(path).trim() });
     }
     if (opts.branch && String(opts.branch).trim()) {
-      await pointers.set(`chat/${cid}/start-branch`, String(opts.branch).trim());
+      await pointers.set({ name: `chat/${cid}/start-branch`, target: String(opts.branch).trim() });
     }
-    await chat.touch(cid);
+    await chat.touch({ chatId: cid });
     // Do not materialize the per-chat scratch/worktree during creation.
     // Creating a git worktree can be slow in large repositories, and the UI
     // only needs the chat metadata to navigate to an empty chat. The worktree
@@ -2898,7 +2899,7 @@ const chat: Moo["chat"] = {
     // agent run that actually needs it.
     return cid;
   },
-  async remove(chatId) {
+  async remove({ chatId }) {
     if (!chatId) throw new Error("remove requires chatId");
     const root = await chatScratchRoot(chatId);
     const path = await chatWorktreePath(chatId);
@@ -2906,19 +2907,19 @@ const chat: Moo["chat"] = {
     // If this scratch was set up as a git worktree, the directory contains a
     // .git *file* (not a dir) pointing back at the main repo. Clean it via
     // the git CLI so we don't leave dangling worktree metadata.
-    const gitFile = await fs.stat(`${path}/.git`);
+    const gitFile = await fs.stat({ path: `${path}/.git` });
     if (gitFile && gitFile.kind === "file") {
       await proc.run({ cmd: "git", args: ["worktree", "remove", "--force", path], timeoutMs: 10_000 });
-    } else if (await fs.exists(path)) {
+    } else if (await fs.exists({ path: path })) {
       await proc.run({ cmd: "rm", args: ["-rf", path], timeoutMs: 10_000 });
     }
-    const all = await pointers.list(`chat/${chatId}/`);
+    const all = await pointers.list({ prefix: `chat/${chatId}/` });
     let clearedQuads = 0;
     for (const name of all) {
       if (name.endsWith("/facts")) {
         clearedQuads += (await facts.deleteStore({ store: name })).removed;
       }
-      await pointers.delete(name);
+      await pointers.delete({ name: name });
     }
     clearedQuads += (await facts.deleteStore({ store: `chat/${chatId}/facts` })).removed;
     return { chatId, refsDeleted: all.length, quadsCleared: clearedQuads };
@@ -2926,18 +2927,18 @@ const chat: Moo["chat"] = {
   async setTitle({ chatId, title, manual }: { chatId: string; title: string | null; manual?: boolean }) {
     const ref = `chat/${chatId}/title`;
     const manualRef = `chat/${chatId}/title-manual`;
-    const previousTitle = await pointers.get(ref);
+    const previousTitle = await pointers.get({ name: ref });
     const nextTitle = title == null || title.trim() === "" ? null : title.trim();
-    const manualTitle = await pointers.get(manualRef);
+    const manualTitle = await pointers.get({ name: manualRef });
     if (!manual && manualTitle && (previousTitle || null) === manualTitle && nextTitle !== manualTitle) {
       return { chatId, previousTitle: previousTitle || null, title: previousTitle || null, changed: false };
     }
     if (nextTitle == null) {
-      await pointers.delete(ref);
-      if (manual) await pointers.delete(manualRef);
+      await pointers.delete({ name: ref });
+      if (manual) await pointers.delete({ name: manualRef });
     } else {
-      await pointers.set(ref, nextTitle);
-      if (manual) await pointers.set(manualRef, nextTitle);
+      await pointers.set({ name: ref, target: nextTitle });
+      if (manual) await pointers.set({ name: manualRef, target: nextTitle });
     }
     const changed = (previousTitle || null) !== nextTitle;
     if (changed) {
@@ -2960,13 +2961,13 @@ const chat: Moo["chat"] = {
     }, { touch: true });
     return { chatId: targetChatId, entryId, title: cleanTitle };
   },
-  async archive(chatId) {
-    const at = String(await time.nowMs());
-    await pointers.set(`chat/${chatId}/archived-at`, at);
+  async archive({ chatId }) {
+    const at = String(await time.nowMs({}));
+    await pointers.set({ name: `chat/${chatId}/archived-at`, target: at });
     return Number(at);
   },
-  async unarchive(chatId) {
-    await pointers.delete(`chat/${chatId}/archived-at`);
+  async unarchive({ chatId }) {
+    await pointers.delete({ name: `chat/${chatId}/archived-at` });
     return null;
   },
 };
@@ -3040,7 +3041,7 @@ async function replaceStepStatus(chatId: string, stepId: string, status: string,
 }
 
 async function markOutstandingSubagentCancelled(parentChatId: string, childChatId: string, error: string) {
-  const stepId = await pointers.get(`chat/${childChatId}/parent-step`);
+  const stepId = await pointers.get({ name: `chat/${childChatId}/parent-step` });
   if (!stepId) return;
   const result: SubagentResult = {
     status: "cancelled",
@@ -3062,19 +3063,19 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   }
 
   const parentChatId = ctx.chatId;
-  const parentRoot = await pointers.get(`chat/${parentChatId}/path`);
-  const childChatId = await chat.create(undefined, parentRoot);
+  const parentRoot = await pointers.get({ name: `chat/${parentChatId}/path` });
+  const childChatId = await chat.create({ path: parentRoot });
   await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });
-  await pointers.set(`chat/${childChatId}/hidden`, "true");
-  await pointers.set(`chat/${childChatId}/parent`, parentChatId);
-  await pointers.set(`chat/${childChatId}/subagent-depth`, String(ctx.depth + 1));
-  await pointers.set(`chat/${childChatId}/subagent-parent-runjs`, ctx.runJsStepId);
+  await pointers.set({ name: `chat/${childChatId}/hidden`, target: "true" });
+  await pointers.set({ name: `chat/${childChatId}/parent`, target: parentChatId });
+  await pointers.set({ name: `chat/${childChatId}/subagent-depth`, target: String(ctx.depth + 1) });
+  await pointers.set({ name: `chat/${childChatId}/subagent-parent-runjs`, target: ctx.runJsStepId });
   await applyDefaultChatSettings(childChatId);
-  if (spec.model) await pointers.set(chatRefs(childChatId).model, spec.model);
-  if (spec.effort) await pointers.set(chatRefs(childChatId).effort, spec.effort);
+  if (spec.model) await pointers.set({ name: chatRefs(childChatId).model, target: spec.model });
+  if (spec.effort) await pointers.set({ name: chatRefs(childChatId).effort, target: spec.effort });
 
   const specHash = await objects.putJSON({ kind: "agent:SubagentSpec", value: spec });
-  await pointers.set(`chat/${childChatId}/subagent-spec`, specHash);
+  await pointers.set({ name: `chat/${childChatId}/subagent-spec`, target: specHash });
 
   const payloadHash = await objects.putJSON({ kind: "agent:Subagent", value: {
     label: spec.label,
@@ -3093,17 +3094,17 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
       ["agent:parentRunJS", ctx.runJsStepId],
     ],
   });
-  await pointers.set(`chat/${childChatId}/parent-step`, appended.stepId);
+  await pointers.set({ name: `chat/${childChatId}/parent-step`, target: appended.stepId });
   ctx.outstanding.add(childChatId);
 
   if (spec.worktree === "inherit") {
     // Never share writable dirs. For now inherit only selects the same repo root;
     // the child still gets its own lazy git worktree from chat.scratch().
-    await pointers.set(`chat/${childChatId}/worktree-mode`, "inherit");
+    await pointers.set({ name: `chat/${childChatId}/worktree-mode`, target: "inherit" });
   }
 
   return {
-    requestId: await id.new("subagent"),
+    requestId: await id.new({ prefix: "subagent" }),
     parentChatId,
     parentRunJsStepId: ctx.runJsStepId,
     parentSubagentStepId: appended.stepId,
@@ -3120,8 +3121,8 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
 async function finishSubagentRun(childChatId: string, result: SubagentResult) {
   result = normalizeSubagentResult(result as LegacySubagentResult);
   const ctx = activeRunJSContext;
-  const parentChatId = ctx?.chatId || (await pointers.get(`chat/${childChatId}/parent`));
-  const stepId = await pointers.get(`chat/${childChatId}/parent-step`);
+  const parentChatId = ctx?.chatId || (await pointers.get({ name: `chat/${childChatId}/parent` }));
+  const stepId = await pointers.get({ name: `chat/${childChatId}/parent-step` });
   if (ctx) ctx.outstanding.delete(childChatId);
   if (!parentChatId || !stepId) return;
   const resultHash = await objects.putJSON({ kind: "agent:ToolResult", value: result });
@@ -3144,7 +3145,7 @@ async function failSubagentRun(childChatId: string | null, err: unknown) {
 }
 
 const agent: Moo["agent"] = {
-  async claim(store, graph, runId, leaseMs = 60_000) {
+  async claim({ store, graph, runId, leaseMs = 60_000 }) {
     const queued = await facts.match({ store, ...{
       graph,
       predicate: "agent:status",
@@ -3160,8 +3161,8 @@ const agent: Moo["agent"] = {
         } });
         if (runRows.length && runRows[0]![3] !== runId) continue;
       }
-      const leaseId = await id.new("lease");
-      const expiresAt = (await time.nowMs()) + leaseMs;
+      const leaseId = await id.new({ prefix: "lease" });
+      const expiresAt = (await time.nowMs({})) + leaseMs;
       await facts.update({ store, fn: (txn) => {
         txn.remove({ graph: graph, subject: stepId, predicate: "agent:status", object: "agent:Queued" });
         txn.add({ graph: graph, subject: stepId, predicate: "agent:status", object: "agent:Running" });
@@ -3172,7 +3173,7 @@ const agent: Moo["agent"] = {
     }
     return null;
   },
-  async complete(store, graph, stepId, status = "agent:Done") {
+  async complete({ store, graph, stepId, status = "agent:Done" }) {
     const cur = await facts.match({ store, ...{
       graph,
       subject: stepId,
@@ -3183,16 +3184,16 @@ const agent: Moo["agent"] = {
       txn.add({ graph: graph, subject: stepId, predicate: "agent:status", object: status });
     } });
   },
-  async fork(chatId, fromStepId = null) {
+  async fork({ chatId, fromStepId = null }) {
     const c = {
       facts: `chat/${chatId}/facts`,
       run: `chat/${chatId}/run`,
       graph: `chat:${chatId}`,
       head: `chat/${chatId}/head`,
     };
-    const runId = await id.new("run");
-    const forkedFrom = fromStepId ?? (await pointers.get(c.head));
-    await pointers.set(c.run, runId);
+    const runId = await id.new({ prefix: "run" });
+    const forkedFrom = fromStepId ?? (await pointers.get({ name: c.head }));
+    await pointers.set({ name: c.run, target: runId });
     await facts.update({ store: c.facts, fn: (txn) => {
       txn.add({ graph: c.graph, subject: runId, predicate: "rdf:type", object: "agent:Run" });
       txn.add({ graph: c.graph, subject: runId, predicate: "agent:chat", object: c.graph });
@@ -3259,7 +3260,7 @@ function encodeProjectMemoryId(projectId: string): string {
 async function currentProjectMemoryId(): Promise<string> {
   const git = await proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
   if (git.code === 0 && git.stdout.trim()) return git.stdout.trim();
-  const pwd = await env.get("PWD");
+  const pwd = await env.get({ name: "PWD" });
   if (pwd && pwd.trim()) return pwd.trim();
   return ".";
 }
@@ -3337,7 +3338,8 @@ function memoryScope(store: string, graph: string): MemoryScope {
 }
 const globalMemory = memoryScope(MEMORY_REF, MEMORY_GRAPH);
 const memory: Moo["memory"] = Object.assign(globalMemory, {
-  project(projectId?: string): MemoryScope {
+  project(args: { projectId?: string } = {}): MemoryScope {
+    const projectId = args.projectId;
     let cached: MemoryScope | null = null;
     let pending: Promise<MemoryScope> | null = null;
     async function resolve(): Promise<MemoryScope> {
@@ -3348,7 +3350,7 @@ const memory: Moo["memory"] = Object.assign(globalMemory, {
           const id = encodeProjectMemoryId(raw);
           const store = `${PROJECT_MEMORY_REF_PREFIX}${id}/facts`;
           const graph = `${PROJECT_MEMORY_GRAPH_PREFIX}${id}`;
-          await pointers.set(store, raw);
+          await pointers.set({ name: store, target: raw });
           cached = memoryScope(store, graph);
           return cached;
         })();
@@ -3376,7 +3378,8 @@ const VOCAB_REF = "vocab/facts";
 const VOCAB_GRAPH = "vocab:facts";
 
 const vocab: Moo["vocab"] = {
-  async define(name, opts) {
+  async define({ name, description, example, label }) {
+    const opts = { description, example, label };
     if (!name || !name.trim()) throw new Error("vocab.define requires name");
     // Subject is the literal predicate as used in triples — no auto-prefix.
     // That way `vocab.define('prefers',…)` annotates the same predicate the
@@ -3424,8 +3427,8 @@ const vocab: Moo["vocab"] = {
     const memoryStores = [
       MEMORY_REF,
       VOCAB_REF,
-      ...(await pointers.list(PROJECT_MEMORY_REF_PREFIX)),
-      ...(await pointers.list("chat/")).filter((name) =>
+      ...(await pointers.list({ prefix: PROJECT_MEMORY_REF_PREFIX })),
+      ...(await pointers.list({ prefix: "chat/" })).filter((name) =>
         name.startsWith("chat/") && name.endsWith("/facts"),
       ),
     ];
@@ -3467,7 +3470,7 @@ const vocab: Moo["vocab"] = {
   },
 };
 
-export const tryApi: Moo["try"] = async (fn) => {
+export const tryApi: Moo["try"] = async ({ fn }) => {
   try {
     return ok(await fn());
   } catch (e) {

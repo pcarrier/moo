@@ -13,7 +13,7 @@ export function vocabDefineCommand(input: Input) {
   }
   const name = String(input.name);
   return Effect.tryPromise(
-    () => moo.vocab.define(name, {
+    () => moo.vocab.define({ name,
       description: input.description || undefined,
       example: input.example || undefined,
       label: input.label || undefined,

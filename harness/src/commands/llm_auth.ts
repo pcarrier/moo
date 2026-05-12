@@ -106,7 +106,7 @@ function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuth
 }
 
 export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
-  const hash = await moo.pointers.get(SETTINGS_REF);
+  const hash = await moo.pointers.get({ name: SETTINGS_REF });
   if (!hash) return defaultSettings();
   const obj = await moo.objects.getJSON<Partial<LlmAuthSettings>>({ hash });
   const raw = obj?.value ?? {};
@@ -124,9 +124,9 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
 }
 
 async function writeLlmAuthSettings(settings: LlmAuthSettings): Promise<LlmAuthSettings> {
-  const next = { ...settings, updatedAt: await moo.time.nowMs() };
+  const next = { ...settings, updatedAt: await moo.time.nowMs({}) };
   const hash = await moo.objects.putJSON({ kind: "llm:AuthSettings", value: next });
-  await moo.pointers.set(SETTINGS_REF, hash);
+  await moo.pointers.set({ name: SETTINGS_REF, target: hash });
   return next;
 }
 
@@ -140,10 +140,10 @@ export async function currentLlmRetryPolicy(): Promise<RetryPolicy> {
 
 async function envKeyForProvider(id: LlmAuthProviderId): Promise<string | null> {
   const meta = PROVIDERS[id];
-  const primary = await moo.env.get(meta.envKey);
+  const primary = await moo.env.get({ name: meta.envKey });
   if (primary) return primary;
   for (const alt of meta.envAltKeys ?? []) {
-    const value = await moo.env.get(alt);
+    const value = await moo.env.get({ name: alt });
     if (value) return value;
   }
   return null;
@@ -151,14 +151,14 @@ async function envKeyForProvider(id: LlmAuthProviderId): Promise<string | null> 
 
 async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAuthMode): Promise<string> {
   const providerFallback = PROVIDERS[id].fallbackModel;
-  const generic = await moo.env.get("MOO_LLM_MODEL");
+  const generic = await moo.env.get({ name: "MOO_LLM_MODEL" });
   if (generic) {
     const trimmed = generic.trim();
     const prefix = id + ":";
     if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim() || providerFallback;
   }
   const envName = id === "openai" ? "OPENAI_MODEL" : id === "anthropic" ? "ANTHROPIC_MODEL" : id === "qwen" ? "QWEN_MODEL" : "XAI_MODEL";
-  return (await moo.env.get(envName)) || providerFallback;
+  return (await moo.env.get({ name: envName })) || providerFallback;
 }
 
 
@@ -166,7 +166,7 @@ export async function providerConfiguredCredential(id: LlmAuthProviderId): Promi
   const settings = await readLlmAuthSettings();
   const provider = settings.providers[id];
   const meta = PROVIDERS[id];
-  const baseUrl = provider.baseUrl || (await moo.env.get(meta.baseUrlEnv)) || meta.defaultBaseUrl;
+  const baseUrl = provider.baseUrl || (await moo.env.get({ name: meta.baseUrlEnv })) || meta.defaultBaseUrl;
   const requestedAuthMode = provider.authMode;
   const model = await fallbackModelForProvider(id, requestedAuthMode);
   if (id === "openai" && provider.authMode === "oauth") {
@@ -237,7 +237,7 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
 
 export async function llmAuthSaveCommand(input: Input) {
   const current = await readLlmAuthSettings();
-  const now = await moo.time.nowMs();
+  const now = await moo.time.nowMs({});
   const providers = { ...current.providers };
   for (const id of Object.keys(PROVIDERS) as LlmAuthProviderId[]) {
     providers[id] = applyProviderInput(current.providers[id], id, input[id], now);
@@ -321,7 +321,7 @@ async function exchangeOpenAiOAuthTokens(saved: { clientId: string; redirectUri:
     authMode: "oauth",
     accessToken,
     refreshToken: typeof token.refresh_token === "string" ? token.refresh_token : current.providers.openai.refreshToken ?? null,
-    expiresAt: Number.isFinite(expiresIn) ? (await moo.time.nowMs()) + expiresIn * 1000 : null,
+    expiresAt: Number.isFinite(expiresIn) ? (await moo.time.nowMs({})) + expiresIn * 1000 : null,
     oauthSubject: loginAccessToken ? loginAccessToken.slice(0, 32) : current.providers.openai.oauthSubject ?? null,
     oauthAccountId: typeof accountId === "string" && accountId ? accountId : current.providers.openai.oauthAccountId ?? null,
   };
@@ -335,9 +335,9 @@ export async function llmAuthOAuthStartCommand(input: Input) {
   const redirectUri = String(input.redirectUri ?? originFromInput(input) + "/llm-auth/oauth/callback").trim();
   const verifier = randomState() + randomState();
   const codeChallenge = host.sha256Base64Url(verifier);
-  const expiresAt = (await moo.time.nowMs()) + 10 * 60_000;
+  const expiresAt = (await moo.time.nowMs({})) + 10 * 60_000;
   const clientId = CODEX_OPENAI_CLIENT_ID;
-  await moo.pointers.set(OAUTH_STATE_REF_PREFIX + state, await moo.objects.putJSON({ kind: "llm:OAuthState", value: { state, provider: "openai", clientId, redirectUri, verifier, tokenUrl: OPENAI_TOKEN_URL, expiresAt } }));
+  await moo.pointers.set({ name: OAUTH_STATE_REF_PREFIX + state, target: await moo.objects.putJSON({ kind: "llm:OAuthState", value: { state, provider: "openai", clientId, redirectUri, verifier, tokenUrl: OPENAI_TOKEN_URL, expiresAt } }) });
   return { ok: true, value: { login: { provider: "openai", authorizeUrl: addQuery(OPENAI_AUTHORIZE_URL, { response_type: "code", client_id: clientId, redirect_uri: redirectUri, scope: CODEX_OPENAI_SCOPES, code_challenge: codeChallenge, code_challenge_method: "S256", id_token_add_organizations: "true", codex_cli_simplified_flow: "true", state, originator: "codex_cli_rs" }), state, redirectUri, expiresAt } } };
 }
 
@@ -346,12 +346,12 @@ export async function llmAuthOAuthCompleteCommand(input: Input) {
   const code = String(input.code ?? "").trim();
   if (!state || !code) return { ok: false, error: { message: "OAuth callback requires state and code" } };
   const ref = OAUTH_STATE_REF_PREFIX + state;
-  const hash = await moo.pointers.get(ref);
+  const hash = await moo.pointers.get({ name: ref });
   if (!hash) return { ok: false, error: { message: "Unknown or expired OAuth state" } };
   const obj = await moo.objects.getJSON<any>({ hash });
   const saved = obj?.value ?? {};
-  await moo.pointers.delete(ref);
-  if (Number(saved.expiresAt ?? 0) < await moo.time.nowMs()) return { ok: false, error: { message: "OAuth state expired" } };
+  await moo.pointers.delete({ name: ref });
+  if (Number(saved.expiresAt ?? 0) < await moo.time.nowMs({})) return { ok: false, error: { message: "OAuth state expired" } };
   const exchanged = await exchangeOpenAiOAuthTokens({ clientId: String(saved.clientId), redirectUri: String(saved.redirectUri), verifier: String(saved.verifier) }, code);
   if (!exchanged.ok) return exchanged;
   return { ok: true, value: { settings: redact(exchanged.settings) } };
@@ -369,8 +369,8 @@ export async function llmAuthOAuthDeviceStartCommand(input: Input) {
   const interval = Math.max(1, Math.min(30, Number.parseInt(String(body.interval ?? "5"), 10) || 5));
   if (!deviceAuthId || !userCode) return { ok: false, error: { message: "OpenAI device login response was missing a code" } };
   const state = randomState();
-  const expiresAt = (await moo.time.nowMs()) + 15 * 60_000;
-  await moo.pointers.set(OAUTH_DEVICE_REF_PREFIX + state, await moo.objects.putJSON({ kind: "llm:OAuthDeviceState", value: { state, provider: "openai", deviceAuthId, userCode, interval, expiresAt } }));
+  const expiresAt = (await moo.time.nowMs({})) + 15 * 60_000;
+  await moo.pointers.set({ name: OAUTH_DEVICE_REF_PREFIX + state, target: await moo.objects.putJSON({ kind: "llm:OAuthDeviceState", value: { state, provider: "openai", deviceAuthId, userCode, interval, expiresAt } }) });
   return { ok: true, value: { device: { provider: "openai", state, verificationUrl: OPENAI_ISSUER + "/codex/device", userCode, interval, expiresAt } } };
 }
 
@@ -378,18 +378,18 @@ export async function llmAuthOAuthDevicePollCommand(input: Input) {
   const state = String(input.state ?? "").trim();
   if (!state) return { ok: false, error: { message: "Device login poll requires state" } };
   const ref = OAUTH_DEVICE_REF_PREFIX + state;
-  const hash = await moo.pointers.get(ref);
+  const hash = await moo.pointers.get({ name: ref });
   if (!hash) return { ok: false, error: { message: "Unknown or expired device login" } };
   const obj = await moo.objects.getJSON<any>({ hash });
   const saved = obj?.value ?? {};
-  if (Number(saved.expiresAt ?? 0) < await moo.time.nowMs()) {
-    await moo.pointers.delete(ref);
+  if (Number(saved.expiresAt ?? 0) < await moo.time.nowMs({})) {
+    await moo.pointers.delete({ name: ref });
     return { ok: false, error: { message: "Device login expired" } };
   }
   const resp = await moo.http.fetch({ method: "POST", url: OPENAI_ISSUER + "/api/accounts/deviceauth/token", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ device_auth_id: String(saved.deviceAuthId), user_code: String(saved.userCode) }), timeoutMs: 30_000 });
   if (resp.status === 403 || resp.status === 404) return { ok: true, value: { pending: true, interval: Number(saved.interval ?? 5), expiresAt: Number(saved.expiresAt) } };
   if (resp.status >= 400) {
-    await moo.pointers.delete(ref);
+    await moo.pointers.delete({ name: ref });
     return { ok: false, error: { message: "OpenAI device login polling failed (" + resp.status + ")", detail: resp.body } };
   }
   let body: any;
@@ -397,7 +397,7 @@ export async function llmAuthOAuthDevicePollCommand(input: Input) {
   const code = String(body.authorization_code ?? "").trim();
   const verifier = String(body.code_verifier ?? "").trim();
   if (!code || !verifier) return { ok: false, error: { message: "OpenAI device login completed without an authorization code" } };
-  await moo.pointers.delete(ref);
+  await moo.pointers.delete({ name: ref });
   const exchanged = await exchangeOpenAiOAuthTokens({ clientId: CODEX_OPENAI_CLIENT_ID, redirectUri: OPENAI_ISSUER + "/deviceauth/callback", verifier }, code);
   if (!exchanged.ok) return exchanged;
   return { ok: true, value: { pending: false, settings: redact(exchanged.settings) } };

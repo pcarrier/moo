@@ -61,50 +61,50 @@ const POINTER_NAME_RE = /^(?!.*\[object\s+Promise\])[^\s]+$/;
 const GRAPH_NAME_RE = /^[^\s]+$/;
 
 export const validate: Moo["validate"] = {
-  pointerName(name) {
+  pointerName({ name }) {
     return typeof name === "string" && name.length > 0 && POINTER_NAME_RE.test(name);
   },
-  factStoreName(name) {
+  factStoreName({ name }) {
     return typeof name === "string" && name.length > 0 && REF_NAME_RE.test(name);
   },
-  graphName(graph) {
+  graphName({ graph }) {
     return typeof graph === "string" && graph.length > 0 && GRAPH_NAME_RE.test(graph);
   },
-  uiAppId(id) {
+  uiAppId({ id }) {
     return typeof id === "string" && UI_APP_ID_RE.test(id);
   },
-  hash(hash) {
+  hash({ hash }) {
     return typeof hash === "string" && HASH_RE.test(hash);
   },
-  relativePath(path) {
+  relativePath({ path }) {
     if (typeof path !== "string" || path.length === 0 || path.startsWith("/")) return false;
     return !path.split("/").some((seg) => seg === "..");
   },
 };
 
 export const term: Moo["term"] = {
-  iri(uri) {
+  iri({ uri }) {
     if (/^<[^>\s]+>$/.test(uri)) return new Term(uri);
     if (/^[A-Za-z][A-Za-z0-9_-]*:[^\s]+$/.test(uri)) return new Term(uri);
     return new Term(`<${uri}>`);
   },
-  string(s, opts) {
+  string({ s, lang, type }) {
     let t = encodeStringLiteral(s);
-    if (opts?.lang) t += `@${opts.lang}`;
-    else if (opts?.type) t += `^^${opts.type}`;
+    if (lang) t += `@${lang}`;
+    else if (type) t += `^^${type}`;
     return new Term(t);
   },
-  int(n) {
+  int({ n }) {
     return new Term(String(Math.trunc(n)));
   },
-  decimal(n) {
+  decimal({ n }) {
     const s = String(n);
     return new Term(s.includes(".") ? s : `${s}.0`);
   },
-  bool(b) {
+  bool({ b }) {
     return new Term(b ? "true" : "false");
   },
-  datetime(d) {
+  datetime({ d }) {
     const iso = typeof d === "string" ? d : d.toISOString();
     return new Term(`"${iso}"^^xsd:dateTime`);
   },

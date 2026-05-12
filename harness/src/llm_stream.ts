@@ -19,7 +19,7 @@ export function llmStreamInitCommand(input: Input) {
 }
 
 export function llmStreamInitEffect(input: Input): Effect<{ state: LlmAccumulatorState; events: any[] }> {
-  return Effect.tryPromise(async () => moo.traces.span("llm.stream.init", llmStreamInputSummary(input), async () => {
+  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.init", data: llmStreamInputSummary(input), fn: async () => {
     const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
     const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
     const state: LlmAccumulatorState = {
@@ -37,9 +37,9 @@ export function llmStreamInitEffect(input: Input): Effect<{ state: LlmAccumulato
     if (tokenEvent && typeof tokenEvent === "object") {
       events.push(tokenProgressPayload(tokenEvent, estimated, Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0));
     }
-    await moo.traces.mark("llm.stream.init.result", { estimatedPromptTokens: estimated, events });
+    await moo.traces.mark({ message: "llm.stream.init.result", data: { estimatedPromptTokens: estimated, events } });
     return { state, events };
-  }), "llm stream init failed");
+  } }), "llm stream init failed");
 }
 
 export function llmStreamAccumulateCommand(input: Input) {
@@ -47,7 +47,7 @@ export function llmStreamAccumulateCommand(input: Input) {
 }
 
 export function llmStreamAccumulateEffect(input: Input): Effect<{ state: LlmAccumulatorState; events: any[] }> {
-  return Effect.tryPromise(async () => moo.traces.span("llm.stream.accumulate", llmStreamInputSummary(input), async () => {
+  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.accumulate", data: llmStreamInputSummary(input), fn: async () => {
     const state = normalizeLlmAccumulatorState(input.state);
     const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
     const events: any[] = [];
@@ -59,12 +59,12 @@ export function llmStreamAccumulateEffect(input: Input): Effect<{ state: LlmAccu
       const parsed = parseStreamJsonEvent(raw);
       if (parsed == null) { ignoredCount++; continue; }
       parsedCount++;
-      await moo.traces.mark("llm.stream.event", { event: traceJsonValue(parsed) });
+      await moo.traces.mark({ message: "llm.stream.event", data: { event: traceJsonValue(parsed) } });
       accumulateLlmStreamEvent(state, parsed, streamEvents, events);
     }
-    await moo.traces.mark("llm.stream.accumulate.result", { rawEvents, parsedEvents: parsedCount, ignoredEvents: ignoredCount, events, state: traceJsonValue(state) });
+    await moo.traces.mark({ message: "llm.stream.accumulate.result", data: { rawEvents, parsedEvents: parsedCount, ignoredEvents: ignoredCount, events, state: traceJsonValue(state) } });
     return { state, events };
-  }), "llm stream accumulate failed");
+  } }), "llm stream accumulate failed");
 }
 
 export function llmStreamFinalizeCommand(input: Input) {
@@ -72,7 +72,7 @@ export function llmStreamFinalizeCommand(input: Input) {
 }
 
 export function llmStreamFinalizeEffect(input: Input): Effect<any> {
-  return Effect.tryPromise(async () => moo.traces.span("llm.stream.finalize", llmStreamInputSummary(input), async () => {
+  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.finalize", data: llmStreamInputSummary(input), fn: async () => {
     const state = normalizeLlmAccumulatorState(input.state);
     const status = Number(input.status ?? 0) || 0;
     const result = state.error != null
@@ -95,9 +95,9 @@ export function llmStreamFinalizeEffect(input: Input): Effect<any> {
         model: state.model,
         usage: state.usage,
       };
-    await moo.traces.mark("llm.stream.finalize.result", { result: traceJsonValue(result) });
+    await moo.traces.mark({ message: "llm.stream.finalize.result", data: { result: traceJsonValue(result) } });
     return result;
-  }), "llm stream finalize failed");
+  } }), "llm stream finalize failed");
 }
 
 export function llmStreamErrorCommand(input: Input) {
@@ -105,7 +105,7 @@ export function llmStreamErrorCommand(input: Input) {
 }
 
 export function llmStreamErrorEffect(input: Input): Effect<any> {
-  return Effect.tryPromise(async () => moo.traces.span("llm.stream.error", llmStreamInputSummary(input), async () => {
+  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.error", data: llmStreamInputSummary(input), fn: async () => {
     const state = normalizeLlmAccumulatorState(input.state);
     const errorBody = formatStreamErrorBody(input.errorBody ?? input.error ?? "stream failed");
     const result = {
@@ -118,9 +118,9 @@ export function llmStreamErrorEffect(input: Input): Effect<any> {
       model: state.model,
       usage: state.usage,
     };
-    await moo.traces.mark("llm.stream.error.result", { result: traceJsonValue(result), state: traceJsonValue(state) });
+    await moo.traces.mark({ message: "llm.stream.error.result", data: { result: traceJsonValue(result), state: traceJsonValue(state) } });
     return result;
-  }), "llm stream error failed");
+  } }), "llm stream error failed");
 }
 
 function llmStreamInputSummary(input: Input): Record<string, unknown> {

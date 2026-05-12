@@ -38,21 +38,21 @@ export function nowIso(ms: number): string {
 }
 
 export async function uiManifest(uiId: string): Promise<UiManifest | null> {
-  const hash = await moo.pointers.get(`ui/${uiId}/manifest`);
+  const hash = await moo.pointers.get({ name: `ui/${uiId}/manifest` });
   if (!hash) return null;
   const row = await moo.objects.getJSON<UiManifest>({ hash: hash });
   return row?.value ?? null;
 }
 
 export async function uiBundle(uiId: string): Promise<UiBundle | null> {
-  const hash = await moo.pointers.get(`ui/${uiId}/bundle`);
+  const hash = await moo.pointers.get({ name: `ui/${uiId}/bundle` });
   if (!hash) return null;
   const row = await moo.objects.getJSON<UiBundle>({ hash: hash });
   return row?.value ?? null;
 }
 
 export async function listUiIds(): Promise<string[]> {
-  const refs = await moo.pointers.list("ui/");
+  const refs = await moo.pointers.list({ prefix: "ui/" });
   const ids = new Set<string>();
   for (const pointerName of refs) {
     const match = /^ui\/([^/]+)\/manifest$/.exec(pointerName);
@@ -81,13 +81,13 @@ export async function uiRegisterCommand(input: Input) {
   };
   const manifestHash = await moo.objects.putJSON({ kind: "ui:Manifest", value: manifest });
   const bundleHash = await moo.objects.putJSON({ kind: "ui:Bundle", value: bundle });
-  const now = await moo.time.nowMs();
-  await moo.pointers.set(`ui/${id}/manifest`, manifestHash);
-  await moo.pointers.set(`ui/${id}/bundle`, bundleHash);
+  const now = await moo.time.nowMs({});
+  await moo.pointers.set({ name: `ui/${id}/manifest`, target: manifestHash });
+  await moo.pointers.set({ name: `ui/${id}/bundle`, target: bundleHash });
   let handlerHash: string | null = null;
   if (input.handler != null) {
     handlerHash = await moo.objects.putText({ kind: "ui:Handler", text: String(input.handler) });
-    await moo.pointers.set(`ui/${id}/handler`, handlerHash);
+    await moo.pointers.set({ name: `ui/${id}/handler`, target: handlerHash });
   }
   await moo.memory.assert({ facts: [
     [`ui:${id}`, "rdf:type", "ui:App"],
@@ -96,7 +96,7 @@ export async function uiRegisterCommand(input: Input) {
     [`ui:${id}`, "ui:manifest", manifestHash],
     [`ui:${id}`, "ui:bundle", bundleHash],
     ...(handlerHash ? [[`ui:${id}`, "ui:handler", handlerHash] as [string, string, string]] : []),
-    [`ui:${id}`, "ui:updatedAt", moo.term.datetime(nowIso(now))],
+    [`ui:${id}`, "ui:updatedAt", moo.term.datetime({ d: nowIso(now) })],
   ] });
   return { ok: true, value: { ui: manifest, manifestHash, bundleHash, handlerHash } };
 }
@@ -113,9 +113,9 @@ export async function uiListCommand(_input: Input) {
 export async function uiRemoveCommand(input: Input) {
   const id = cleanUiId(input.uiId ?? input.id);
   if (!id) return { ok: false, error: { message: "ui-remove requires uiId" } };
-  const pointerNames = await moo.pointers.list(`ui/${id}/`);
+  const pointerNames = await moo.pointers.list({ prefix: `ui/${id}/` });
   const existed = pointerNames.length > 0 || !!(await uiManifest(id));
-  for (const name of pointerNames) await moo.pointers.delete(name);
+  for (const name of pointerNames) await moo.pointers.delete({ name: name });
 
   const subject = `ui:${id}`;
   const rows = await moo.facts.match({ store: UI_REF, ...{ graph: UI_GRAPH, subject } });
@@ -167,7 +167,7 @@ export async function uiOpenCommand(input: Input) {
       ["?inst", "rdf:type", "ui:Instance"],
       ["?inst", "ui:app", `ui:${uiId}`],
     ], ...{ store: refs.facts, graph: refs.graph, limit: 1 } });
-    instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await moo.id.new("uiinst"));
+    instanceId = existing[0]?.["?inst"]?.replace(/^uiinst:/, "") ?? (await moo.id.new({ prefix: "uiinst" }));
   }
   const inst = `uiinst:${instanceId}`;
   const primaryRows = await moo.facts.match({
@@ -188,12 +188,12 @@ export async function uiOpenCommand(input: Input) {
     txn.add({ graph: refs.graph, subject: inst, predicate: "ui:statePointer", object: `pointer:uiinst/${instanceId}/state` });
   } });
   const stateRef = `uiinst/${instanceId}/state`;
-  let stateTarget = await moo.pointers.get(stateRef);
+  let stateTarget = await moo.pointers.get({ name: stateRef });
   if (!stateTarget) {
     stateTarget = encodeJsonPointer(input.state ?? {});
-    await moo.pointers.set(stateRef, stateTarget);
+    await moo.pointers.set({ name: stateRef, target: stateTarget });
   }
-  moo.events.publish({ kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await moo.time.nowMs() });
+  moo.events.publish({ payload: { kind: "ui-open", chatId, uiId, instanceId, stateRef, stateTarget, at: await moo.time.nowMs({}) } });
   return { ok: true, value: { chatId, uiId, instanceId } };
 }
 
@@ -214,7 +214,7 @@ export async function uiCloseCommand(input: Input) {
 export async function uiStateGetCommand(input: Input) {
   const instanceId = String(input.instanceId ?? "").replace(/^uiinst:/, "");
   if (!instanceId) return { ok: false, error: { message: "ui-state-get requires instanceId" } };
-  const state = readUiStateTarget(await moo.pointers.get(`uiinst/${instanceId}/state`));
+  const state = readUiStateTarget(await moo.pointers.get({ name: `uiinst/${instanceId}/state` }));
   return { ok: true, value: { instanceId, state: state.state, target: state.target } };
 }
 
@@ -223,14 +223,14 @@ export async function uiStateSetCommand(input: Input) {
   if (!instanceId) return { ok: false, error: { message: "ui-state-set requires instanceId" } };
   const state = input.state ?? {};
   const target = encodeJsonPointer(state);
-  await moo.pointers.set(`uiinst/${instanceId}/state`, target);
+  await moo.pointers.set({ name: `uiinst/${instanceId}/state`, target });
   return { ok: true, value: { instanceId, state, target } };
 }
 
 export async function uiCallCommand(input: Input) {
   const uiId = cleanUiId(input.uiId ?? input.id);
   if (!uiId) return { ok: false, error: { message: "ui-call requires uiId" } };
-  const handlerHash = await moo.pointers.get(`ui/${uiId}/handler`);
+  const handlerHash = await moo.pointers.get({ name: `ui/${uiId}/handler` });
   if (!handlerHash) return { ok: false, error: { message: `ui has no handler: ${uiId}` } };
   const row = await moo.objects.getText({ hash: handlerHash });
   if (!row) return { ok: false, error: { message: `handler not found: ${handlerHash}` } };

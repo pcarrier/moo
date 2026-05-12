@@ -347,16 +347,16 @@ async function tokenPressure(chatId: string) {
 async function chatOverview(chatId: string) {
   const c = chatRefs(chatId);
   const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId, compaction] = await Promise.all([
-    moo.pointers.get(c.head),
-    moo.pointers.get(`chat/${chatId}/title`),
-    moo.pointers.get(`chat/${chatId}/path`),
-    moo.pointers.get(`chat/${chatId}/created-at`),
-    moo.pointers.get(`chat/${chatId}/last-at`),
-    moo.pointers.get(`chat/${chatId}/hidden`),
-    moo.pointers.get(`chat/${chatId}/parent`),
-    moo.pointers.get(`chat/${chatId}/compaction`),
+    moo.pointers.get({ name: c.head }),
+    moo.pointers.get({ name: `chat/${chatId}/title` }),
+    moo.pointers.get({ name: `chat/${chatId}/path` }),
+    moo.pointers.get({ name: `chat/${chatId}/created-at` }),
+    moo.pointers.get({ name: `chat/${chatId}/last-at` }),
+    moo.pointers.get({ name: `chat/${chatId}/hidden` }),
+    moo.pointers.get({ name: `chat/${chatId}/parent` }),
+    moo.pointers.get({ name: `chat/${chatId}/compaction` }),
   ]);
-  const home = String((await moo.env.get("HOME")) || "").trim().replace(/\/+$/, "");
+  const home = String((await moo.env.get({ name: "HOME" })) || "").trim().replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
   const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
   const [totalFacts, totalSteps, totalTurns, totalCodeCalls, totalInputs, totalInputResponses, totalLogs, totalTrailEntries, tokens] = await Promise.all([
@@ -442,15 +442,15 @@ async function loadTimelineSnapshot(
   const includeTrail = options.includeTrail;
   const sinceAt = Number(options.sinceAt ?? 0);
   const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId] = await Promise.all([
-    moo.pointers.get(c.head),
-    moo.pointers.get(`chat/${chatId}/title`),
-    moo.pointers.get(`chat/${chatId}/path`),
-    moo.pointers.get(`chat/${chatId}/created-at`),
-    moo.pointers.get(`chat/${chatId}/last-at`),
-    moo.pointers.get(`chat/${chatId}/hidden`),
-    moo.pointers.get(`chat/${chatId}/parent`),
+    moo.pointers.get({ name: c.head }),
+    moo.pointers.get({ name: `chat/${chatId}/title` }),
+    moo.pointers.get({ name: `chat/${chatId}/path` }),
+    moo.pointers.get({ name: `chat/${chatId}/created-at` }),
+    moo.pointers.get({ name: `chat/${chatId}/last-at` }),
+    moo.pointers.get({ name: `chat/${chatId}/hidden` }),
+    moo.pointers.get({ name: `chat/${chatId}/parent` }),
   ]);
-  const home = String((await moo.env.get("HOME")) || "").trim().replace(/\/+$/, "");
+  const home = String((await moo.env.get({ name: "HOME" })) || "").trim().replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
   const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
   const totalFacts = await moo.facts.count({ store: c.facts });
@@ -938,7 +938,7 @@ export function validPrice(v: unknown): v is ModelPrice {
 }
 
 export async function loadPricing(): Promise<Record<string, ModelPrice>> {
-  const raw = await moo.env.get("MOO_LLM_PRICING");
+  const raw = await moo.env.get({ name: "MOO_LLM_PRICING" });
   if (!raw) return DEFAULT_MODEL_PRICING;
   try {
     const parsed = JSON.parse(raw);

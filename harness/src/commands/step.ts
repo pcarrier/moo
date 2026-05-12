@@ -76,7 +76,7 @@ function sanitizePendingMessage(value: any): PendingMessage | null {
 }
 
 async function readPendingMessages(): Promise<PendingMessage[]> {
-  const target = await moo.pointers.get(CHAT_PENDING_MESSAGES_REF);
+  const target = await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF });
   const decoded = target ? decodeJsonPointer(target) : null;
   if (!Array.isArray(decoded)) return [];
   return decoded.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
@@ -84,8 +84,8 @@ async function readPendingMessages(): Promise<PendingMessage[]> {
 
 async function writePendingMessages(messages: PendingMessage[]) {
   const clean = messages.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
-  if (clean.length === 0) await moo.pointers.delete(CHAT_PENDING_MESSAGES_REF);
-  else await moo.pointers.set(CHAT_PENDING_MESSAGES_REF, encodeJsonPointer(clean));
+  if (clean.length === 0) await moo.pointers.delete({ name: CHAT_PENDING_MESSAGES_REF });
+  else await moo.pointers.set({ name: CHAT_PENDING_MESSAGES_REF, target: encodeJsonPointer(clean) });
   return clean;
 }
 
@@ -276,9 +276,9 @@ export async function enqueueCommand(input: Input) {
 export async function tickCommand(input: Input) {
   const chatId = input.chatId || "demo";
   const c = chatRefs(chatId);
-  const runId = await moo.pointers.get(c.run);
+  const runId = await moo.pointers.get({ name: c.run });
 
-  const claim = await moo.agent.claim(c.facts, c.graph, runId, input.leaseMs ?? 60_000);
+  const claim = await moo.agent.claim({ store: c.facts, graph: c.graph, runId: runId, leaseMs: input.leaseMs ?? 60_000 });
   if (!claim) {
     return { ok: true, value: { chatId, ran: false, reason: "no queued step" } };
   }
@@ -302,7 +302,7 @@ export async function tickCommand(input: Input) {
       const payloadObj = await loadPayloadJSON(c.facts, c.graph, stepId);
       if (!payloadObj) throw new Error("ShellCommand step has no payload");
       const { cmd, args, cwd, stdin } = payloadObj.value;
-      const wt = cwd ?? (await moo.chat.scratch(chatId));
+      const wt = cwd ?? (await moo.chat.scratch({ chatId: chatId }));
       result = await moo.proc.run({ cmd: cmd, args: args || [], ...{ cwd: wt, stdin } });
       resultHash = await moo.objects.putJSON({ kind: "agent:ToolResult", value: { kind, cmd, args, cwd: wt, ...result } });
       if (result.code !== 0 || result.timedOut) status = "agent:Failed";
@@ -314,7 +314,7 @@ export async function tickCommand(input: Input) {
   } catch (err: any) {
     status = "agent:Failed";
     errorMessage = err?.message ?? String(err);
-    moo.log("tick error:", errorMessage);
+    moo.log({ args: ["tick error:", errorMessage] });
   }
 
   await moo.facts.update({ store: c.facts, fn: (txn) => {
@@ -323,7 +323,7 @@ export async function tickCommand(input: Input) {
     if (errorMessage) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: errorMessage });
     if (leaseId) txn.remove({ graph: c.graph, subject: stepId, predicate: "agent:lease", object: leaseId });
   } });
-  await moo.agent.complete(c.facts, c.graph, stepId, status);
+  await moo.agent.complete({ store: c.facts, graph: c.graph, stepId: stepId, status: status });
 
   return {
     ok: true,
@@ -363,9 +363,9 @@ export async function submitCommand(input: Input) {
   } });
   const kind = kindRows[0]?.[3] || null;
 
-  const respondedAt = await moo.time.nowMs();
+  const respondedAt = await moo.time.nowMs({});
   const respPayload = await moo.objects.putJSON({ kind: "ui:Response", value: { values, at: respondedAt, ...(cancelled ? { cancelled: true } : {}) } });
-  const respId = await moo.id.new("uires");
+  const respId = await moo.id.new({ prefix: "uires" });
 
   await moo.facts.update({ store: c.facts, fn: (txn) => {
     txn.add({ graph: c.graph, subject: respId, predicate: "rdf:type", object: "ui:InputResponse" });
@@ -411,8 +411,8 @@ export function chatOngoingRef(chatId: string): string {
 }
 
 export async function setChatOngoing(chatId: string, ongoing: boolean) {
-  if (ongoing) await moo.pointers.set(chatOngoingRef(chatId), String(await moo.time.nowMs()));
-  else await moo.pointers.delete(chatOngoingRef(chatId));
+  if (ongoing) await moo.pointers.set({ name: chatOngoingRef(chatId), target: String(await moo.time.nowMs({})) });
+  else await moo.pointers.delete({ name: chatOngoingRef(chatId) });
 }
 
 export async function cancelChatInFlightSteps(chatId: string, reason = "interrupted") {
@@ -432,7 +432,7 @@ export async function cancelChatInFlightSteps(chatId: string, reason = "interrup
   }
   if (steps.size === 0) return { cancelled: 0 };
 
-  const now = String(await moo.time.nowMs());
+  const now = String(await moo.time.nowMs({}));
   const adds: Array<[string, string, string, string]> = [];
   for (const step of steps) {
     adds.push([c.graph, step, "agent:status", "agent:Cancelled"]);
@@ -472,7 +472,7 @@ export function stepDriverAction(chatId: string, mode: "step" | "resume" | "comp
 export async function compactPreludeCommand(input: Input) {
   const chatId = input.chatId;
 
-  await moo.chat.unarchive(chatId);
+  await moo.chat.unarchive({ chatId: chatId });
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
@@ -507,12 +507,12 @@ export async function stepPreludeCommand(input: Input) {
 
   // A new user turn makes the chat active again, regardless of whether it
   // was hidden in the archived section before the user sent the message.
-  await moo.chat.unarchive(chatId);
+  await moo.chat.unarchive({ chatId: chatId });
 
   const artificial = input.artificial === true;
   const payloadHash = await moo.objects.putJSON({ kind: "agent:UserInput", value: {
       message,
-      at: await moo.time.nowMs(),
+      at: await moo.time.nowMs({}),
       ...(attachments.length ? { attachments } : {}),
       ...(artificial ? { artificial: true } : {}),
     } });
@@ -795,7 +795,7 @@ export async function restartOngoingCommand() {
   const clearedStale: string[] = [];
   for (const c of chats) {
     if (c.archived) continue;
-    const marked = await moo.pointers.get(chatOngoingRef(c.chatId));
+    const marked = await moo.pointers.get({ name: chatOngoingRef(c.chatId) });
     const staleInflightStatus = c.status === "agent:Running" || c.status === "agent:Queued";
     if (!marked) {
       // Only the durable ongoing marker means a chat is crash-recoverable.
@@ -866,18 +866,18 @@ export async function stepPrepareCommand(input: Input) {
     estimatedPromptTokens = await traceSpan("compaction.estimate", { chatId, messages: messages.length }, () => estimateCompactionPromptTokens(chatId, messages));
     const threshold = await compactionThresholdForBudget(budget);
     await recordLastCompactionPromptTokens(chatId, estimatedPromptTokens);
-    moo.events.publish(tokenPressureEvent(chatId, estimatedPromptTokens, {
+    moo.events.publish({ payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
       budget,
       threshold,
       source: "compaction",
       estimated: true,
-    }));
+    }) });
     await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
     await traceMark("compaction.check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
     if (estimatedPromptTokens >= threshold) {
       await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
       const compactionMessages = await traceSpan("compaction.build_messages", { chatId }, () => buildCompactionMessages(chatId));
-      moo.events.publish({ kind: "compaction-start", chatId });
+      moo.events.publish({ payload: { kind: "compaction-start", chatId } });
       const rawSummaryMessages = buildCompactionSummaryPromptMessages(compactionMessages);
       const requestTokenLimit = compactionRequestTokenLimit(budget, threshold);
       const summaryMessages = fitCompactionSummaryMessages(rawSummaryMessages, requestTokenLimit);
@@ -941,7 +941,7 @@ export async function stepPrepareCommand(input: Input) {
   }
 
   const threshold = await compactionThresholdForBudget(budget);
-  const draftId = await moo.id.new("draft");
+  const draftId = await moo.id.new({ prefix: "draft" });
   await traceMark("llm.draft.created", { chatId, draftId });
   const request = buildStreamingLLMRequest(provider, messages, TOOLS);
   await traceMark("llm.request.prepared", {
@@ -1000,7 +1000,7 @@ export async function stepHandleLlmCommand(input: Input) {
   const thoughtDurationNs = Number(input.thoughtDurationNs);
   let messages = (Array.isArray(input.messages) ? (input.messages as any[]) : null) as any[] | null;
 
-  if (draftId) moo.events.publish({ kind: "draft-end", chatId, draftId });
+  if (draftId) moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
   await traceMark("llm.result.received", {
     chatId,
     purpose,
@@ -1037,7 +1037,7 @@ export async function stepHandleLlmCommand(input: Input) {
   if (normalizedUsage && purpose !== "compact") {
     const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" ? input.requestProvider : "openai";
     const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel } : null);
-    if (tokenEvent) moo.events.publish(tokenEvent);
+    if (tokenEvent) moo.events.publish({ payload: tokenEvent });
     await recordUsage(chatId, usedModel, normalizedUsage);
     await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: true, model: usedModel });
   } else if (normalizedUsage) {
@@ -1076,7 +1076,7 @@ export async function stepHandleLlmCommand(input: Input) {
         effort: input.requestEffort || null,
       });
       await setChatOngoing(chatId, false);
-      moo.events.publish({ kind: "compaction-end", chatId });
+      moo.events.publish({ payload: { kind: "compaction-end", chatId } });
       // Don't iterate — the next prepare would see token-pressure still
       // over threshold and try to compact again forever.
       return { ok: true, value: { kind: "done" } };
@@ -1093,7 +1093,7 @@ export async function stepHandleLlmCommand(input: Input) {
         requestTokenLimit: Number(input.requestTokenLimit) || null,
       });
       await setChatOngoing(chatId, false);
-      moo.events.publish({ kind: "compaction-end", chatId });
+      moo.events.publish({ payload: { kind: "compaction-end", chatId } });
       return { ok: true, value: { kind: "done" } };
     }
     const compactionTracking = {
@@ -1104,7 +1104,7 @@ export async function stepHandleLlmCommand(input: Input) {
       requestPromptTokens: Number(input.requestPromptTokens) || null,
       requestTokenLimit: Number(input.requestTokenLimit) || null,
     };
-    const now = await moo.time.nowMs();
+    const now = await moo.time.nowMs({});
     await traceMark("compaction.summary.received", { chatId, chars: summary.length, attempt, usedModel });
     const compactionHash = await persistCompactionLayer(chatId, {
       summary,
@@ -1131,15 +1131,15 @@ export async function stepHandleLlmCommand(input: Input) {
     const budget = Number(input.tokenBudget) || await contextBudget();
     const threshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(budget);
     await recordLastContextTokens(chatId, postContextTokens, { compactionPromptTokens: postPressureTokens });
-    moo.events.publish(tokenPressureEvent(chatId, postPressureTokens, {
+    moo.events.publish({ payload: tokenPressureEvent(chatId, postPressureTokens, {
       budget,
       threshold,
       source: "compaction",
       estimated: true,
       reset: true,
-    }));
+    }) });
     await traceMark("compaction.post_context", { chatId, postContextTokens, postPressureTokens, budget, threshold });
-    moo.events.publish({ kind: "compaction-end", chatId });
+    moo.events.publish({ payload: { kind: "compaction-end", chatId } });
     return { ok: true, value: { kind: "iterate", messages: null } };
   }
 
@@ -1246,12 +1246,12 @@ export async function stepHandleLlmCommand(input: Input) {
   await recordLastCompactionPromptTokens(chatId, postReplyPressureTokens);
   const pressureBudget = Number(input.tokenBudget) || await contextBudget();
   const pressureThreshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(pressureBudget);
-  moo.events.publish(tokenPressureEvent(chatId, postReplyPressureTokens, {
+  moo.events.publish({ payload: tokenPressureEvent(chatId, postReplyPressureTokens, {
     budget: pressureBudget,
     threshold: pressureThreshold,
     source: "compaction",
     estimated: true,
-  }));
+  }) });
   await traceMark("compaction.post_reply_pressure.recorded", { chatId, postReplyPressureTokens, budget: pressureBudget, threshold: pressureThreshold });
   await setChatOngoing(chatId, false);
   await traceMark("llm.final_reply.done", { chatId, usedModel });

@@ -17,7 +17,7 @@ function schemaStores(input: Input): Effect<string[]> {
   if (input.chatId) {
     return Effect.succeed([`chat/${input.chatId}/facts`]);
   }
-  return Effect.tryPromise(() => moo.pointers.list("chat/"), "chat pointer list failed")
+  return Effect.tryPromise(() => moo.pointers.list({ prefix: "chat/" }), "chat pointer list failed")
     .map((all) => {
     const ids = new Set<string>();
     for (const name of all) {
