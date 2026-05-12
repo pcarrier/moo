@@ -4071,6 +4071,7 @@ function DiffDetailTab(props: {
           props.bag.currentChatWorktreePath(),
           sizeRevision(),
           wantsFilesystemSource(),
+          props.tab.sourceRevision ?? "",
         ] as const,
       async ([nextPath, basePath, revision, wantsSource]) => {
         const request = ++sizeRequest;
@@ -4085,9 +4086,10 @@ function DiffDetailTab(props: {
           source.path === nextPath &&
           source.basePath === normalizedBasePath &&
           source.revision === revision;
-        if (cached !== null && cachedRevision === revision) {
+        const forceRefreshSource = Boolean(props.tab.sourceRevision) && wantsSource;
+        if (!forceRefreshSource && cached !== null && cachedRevision === revision) {
           if (!wantsSource || hasLoadedSource) return;
-        } else if (wantsSource && hasLoadedSource) {
+        } else if (!forceRefreshSource && wantsSource && hasLoadedSource) {
           setSourceLoading(false);
           return;
         }

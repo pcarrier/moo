@@ -82,6 +82,7 @@ export type RightSidebarTab =
       scope: "history" | "timeline";
       mode?: DiffContentMode;
       scrollTopByMode?: Partial<Record<DiffContentMode, number>>;
+      sourceRevision?: string;
     }
   | { id: string; kind: "trace"; title: string; trace: TraceRow }
   | {

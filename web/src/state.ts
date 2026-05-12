@@ -2006,6 +2006,19 @@ export function createState() {
     );
   }
 
+  function refreshMatchingDiffTabs(path: string, sourceRevision: string) {
+    updateCurrentRightSidebarState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.kind === "diff" &&
+        tab.scope === "history" &&
+        sameRepoFilePath(tab.path, path)
+          ? { ...tab, sourceRevision }
+          : tab,
+      ),
+    }));
+  }
+
   async function openFileInSidebar(path: string) {
     const requestedPath = path.trim();
     if (!requestedPath) return;
@@ -4961,6 +4974,10 @@ export function createState() {
           ]),
         );
         refreshMatchingRepoFilesSoon(ev.path);
+        refreshMatchingDiffTabs(
+          ev.path,
+          [id, ev.hash || "", ev.at || ""].join(":"),
+        );
       }
       return;
     }
