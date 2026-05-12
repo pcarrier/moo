@@ -1202,19 +1202,25 @@ fn trace_frontend(payload: &Value) -> Value {
             "error": trace_string(payload, "error")?,
         });
         let data_json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-        let id = util::random_id("fronttrace");
-        host::trace_open(host::TraceOpenParams {
-            id: &id,
-            parent_id: None,
-            chat_id: None,
-            run_id: None,
-            kind: "frontend",
-            name: &command,
-            started_ns,
-            input_hash: None,
-            invoked_from_step_id: None,
-            data_json: Some(&data_json),
-        })?;
+        let id = trace_string(payload, "id")?
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| util::random_id("fronttrace"));
+        if host::trace_get(&id)?.is_some() {
+            host::trace_update_data(&id, Some(&data_json))?;
+        } else {
+            host::trace_open(host::TraceOpenParams {
+                id: &id,
+                parent_id: None,
+                chat_id: None,
+                run_id: None,
+                kind: "frontend",
+                name: &command,
+                started_ns,
+                input_hash: None,
+                invoked_from_step_id: None,
+                data_json: Some(&data_json),
+            })?;
+        }
         host::trace_finish(
             &id,
             ended_ns.max(started_ns),

@@ -63,10 +63,17 @@ function resultError(result: unknown): string | undefined {
   return String(error);
 }
 
-function recordFrontendTrace(name: string, startedNs: number, endedNs: number, result: unknown, rpcDurationNs: number) {
+function newFrontendTraceId(): string {
+  const cryptoObj = typeof crypto !== "undefined" ? crypto : null;
+  const uuid = cryptoObj && "randomUUID" in cryptoObj ? cryptoObj.randomUUID() : Math.random().toString(36).slice(2);
+  return `fronttrace:${uuid}`;
+}
+
+function recordFrontendTrace(id: string, name: string, startedNs: number, endedNs: number, result: unknown, rpcDurationNs: number) {
   if (!conn || FRONTEND_TRACE_IGNORED.has(name)) return;
   void conn.run({
     command: FRONTEND_TRACE_COMMAND,
+    id,
     name,
     startedNs,
     endedNs,
@@ -82,9 +89,12 @@ export async function call<T = unknown>(
 ): Promise<ApiResult<T>> {
   if (!conn) return { ok: false, error: { message: "ws not bound" } };
   const name = commandName(payload);
+  const traceId = name && !FRONTEND_TRACE_IGNORED.has(name) ? newFrontendTraceId() : null;
+  const route = traceId ? currentRoute() : undefined;
+  const tracedPayload = traceId ? { ...payload, traceFrontendId: traceId, traceParentId: traceId, traceRoute: route } : payload;
   const rpcStartedNs = Date.now() * 1_000_000;
-  const result = await conn.run<ApiResult<T>>(payload);
+  const result = await conn.run<ApiResult<T>>(tracedPayload);
   const receivedNs = Date.now() * 1_000_000;
-  if (name) recordFrontendTrace(name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs);
+  if (name && traceId) recordFrontendTrace(traceId, name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs);
   return result;
 }

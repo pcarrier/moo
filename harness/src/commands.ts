@@ -17,6 +17,8 @@ async function runDispatch(input: Input) {
     command,
     chatId: payload.chatId ?? null,
     input: traceJsonValue(payload),
+    traceParentId: traceParentId(payload),
+    traceRoute: typeof payload.traceRoute === "string" ? payload.traceRoute : null,
   }) : null;
   try {
     const result = await withMooServerBaseUrlContext(payload.serverBaseUrl, () =>
@@ -51,6 +53,13 @@ async function runDispatch(input: Input) {
 
 function shouldTraceCommand(_command: string): boolean {
   return true;
+}
+
+function traceParentId(payload: Input): string | null {
+  const id = typeof payload.traceParentId === "string" && payload.traceParentId ? payload.traceParentId
+    : typeof payload.traceFrontendId === "string" && payload.traceFrontendId ? payload.traceFrontendId
+    : null;
+  return id;
 }
 
 function commandStepId(command: string, payload: Input): string | null {

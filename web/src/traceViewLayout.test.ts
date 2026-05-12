@@ -9,6 +9,9 @@ const tracesApi = readFileSync(new URL("./api/traces.ts", import.meta.url), "utf
 const transport = readFileSync(new URL("./api/transport.ts", import.meta.url), "utf8");
 const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 const apiTypes = readFileSync(new URL("./api/types.ts", import.meta.url), "utf8");
+const commands = readFileSync(new URL("../../harness/src/commands.ts", import.meta.url), "utf8");
+const moo = readFileSync(new URL("../../harness/src/moo.ts", import.meta.url), "utf8");
+const ws = readFileSync(new URL("../../src/ws.rs", import.meta.url), "utf8");
 
 describe("hierarchical trace view", () => {
   test("uses the hierarchical trace commands including all roots", () => {
@@ -55,6 +58,8 @@ describe("hierarchical trace view", () => {
     expect(tracesView).not.toContain("trace-tabs trace-tabs-vertical");
     expect(tracesView).toContain("selectTraceRoot");
     expect(tracesView).toContain("trace tree timeline");
+    expect(tracesView).not.toContain("Local timeline");
+    expect(tracesView).not.toContain("trace-span-timeline-section");
     expect(tracesView).not.toContain("load older traces");
     expect(tracesView).toContain("installTraceSelectorAutoLoad");
     expect(tracesView).toContain("maybeLoadOlderTraceRoots");
@@ -179,9 +184,21 @@ describe("hierarchical trace view", () => {
     expect(transport).not.toContain("FRONTEND_TRACE_MAX_DURATION_MS");
     expect(transport).not.toContain("startedMs");
     expect(transport).not.toContain("endedMs");
-    expect(transport).toContain("recordFrontendTrace(name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs)");
+    expect(transport).toContain("recordFrontendTrace(traceId, name, receivedNs, receivedNs, result, receivedNs - rpcStartedNs)");
     expect(transport).toContain("rpcDurationNs");
     expect(tracesApi).toContain("rpcDurationNs?: number");
+  });
+
+  test("parents command traces under frontend action traces", () => {
+    expect(transport).toContain("traceFrontendId: traceId");
+    expect(transport).toContain("traceParentId: traceId");
+    expect(commands).toContain("traceParentId(payload)");
+    expect(commands).toContain("traceRoute: typeof payload.traceRoute");
+    expect(moo).toContain('kind: "frontend"');
+    expect(moo).toContain('rootChoice: "frontend-command-parent"');
+    expect(ws).toContain('trace_string(payload, "id")');
+    expect(ws).toContain("host::trace_update_data(&id");
+    expect(tracesApi).toContain("id?: string");
   });
 
   test("uses nanosecond end timestamps when microseconds are absent", () => {

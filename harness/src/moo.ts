@@ -127,6 +127,33 @@ function inferTraceRoot(id: string, data: Record<string, unknown>): TraceRootPla
   const command = typeof data.command === "string" && data.command ? data.command : null;
   const startedNs = Date.now() * 1_000_000;
   if (id.startsWith("command:")) {
+    const traceParentId = typeof data.traceParentId === "string" && data.traceParentId ? data.traceParentId : null;
+    if (traceParentId) {
+      const route = typeof data.traceRoute === "string" && data.traceRoute ? data.traceRoute : null;
+      const name = command ? `command ${command}` : label;
+      return {
+        parentId: id,
+        root: {
+          id: traceParentId,
+          chatId,
+          runId,
+          kind: "frontend",
+          name: command || "frontend.action",
+          startedNs,
+          data: { label: command || label, command, chatId, route, source: "frontend", rootChoice: "frontend-action-parent" },
+        },
+        span: {
+          id,
+          parentId: traceParentId,
+          chatId,
+          runId,
+          kind: "command",
+          name,
+          startedNs,
+          data: { label, command, chatId, route, rootChoice: "frontend-command-parent" },
+        },
+      };
+    }
     return {
       parentId: id,
       root: {

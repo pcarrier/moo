@@ -3,7 +3,7 @@ import type { ApiCommand } from "./contract";
 import type { TraceConfig, TraceConfigTestValue, TraceRow, TraceSearchArgs, TraceSettingsValue } from "./types";
 
 export type TraceCommands =
-  | ApiCommand<"trace-frontend", { name: string; startedNs: number; endedNs: number; status: "ok" | "error" | "cancelled" | "timeout"; route?: string; error?: string; rpcDurationNs?: number }, { id: string }>
+  | ApiCommand<"trace-frontend", { id?: string; name: string; startedNs: number; endedNs: number; status: "ok" | "error" | "cancelled" | "timeout"; route?: string; error?: string; rpcDurationNs?: number }, { id: string }>
   | ApiCommand<"trace-chats", { limit?: number; beforeNs?: number }, { chats: TraceRow[] }>
   | ApiCommand<"trace-roots", TraceSearchArgs, { roots: TraceRow[] }>
   | ApiCommand<"trace-node", { id: string }, { node: TraceRow; children: TraceRow[]; ancestors: TraceRow[]; root?: TraceRow | null }>
