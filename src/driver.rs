@@ -71,9 +71,11 @@ fn ensure_chat_trace_root(chat_id: &str) -> Result<String, String> {
     }
     let id = chat_trace_id(chat_id);
     let title = host::with_db(|conn| chat_title_conn(conn, chat_id))?.unwrap_or_default();
+    let label = if title.is_empty() { format!("chat {chat_id}") } else { title.clone() };
+    let root_name = label.as_str();
     let data = object_value(json!({
         "chatId": chat_id,
-        "label": if title.is_empty() { format!("chat {chat_id}") } else { title.clone() },
+        "label": label,
         "description": "single chat trace",
     }))
     .to_string();
@@ -84,7 +86,7 @@ fn ensure_chat_trace_root(chat_id: &str) -> Result<String, String> {
             chat_id: Some(chat_id),
             run_id: None,
             kind: "chat",
-            name: "chat.timeline",
+            name: root_name,
             started_ns: now_ns(),
             input_hash: None,
             invoked_from_step_id: None,

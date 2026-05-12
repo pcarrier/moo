@@ -39,13 +39,13 @@ async function runDispatch(input: Input) {
         ok: commandResultOk(result),
         output: traceJsonValue(result),
       });
-      await finishTraceRoot({ traceId: trace.traceId, status: commandResultOk(result) ? "ok" : "error" });
+      await finishTraceRoot({ id: trace.id, status: commandResultOk(result) ? "ok" : "error" });
     }
     return result;
   } catch (error: any) {
     if (trace) {
       await moo.traces.mark("command.error", { command, error: error?.message ?? String(error), stack: error?.stack ?? null });
-      await finishTraceRoot({ traceId: trace.traceId, status: "error", error: error?.message ?? String(error) });
+      await finishTraceRoot({ id: trace.id, status: "error", error: error?.message ?? String(error) });
     }
     throw error;
   }

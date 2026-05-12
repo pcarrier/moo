@@ -113,117 +113,182 @@ export async function withMooRunJSContext<T>(
 }
 
 
-type TraceRootInfo = { traceId?: string | null; resultHash?: string | null; error?: string | null; status?: string };
+type TraceRootInfo = { traceId?: string | null; id?: string | null; resultHash?: string | null; error?: string | null; status?: string };
 
-type TraceRootPlan = {
+type TraceAttachmentPlan = {
   root: Record<string, unknown>;
-  span?: Record<string, unknown>;
-  parentId: string;
+  active: Record<string, unknown>;
+  rootId: string;
+  activeId: string;
 };
 
-function inferTraceRoot(id: string, data: Record<string, unknown>): TraceRootPlan {
-  const chatId = typeof data.chatId === "string" && data.chatId ? data.chatId : null;
-  const runId = typeof data.runId === "string" && data.runId ? data.runId : null;
-  const label = typeof data.label === "string" && data.label ? data.label : id;
-  const command = typeof data.command === "string" && data.command ? data.command : null;
+type TraceParentKind = "frontend" | "command" | "chat-step" | "system";
+
+function stringField(data: Record<string, unknown>, key: string): string | null {
+  const value = data[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function safeTracePart(value: string | null): string {
+  return (value || "unknown").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
+}
+
+function commandTraceId(command: string | null, parentKey?: string | null): string {
+  const key = parentKey ? safeTracePart(parentKey) : host.newId("trace");
+  return `command:${safeTracePart(command)}:${key}`;
+}
+
+function chatRootId(chatId: string): string {
+  return `chattrace:${chatId}`;
+}
+
+function traceParentKind(id: string | null): TraceParentKind {
+  if (id?.startsWith("fronttrace:")) return "frontend";
+  if (id?.startsWith("command:")) return "command";
+  if (id?.startsWith("step:") || id?.startsWith("traceevt:")) return "chat-step";
+  return "system";
+}
+
+function traceAttachmentPlan(parentId: string | null, data: Record<string, unknown>, ambientParentId: string | null = null): TraceAttachmentPlan {
+  const chatId = stringField(data, "chatId");
+  const runId = stringField(data, "runId");
+  const label = stringField(data, "label") || stringField(data, "description") || "trace";
+  const command = stringField(data, "command");
+  const explicitParentId = stringField(data, "traceParentId") || parentId;
+  const route = stringField(data, "traceRoute");
   const startedNs = Date.now() * 1_000_000;
-  if (id.startsWith("command:")) {
-    const traceParentId = typeof data.traceParentId === "string" && data.traceParentId ? data.traceParentId : null;
-    if (traceParentId) {
-      const route = typeof data.traceRoute === "string" && data.traceRoute ? data.traceRoute : null;
-      const name = command ? `command ${command}` : label;
-      return {
-        parentId: id,
-        root: {
-          id: traceParentId,
-          chatId,
-          runId,
-          kind: "frontend",
-          name: command || "frontend.action",
-          startedNs,
-          data: { label: command || label, command, chatId, route, source: "frontend", rootChoice: "frontend-action-parent" },
-        },
-        span: {
-          id,
-          parentId: traceParentId,
-          chatId,
-          runId,
-          kind: "command",
-          name,
-          startedNs,
-          data: { label, command, chatId, route, rootChoice: "frontend-command-parent" },
-        },
-      };
-    }
+  const parentKind = traceParentKind(explicitParentId);
+
+  if (parentKind === "frontend" && explicitParentId) {
+    const rootId = explicitParentId;
+    const activeId = commandTraceId(command, rootId);
     return {
-      parentId: id,
+      rootId,
+      activeId,
       root: {
-        id,
+        id: rootId,
+        chatId,
+        runId,
+        kind: "frontend",
+        name: command || "frontend.action",
+        status: "running",
+        startedNs,
+        data: { label: command || label, command, chatId, route, source: "frontend" },
+      },
+      active: {
+        id: activeId,
+        parentId: rootId,
         chatId,
         runId,
         kind: "command",
         name: command ? `command ${command}` : label,
         startedNs,
-        data: { label, command, chatId },
+        data: { label, command, chatId, route },
       },
     };
   }
-  if (id.startsWith("step:")) {
+
+  if (parentKind === "command") {
     if (chatId) {
-      const chatTitle = typeof data.title === "string" && data.title ? data.title : chatId;
+      const rootId = chatRootId(chatId);
+      const activeId = commandTraceId(command);
       return {
-        parentId: id,
+        rootId,
+        activeId,
         root: {
-          id: `chat:${chatId}`,
+          id: rootId,
           chatId,
           runId,
           kind: "chat",
-          name: chatTitle,
+          name: stringField(data, "title") || `chat ${chatId}`,
           startedNs,
-          data: { chatId, runId, rootChoice: "chat-for-step-parent" },
+          data: { chatId, runId, label: stringField(data, "title") || `chat ${chatId}`, source: "chat" },
         },
-        span: {
-          id,
-          parentId: `chat:${chatId}`,
+        active: {
+          id: activeId,
+          parentId: rootId,
           chatId,
           runId,
-          kind: "step",
-          name: label,
+          kind: "command",
+          name: command ? `command ${command}` : label,
           startedNs,
-          data: { label, chatId, runId, rootChoice: "chat-step-parent" },
+          data: { label, command, chatId, route },
         },
       };
     }
-    // A step id is an attachment point supplied by the chat driver, not a trace root.
-    // If the driver-created span is missing, make the fallback explicit and easy to spot.
+    const rootId = commandTraceId(command);
     return {
-      parentId: id,
+      rootId,
+      activeId: rootId,
       root: {
-        id,
+        id: rootId,
         chatId,
         runId,
-        kind: "missing-parent",
-        name: label,
+        kind: "command",
+        name: command ? `command ${command}` : label,
         startedNs,
-        data: { label, chatId, runId, rootChoice: "fallback-missing-step-parent" },
+        data: { label, command, chatId, route },
+      },
+      active: {
+        id: rootId,
+        parentId: null,
+        chatId,
+        runId,
+        kind: "command",
+        name: command ? `command ${command}` : label,
+        startedNs,
+        data: { label, command, chatId, route },
       },
     };
   }
-  return { parentId: id, root: { id, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } } };
+
+  if (parentKind === "chat-step" && chatId && explicitParentId) {
+    const rootId = chatRootId(chatId);
+    return {
+      rootId,
+      activeId: explicitParentId,
+      root: {
+        id: rootId,
+        chatId,
+        runId,
+        kind: "chat",
+        name: stringField(data, "title") || `chat ${chatId}`,
+        startedNs,
+        data: { chatId, runId, label: stringField(data, "title") || `chat ${chatId}`, source: "chat" },
+      },
+      active: {
+        id: explicitParentId,
+        parentId: ambientParentId || rootId,
+        chatId,
+        runId,
+        kind: explicitParentId.startsWith("step:") ? "step" : "tool",
+        name: label,
+        startedNs,
+        data: { label, chatId, runId },
+      },
+    };
+  }
+
+  const rootId = explicitParentId || `system:${label.replace(/\s+/g, "-").toLowerCase()}`;
+  return {
+    rootId,
+    activeId: rootId,
+    root: { id: rootId, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } },
+    active: { id: rootId, parentId: null, chatId, runId, kind: "system", name: label, startedNs, data: { label, chatId, runId } },
+  };
 }
 
-export async function startRunJSTraceRoot(stepId: string | null, data: Record<string, unknown> = {}) {
-  let parentId = stepId;
-  if (stepId) {
-    const plan = inferTraceRoot(stepId, data);
-    await host.ensureTraceRoot(JSON.stringify(plan.root));
-    if (plan.span) await host.ensureTraceSpan(JSON.stringify(plan.span));
-    parentId = plan.parentId;
-  }
-  const raw = await host.startTraceRoot(parentId, JSON.stringify(traceJsonValue(data)));
-  const cur = raw ? JSON.parse(raw) : null;
-  if (activeRunJSContext && (cur?.traceId || cur?.rootId)) activeRunJSContext.traceId = cur.traceId || cur.rootId;
-  return cur;
+export async function startRunJSTraceRoot(parentId: string | null, data: Record<string, unknown> = {}) {
+  const current = await host.currentTrace();
+  const cur = current ? JSON.parse(current) : null;
+  const ambientParentId = typeof cur?.id === "string" && cur.id && cur.id !== parentId ? cur.id : null;
+  const plan = traceAttachmentPlan(parentId, data, ambientParentId);
+  await host.ensureTraceRoot(JSON.stringify(plan.root));
+  if (plan.activeId !== plan.rootId) await host.ensureTraceSpan(JSON.stringify(plan.active));
+  const raw = await host.enterTrace(JSON.stringify({ id: plan.activeId, rootId: plan.rootId }));
+  const entered = raw ? JSON.parse(raw) : null;
+  if (activeRunJSContext && (entered?.id || entered?.traceId || entered?.rootId)) activeRunJSContext.traceId = entered.id || entered.traceId || entered.rootId;
+  return entered;
 }
 export const startTraceRoot = startRunJSTraceRoot;
 
@@ -232,10 +297,10 @@ export async function finishRunJSTraceRoot(info: TraceRootInfo) {
   try {
     const current = await host.currentTrace();
     const cur = current ? JSON.parse(current) : null;
-    const traceId = info.traceId || cur?.traceId;
+    const traceId = info.id || info.traceId || cur?.id || cur?.parentId || cur?.traceId;
     if (!traceId) return false;
     shouldLeave = true;
-    const root = await host.getTrace(JSON.stringify({ traceId }));
+    const root = await host.getTrace(JSON.stringify({ id: traceId }));
     const row = root ? JSON.parse(root) : null;
     const data = {
       ...(row?.data && typeof row.data === "object" ? row.data : {}),
@@ -243,18 +308,7 @@ export async function finishRunJSTraceRoot(info: TraceRootInfo) {
       ...(info.error ? { error: info.error } : {}),
     };
     const status = info.status || (info.error ? "error" : "ok");
-    const dataJson = JSON.stringify(traceJsonValue(data));
-    const finished = (await host.finishTrace(traceId, status, dataJson)) === "true";
-    const rootId = typeof row?.rootId === "string" && row.rootId ? row.rootId : null;
-    const rootKind = typeof row?.rootKind === "string" && row.rootKind ? row.rootKind : null;
-    const parentId = typeof row?.parentId === "string" && row.parentId ? row.parentId : null;
-    if (finished && rootKind === "command" && rootId && rootId !== traceId) {
-      await host.finishTrace(rootId, status, dataJson);
-    }
-    if (finished && parentId?.startsWith("step:")) {
-      await host.finishTrace(parentId, status, dataJson);
-    }
-    return finished;
+    return (await host.finishTrace(traceId, status, JSON.stringify(traceJsonValue(data)))) === "true";
   } finally {
     if (shouldLeave) {
       try {

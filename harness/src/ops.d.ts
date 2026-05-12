@@ -122,6 +122,7 @@ declare global {
   function __op_trace_ensure_root(optsJson: string): void;
   function __op_trace_ensure_span(optsJson: string): void;
   function __op_trace_start_root(stepId: string | null, dataJson: string): string;
+  function __op_trace_enter(optsJson: string): string;
   function __op_trace_current(): string | null;
   function __op_trace_get(optsJson: string): string | null;
   function __op_trace_events(optsJson: string): string;

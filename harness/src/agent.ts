@@ -1706,7 +1706,7 @@ async function toolRunJS(
   });
   if (!code.trim()) {
     const resultHash = await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code", started);
-    await finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error: "missing code", status: "error" });
+    await finishRunJSTraceRoot({ id: trace?.id, resultHash, error: "missing code", status: "error" });
     return { toolText: "error: runJS requires `code`" };
   }
   let result: any = undefined;
@@ -1742,7 +1742,7 @@ async function toolRunJS(
     error,
     started,
   );
-  await finishRunJSTraceRoot({ traceId: trace?.traceId, resultHash, error, status: error ? "error" : "ok" });
+  await finishRunJSTraceRoot({ id: trace?.id, resultHash, error, status: error ? "error" : "ok" });
   if (error) return { toolText: `error: ${error}` };
   return { toolText: truncate(serialized ?? "undefined", 4000) };
 }

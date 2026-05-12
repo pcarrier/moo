@@ -1661,6 +1661,7 @@ pub struct TraceRootParams<'a> {
     pub run_id: Option<&'a str>,
     pub kind: &'a str,
     pub name: &'a str,
+    pub status: Option<&'a str>,
     pub started_ns: i64,
     pub input_hash: Option<&'a str>,
     pub data_json: Option<&'a str>,
@@ -1714,6 +1715,7 @@ pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
         run_id,
         kind,
         name,
+        status,
         started_ns,
         input_hash,
         data_json,
@@ -1721,6 +1723,7 @@ pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
     if trace_get(id)?.is_some() {
         return Ok(());
     }
+    let status = status.unwrap_or("ok");
     let seq = NEXT_TRACE_SEQ.fetch_add(1, Ordering::Relaxed) as i64;
     let prepared = prepare_trace_data_queued(data_json)?;
     let row = TraceRow {
@@ -1735,9 +1738,9 @@ pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
         name: name.to_string(),
         depth: 0,
         seq,
-        status: "ok".to_string(),
+        status: status.to_string(),
         started_ns,
-        ended_ns: Some(started_ns),
+        ended_ns: if status == "running" { None } else { Some(started_ns) },
         input_hash: input_hash.map(ToString::to_string),
         output_hash: None,
         error_hash: None,
@@ -1776,6 +1779,9 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
         invoked_from_step_id,
         data_json,
     } = params;
+    if trace_get(id)?.is_some() {
+        return Ok(());
+    }
     let parent = match parent_id {
         Some(parent_id) => match trace_get(parent_id)? {
             Some(row) => Some((
@@ -1794,6 +1800,7 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
                     run_id,
                     kind,
                     name: &name,
+                    status: None,
                     started_ns,
                     input_hash: None,
                     data_json: Some(r#"{"backfilled":"missing live trace parent"}"#),
@@ -1866,6 +1873,9 @@ pub fn trace_update_data(id: &str, data_json: Option<&str>) -> Result<bool, Stri
     let prepared = prepare_trace_data_queued(data_json)?;
     row.data_json = prepared.inline_json;
     row.data_hash = prepared.hash;
+    if row.status == "running" && row.ended_ns.is_some() {
+        row.ended_ns = None;
+    }
     enqueue_trace_write(TraceWrite::State(Box::new(row)))?;
     Ok(true)
 }

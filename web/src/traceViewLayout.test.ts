@@ -208,7 +208,8 @@ describe("hierarchical trace view", () => {
     expect(commands).toContain("traceParentId(payload)");
     expect(commands).toContain("traceRoute: typeof payload.traceRoute");
     expect(moo).toContain('kind: "frontend"');
-    expect(moo).toContain('rootChoice: "frontend-command-parent"');
+    expect(moo).toContain("host.enterTrace");
+    expect(moo).toContain("activeId = commandTraceId(command, rootId)");
     expect(ws).toContain('trace_string(payload, "id")');
     expect(ws).toContain("host::trace_update_data(&id");
     expect(tracesApi).toContain("id?: string");

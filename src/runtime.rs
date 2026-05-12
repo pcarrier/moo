@@ -65,6 +65,26 @@ struct TraceState {
     opened: HashSet<String>,
 }
 
+impl TraceState {
+    fn attach(parent_id: String) -> Self {
+        Self {
+            root_id: parent_id.clone(),
+            current_parent_id: parent_id,
+            opened: HashSet::new(),
+        }
+    }
+
+    fn enter(root_id: String, active_id: String) -> Self {
+        let mut opened = HashSet::new();
+        opened.insert(active_id.clone());
+        Self {
+            root_id,
+            current_parent_id: active_id,
+            opened,
+        }
+    }
+}
+
 enum TraceInsertTarget {
     Current(String),
     FallbackRoot { root_id: String, create: bool },
@@ -428,11 +448,7 @@ fn run_cached_main_async_in_scope(
             finish_open_trace_state(previous, "startup");
         });
         TRACE_STATE.with(|cell| {
-            *cell.borrow_mut() = Some(TraceState {
-                root_id: parent_id.clone(),
-                current_parent_id: parent_id,
-                opened: HashSet::new(),
-            });
+            *cell.borrow_mut() = Some(TraceState::attach(parent_id));
         });
     }
     let out = call_cached_main_json_async(scope, main, input_json, completion_rx, cancelled);
@@ -489,11 +505,7 @@ fn run_main_async_in_scope(
     let _guard = AsyncHostStateGuard::install(completion_tx, agent_run);
     if let Some(parent_id) = parent_id {
         TRACE_STATE.with(|cell| {
-            *cell.borrow_mut() = Some(TraceState {
-                root_id: parent_id.clone(),
-                current_parent_id: parent_id,
-                opened: HashSet::new(),
-            });
+            *cell.borrow_mut() = Some(TraceState::attach(parent_id));
         });
     }
     let out = call_main_json_async(scope, input_json, completion_rx, cancelled);
@@ -885,6 +897,7 @@ pub(crate) fn install_globals(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_trace_ensure_root", op_trace_ensure_root)?;
     install_fn(scope, "__op_trace_ensure_span", op_trace_ensure_span)?;
     install_fn(scope, "__op_trace_start_root", op_trace_start_root)?;
+    install_fn(scope, "__op_trace_enter", op_trace_enter)?;
     install_fn(scope, "__op_trace_current", op_trace_current)?;
     install_fn(scope, "__op_trace_get", op_trace_get)?;
     install_fn(scope, "__op_trace_events", op_trace_events)?;
@@ -1178,6 +1191,7 @@ fn op_trace_ensure_root(
         .and_then(Value::as_str)
         .unwrap_or("system");
     let name = parsed.get("name").and_then(Value::as_str).unwrap_or(id);
+    let status = parsed.get("status").and_then(Value::as_str).unwrap_or("ok");
     let started_ns = parsed
         .get("startedNs")
         .and_then(Value::as_i64)
@@ -1195,12 +1209,14 @@ fn op_trace_ensure_root(
     let run_id = run_id.map(ToString::to_string);
     let kind = kind.to_string();
     let name = name.to_string();
+    let status = status.to_string();
     match host::trace_ensure_root(host::TraceRootParams {
         id: &id,
         chat_id: chat_id.as_deref(),
         run_id: run_id.as_deref(),
         kind: &kind,
         name: &name,
+        status: Some(&status),
         started_ns,
         input_hash: Some(&input_hash),
         data_json: Some(&data_json),
@@ -1305,14 +1321,8 @@ fn op_trace_start_root(
         finish_open_trace_state(previous, "replaced");
     });
     let started_ns = now_ns();
-    let mut opened = HashSet::new();
-    opened.insert(id.clone());
     TRACE_STATE.with(|cell| {
-        *cell.borrow_mut() = Some(TraceState {
-            root_id: id.clone(),
-            current_parent_id: id.clone(),
-            opened,
-        });
+        *cell.borrow_mut() = Some(TraceState::enter(id.clone(), id.clone()));
     });
     let current_json = trace_current_json().to_string();
     match host::trace_open(host::TraceOpenParams {
@@ -1331,6 +1341,51 @@ fn op_trace_start_root(
         Err(e) => throw(scope, &format!("trace_start_root: {e}")),
     }
 }
+
+fn op_trace_enter(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parsed = json_arg(scope, &args, 0);
+    let Some(id) = parsed.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
+        throw(scope, "trace_enter requires id");
+        return;
+    };
+    let requested_root_id = parsed
+        .get("rootId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let row = match host::trace_get(id) {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            throw(scope, &format!("trace_enter target not found: {id}"));
+            return;
+        }
+        Err(e) => {
+            throw(scope, &format!("trace_enter: {e}"));
+            return;
+        }
+    };
+    let root_id = requested_root_id.unwrap_or_else(|| row.root_id.clone());
+    let active_id = id.to_string();
+    let is_open = row.status == "running";
+    TRACE_STATE.with(|cell| {
+        let previous = cell.borrow_mut().take();
+        finish_open_trace_state(previous, "replaced");
+    });
+    TRACE_STATE.with(|cell| {
+        *cell.borrow_mut() = Some(if is_open {
+            TraceState::enter(root_id, active_id)
+        } else {
+            TraceState::attach(active_id)
+        });
+    });
+    set_string_return(scope, &mut rv, &trace_current_json().to_string());
+}
+
 
 fn op_trace_current(
     scope: &mut v8::PinScope,
@@ -1495,6 +1550,9 @@ fn op_trace_finish(
             TRACE_STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     state.opened.remove(&id);
+                    if state.current_parent_id == id {
+                        state.current_parent_id = state.root_id.clone();
+                    }
                 }
             });
             set_string_return(scope, &mut rv, &v.to_string());
@@ -1626,6 +1684,9 @@ fn trace_insert_child(
                 state.opened.insert(root_id);
             }
             state.opened.insert(id.clone());
+            if status != "running" {
+                state.opened.remove(&id);
+            }
         }
     });
     Ok(Some(id))
@@ -1696,7 +1757,7 @@ fn trace_current_json() -> Value {
             return Value::Null;
         };
         json!({
-            "id": state.root_id,
+            "id": state.current_parent_id,
             "rootId": state.root_id,
             "traceId": state.root_id,
             "parentId": state.current_parent_id,
@@ -2029,8 +2090,9 @@ globalThis.main = () => {
   const parent = JSON.parse(__op_trace_current());
   __op_trace_finish(parent.id, 'ok', JSON.stringify({ parent: true }));
 
-  __op_trace_ensure_root(JSON.stringify({ id: 'command:chat-archive:c1', chatId: 'c1', kind: 'command', name: 'command chat-archive', startedNs: 5_000_000 }));
-  const root = JSON.parse(__op_trace_start_root('command:chat-archive:c1', JSON.stringify({ label: 'Trace test' })));
+  __op_trace_ensure_root(JSON.stringify({ id: 'chattrace:c1', chatId: 'c1', kind: 'chat', name: 'chat.timeline', startedNs: 5_000_000 }));
+  __op_trace_ensure_span(JSON.stringify({ id: 'traceevt:tool:c1', parentId: 'chattrace:c1', chatId: 'c1', kind: 'tool', name: 'harness.runjs_tool', startedNs: 5_000_001 }));
+  const root = JSON.parse(__op_trace_enter(JSON.stringify({ id: 'traceevt:tool:c1', rootId: 'chattrace:c1' })));
   const span = __op_trace_insert(JSON.stringify({ kind: 'span', name: 'work', status: 'running', data: { phase: 1 } }));
   const previous = __op_trace_set_parent(span);
   const mark = __op_trace_insert(JSON.stringify({ kind: 'mark', name: 'checkpoint', status: 'ok', data: { message: 'inside' } }));
@@ -2058,11 +2120,11 @@ globalThis.main = () => {
             .get("rootRow")
             .and_then(Value::as_object)
             .unwrap_or_else(|| panic!("no rootRow in: {out}"));
-        assert_eq!(root.get("kind").and_then(Value::as_str), Some("runjs"));
+        assert_eq!(root.get("kind").and_then(Value::as_str), Some("tool"));
         assert_eq!(root.get("status").and_then(Value::as_str), Some("ok"));
         assert_eq!(
             root.get("parentId").and_then(Value::as_str),
-            Some("command:chat-archive:c1")
+            Some("chattrace:c1")
         );
         let root_data = root.get("data").and_then(Value::as_object).unwrap();
         assert!(root_data.contains_key("durationNs"));

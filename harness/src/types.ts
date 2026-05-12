@@ -403,7 +403,7 @@ export type TraceRow = {
   dataHash?: string | null;
   data: Record<string, unknown>;
 };
-export type TraceCurrent = { traceId?: string | null; id: string; rootId?: string | null; stepId: string | null; parentId: string };
+export type TraceCurrent = { traceId?: string | null; id: string; rootId?: string | null; stepId?: string | null; parentId: string };
 export type TraceTreeNode = TraceRow & { children: TraceTreeNode[] };
 export type TraceChat = { id: string; title: string | null };
 export type TraceErrorCategory =

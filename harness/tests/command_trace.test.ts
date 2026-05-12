@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-type Root = { id: string; kind: string; name: string; chatId?: string | null; data?: Record<string, unknown> };
+type Root = { id: string; kind: string; name: string; status?: string; chatId?: string | null; data?: Record<string, unknown> };
 type Span = { id: string; parentId: string; data?: Record<string, unknown> };
-type Row = { id: string; rootId: string; rootKind: string; data?: Record<string, unknown> | null };
+type Row = { id: string; rootId: string; rootKind: string; parentId?: string | null; data?: Record<string, unknown> | null };
 
 const roots = new Map<string, Root>();
 const spans = new Map<string, Span>();
 const rows = new Map<string, Row>();
 const finished: Array<{ id: string; status: string; data: unknown }> = [];
-let currentTrace: { traceId: string; rootId: string; parentId: string } | null = null;
+let currentTrace: { id: string; traceId: string; rootId: string; parentId: string } | null = null;
 let traceSeq = 0;
 let objectSeq = 0;
 
 function installOps() {
   const g = globalThis as any;
   g.__op_now = () => 1_000;
-  g.__op_id = (prefix: string) => `${prefix}:1`;
+  g.__op_id = (prefix: string) => `${prefix}:${++traceSeq}`;
   g.__op_sha256_base64url = () => "hash";
   g.__op_env_get = () => null;
   g.__op_broadcast = () => {};
@@ -62,7 +62,7 @@ function installOps() {
   g.__op_trace_current = () => currentTrace ? JSON.stringify(currentTrace) : null;
   g.__op_trace_get = (raw: string) => {
     const args = JSON.parse(raw || "{}");
-    const id = args.traceId || args.id;
+    const id = args.id || args.traceId;
     const row = rows.get(id);
     if (!row) return null;
     return JSON.stringify({ ...row, data: row.data ?? null });
@@ -72,6 +72,7 @@ function installOps() {
   g.__op_trace_insert = () => null;
   g.__op_trace_finish = (id: string, status = "ok", dataJson = "{}") => {
     finished.push({ id, status, data: JSON.parse(dataJson || "{}") });
+    if (currentTrace?.id === id) currentTrace = null;
     return "true";
   };
   g.__op_trace_set_parent = () => null;
@@ -79,17 +80,18 @@ function installOps() {
   g.__op_trace_ensure_root = (optsJson: string) => {
     const root = JSON.parse(optsJson) as Root;
     roots.set(root.id, root);
-    rows.set(root.id, { id: root.id, rootId: root.id, rootKind: root.kind, data: root.data ?? null });
+    if (!rows.has(root.id)) rows.set(root.id, { id: root.id, rootId: root.id, rootKind: root.kind, parentId: null, data: root.data ?? null });
   };
   g.__op_trace_ensure_span = (optsJson: string) => {
     const span = JSON.parse(optsJson) as Span;
     spans.set(span.id, span);
+    const parent = rows.get(span.parentId);
+    if (!rows.has(span.id)) rows.set(span.id, { id: span.id, rootId: parent?.rootId ?? span.parentId, rootKind: parent?.rootKind ?? "system", parentId: span.parentId, data: span.data ?? null });
   };
-  g.__op_trace_start_root = (parentId: string, dataJson = "{}") => {
-    const traceId = `trace:${++traceSeq}`;
-    const root = rows.get(parentId) ?? { id: parentId, rootId: parentId, rootKind: "system", data: null };
-    rows.set(traceId, { id: traceId, rootId: root.rootId, rootKind: root.rootKind, data: JSON.parse(dataJson || "{}") });
-    currentTrace = { traceId, rootId: traceId, parentId: traceId };
+  g.__op_trace_start_root = () => { throw new Error("legacy trace root API should not be used"); };
+  g.__op_trace_enter = (optsJson: string) => {
+    const opts = JSON.parse(optsJson || "{}");
+    currentTrace = { id: opts.id, traceId: opts.rootId, rootId: opts.rootId, parentId: opts.id };
     return JSON.stringify(currentTrace);
   };
 }
@@ -112,8 +114,8 @@ describe("command tracing", () => {
     const result = await dispatch({ command: "unknown-test-command", chatId: "chat1" } as any);
 
     expect(result).toEqual({ ok: false, error: { message: "unknown command: unknown-test-command" } });
-    expect(roots.get("command:unknown-test-command:chat1")?.kind).toBe("command");
-    expect(finished.map((row) => row.id)).toEqual(["trace:1", "command:unknown-test-command:chat1"]);
+    expect(roots.get("chattrace:chat1")?.kind).toBe("chat");
+    expect(finished.map((row) => row.id)).toEqual(["command:unknown-test-command:trace:1"]);
     expect(finished.every((row) => row.status === "error")).toBe(true);
     expect(currentTrace).toBeNull();
   });

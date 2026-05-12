@@ -1205,8 +1205,18 @@ fn trace_frontend(payload: &Value) -> Value {
         let id = trace_string(payload, "id")?
             .filter(|id| !id.trim().is_empty())
             .unwrap_or_else(|| util::random_id("fronttrace"));
-        if host::trace_get(&id)?.is_some() {
+        if let Some(row) = host::trace_get(&id)? {
             host::trace_update_data(&id, Some(&data_json))?;
+            if row.kind == "frontend" {
+                host::trace_finish(
+                    &id,
+                    ended_ns.max(started_ns),
+                    &status,
+                    None,
+                    None,
+                    Some(&data_json),
+                )?;
+            }
         } else {
             host::trace_open(host::TraceOpenParams {
                 id: &id,
@@ -1220,15 +1230,15 @@ fn trace_frontend(payload: &Value) -> Value {
                 invoked_from_step_id: None,
                 data_json: Some(&data_json),
             })?;
+            host::trace_finish(
+                &id,
+                ended_ns.max(started_ns),
+                &status,
+                None,
+                None,
+                Some(&data_json),
+            )?;
         }
-        host::trace_finish(
-            &id,
-            ended_ns.max(started_ns),
-            &status,
-            None,
-            None,
-            Some(&data_json),
-        )?;
         Ok(json!({ "id": id }))
     })();
     match result {

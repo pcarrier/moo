@@ -656,6 +656,7 @@ fn trace_asset_response(
         run_id: None,
         kind: "http",
         name: "serve-ui-asset",
+        status: None,
         started_ns,
         input_hash: None,
         data_json: Some(&data_json),
