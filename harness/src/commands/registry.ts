@@ -61,6 +61,7 @@ import {
   fsSearchCommand,
   graphRemoveCommand,
   recentChatPathsCommand,
+  removeRecentChatPathCommand,
 } from "./chats";
 import {
   chatEffortSetCommand,
@@ -118,6 +119,7 @@ const CHAT_COMMANDS: Record<string, CommandHandler> = {
   chats: () => chatsListCommand(),
   "chat-autocomplete": chatAutocompleteCommand,
   "chat-recent-paths": recentChatPathsCommand,
+  "chat-remove-recent-path": removeRecentChatPathCommand,
   "chat-new": chatNewCommand,
   "chat-rm": chatRemoveCommand,
   "chat-fork": chatForkCommand,

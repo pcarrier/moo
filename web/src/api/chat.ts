@@ -32,6 +32,7 @@ export type ChatCommands =
   | ApiCommand<"chat-autocomplete", { query: string; limit?: number }, { suggestions: ChatAutocompleteSuggestion[] }>
   | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; worktreePath?: string | null; recent?: string[] }>
   | ApiCommand<"chat-recent-paths", { includeRepos?: boolean }, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
+  | ApiCommand<"chat-remove-recent-path", { path: string }, { removed: boolean; paths: string[] }>
   | ApiCommand<"chat-rm", { chatId: ChatId }, { chatId: ChatId; refsDeleted: number; quadsCleared: number }>
   | ApiCommand<"chat-fork", { chatId: ChatId; step: StepId; forkChatId?: ChatId }, { chatId: ChatId; sourceChatId: ChatId; forkedFromStep: StepId; forkedFromAt: number; path?: string | null; worktreePath?: string | null; copiedFacts: number }>
   | ApiCommand<"chat-rename", { chatId: ChatId; title: string | null }, { chatId: ChatId; title: string | null }>
@@ -77,6 +78,7 @@ export const chatApi = {
     callCommand("chat-autocomplete", { query, limit }),
   new: newChat,
   recentPaths: (includeRepos = false) => callCommand("chat-recent-paths", { ...(includeRepos ? { includeRepos } : {}) }),
+  removeRecentPath: (path: string) => callCommand("chat-remove-recent-path", { path }),
   remove: (chatId: ChatId) =>
     callCommand("chat-rm", { chatId }),
   rename: (chatId: ChatId, title: string | null) =>

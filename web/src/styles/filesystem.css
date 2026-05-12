@@ -152,7 +152,14 @@
   cursor: pointer;
 }
 
-.fs-recent-list button {
+.fs-recent-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.fs-recent-project {
+  flex: 1;
   display: grid;
   grid-template-columns: 1.5rem minmax(0, 1fr) auto;
   align-items: center;
@@ -160,6 +167,28 @@
   min-width: 0;
   padding: 0.35rem var(--fs-row-inline-padding);
   text-align: left;
+}
+
+.fs-recent-remove {
+  width: 2rem;
+  block-size: auto;
+  min-block-size: 0;
+  border-left: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.fs-recent-row:hover .fs-recent-remove,
+.fs-recent-remove:focus-visible {
+  opacity: 0.7;
+}
+
+.fs-recent-remove:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--bubble-error);
+  color: var(--fg);
 }
 
 .fs-recent-path {
@@ -360,7 +389,7 @@
 }
 
 
-.fs-recent-list button:hover:not(:disabled),
+.fs-recent-project:hover:not(:disabled),
 .fs-pick-toggle:hover:not(:disabled),
 .fs-path-row button:hover:not(:disabled),
 .fs-actions button:hover:not(:disabled),

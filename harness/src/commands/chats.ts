@@ -443,6 +443,22 @@ export async function recentChatPathsCommand(input: Input = {}) {
   return { ok: true, value: { paths, ...(includeRepos ? { repos: await recentChatRepoSummaries(paths) } : {}) } };
 }
 
+export async function removeRecentChatPathCommand(input: Input = {}) {
+  if (typeof input.path !== "string" || !input.path.trim()) {
+    return { ok: false, error: { message: "path is required" } };
+  }
+  let normalized: string;
+  try {
+    normalized = await normalizeDir(input.path);
+  } catch {
+    normalized = input.path.trim();
+  }
+  const paths = await loadRecentChatPaths();
+  const next = paths.filter((path) => path !== normalized && path !== input.path);
+  await moo.pointers.set(RECENT_CHAT_PATHS_REF, JSON.stringify(next));
+  return { ok: true, value: { removed: next.length !== paths.length, paths: next } };
+}
+
 export async function fsListCommand(input: Input) {
   let path: string;
   try {

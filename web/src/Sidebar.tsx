@@ -27,7 +27,7 @@ import {
 } from "./syntax";
 import { DiffView, MemoryDiffView, type DiffExpansionStore } from "./DiffView";
 import { LoadingDots } from "./LoadingDots";
-import { MaximizeIcon, MenuIcon, PlusIcon, RestoreIcon } from "./icons";
+import { CloseIcon, MaximizeIcon, MenuIcon, PlusIcon, RestoreIcon } from "./icons";
 import { LeftSidebarToggle } from "./HeaderControls";
 
 import {
@@ -1174,6 +1174,26 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     void prepareProjectChat(path);
   }
 
+  async function removeRecentPath(path: string, event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    const previous = recentPaths();
+    setRecentPaths(previous.filter((item) => item !== path));
+    setRecentRepoKinds((kinds) => {
+      const next = { ...kinds };
+      delete next[path];
+      return next;
+    });
+    const result = await api.chat.removeRecentPath(expandHome(path));
+    if (!result.ok) {
+      setRecentPaths(previous);
+      setExplorerError(result.error.message);
+      return;
+    }
+    setRecentPaths(result.value.paths.map((item) => collapseHome(item)));
+  }
+
   async function openPathPicker(path = explorerPath()) {
     setExplorerExpanded(true);
     await loadExplorer(path || ".");
@@ -1212,27 +1232,39 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   >
                     <For each={recentPaths()}>
                       {(path) => (
-                        <button
-                          type="button"
-                          role="listitem"
-                          title={path}
-                          onClick={() => chooseRecentPath(path)}
-                          disabled={creatingProjectChat() || branchesLoading()}
-                        >
-                          <span class="fs-folder">📁</span>
-                          <span class="fs-recent-path">{path}</span>
-                          <span
-                            classList={{
-                              "fs-repo-badge": true,
-                              "is-git": recentRepoKind(path) === "git",
-                              "is-jj": recentRepoKind(path) === "jj",
-                              "is-none": recentRepoKind(path) === null,
-                              "is-loading": recentRepoKind(path) === undefined,
-                            }}
+                        <div class="fs-recent-row" role="listitem">
+                          <button
+                            type="button"
+                            class="fs-recent-project"
+                            title={path}
+                            onClick={() => chooseRecentPath(path)}
+                            disabled={creatingProjectChat() || branchesLoading()}
                           >
-                            {repoKindLabel(recentRepoKind(path))}
-                          </span>
-                        </button>
+                            <span class="fs-folder">📁</span>
+                            <span class="fs-recent-path">{path}</span>
+                            <span
+                              classList={{
+                                "fs-repo-badge": true,
+                                "is-git": recentRepoKind(path) === "git",
+                                "is-jj": recentRepoKind(path) === "jj",
+                                "is-none": recentRepoKind(path) === null,
+                                "is-loading": recentRepoKind(path) === undefined,
+                              }}
+                            >
+                              {repoKindLabel(recentRepoKind(path))}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            class="icon-btn fs-recent-remove"
+                            title={`remove ${path}`}
+                            aria-label={`remove ${path} from recent projects`}
+                            onClick={(event) => removeRecentPath(path, event)}
+                            disabled={creatingProjectChat() || branchesLoading()}
+                          >
+                            <CloseIcon />
+                          </button>
+                        </div>
                       )}
                     </For>
                   </div>

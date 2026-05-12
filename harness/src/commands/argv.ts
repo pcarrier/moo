@@ -71,6 +71,7 @@ const ARGUMENT_PARSERS: Record<string, ArgvParser> = {
   submit: submitPayload,
   "chat-new": newChatPayload,
   "chat-rm": firstArgAsChatPayload,
+  "chat-remove-recent-path": pathPayload,
   "chat-fork": forkChatPayload,
   "graph-rm": graphPayload,
   "chat-rename": renameChatPayload,

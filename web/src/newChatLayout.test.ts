@@ -139,9 +139,12 @@ describe("new chat layout", () => {
       "calc(var(--fs-panel-inline-padding) - var(--fs-row-inline-padding))",
     );
 
-    const recent = cssBlock(".fs-recent-list button");
-    expect(recent).toContain("grid-template-columns: 1.5rem minmax(0, 1fr)");
+    const recent = cssBlock(".fs-recent-project");
+    expect(recent).toContain("grid-template-columns: 1.5rem minmax(0, 1fr) auto");
     expect(recent).toContain("padding: 0.35rem var(--fs-row-inline-padding)");
+    const remove = cssBlock(".fs-recent-remove");
+    expect(remove).toContain("width: 2rem");
+    expect(remove).toContain("opacity: 0");
 
     const scratch = cssBlock(".fs-pick-toggle");
     expect(scratch).toContain("grid-template-columns: minmax(0, 1fr)");

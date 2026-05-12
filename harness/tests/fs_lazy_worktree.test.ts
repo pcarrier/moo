@@ -75,7 +75,7 @@ function addDir(path: string, names: string[] = []) {
 (globalThis as any).__op_trace_mark = () => Promise.resolve(null);
 (globalThis as any).__op_trace_finish = () => Promise.resolve(null);
 
-const { fsListCommand, recentChatPathsCommand } = await import("../src/commands/chats");
+const { fsListCommand, recentChatPathsCommand, removeRecentChatPathCommand } = await import("../src/commands/chats");
 const { moo } = await import("../src/moo");
 
 describe("fsListCommand", () => {
@@ -145,6 +145,15 @@ describe("recentChatPathsCommand", () => {
       "git",
       "rev-parse",
     ]);
+  });
+
+  test("removes a recent path", async () => {
+    refs.set("user/recent-chat-paths", JSON.stringify(["/repo", "/other"]));
+
+    const result = await removeRecentChatPathCommand({ path: "/repo" });
+
+    expect(result).toEqual({ ok: true, value: { removed: true, paths: ["/other"] } });
+    expect(JSON.parse(refs.get("user/recent-chat-paths") || "[]")).toEqual(["/other"]);
   });
 });
 
