@@ -388,6 +388,10 @@ describe("hierarchical trace view", () => {
     expect(css).toContain('.agent-trail-item.todo-status-doing .agent-trail-title {\n  font-weight: 700;\n}');
     expect(css).toContain('.agent-trail-item.todo-status-done .agent-trail-title {\n  color: var(--muted);\n  text-decoration: line-through;\n}');
     expect(css).toContain('.agent-trail-item.subagent .agent-trail-title::before');
+    expect(css).toContain('.agent-trail-item.title .agent-trail-dot {\n  background: darkorange;\n}');
+    expect(css).toContain('.agent-trail-item.summary .agent-trail-dot {\n  background: mediumseagreen;\n}');
+    expect(css).toContain('.agent-trail-item.todo .agent-trail-dot {\n  background: mediumorchid;\n}');
+    expect(css).toContain('.agent-trail-item.subagent .agent-trail-dot {\n  background: mediumpurple;\n}');
   });
 });
 
