@@ -43,6 +43,7 @@ import {
   type Sha256Hash,
   type TrailItem,
   type MemoryDiffItem,
+  type TodoDiffItem,
 } from "./api";
 import {
   diffStats,
@@ -2943,10 +2944,10 @@ type AgentTrailItem = {
   timelineKey?: string;
   detail?: string;
   kind: string;
-  tone?: "title" | "summary" | "diff" | "memory" | "subagent";
+  tone?: "title" | "summary" | "todo" | "memory" | "subagent";
   path?: string;
   targetChatId?: string;
-  diff?: FileDiffItem | MemoryDiffItem;
+  diff?: MemoryDiffItem;
   stats?: { added: number; removed: number };
   titleMarkdown?: boolean;
   detailMarkdown?: boolean;
@@ -2993,9 +2994,7 @@ function AgentTrailRow(props: {
   };
   const activateTrailItem = () => {
     if (props.item.diff) {
-      if (props.item.diff.type === "memory-diff")
-        props.bag.openMemoryDiffInSidebar(props.item.diff, "timeline");
-      else props.bag.openDiffInSidebar(props.item.diff, "timeline");
+      props.bag.openMemoryDiffInSidebar(props.item.diff, "timeline");
       return;
     }
     if (props.item.targetChatId) {
@@ -3015,7 +3014,7 @@ function AgentTrailRow(props: {
   };
   const itemTitle = () =>
     props.item.diff
-      ? "Open this diff in the right sidebar"
+      ? "Open this memory diff in the right sidebar"
       : props.item.targetChatId
         ? "Open this subagent chat"
         : "Jump to this point in the timeline";
@@ -3061,7 +3060,7 @@ function AgentTrailRow(props: {
       classList={{
         title: props.item.tone === "title",
         summary: props.item.tone === "summary",
-        diff: props.item.tone === "diff",
+        todo: props.item.tone === "todo",
         memory: props.item.tone === "memory",
         subagent: props.item.tone === "subagent",
       }}
@@ -3100,9 +3099,9 @@ function AgentTrailInline(props: {
 
 function trailSourceItems(bag: Bag): TimelineItem[] {
   const byKey = new Map<string, TimelineItem>();
-  // `trail` can lag behind websocket-pushed timeline updates while a file is
-  // changing quickly. Seed it first, then let live timeline rows replace stale
-  // trail rows with the same key so chat changesets refresh immediately.
+  // `trail` can lag behind websocket-pushed timeline updates. Seed it first,
+  // then let live timeline rows replace stale rows with the same key so TODO
+  // trail entries refresh immediately.
   for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);
   for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);
   return [...byKey.values()];
@@ -3112,7 +3111,7 @@ function buildTrailItems(bag: Bag): AgentTrailItem[] {
   return trailSourceItems(bag)
     .map((item) => {
       if (item.type === "trail") return trailTimelineItem(item);
-      if (item.type === "file-diff") return diffTimelineItem(item);
+      if (item.type === "todo-diff") return todoTrailItem(item);
       if (item.type === "memory-diff") return memoryTrailItem(item);
       if (item.type === "step" && item.kind === "agent:Subagent")
         return subagentTimelineItem(item);
@@ -3130,6 +3129,7 @@ function trailSourceKey(item: TimelineItem): string {
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
   if (item.type === "memory-diff") return `memory-diff:${item.id}`;
+  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
   return `file-diff:${item.id}`;
 }
 
@@ -3208,19 +3208,29 @@ function formatTrailDuration(ms: number): string {
   return `${minutes}m ${remaining}s`;
 }
 
-function diffTimelineItem(item: FileDiffItem): AgentTrailItem | null {
-  const path = String(item.path || "").trim();
-  if (!path) return null;
+function todoTrailItem(item: TodoDiffItem): AgentTrailItem | null {
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  if (!changes.length) return null;
+  const added = changes.filter((change) => change.kind === "added").length;
+  const updated = changes.filter((change) => change.kind === "updated").length;
+  const removed = changes.filter((change) => change.kind === "removed").length;
+  const parts = [
+    added ? `${added} added` : "",
+    updated ? `${updated} updated` : "",
+    removed ? `${removed} removed` : "",
+  ].filter(Boolean);
+  const first = changes[0];
+  const todo = first && ("after" in first ? first.after : first.before);
+  const detail = todo?.text ? String(todo.text).trim() : "";
   return {
     id: item.id,
     at: item.at,
-    title: path,
-    timelineKey: `file-diff:${item.id}`,
-    kind: "file-diff",
-    tone: "diff",
-    path,
-    diff: item,
-    stats: diffStatsForDisplay(item),
+    title: parts.length ? `TODOs: ${parts.join(", ")}` : "TODOs changed",
+    timelineKey: `todo-diff:${item.id}`,
+    kind: "todo-diff",
+    tone: "todo",
+    detail,
+    detailMarkdown: true,
   };
 }
 

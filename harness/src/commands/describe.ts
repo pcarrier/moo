@@ -17,7 +17,7 @@ import { chatModelInfo } from "./models";
 
 const DEFAULT_TIMELINE_LIMIT = 160;
 // The trail sidebar is an index, not the transcript itself. Keep initial loads
-// bounded so old diffs/subagent payloads do not dominate chat switching time.
+// bounded so old payload-heavy entries do not dominate chat switching time.
 const TRAIL_INDEX_LIMIT = 400;
 const TRAIL_STEP_INDEX_LIMIT = 240;
 
@@ -257,11 +257,12 @@ function trailRowToTimelineItem(row: any) {
 async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string, rows: any[], limit = 0) {
   // The main timeline can be limited to the newest N rows for responsiveness,
   // but the Trails sidebar is just a navigation index. Load only the newest
-  // historical step kinds it renders instead of resolving every old diff and
-  // subagent payload/result on every chat switch.
+  // historical step kinds it renders instead of resolving every old subagent
+  // payload/result on every chat switch. File diffs stay out of the trail; TODO
+  // diffs are kept here so the trail remains a useful work-state index.
   const trailStepRows = newestByAt(
     rows.filter((row) =>
-      (row["?kind"] === "agent:FileDiff" || row["?kind"] === "agent:TodoDiff" || row["?kind"] === "agent:Subagent")
+      (row["?kind"] === "agent:TodoDiff" || row["?kind"] === "agent:Subagent")
     ),
     limit,
     (row) => factTimestamp(row["?at"]),
@@ -298,7 +299,7 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
     const payload = lookupObject(meta.payload[0]?.[3]);
     const result = lookupObject(meta.result[0]?.[3]);
     const at = factTimestamp(row["?at"]);
-    if ((row["?kind"] === "agent:FileDiff" || row["?kind"] === "agent:TodoDiff") && payload?.value) {
+    if (row["?kind"] === "agent:TodoDiff" && payload?.value) {
       const diffItem = diffPayloadSummary(payload.value, stepId, chatId, at, meta.payload[0]?.[3]);
       if (diffItem) items.push(diffItem);
       continue;

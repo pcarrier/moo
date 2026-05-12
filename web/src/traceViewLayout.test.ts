@@ -397,7 +397,9 @@ describe("right sidebar diff tabs", () => {
     expect(state).not.toContain("tab.scope === scope && sameDiffPath(tab.path, diff.path)");
   });
 
-  test("chat changesets prefer live timeline diffs over stale trail rows", () => {
+  test("trail TODO entries prefer live timeline rows over stale trail rows", () => {
+    expect(sidebar).toContain('if (item.type === "todo-diff") return todoTrailItem(item);');
+    expect(sidebar).not.toContain('if (item.type === "file-diff") return diffTimelineItem(item);');
     expect(sidebar).toContain("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);");
     expect(sidebar).toContain("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);");
     expect(sidebar.indexOf("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);")).toBeLessThan(
