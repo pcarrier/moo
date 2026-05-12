@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { startRunJSTraceRoot, traceJsonValue } from "../src/moo";
+import { finishRunJSTraceRoot, startRunJSTraceRoot, traceJsonValue } from "../src/moo";
 
 describe("trace value serialization", () => {
   test("include function source instead of a placeholder", () => {
@@ -124,6 +124,42 @@ describe("trace root inference", () => {
       else delete (globalThis as any).__op_trace_ensure_span;
       if (previousStart) (globalThis as any).__op_trace_start_root = previousStart;
       else delete (globalThis as any).__op_trace_start_root;
+    }
+  });
+
+  test("finishes parent step spans when runJS completes", async () => {
+    const previousCurrent = (globalThis as any).__op_trace_current;
+    const previousGet = (globalThis as any).__op_trace_get;
+    const previousFinish = (globalThis as any).__op_trace_finish;
+    const previousLeave = (globalThis as any).__op_trace_leave;
+    const finished: any[] = [];
+    (globalThis as any).__op_trace_current = () => JSON.stringify({ traceId: "trace:test", rootId: "trace:test", parentId: "trace:test" });
+    (globalThis as any).__op_trace_get = (raw: string) => {
+      const id = JSON.parse(raw || "{}").traceId;
+      if (id !== "trace:test") return null;
+      return JSON.stringify({ id, parentId: "step:test", rootId: "trace:test", rootKind: "chat", data: { label: "Run JS" } });
+    };
+    (globalThis as any).__op_trace_finish = (id: string, status: string, dataJson: string) => {
+      finished.push({ id, status, data: JSON.parse(dataJson || "{}") });
+      return "true";
+    };
+    (globalThis as any).__op_trace_leave = () => {};
+    try {
+      const ok = await finishRunJSTraceRoot({ traceId: "trace:test", resultHash: "sha256:result", status: "ok" });
+
+      expect(ok).toBe(true);
+      expect(finished.map((row) => row.id)).toEqual(["trace:test", "step:test"]);
+      expect(finished.every((row) => row.status === "ok")).toBe(true);
+      expect(finished[1].data).toMatchObject({ label: "Run JS", resultHash: "sha256:result" });
+    } finally {
+      if (previousCurrent) (globalThis as any).__op_trace_current = previousCurrent;
+      else delete (globalThis as any).__op_trace_current;
+      if (previousGet) (globalThis as any).__op_trace_get = previousGet;
+      else delete (globalThis as any).__op_trace_get;
+      if (previousFinish) (globalThis as any).__op_trace_finish = previousFinish;
+      else delete (globalThis as any).__op_trace_finish;
+      if (previousLeave) (globalThis as any).__op_trace_leave = previousLeave;
+      else delete (globalThis as any).__op_trace_leave;
     }
   });
 

@@ -246,8 +246,12 @@ export async function finishRunJSTraceRoot(info: TraceRootInfo) {
     const finished = (await host.finishTrace(traceId, status, dataJson)) === "true";
     const rootId = typeof row?.rootId === "string" && row.rootId ? row.rootId : null;
     const rootKind = typeof row?.rootKind === "string" && row.rootKind ? row.rootKind : null;
+    const parentId = typeof row?.parentId === "string" && row.parentId ? row.parentId : null;
     if (finished && rootKind === "command" && rootId && rootId !== traceId) {
       await host.finishTrace(rootId, status, dataJson);
+    }
+    if (finished && parentId?.startsWith("step:")) {
+      await host.finishTrace(parentId, status, dataJson);
     }
     return finished;
   } finally {
