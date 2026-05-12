@@ -25,7 +25,7 @@ describe("timeline TODO UI", () => {
     expect(todoRegion).not.toContain('type="checkbox"');
     expect(todoRegion).not.toContain('checked={todoDone');
     expect(timeline).toContain('const items = () => props.todos.filter((item) => item.status !== "dropped");');
-    expect(timeline).toContain('const label = (item: AgentTodo) => `${item.id}. ${item.text}`;');
+    expect(timeline).toContain('const label = (item: AgentTodo) => `~ ${item.id}. ${item.text}`;');
     expect(timeline).toContain('<TodoMarkdownInline className="ongoing-todo-text" content={label(item)} />');
     expect(timeline).toContain('function TodoMetaBubbles');
     expect(timeline).toContain('class="todo-bubble todo-status-bubble"');
@@ -44,7 +44,8 @@ describe("timeline TODO UI", () => {
     expect(css).toContain('min-block-size: 1.8em;');
     expect(css).toContain('.ongoing-todo-line {');
     expect(css).not.toContain('.ongoing-todo-check input[type="checkbox"]');
-    expect(css).toContain('border-radius: 0;');
+    expect(css).toContain('border: 0;');
+    expect(css).toContain('font-weight: 800;');
   });
 
   test("keeps ongoing TODO rows to one ellipsized line", () => {
@@ -58,7 +59,8 @@ describe("timeline TODO UI", () => {
     expect(css).toContain(`.ongoing-todo-line {
   display: flex;
   align-items: baseline;
-  flex: 1 1 auto;`);
+  flex: 1 1 auto;
+  gap: 0.32em;`);
     expect(css).toContain(`.ongoing-todo-text,
 .ongoing-todo-details {
   min-inline-size: 0;
@@ -69,7 +71,7 @@ describe("timeline TODO UI", () => {
 }`);
     expect(css).toContain(`.ongoing-todo .ongoing-todo-text {
   display: block;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }`);
     expect(css).toContain(`.ongoing-todo-details {
   flex: 0 1 auto;
