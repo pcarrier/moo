@@ -203,11 +203,13 @@ describe("filesystem API", () => {
   test("applies create, update, and delete patches within scoped workspace", async () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
 
-    await expect(workspace.fs.applyPatch({
+    const created = await workspace.fs.applyPatch({
       operation_type: "create_file",
       path: "src/example.txt",
       diff: "@@ -0,0 +1,2 @@\n+hello\n+world\n",
-    })).resolves.toMatchObject({ status: "completed" });
+    });
+    expect(created).toMatchObject({ status: "completed" });
+    expect(created).not.toHaveProperty("tool_name");
     expect(files.get("/repo/src/example.txt")).toBe("hello\nworld\n");
 
     await expect(workspace.fs.applyPatch({

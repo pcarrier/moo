@@ -525,14 +525,12 @@ export type ValidateApi = {
 
 
 export type ApplyPatchInput = {
-  tool_name?: "apply_patch";
   operation_type: string;
   path: string;
   diff?: string | null;
 };
 
 export type ApplyPatchResult = {
-  tool_name: "apply_patch";
   status: string;
   output?: string | null;
 };

@@ -1233,7 +1233,7 @@ function resolveApplyPatchPaths(rawPath: string, workingDirectory: string | null
 }
 
 function applyPatchResult(status: string, output: string): ApplyPatchResult {
-  return { tool_name: "apply_patch", status, output };
+  return { status, output };
 }
 
 async function executeApplyPatch(input: ApplyPatchInput, workingDirectory: string | null): Promise<ApplyPatchResult> {

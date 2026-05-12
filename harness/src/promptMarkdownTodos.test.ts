@@ -16,7 +16,7 @@ describe("filesystem editing prompt", () => {
   test("documents readLines and applyPatch guidance", () => {
     expect(prompt).toContain("readLines(path:string,ranges:[number,number][],opts?:{numbered?:boolean})");
     expect(prompt).toContain("1-based inclusive ranges; sorted/collapsed overlaps");
-    expect(prompt).toContain("applyPatch({operation_type,path,diff?})");
+    expect(prompt).toContain("applyPatch({operation_type,path,diff?})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("operation_type=create_file|update_file|delete_file");
     expect(prompt).toContain("failures return status=\'failed\' plus output");
     expect(prompt).toContain("check result.status/output and stop on failed");
