@@ -1424,7 +1424,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
       ["?resp", "ui:createdAt", "?at"],
     ], ...{ store: c.facts, graph: c.graph } });
 
-  type Entry = { at: number; role: "user" | "assistant"; content: any };
+  type Entry = { at: number; role: "user" | "assistant" | "system"; content: any };
   const entries: Entry[] = [];
 
   for (const s of steps) {
@@ -1460,7 +1460,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
         status: s["?status"] ?? "",
         at,
       });
-      if (text) entries.push({ at, role: "assistant", content: text });
+      if (text) entries.push({ at, role: "system", content: toolContextMessage(text) });
     }
   }
 
@@ -1500,6 +1500,13 @@ const LLM_CONTEXT_STEP_KINDS = new Set([
   "agent:Error",
 ]);
 
+function toolContextMessage(text: string): string {
+  return [
+    "Internal tool transcript for context only; do not quote, imitate, or present this format to the user.",
+    text,
+  ].join("\n");
+}
+
 async function formatStepForLLMContext(facts: string, graph: string, item: any): Promise<string> {
   if (!LLM_CONTEXT_STEP_KINDS.has(item.kind)) return "";
   const payload = await loadPayloadJSON(facts, graph, item.step);
@@ -1535,13 +1542,13 @@ async function transcriptMessages(chatId: string, afterAt: number): Promise<any[
     const result = await loadResultJSON(c.facts, c.graph, item.step);
     const text = formatStepForCompaction(item, payload, result);
     if (!text) continue;
-    const role = item.kind === "agent:UserInput" ? "user" : "assistant";
+    if (item.kind === "agent:UserInput") {
+      messages.push({ role: "user", content: text });
+      continue;
+    }
     const status = item.status ? ` · ${item.status.replace(/^agent:/, "")}` : "";
-    const prefix = item.kind === "agent:UserInput" ? "" : `[${item.kind.replace(/^agent:/, "")}${status}]\n`;
-    messages.push({
-      role,
-      content: role === "user" ? text : prefix + text,
-    });
+    const prefix = `[${item.kind.replace(/^agent:/, "")}${status}]\n`;
+    messages.push({ role: "system", content: toolContextMessage(prefix + text) });
   }
   return messages;
 }

@@ -141,5 +141,9 @@ describe("LLM prompt context", () => {
     expect(joined).toContain("[RunJS · Done]");
     expect(joined).toContain("Inspect thing");
     expect(joined).toContain("secret-tool-result");
+    const runMessage = messages.find((m) => JSON.stringify(m).includes("Inspect thing"));
+    expect(runMessage?.role).toBe("system");
+    expect(runMessage?.content).toContain("Internal tool transcript for context only");
+    expect(messages.some((m) => m.role === "assistant" && JSON.stringify(m).includes("[RunJS · Done]"))).toBe(false);
   });
 });
