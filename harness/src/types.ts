@@ -524,13 +524,7 @@ export type ValidateApi = {
 };
 
 
-export type ApplyPatchInput = {
-  operation_type: string;
-  path: string;
-  diff?: string | null;
-};
-
-export type ApplyPatchResult = {
+export type PatchResult = {
   status: string;
   output?: string | null;
 };
@@ -561,7 +555,8 @@ export type WorkspaceScope = {
     canonical(path?: string): Promise<string>;
     exists(path?: string): Promise<boolean>;
     ensureDir(path?: string): Promise<void>;
-    applyPatch(input: ApplyPatchInput): Promise<ApplyPatchResult>;
+    patch(path: string, diff: string): Promise<PatchResult>;
+    delete(path: string): Promise<PatchResult>;
   };
   proc: {
     run(args: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }): Promise<ProcResult>;
@@ -647,7 +642,8 @@ export type Moo = {
     canonical(path: string): Promise<string>;
     exists(path: string): Promise<boolean>;
     ensureDir(path: string): Promise<void>;
-    applyPatch(input: ApplyPatchInput): Promise<ApplyPatchResult>;
+    patch(path: string, diff: string): Promise<PatchResult>;
+    delete(path: string): Promise<PatchResult>;
   };
   proc: {
     run(args: ProcRunArgs): Promise<ProcResult>;

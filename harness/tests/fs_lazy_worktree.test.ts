@@ -191,59 +191,43 @@ describe("filesystem API", () => {
     addDir("/repo", []);
   });
 
-  test("exposes applyPatch without legacy patch helper", async () => {
-    expect("patch" in moo.fs).toBe(false);
-    expect("applyPatch" in moo.fs).toBe(true);
+  test("exposes split patch and delete helpers", async () => {
+    expect("patch" in moo.fs).toBe(true);
+    expect("delete" in moo.fs).toBe(true);
+    expect("applyPatch" in moo.fs).toBe(false);
 
     const workspace = await moo.workspace.current({ root: "/repo" });
-    expect("patch" in workspace.fs).toBe(false);
-    expect("applyPatch" in workspace.fs).toBe(true);
+    expect("patch" in workspace.fs).toBe(true);
+    expect("delete" in workspace.fs).toBe(true);
+    expect("applyPatch" in workspace.fs).toBe(false);
   });
 
-  test("applies create, update, and delete patches within scoped workspace", async () => {
+  test("patches and deletes within scoped workspace", async () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
 
-    const created = await workspace.fs.applyPatch({
-      operation_type: "create_file",
-      path: "src/example.txt",
-      diff: "@@ -0,0 +1,2 @@\n+hello\n+world\n",
-    });
-    expect(created).toMatchObject({ status: "completed" });
-    expect(created).not.toHaveProperty("tool_name");
+    await workspace.fs.write("src/example.txt", "hello\nworld\n");
     expect(files.get("/repo/src/example.txt")).toBe("hello\nworld\n");
 
-    await expect(workspace.fs.applyPatch({
-      operation_type: "update_file",
-      path: "src/example.txt",
-      diff: "@@ -1,2 +1,2 @@\n hello\n-world\n+moo\n",
-    })).resolves.toMatchObject({ status: "completed" });
+    await expect(workspace.fs.patch(
+      "src/example.txt",
+      "@@ -1,2 +1,2 @@\n hello\n-world\n+moo\n",
+    )).resolves.toMatchObject({ status: "completed" });
     expect(files.get("/repo/src/example.txt")).toBe("hello\nmoo\n");
 
-    await expect(workspace.fs.applyPatch({
-      operation_type: "delete_file",
-      path: "src/example.txt",
-    })).resolves.toMatchObject({ status: "completed" });
+    await expect(workspace.fs.delete("src/example.txt")).resolves.toMatchObject({ status: "completed" });
     expect(files.has("/repo/src/example.txt")).toBe(false);
   });
 
-  test("returns apply_patch failures for invalid paths and mismatched hunks", async () => {
+  test("returns patch failures for invalid paths and mismatched hunks", async () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
     addFile("/repo/example.txt", "alpha\n");
 
-    await expect(workspace.fs.applyPatch({
-      operation_type: "update_file",
-      path: "../example.txt",
-      diff: "",
-    })).resolves.toMatchObject({
+    await expect(workspace.fs.patch("../example.txt", "")).resolves.toMatchObject({
       status: "failed",
       output: "apply_patch paths must stay within the workspace root.",
     });
 
-    await expect(workspace.fs.applyPatch({
-      operation_type: "update_file",
-      path: "example.txt",
-      diff: "@@ -1 +1 @@\n-beta\n+gamma\n",
-    })).resolves.toMatchObject({
+    await expect(workspace.fs.patch("example.txt", "@@ -1 +1 @@\n-beta\n+gamma\n")).resolves.toMatchObject({
       status: "failed",
     });
     expect(files.get("/repo/example.txt")).toBe("alpha\n");
