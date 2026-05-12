@@ -116,6 +116,8 @@ const LIVE_TIMELINE_SLACK = 80;
 const MAX_REMEMBERED_TIMELINE_KEYS = 1200;
 const MAX_DISMISSED_REPLIES = 24;
 const RIGHT_SIDEBAR_CHAT_MAX = 24;
+const MISSING_REPO_FILE_REFRESH_MS = 2000;
+
 const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:apps",
   "view:facts",
@@ -1909,6 +1911,10 @@ export function createState() {
     return sameDiffPathInRoot(a, b, currentChatWorktreePath());
   }
 
+  function isMissingRepoFileError(error: string | null | undefined): boolean {
+    return /not found|does not exist|no such file/i.test(String(error || ""));
+  }
+
   async function readRepoFileIntoSidebar(
     requestedPath: string,
     basePath: string | null,
@@ -2009,7 +2015,19 @@ export function createState() {
         (sameRepoFilePath(tab.file.requestedPath, requestedPath) ||
           sameRepoFilePath(tab.file.path, requestedPath)),
     );
-    if (existing) return;
+    if (existing) {
+      if (
+        existing.kind === "file" &&
+        (existing.file.error || existing.file.loading)
+      ) {
+        await readRepoFileIntoSidebar(
+          requestedPath,
+          currentChatWorktreePath(),
+          true,
+        );
+      }
+      return;
+    }
     await readRepoFileIntoSidebar(
       requestedPath,
       currentChatWorktreePath(),
@@ -5603,6 +5621,36 @@ export function createState() {
   const [tick, setTick] = createSignal(0);
   const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
   onCleanup(() => clearInterval(timer));
+
+  let missingRepoFileRefreshInFlight = false;
+  const missingRepoFileRefreshTimer = window.setInterval(() => {
+    if (missingRepoFileRefreshInFlight) return;
+    const files = rightSidebarTabs()
+      .filter(
+        (tab): tab is Extract<RightSidebarTab, { kind: "file" }> =>
+          tab.kind === "file",
+      )
+      .filter(
+        (tab) =>
+          !tab.file.loading &&
+          isMissingRepoFileError(tab.file.error) &&
+          Boolean(tab.file.requestedPath.trim()),
+      );
+    if (files.length === 0) return;
+    missingRepoFileRefreshInFlight = true;
+    void Promise.all(
+      files.map((tab) =>
+        readRepoFileIntoSidebar(
+          tab.file.requestedPath,
+          currentChatWorktreePath(),
+          false,
+        ),
+      ),
+    ).finally(() => {
+      missingRepoFileRefreshInFlight = false;
+    });
+  }, MISSING_REPO_FILE_REFRESH_MS);
+  onCleanup(() => clearInterval(missingRepoFileRefreshTimer));
 
   return {
     startupLoading,
