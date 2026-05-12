@@ -291,8 +291,13 @@ impl ClickHouseTraceClient {
             return Ok(vec![]);
         }
         let ids = ids.join(", ");
-        self.select_trace_rows(
+        // Subtree traversal sets root metadata once after traversal. Avoid
+        // select_trace_rows() here: it calls attach_trace_roots(), which used to
+        // climb to the root for every returned child and turned a breadth fetch
+        // into hundreds/thousands of ClickHouse point queries.
+        self.select_latest_trace_rows(
             &format!("WHERE parent_id IN ({ids}) ORDER BY depth ASC, seq ASC"),
+            None,
             false,
         )
     }
@@ -585,10 +590,39 @@ impl ClickHouseTraceClient {
         chat_id: &str,
         max_depth: i32,
     ) -> Result<(Option<TraceRow>, Vec<TraceRow>), String> {
-        let Some(root) = self.chat_root_for(chat_id)? else {
+        let Some(mut root) = self.chat_root_for(chat_id)? else {
             return Ok((None, Vec::new()));
         };
-        let nodes = self.subtree_rows(&root.id, max_depth)?;
+        let root_id = root.id.clone();
+        let root_kind = root.kind.clone();
+        let root_name = root.name.clone();
+        root.root_id = root_id.clone();
+        root.root_kind = root_kind.clone();
+        root.root_name = root_name.clone();
+
+        // Chat trace loading is the hot path. All chat-attached spans carry the
+        // chat_id, and the trace table is ordered by (chat_key, started_ns, id),
+        // so one chat-scoped range scan is dramatically cheaper than recursive
+        // parent_id bloom-filter lookups plus per-row root hydration.
+        let max_depth = i64::from(max_depth.max(0));
+        let max_node_depth = root.depth.saturating_add(max_depth);
+        let mut nodes = self.select_latest_trace_rows(
+            &format!(
+                "WHERE chat_id = {} AND depth <= {max_node_depth} ORDER BY depth ASC, seq ASC",
+                ch_sql_string(chat_id),
+            ),
+            None,
+            false,
+        )?;
+        if !nodes.iter().any(|row| row.id == root_id) {
+            nodes.push(root.clone());
+        }
+        nodes.sort_by_key(|row| (row.depth, row.seq));
+        for row in nodes.iter_mut() {
+            row.root_id = root_id.clone();
+            row.root_kind = root_kind.clone();
+            row.root_name = root_name.clone();
+        }
         Ok((Some(root), nodes))
     }
 

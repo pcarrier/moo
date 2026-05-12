@@ -894,9 +894,36 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     const request = nextSelectionRequest();
     const known = traceRoots().find((row) => row.kind === "chat" && (row.chatId === chatId || row.id === chatId));
     if (known) return selectTraceRoot(known, { request });
-    const value = await unwrap(api.traces.chatTree({ chatId, maxDepth: 0 }), "trace chat lookup");
-    if (!isCurrentSelection(request)) return;
-    if (value.root) return selectTraceRoot(value.root, { request });
+    setSelectedRootKey(chatId);
+    setSelectedChatId(chatId);
+    setActiveTab("all");
+    setTreeState("loading");
+    setError(null);
+    try {
+      const value = await unwrap(api.traces.chatTree({ chatId, maxDepth: DEFAULT_TREE_DEPTH }), "trace chat tree load");
+      if (!isCurrentSelection(request)) return;
+      const canonicalRoot = value.root || value.nodes.find(isCanonicalRoot) || value.nodes[0] || null;
+      if (!canonicalRoot) {
+        setTreeState("idle");
+        return;
+      }
+      setSelectedRootKey(canonicalRoot.id);
+      setSelectedChatId(canonicalRoot.chatId || chatId);
+      setNodes(value.nodes);
+      setRootId(canonicalRoot.id);
+      const baseDepth = canonicalRoot.depth || value.nodes[0]?.depth || 0;
+      const open = new Set<string>();
+      for (const node of value.nodes) if (node.depth - baseDepth < DEFAULT_TREE_OPEN_DEPTH) open.add(node.id);
+      setExpanded(open);
+      setLoadedBoundary(new Map(value.nodes.filter((node) => node.depth - baseDepth >= DEFAULT_TREE_DEPTH - 1).map((node) => [node.id, DEFAULT_TREE_DEPTH])));
+      setSelectedId(canonicalRoot.id);
+      void loadDetail(canonicalRoot.id, { request });
+      setTreeState("idle");
+    } catch (err) {
+      if (!isCurrentSelection(request)) return;
+      setTreeState("error");
+      setError(errMessage(err));
+    }
   }
 
   async function selectTraceId(id: string) {
