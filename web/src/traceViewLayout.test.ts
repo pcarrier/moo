@@ -358,4 +358,12 @@ describe("right sidebar diff tabs", () => {
     expect(state).toContain('scope === "history" &&');
     expect(state).not.toContain("tab.scope === scope && sameDiffPath(tab.path, diff.path)");
   });
+
+  test("chat changesets prefer live timeline diffs over stale trail rows", () => {
+    expect(sidebar).toContain("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);");
+    expect(sidebar).toContain("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);");
+    expect(sidebar.indexOf("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);")).toBeLessThan(
+      sidebar.indexOf("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);"),
+    );
+  });
 });

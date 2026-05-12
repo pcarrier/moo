@@ -3068,8 +3068,11 @@ function AgentTrailInline(props: {
 
 function trailSourceItems(bag: Bag): TimelineItem[] {
   const byKey = new Map<string, TimelineItem>();
-  for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);
+  // `trail` can lag behind websocket-pushed timeline updates while a file is
+  // changing quickly. Seed it first, then let live timeline rows replace stale
+  // trail rows with the same key so chat changesets refresh immediately.
   for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);
+  for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);
   return [...byKey.values()];
 }
 

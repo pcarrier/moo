@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Moo is a local-first agent workbench with an inspectable browser UI, TypeScript tools, SQLite memory, MCP integrations, VCS-aware worktrees, and Chrome DevTools debugging." />
+    <meta name="description" content="Moo is a local-first agent workbench that gives coding agents a browser work surface, TypeScript tools, SQLite memory, MCP integrations, VCS-aware worktrees, and Chrome DevTools debugging." />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#ffffff" />
-    <meta property="og:title" content="Moo · local agent workbench" />
-    <meta property="og:description" content="Drive local agents from a browser UI with durable memory, rich tools, MCP connectors, and auditable worktrees." />
+    <meta property="og:title" content="Moo · Better than your TUI" />
+    <meta property="og:description" content="Drive local agents from an inspectable browser workbench with durable memory, rich tools, MCP connectors, apps, and auditable worktrees." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://moo.pcarrier.com/" />
     <meta name="twitter:card" content="summary" />
-    <title>Moo · local agent workbench</title>
+    <title>Moo · Better than your TUI</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./style.css" />
   </head>
@@ -19,7 +19,7 @@
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header" aria-label="Primary navigation">
       <a class="brand" href="#top" aria-label="Moo home">
-        <span class="brand__mark" aria-hidden="true">🐮</span><span><strong>Moo</strong><small>local agent workbench</small></span>
+        <span class="brand__mark" aria-hidden="true">🐮</span><span><strong>Moo</strong><small>better than your TUI</small></span>
       </a>
       <nav class="nav" aria-label="Page sections">
         <a href="#features">Features</a>
@@ -38,19 +38,19 @@
           </figure>
           <div class="hero__copy reveal">
             <div class="hero__headline">
-              <p class="eyebrow">Rust host · TypeScript tools · SQLite memory · MCP · DevTools</p>
-              <h1 id="title">The local agent workbench.</h1>
+              <p class="eyebrow">Browser workbench · TypeScript tools · SQLite memory · MCP · DevTools</p>
+              <h1 id="title">Better than your TUI.</h1>
             </div>
             <div class="hero__body">
-              <p class="lede">Moo turns a local checkout into an inspectable browser-driven workspace for agents. It runs a TypeScript harness in Rust-hosted V8, keeps chats and memory in SQLite, opens VCS-aware scratch worktrees, exposes files, processes, HTTP, RDF, MCP, TODOs, and apps as tools, and lets you watch or debug the run as it happens.</p>
+              <p class="lede">Moo gives local coding agents the room a terminal UI cannot: an inspectable browser workspace with chat, diffs, tool traces, memory, app panels, and previews side by side. A Rust-hosted V8 runtime runs the TypeScript harness, SQLite keeps durable state, VCS-aware scratch worktrees isolate changes, and Chrome DevTools lets you watch or debug the run as it happens.</p>
               <div class="hero__actions" aria-label="Primary calls to action">
                 <a class="button button--primary" href="#quickstart">Install Moo</a>
                 <a class="button" href="https://github.com/pcarrier/moo" rel="noopener noreferrer">Read the source</a>
                 <a class="button" href="https://github.com/pcarrier/moo/releases/latest" rel="noopener noreferrer">Releases</a>
               </div>
               <dl class="hero-stats" aria-label="Project highlights">
+                <div><dt>Spatial</dt><dd>Chat, diffs, tools, previews, memory, and apps at once</dd></div>
                 <div><dt>Local-first</dt><dd>One binary, local database, no hosted control plane</dd></div>
-                <div><dt>Tool-rich</dt><dd>Files, procs, HTTP, RDF, apps, attachments, MCP</dd></div>
                 <div><dt>Auditable</dt><dd>Trail summaries, diffs, todos, tool calls, facts</dd></div>
               </dl>
             </div>
@@ -61,56 +61,80 @@
       <section id="features" class="section section-pad" aria-labelledby="features-title">
         <div class="section__intro reveal">
           <p class="eyebrow">Feature set</p>
-          <h2 id="features-title">A workbench, not a black box.</h2>
-          <p>Moo gives agents practical local capabilities while keeping each action visible, resumable, and grounded in the repository they are changing.</p>
+          <h2 id="features-title">A browser workbench beats a terminal pane.</h2>
+          <p>Moo gives agents practical local capabilities and enough screen space to keep every action visible, resumable, and grounded in the repository they are changing.</p>
         </div>
 
         <div class="feature-matrix" aria-label="Moo feature matrix">
           <article class="feature-card reveal">
             <h3>Inspectable agent runtime</h3>
-            <p>A Rust binary hosts V8 and the TypeScript harness, streams model output, queues messages durably, supports interrupts and subagents, and exposes Chrome DevTools Protocol debugging when you need to look inside the run.</p>
-            <ul class="chip-list"><li>Rust/V8 host</li><li>TypeScript tools</li><li>streaming</li><li>interrupts</li><li>subagents</li><li>CDP</li></ul>
+            <p>A Rust binary hosts V8 and the TypeScript harness, streams model output, queues messages durably, supports interrupts, subagents, timers, and Chrome DevTools Protocol debugging, and lets you tune separate V8 pools for chat, reads, scans, UI work, and tools.</p>
+            <ul class="chip-list"><li>Rust/V8 host</li><li>TypeScript tools</li><li>streaming</li><li>subagents</li><li>CDP</li><li>runtime pools</li></ul>
           </article>
 
           <article class="feature-card reveal">
-            <h3>Browser work surface</h3>
-            <p>The Solid web UI is the place to chat, inspect tool calls, review semantic diffs, browse memory and state, manage settings and MCP servers, preview Markdown or HTML, and keep generated apps beside the conversation.</p>
-            <ul class="chip-list"><li>chat timeline</li><li>diff viewer</li><li>memory browser</li><li>settings</li><li>previews</li><li>apps</li></ul>
+            <h3>Browser-native work surface</h3>
+            <p>The Solid web UI is the place to chat, inspect tool calls, review semantic diffs, browse memory and state, manage settings, preview Markdown, HTML, and Mermaid, and keep generated apps beside the conversation without cramming everything into terminal rows.</p>
+            <ul class="chip-list"><li>chat timeline</li><li>diff viewer</li><li>memory browser</li><li>settings</li><li>previews</li><li>Mermaid</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>App workspaces</h3>
+            <p>Agents can register iframe apps, open one as the primary chat surface, preserve panel state, call app handlers, and expose source bundles in a code explorer with source and preview tabs, formatting, syntax highlighting, and Mermaid rendering.</p>
+            <ul class="chip-list"><li>iframe apps</li><li>primary app</li><li>state bridge</li><li>handlers</li><li>code explorer</li><li>source preview</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>MCP command center</h3>
+            <p>Moo discovers MCP servers and tools, manages OAuth-backed connectors, renders tool titles, markdown descriptions, preserved newlines, highlighted signatures, collapsible schemas, and HJSON examples so connected tools stay understandable.</p>
+            <ul class="chip-list"><li>MCP discovery</li><li>OAuth</li><li>tool titles</li><li>Markdown docs</li><li>HJSON examples</li><li>schemas</li></ul>
           </article>
 
           <article class="feature-card reveal">
             <h3>Durable local context</h3>
-            <p>Chats, summaries, TODOs, pointers, content-addressed objects, RDF facts, MCP state, diffs, and trail history live in SQLite so a session can be audited, resumed, forked, or archived without a remote service.</p>
+            <p>Chats, summaries, TODOs, pointers, content-addressed objects, RDF facts, MCP state, diffs, app state, and trail history live in SQLite so a session can be audited, resumed, forked, or archived without a remote service.</p>
             <ul class="chip-list"><li>SQLite</li><li>chats</li><li>todos</li><li>objects</li><li>pointers</li><li>trail</li></ul>
           </article>
 
           <article class="feature-card reveal">
             <h3>Queryable memory</h3>
-            <p>Agents can assert durable facts globally or per project, use typed RDF terms, define vocabulary, run joins and SPARQL, and keep chat-local graph history separate from long-lived user and project memory.</p>
+            <p>Agents can assert durable facts globally or per project, use typed RDF terms, define vocabulary, run joins and SPARQL, scroll large fact sets, and keep chat-local graph history separate from long-lived user and project memory.</p>
             <ul class="chip-list"><li>RDF facts</li><li>SPARQL</li><li>project scope</li><li>typed terms</li><li>vocab</li><li>history</li></ul>
           </article>
 
           <article class="feature-card reveal">
             <h3>Repository-safe work</h3>
-            <p>Each chat gets an isolated scratch worktree with repository metadata, git or jj context, lazy filesystem access, command execution, patches, diffs, and check scripts so agents can make real changes without trampling the main checkout.</p>
-            <ul class="chip-list"><li>scratch worktrees</li><li>git</li><li>jj</li><li>fs tools</li><li>proc tools</li><li>diffs</li></ul>
+            <p>Each chat gets an isolated scratch worktree with repository metadata, git or jj context, lazy filesystem access, command execution, patches, diffs, forks, and check scripts so agents can make real changes without trampling the main checkout.</p>
+            <ul class="chip-list"><li>scratch worktrees</li><li>git</li><li>jj</li><li>fs tools</li><li>proc tools</li><li>forks</li></ul>
           </article>
 
           <article class="feature-card reveal">
             <h3>Human checkpoints</h3>
-            <p>Structured forms, choices, visible status messages, semantic TODOs, title updates, compact summaries, attachments, and queued sends keep the human in the loop without forcing every decision into prose.</p>
+            <p>Structured forms, choices, visible status messages, semantic TODOs, TODO reminders, title updates, compact summaries, attachments, and queued sends keep the human in the loop with real controls instead of forcing every decision through prose in a terminal prompt.</p>
             <ul class="chip-list"><li>ui.ask</li><li>ui.choose</li><li>attachments</li><li>todos</li><li>summaries</li><li>queued sends</li></ul>
           </article>
 
           <article class="feature-card reveal">
+            <h3>Skill-aware assistance</h3>
+            <p>Built-in and saved skills carry metadata and markdown instructions, can be listed, loaded, refreshed, enabled, tested, and opened from a dedicated route without materializing scratch worktrees just to browse guidance.</p>
+            <ul class="chip-list"><li>built-in skills</li><li>saved skills</li><li>metadata</li><li>refresh</li><li>dedicated route</li><li>tests</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
             <h3>Connected local tools</h3>
-            <p>The harness exposes host-backed HTTP fetch and streaming, environment reads, validators, event broadcasts, MCP discovery and OAuth, and iframe apps with state and handler calls for richer task-specific interfaces.</p>
-            <ul class="chip-list"><li>HTTP</li><li>env</li><li>events</li><li>MCP OAuth</li><li>validators</li><li>UI apps</li></ul>
+            <p>The harness exposes host-backed HTTP fetch and streaming, environment reads, validators, event broadcasts, MCP calls, and iframe app APIs with state and handler calls for richer task-specific interfaces.</p>
+            <ul class="chip-list"><li>HTTP</li><li>env</li><li>events</li><li>MCP calls</li><li>validators</li><li>UI apps</li></ul>
+          </article>
+
+          <article class="feature-card reveal">
+            <h3>Polished diagnostics</h3>
+            <p>Timeline headers, sidebar counts, trace panels, facts scrolling, app tabs, panel controls, markdown highlighting, and Mermaid lightboxes have focused tests so the browser shell remains fast and readable during long sessions.</p>
+            <ul class="chip-list"><li>timeline</li><li>sidebars</li><li>traces</li><li>facts</li><li>lightboxes</li><li>UI tests</li></ul>
           </article>
 
           <article class="feature-card reveal">
             <h3>Practical developer loop</h3>
-            <p>Release assets embed the harness and UI, while contributors get direnv, process-compose, Bun tests, Rust checks, startup snapshots, model/provider helpers, and a single local check script for the whole stack.</p>
+            <p>Release assets embed the harness and UI, while contributors get direnv, process-compose, Bun tests, Rust checks, startup snapshots, model/provider helpers, runtime presets, and a single local check script for the whole stack.</p>
             <ul class="chip-list"><li>release binaries</li><li>direnv</li><li>process-compose</li><li>Bun</li><li>Rust</li><li>bin/check</li></ul>
           </article>
         </div>
@@ -162,7 +186,7 @@ check</code></pre>
       <section id="limits" class="limits section-pad" aria-labelledby="limits-title">
         <div class="section__intro reveal">
           <p class="eyebrow">Boundaries</p>
-          <h2 id="limits-title">Designed for local agency.</h2>
+          <h2 id="limits-title">Built for local agents.</h2>
           <p>Moo deliberately favors explicit local control over a hosted product surface.</p>
         </div>
         <div class="limits-grid">
