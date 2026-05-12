@@ -62,7 +62,7 @@ export function normalizeRetryPolicy(input: Partial<RetryPolicy> | null | undefi
   };
 }
 
-export const DEFAULT_COMPACTION_THRESHOLD_PERCENT = 75;
+export const DEFAULT_COMPACTION_THRESHOLD_PERCENT = 50;
 
 export function normalizeCompactionSettings(input: Partial<LlmCompactionSettings> | null | undefined): LlmCompactionSettings {
   return {

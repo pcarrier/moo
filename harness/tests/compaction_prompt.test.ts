@@ -20,7 +20,7 @@ import {
 
 describe("compaction prompts", () => {
   test("defaults automatic compaction near the context limit", () => {
-    expect(DEFAULT_COMPACTION_THRESHOLD_PERCENT).toBe(75);
+    expect(DEFAULT_COMPACTION_THRESHOLD_PERCENT).toBe(50);
   });
 
   test("continuation message tells the resumed model to act", () => {

@@ -932,6 +932,12 @@ export async function stepPrepareCommand(input: Input) {
     messages = stripDynamicContextMessages(passedMessages);
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
     await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
+    const threshold = await compactionThresholdForBudget(budget);
+    await traceMark("compaction.carried_check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
+    if (estimatedPromptTokens >= threshold) {
+      await traceMark("compaction.carried_triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+      return { ok: true, value: { kind: "iterate", messages: null } };
+    }
   }
 
   const threshold = await compactionThresholdForBudget(budget);
