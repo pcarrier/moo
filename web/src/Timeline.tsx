@@ -1026,7 +1026,7 @@ function OngoingTodos(props: { todos: AgentTodo[] }) {
   const items = () => props.todos.filter((item) => item.status !== "dropped");
   const doneItems = () => items().filter((item) => item.status === "done");
   const visibleItems = () => (showDone() ? items() : items().filter((item) => item.status !== "done"));
-  const label = (item: AgentTodo) => `~ ${item.id}. ${item.text}`;
+  const label = (item: AgentTodo) => `${item.id}. ${item.text}`;
   return (
     <Show when={items().length > 0}>
       <section class="ongoing-todos" classList={{ "only-done": !showDone() && visibleItems().length === 0 && doneItems().length > 0 }} aria-label="ongoing TODOs">

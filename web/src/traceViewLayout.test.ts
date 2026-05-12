@@ -375,6 +375,20 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("if (props.bag.traceId?.() || props.bag.traceChatId?.()) return");
   });
 
+
+  test("trail rows mirror timeline TODO typography", () => {
+    expect(sidebar).toContain('title: nextTitle || "Untitled"');
+    expect(sidebar).toContain('title: label,');
+    expect(sidebar).toContain('title: `${action} ${todoText}`');
+    expect(sidebar).toContain('const previousText = previous && previous.text !== todo?.text ? `was: ${previous.id}. ${previous.text}` : "";');
+    expect(sidebar).toContain('function todoChangeTextForTrail(change: TodoDiffChange): string');
+    expect(sidebar).toContain('[`todo-status-${props.item.todoStatus}`]: !!props.item.todoStatus');
+    expect(css).toContain('.agent-trail-title {\n  min-width: 0;');
+    expect(css).toContain('font-weight: 600;');
+    expect(css).toContain('.agent-trail-item.todo-status-doing .agent-trail-title {\n  font-weight: 700;\n}');
+    expect(css).toContain('.agent-trail-item.todo-status-done .agent-trail-title {\n  color: var(--muted);\n  text-decoration: line-through;\n}');
+    expect(css).toContain('.agent-trail-item.subagent .agent-trail-title::before');
+  });
 });
 
 describe("right sidebar diff tabs", () => {

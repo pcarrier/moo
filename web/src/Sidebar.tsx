@@ -44,6 +44,7 @@ import {
   type TrailItem,
   type MemoryDiffItem,
   type TodoDiffItem,
+  type TodoDiffChange,
 } from "./api";
 import {
   diffStats,
@@ -2945,6 +2946,7 @@ type AgentTrailItem = {
   detail?: string;
   kind: string;
   tone?: "title" | "summary" | "todo" | "subagent";
+  todoStatus?: "todo" | "doing" | "done" | "blocked" | "dropped";
   path?: string;
   targetChatId?: string;
   stats?: { added: number; removed: number };
@@ -3053,6 +3055,7 @@ function AgentTrailRow(props: {
         summary: props.item.tone === "summary",
         todo: props.item.tone === "todo",
         subagent: props.item.tone === "subagent",
+        [`todo-status-${props.item.todoStatus}`]: !!props.item.todoStatus,
       }}
     >
       <span class="agent-trail-dot" aria-hidden="true" />
@@ -3196,29 +3199,37 @@ function formatTrailDuration(ms: number): string {
   return `${minutes}m ${remaining}s`;
 }
 
+function todoChangeTextForTrail(change: TodoDiffChange): string {
+  const item = change.kind === "removed" ? change.before : change.after;
+  if (item.status === "dropped") return "X";
+  if (item.status === "blocked") return "!";
+  if (item.status === "done") return "-";
+  if (change.kind === "added") return "+";
+  return "~";
+}
+
 function todoTrailItem(item: TodoDiffItem): AgentTrailItem | null {
   const changes = Array.isArray(item.changes) ? item.changes : [];
   if (!changes.length) return null;
-  const added = changes.filter((change) => change.kind === "added").length;
-  const updated = changes.filter((change) => change.kind === "updated").length;
-  const removed = changes.filter((change) => change.kind === "removed").length;
-  const parts = [
-    added ? `${added} added` : "",
-    updated ? `${updated} updated` : "",
-    removed ? `${removed} removed` : "",
-  ].filter(Boolean);
   const first = changes[0];
   const todo = first && ("after" in first ? first.after : first.before);
-  const detail = todo?.text ? String(todo.text).trim() : "";
+  const previous = first?.kind === "updated" ? first.before : undefined;
+  const action = first ? todoChangeTextForTrail(first) : "~";
+  const todoText = todo ? `${todo.id}. ${todo.text}` : "TODO changed";
+  const note = todo?.note ? String(todo.note).trim() : "";
+  const previousText = previous && previous.text !== todo?.text ? `was: ${previous.id}. ${previous.text}` : "";
+  const detail = [note, previousText].filter(Boolean).join("\n");
   return {
     id: item.id,
     at: item.at,
-    title: parts.length ? `TODOs: ${parts.join(", ")}` : "TODOs changed",
+    title: `${action} ${todoText}`,
     timelineKey: `todo-diff:${item.id}`,
     kind: "todo-diff",
     tone: "todo",
     detail,
+    titleMarkdown: true,
     detailMarkdown: true,
+    todoStatus: todo?.status,
   };
 }
 

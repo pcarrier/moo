@@ -46,7 +46,6 @@ export type TodoPatch = {
 const VALID_STATUSES = new Set<TodoStatus>(["todo", "doing", "done", "blocked", "dropped"]);
 const MAX_ITEMS = 50;
 const MAX_TEXT = 160;
-const MAX_NOTE = 240;
 
 function pointerName(chatId: string): string {
   return `chat/${chatId}/todos`;
@@ -142,11 +141,10 @@ function cleanText(value: unknown, field = "text", max = MAX_TEXT): string {
   return text.length > max ? text.slice(0, max) : text;
 }
 
-function cleanOptionalText(value: unknown, max = MAX_NOTE): string | undefined {
+function cleanOptionalText(value: unknown): string | undefined {
   if (value == null) return undefined;
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-  if (!text) return undefined;
-  return text.length > max ? text.slice(0, max) : text;
+  return text || undefined;
 }
 
 function cleanStatus(value: unknown, fallback: TodoStatus = "todo"): TodoStatus {

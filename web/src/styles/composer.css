@@ -57,10 +57,9 @@
 .ongoing-todo-line {
   display: flex;
   align-items: baseline;
-  flex: 1 1 auto;
-  gap: 0.32em;
-  min-inline-size: 0;
-  overflow: hidden;
+  flex: 0 0 auto;
+  max-inline-size: 100%;
+  overflow: visible;
 }
 
 .ongoing-todo-text,
@@ -74,12 +73,11 @@
 
 .ongoing-todo .ongoing-todo-text {
   display: block;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 .ongoing-todo-details {
-  flex: 0 1 auto;
-  max-inline-size: 35%;
+  flex: 1 1 auto;
 }
 
 .ongoing-todo .todo-note.markdown > * {
@@ -95,7 +93,7 @@
   align-items: baseline;
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 0;
+  margin-inline: 0.33em;
 }
 
 .todo-bubble {

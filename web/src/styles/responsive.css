@@ -489,6 +489,7 @@ details.runjs-step:not([open]) .runjs-desc-text.runjs-markdown {
 .agent-trail-item.subagent .agent-trail-dot {
   background: var(--accent, #7c5cff);
 }
+
 .agent-trail-item.subagent .agent-trail-title::before {
   content: "↳ ";
   color: var(--muted, #777);
