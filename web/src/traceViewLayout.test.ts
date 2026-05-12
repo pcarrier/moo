@@ -234,6 +234,13 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("setNodes(mergeRows(nodes(), value.nodes));");
   });
 
+  test("preserves tree timeline scroll during running trace refresh", () => {
+    const body = tracesView.slice(tracesView.indexOf("async function refreshActiveRunningTrace()"), tracesView.indexOf("createEffect(() =>", tracesView.indexOf("async function refreshActiveRunningTrace()")));
+    expect(body).toContain("preserveTimelineScroll(() => {");
+    expect(body).toContain("setNodes(mergeRows(nodes(), value.nodes));");
+    expect(body).not.toContain("revealDetailInTree(detailValue)");
+  });
+
   test("records and filters frontend global traces", () => {
     expect(tracesView).toContain('value="global"');
     expect(tracesView).toContain('"frontend", "chat"');

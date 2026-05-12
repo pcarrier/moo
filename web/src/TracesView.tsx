@@ -1349,13 +1349,14 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     try {
       const value = await unwrap(api.traces.subtree({ id: root, maxDepth: SUBTREE_DEPTH }), "trace subtree refresh");
       if (!isCurrentSelection(request)) return;
-      setNodes(mergeRows(nodes(), value.nodes));
+      preserveTimelineScroll(() => {
+        setNodes(mergeRows(nodes(), value.nodes));
+      });
       const selected = selectedId();
       if (!selected || !value.nodes.some((node) => node.id === selected)) return;
       const detailValue = await unwrap(api.traces.node({ id: selected }), "trace node refresh");
       if (!isCurrentSelection(request)) return;
       setDetail(detailValue);
-      revealDetailInTree(detailValue);
     } catch {
       // Background refresh should not replace the visible trace with an error state.
     }
