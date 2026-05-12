@@ -204,18 +204,16 @@ async function loadTrailEntryRows(c: ReturnType<typeof chatRefs>, limit = 0) {
 }
 
 async function loadStepCount(c: ReturnType<typeof chatRefs>, kind: string | null = null) {
-  const rows = await moo.facts.match({
+  return moo.facts.count({
     store: c.facts,
     graph: c.graph,
     predicate: kind ? "agent:kind" : "rdf:type",
     object: kind || "agent:Step",
   });
-  return rows.length;
 }
 
 async function loadTypeCount(c: ReturnType<typeof chatRefs>, type: string) {
-  const rows = await moo.facts.match({ store: c.facts, graph: c.graph, predicate: "rdf:type", object: type });
-  return rows.length;
+  return moo.facts.count({ store: c.facts, graph: c.graph, predicate: "rdf:type", object: type });
 }
 
 async function loadInputRows(c: ReturnType<typeof chatRefs>, responseRows: Array<Record<string, string>>, limit = 0) {

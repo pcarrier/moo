@@ -624,7 +624,7 @@ export type Moo = {
     history(args: FactPattern): Promise<FactHistoryRow[]>;
     matchAll(args: FactMatchAllArgs): Promise<Bindings[]>;
     stores(args?: { prefix?: string | null }): Promise<string[]>;
-    count(args: FactStoreArg): Promise<number>;
+    count(args: FactStoreArg & Pick<FactPattern, "graph" | "subject" | "predicate" | "object">): Promise<number>;
     swap(args: FactSwapArgs): Promise<FactMutationReceipt>;
     update(args: FactUpdateArgs): Promise<FactMutationReceipt>;
     clearStore(args: FactClearStoreArgs): Promise<FactClearReceipt>;

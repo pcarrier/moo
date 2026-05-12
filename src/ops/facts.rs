@@ -899,10 +899,34 @@ fn op_facts_count(
         return;
     }
     let ref_name = args.get(0).to_rust_string_lossy(scope);
+    let graph = optional_arg_str(scope, &args, 1);
+    let subject = optional_arg_str(scope, &args, 2);
+    let predicate = optional_arg_str(scope, &args, 3);
+    let object = optional_arg_str(scope, &args, 4);
+
+    let mut sql = String::from("select count(*) from quads where ref_name = ?1");
+    let mut vals: Vec<SqlValue> = vec![SqlValue::Text(ref_name.clone())];
+    if let Some(g) = &graph {
+        sql.push_str(&format!(" and graph = ?{}", vals.len() + 1));
+        vals.push(SqlValue::Text(g.clone()));
+    }
+    if let Some(s) = &subject {
+        sql.push_str(&format!(" and subject = ?{}", vals.len() + 1));
+        vals.push(SqlValue::Text(s.clone()));
+    }
+    if let Some(p) = &predicate {
+        sql.push_str(&format!(" and predicate = ?{}", vals.len() + 1));
+        vals.push(SqlValue::Text(p.clone()));
+    }
+    if let Some(o) = &object {
+        sql.push_str(&format!(" and object = ?{}", vals.len() + 1));
+        vals.push(SqlValue::Text(o.clone()));
+    }
+
     let count: Result<i64, String> = with_db(|conn| {
-        conn.prepare_cached("select count(*) from quads where ref_name = ?1")
+        conn.prepare_cached(&sql)
             .map_err(|e| e.to_string())?
-            .query_row(params![&ref_name], |r| r.get::<_, i64>(0))
+            .query_row(params_from_iter(vals.iter()), |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())
     });
     match count {

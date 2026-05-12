@@ -1096,7 +1096,9 @@ const facts: Moo["facts"] = {
     return host.factStores(args.prefix ?? null);
   },
   async count(args) {
-    return host.countFacts(factStore(args, "facts.count"));
+    const { graph = null, subject = null, predicate = null, object = null } = args;
+    const encodedObject = object == null ? null : encodeObject(object);
+    return host.countFacts(factStore(args, "facts.count"), graph, subject, predicate, encodedObject);
   },
   async swap(args) {
     const { removes, adds } = args;

@@ -49,7 +49,7 @@ declare global {
   ): string[][];
   function __op_facts_refs(prefix?: string | null): string[];
   function __op_facts_graph_summaries(store?: string | null, graph?: string | null): string;
-  function __op_facts_count(store: string): number;
+  function __op_facts_count(store: string, graph?: string | null, subject?: string | null, predicate?: string | null, object?: string | null): number;
   function __op_chat_fact_summaries(): string;
   function __op_facts_swap(store: string, removesJson: string, addsJson: string): void;
   function __op_facts_snapshot_copy(

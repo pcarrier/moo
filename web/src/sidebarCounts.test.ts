@@ -33,7 +33,8 @@ describe("left sidebar memory counts", () => {
 
   test("facts and pointers bypass the V8 write lane", () => {
     expect(pool).toContain('"pointers",');
-    expect(pool).toContain('"graph-summaries", "memory-query"');
+    expect(pool).toContain('"graph-summaries",');
+    expect(pool).toContain('"memory-query",');
     expect(ws).toContain('"pointers" => pointers_command(db, payload)');
     expect(ws).toContain('"graph-summaries" => graph_summaries_command(db, payload)');
   });

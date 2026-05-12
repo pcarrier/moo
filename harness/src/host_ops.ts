@@ -55,7 +55,13 @@ export const factHistory = (
 ): string[][] => __op_facts_history(store, graph, subject, predicate, object, limit);
 export const factStores = (prefix?: string | null): string[] => __op_facts_refs(prefix);
 export const graphFactSummaries = (store?: string | null, graph?: string | null): string => __op_facts_graph_summaries(store ?? null, graph ?? null);
-export const countFacts = (store: string): number => __op_facts_count(store);
+export const countFacts = (
+  store: string,
+  graph: string | null = null,
+  subject: string | null = null,
+  predicate: string | null = null,
+  object: string | null = null,
+): number => __op_facts_count(store, graph, subject, predicate, object);
 export const chatFactSummaries = (): string => __op_chat_fact_summaries();
 export const swapFacts = (store: string, removesJson: string, addsJson: string): void => __op_facts_swap(store, removesJson, addsJson);
 export const copyFactSnapshot = (sourceStore: string, targetStore: string, cutoffAt: number, fromGraph: string, toGraph: string): number =>

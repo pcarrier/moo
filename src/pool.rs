@@ -1881,7 +1881,6 @@ enum Lane {
 }
 
 const FAST_READ_ONLY_COMMANDS: &[&str] = &[
-    "describe",
     "dump",
     "chats",
     "chat-autocomplete",
@@ -1911,8 +1910,13 @@ const FAST_READ_ONLY_COMMANDS: &[&str] = &[
     "skill-get",
 ];
 
-const SCAN_READ_ONLY_COMMANDS: &[&str] =
-    &["graph-summaries", "memory-query", "triples", "vocabulary"];
+const SCAN_READ_ONLY_COMMANDS: &[&str] = &[
+    "describe",
+    "graph-summaries",
+    "memory-query",
+    "triples",
+    "vocabulary",
+];
 
 const FRESH_CONTEXT_COMMANDS: &[&str] = &["run-js-tool", "ui-call"];
 
@@ -2057,6 +2061,14 @@ mod tests {
 
         let outcome = run_snapshot_bundle_job(&mut rt, "{}", true);
         assert_eq!(outcome.result.unwrap(), r#"{"ok":true,"value":"two"}"#);
+    }
+
+    #[test]
+    fn describe_uses_scan_lane_without_chat_lock() {
+        assert_eq!(
+            route_input(r#"{"command":"describe","chatId":"abc"}"#),
+            (Lane::ScanRead, None)
+        );
     }
 
     #[test]
