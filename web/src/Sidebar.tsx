@@ -2944,10 +2944,9 @@ type AgentTrailItem = {
   timelineKey?: string;
   detail?: string;
   kind: string;
-  tone?: "title" | "summary" | "todo" | "memory" | "subagent";
+  tone?: "title" | "summary" | "todo" | "subagent";
   path?: string;
   targetChatId?: string;
-  diff?: MemoryDiffItem;
   stats?: { added: number; removed: number };
   titleMarkdown?: boolean;
   detailMarkdown?: boolean;
@@ -2993,10 +2992,6 @@ function AgentTrailRow(props: {
     void props.bag.openFileInSidebar(path);
   };
   const activateTrailItem = () => {
-    if (props.item.diff) {
-      props.bag.openMemoryDiffInSidebar(props.item.diff, "timeline");
-      return;
-    }
     if (props.item.targetChatId) {
       void props.bag.selectChat(props.item.targetChatId);
       return;
@@ -3013,11 +3008,9 @@ function AgentTrailRow(props: {
     activateTrailItem();
   };
   const itemTitle = () =>
-    props.item.diff
-      ? "Open this memory diff in the right sidebar"
-      : props.item.targetChatId
-        ? "Open this subagent chat"
-        : "Jump to this point in the timeline";
+    props.item.targetChatId
+      ? "Open this subagent chat"
+      : "Jump to this point in the timeline";
   const content = () => (
     <>
       <span class="agent-trail-time">
@@ -3026,9 +3019,7 @@ function AgentTrailRow(props: {
       <span class="agent-trail-card">
         <span class="agent-trail-title-line">
           <AgentTrailInline
-            class={
-              "agent-trail-title" + (props.item.diff ? " agent-trail-path" : "")
-            }
+            class="agent-trail-title"
             content={props.item.title}
             markdown={props.item.titleMarkdown}
             onMarkdownClick={onMarkdownClick}
@@ -3061,7 +3052,6 @@ function AgentTrailRow(props: {
         title: props.item.tone === "title",
         summary: props.item.tone === "summary",
         todo: props.item.tone === "todo",
-        memory: props.item.tone === "memory",
         subagent: props.item.tone === "subagent",
       }}
     >
@@ -3112,7 +3102,6 @@ function buildTrailItems(bag: Bag): AgentTrailItem[] {
     .map((item) => {
       if (item.type === "trail") return trailTimelineItem(item);
       if (item.type === "todo-diff") return todoTrailItem(item);
-      if (item.type === "memory-diff") return memoryTrailItem(item);
       if (item.type === "step" && item.kind === "agent:Subagent")
         return subagentTimelineItem(item);
       return null;
@@ -3128,7 +3117,6 @@ function trailSourceKey(item: TimelineItem): string {
     return `input-response:${item.responseId}`;
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
-  if (item.type === "memory-diff") return `memory-diff:${item.id}`;
   if (item.type === "todo-diff") return `todo-diff:${item.id}`;
   return `file-diff:${item.id}`;
 }
@@ -3231,20 +3219,6 @@ function todoTrailItem(item: TodoDiffItem): AgentTrailItem | null {
     tone: "todo",
     detail,
     detailMarkdown: true,
-  };
-}
-
-function memoryTrailItem(item: MemoryDiffItem): AgentTrailItem {
-  return {
-    id: item.id,
-    at: item.at,
-    title: memoryGraphTitle(item),
-    detail: memoryGraphSubtitle(item),
-    timelineKey: `memory-diff:${item.id}`,
-    kind: "memory-diff",
-    tone: "memory",
-    diff: item,
-    stats: memoryDiffFactStats(item),
   };
 }
 

@@ -400,6 +400,7 @@ describe("right sidebar diff tabs", () => {
   test("trail TODO entries prefer live timeline rows over stale trail rows", () => {
     expect(sidebar).toContain('if (item.type === "todo-diff") return todoTrailItem(item);');
     expect(sidebar).not.toContain('if (item.type === "file-diff") return diffTimelineItem(item);');
+    expect(sidebar).not.toContain('if (item.type === "memory-diff") return memoryTrailItem(item);');
     expect(sidebar).toContain("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);");
     expect(sidebar).toContain("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);");
     expect(sidebar.indexOf("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);")).toBeLessThan(
