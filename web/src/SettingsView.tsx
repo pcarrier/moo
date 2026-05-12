@@ -114,7 +114,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     }
     setDrafts(providerDrafts);
     setServerBaseUrl(next.serverBaseUrl || "");
-    setCompactionThresholdPercent(numberOrBlank(next.compaction?.thresholdPercent ?? 75));
+    setCompactionThresholdPercent(numberOrBlank(next.compaction?.thresholdPercent ?? 50));
     setMaxAttempts(numberOrBlank(next.retries.maxAttempts));
     setBaseDelayMs(numberOrBlank(next.retries.baseDelayMs));
     setMaxDelayMs(numberOrBlank(next.retries.maxDelayMs));

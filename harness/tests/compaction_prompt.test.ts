@@ -5,6 +5,7 @@ import {
   COMPACTION_CONTINUATION_INSTRUCTION,
   compactionContinuationSystemMessage,
 } from "../src/prompt";
+import { tokenPressureFromEstimates } from "../src/commands/step";
 import {
   DYNAMIC_CONTEXT_MESSAGE_ROLE,
   buildStreamingLLMRequest,
@@ -56,6 +57,17 @@ describe("compaction prompts", () => {
     expect(fitted[0]).toEqual(messages[0]);
     expect(fitted.at(-1)).toEqual(messages.at(-1));
     expect(fitted.some((m) => String(m.content).includes("oversized transcript entries were truncated"))).toBe(true);
+  });
+
+  test("uses request prompt tokens for visible token pressure", () => {
+    expect(tokenPressureFromEstimates(40_000, 70_000)).toEqual({
+      used: 70_000,
+      source: "context",
+    });
+    expect(tokenPressureFromEstimates(70_000, 40_000)).toEqual({
+      used: 70_000,
+      source: "compaction",
+    });
   });
 
   test("uses a conservative compaction request budget", () => {

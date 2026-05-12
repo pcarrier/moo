@@ -836,6 +836,19 @@ export async function restartOngoingCommand() {
   };
 }
 
+
+export function tokenPressureFromEstimates(compactionPromptTokens: number, requestPromptTokens: number): {
+  used: number;
+  source: "context" | "compaction";
+} {
+  const compaction = Math.max(0, Math.floor(Number(compactionPromptTokens) || 0));
+  const request = Math.max(0, Math.floor(Number(requestPromptTokens) || 0));
+  return {
+    used: Math.max(compaction, request),
+    source: request > compaction ? "context" : "compaction",
+  };
+}
+
 export async function stepPrepareCommand(input: Input) {
   const chatId = input.chatId;
   const provider = input.provider;
@@ -863,25 +876,28 @@ export async function stepPrepareCommand(input: Input) {
   if (passedMessages == null) {
     messages = await traceSpan("llm.build_messages", { chatId }, () => buildLLMMessages(chatId));
     await traceMark("llm.messages.ready", { chatId, source: "chat", ...messagesForTrace(messages, TOOLS) });
-    estimatedPromptTokens = await traceSpan("compaction.estimate", { chatId, messages: messages.length }, () => estimateCompactionPromptTokens(chatId, messages));
+    const compactionPromptTokens = await traceSpan("compaction.estimate", { chatId, messages: messages.length }, () => estimateCompactionPromptTokens(chatId, messages));
+    const requestPromptTokens = estimateTokens(messages, TOOLS);
+    const pressure = tokenPressureFromEstimates(compactionPromptTokens, requestPromptTokens);
+    estimatedPromptTokens = pressure.used;
     const threshold = await compactionThresholdForBudget(budget);
     await recordLastCompactionPromptTokens(chatId, estimatedPromptTokens);
     moo.events.publish({ payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
       budget,
       threshold,
-      source: "compaction",
+      source: pressure.source,
       estimated: true,
     }) });
-    await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
-    await traceMark("compaction.check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
+    await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+    await traceMark("compaction.check", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
     if (estimatedPromptTokens >= threshold) {
-      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
       const compactionMessages = await traceSpan("compaction.build_messages", { chatId }, () => buildCompactionMessages(chatId));
       moo.events.publish({ payload: { kind: "compaction-start", chatId } });
       const rawSummaryMessages = buildCompactionSummaryPromptMessages(compactionMessages);
       const requestTokenLimit = compactionRequestTokenLimit(budget, threshold);
       const summaryMessages = fitCompactionSummaryMessages(rawSummaryMessages, requestTokenLimit);
-      const requestPromptTokens = estimateTokens(summaryMessages);
+      const summaryRequestPromptTokens = estimateTokens(summaryMessages);
       const compactionProvider = compactionProviderForRequest(provider);
       const request = buildStreamingLLMRequest(compactionProvider, summaryMessages, null);
       await traceMark("llm.request.prepared", {
@@ -893,11 +909,11 @@ export async function stepPrepareCommand(input: Input) {
         url: request.url,
         responsesApi: request.responsesApi,
         estimatedPromptTokens,
-        requestPromptTokens,
+        requestPromptTokens: summaryRequestPromptTokens,
         requestTokenLimit,
         tokenBudget: budget,
         tokenThreshold: threshold,
-        truncatedForRequest: requestPromptTokens < estimateTokens(rawSummaryMessages),
+        truncatedForRequest: summaryRequestPromptTokens < estimateTokens(rawSummaryMessages),
         ...messagesForTrace(summaryMessages, null),
         request: llmBodyForTrace(request.body),
       });
@@ -915,7 +931,7 @@ export async function stepPrepareCommand(input: Input) {
           estimatedPromptTokens,
           tokenBudget: budget,
           tokenThreshold: threshold,
-          requestPromptTokens,
+          requestPromptTokens: summaryRequestPromptTokens,
           requestTokenLimit,
           requestProvider: compactionProvider.name,
           streamEvents: llmStreamEventOptions(chatId, "", {
@@ -933,6 +949,12 @@ export async function stepPrepareCommand(input: Input) {
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
     await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
     const threshold = await compactionThresholdForBudget(budget);
+    moo.events.publish({ payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
+      budget,
+      threshold,
+      source: "context",
+      estimated: true,
+    }) });
     await traceMark("compaction.carried_check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
     if (estimatedPromptTokens >= threshold) {
       await traceMark("compaction.carried_triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });

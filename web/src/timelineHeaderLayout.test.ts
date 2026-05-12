@@ -74,6 +74,16 @@ describe("timeline loading header layout", () => {
     expect(body).toContain("border-radius: 0");
   });
 
+
+  test("renders token usage against full context with a compaction marker", () => {
+    expect(timeline).toContain("tokens.used / safeBudget()");
+    expect(timeline).toContain("(tokens.threshold / safeBudget()) * 100");
+    expect(timeline).toContain('<span class="token-mark" style={{ left: thresholdPct() + "%" }} />');
+    expect(timeline).toContain("formatTokenCount(safeTokens().budget)");
+    expect(timeline).not.toContain("const safeThreshold = () => Math.max(0, safeTokens().threshold)");
+    expect(timeline).not.toContain("safeTokens().threshold || safeTokens().budget");
+  });
+
   test("sizes timeline app code buttons with the app pills", () => {
     expect(timeline).toContain('class="timeline-header-app-group"');
     expect(timeline).toContain('class="timeline-header-app-code"');

@@ -701,7 +701,7 @@ fn normalize_ui_settings(raw: Option<&Value>) -> Value {
 
 fn normalize_compaction_settings(input: Option<&Value>) -> Value {
     let obj = input.and_then(Value::as_object);
-    json!({ "thresholdPercent": clamp_i64(obj.and_then(|o| value_i64(o.get("thresholdPercent"))), 75, 1, 100) })
+    json!({ "thresholdPercent": clamp_i64(obj.and_then(|o| value_i64(o.get("thresholdPercent"))), 50, 1, 100) })
 }
 
 fn non_empty_string(value: Option<&Value>) -> Option<String> {

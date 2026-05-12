@@ -60,8 +60,8 @@ describe("settings layout", () => {
     expect(settingsView).not.toContain('draftsForSave');
   });
 
-  it("defaults automatic compaction to seventy-five percent", () => {
-    expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 75");
+  it("defaults automatic compaction to fifty percent", () => {
+    expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 50");
   });
   it("orders behavior immediately after providers", () => {
     expect(settingsView).toContain('{ id: "providers", title: "Providers" },\n  { id: "behavior", title: "Behavior" },\n  { id: "runtime", title: "Runtime" },\n  { id: "traces", title: "Traces" },');
