@@ -65,6 +65,7 @@ import {
   type RightSidebarLayoutState,
 } from "./state/layout";
 import { normalizeEffort } from "./state/effort";
+import { hasRestartableConversationState } from "./state/resume";
 import {
   expectedChatWorktreePath,
   withExpectedChatWorktreePath,
@@ -1171,11 +1172,9 @@ export function createState() {
     if (!id) return false;
     if (chatBusy(id)) return false;
     const status = currentChat()?.status;
-    return (
-      status === "agent:Failed" ||
-      status === "agent:Cancelled" ||
-      (status === "agent:Done" && hasUnansweredUserInput(timeline()))
-    );
+    if (status === "agent:Failed" || status === "agent:Cancelled") return true;
+    if (status === "agent:Running" || status === "agent:Queued" || status === "ui:Pending") return false;
+    return hasRestartableConversationState(timeline());
   };
   const currentChatPath = () => currentChat()?.path ?? null;
   const currentChatWorktreePath = () => {
@@ -3069,30 +3068,6 @@ export function createState() {
 
   function sortTimelineItems(items: TimelineItem[]): TimelineItem[] {
     return [...items].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
-  }
-
-  function isConversationStepKind(kind: string): boolean {
-    return (
-      kind === "agent:UserInput" ||
-      kind === "agent:Reply" ||
-      kind === "agent:Final" ||
-      kind === "agent:Error"
-    );
-  }
-
-
-  function hasUnansweredUserInput(items: TimelineItem[]): boolean {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i];
-      if (item?.type !== "step") continue;
-      if (!isConversationStepKind(item.kind)) continue;
-      return (
-        item.kind === "agent:UserInput" &&
-        item.status === "agent:Done" &&
-        item.deletedAt == null
-      );
-    }
-    return false;
   }
 
   function trimTimelineRows(items: TimelineItem[]): TimelineItem[] {

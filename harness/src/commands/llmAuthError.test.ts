@@ -68,4 +68,20 @@ describe("missing LLM authentication", () => {
     expect(resume).toContain('await recordMissingLlmAuthError(chatId, provider, "resume");');
     expect(resume).not.toContain("await reply(");
   });
+
+  test("keeps authentication error steps in the conversation status stream", () => {
+    const stepSource = readFileSync(new URL("../moo.ts", import.meta.url), "utf8");
+    expect(stepSource).toContain('latest?.status || "agent:Done"');
+
+    const factSummarySource = readFileSync(
+      new URL("../../../src/ops/facts.rs", import.meta.url),
+      "utf8",
+    );
+    expect(factSummarySource).toContain(
+      "select s.ref_name, s.object, c.object",
+    );
+    expect(factSummarySource).toContain(
+      "order by s.ref_name, cast(c.object as integer) desc",
+    );
+  });
 });
