@@ -46,7 +46,7 @@ use v8::inspector::{
 use crate::host;
 use crate::runtime;
 use crate::runtime::AgentRunHandler;
-use crate::server::BundleProvider;
+use crate::server::{self, BundleProvider};
 
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const CONTEXT_GROUP_ID: i32 = 1;
@@ -68,9 +68,12 @@ pub fn spawn(
     let listener = TcpListener::bind(addr).map_err(|e| format!("cdp bind {addr}: {e}"))?;
     let local = listener
         .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| addr.to_string());
-    eprintln!("cdp: listening on http://{local} — DevTools targets at http://{local}/json/list");
+        .map_err(|e| format!("cdp local addr {addr}: {e}"))?;
+    let listen_url = server::http_url_for_addr(local);
+    let advertised = server::wildcard_visit_addr_for_addr(local)
+        .unwrap_or(local)
+        .to_string();
+    eprintln!("cdp: listening on {listen_url} — DevTools targets at http://{advertised}/json/list");
 
     // Linked source map for the bundle. We re-read on every request so it
     // tracks the current bundle through --watch.
@@ -87,7 +90,7 @@ pub fn spawn(
 
     {
         let bundle = bundle.clone();
-        let advertised = local.clone();
+        let advertised_host = advertised.clone();
         let map_for_inspector = map_path.clone();
         let inspector_active_target = active_target.clone();
         let inspector_db_path = db_path.clone();
@@ -98,7 +101,7 @@ pub fn spawn(
                     session_rx,
                     inspect_rx,
                     bundle,
-                    advertised,
+                    advertised_host,
                     map_for_inspector,
                     inspector_active_target,
                     inspector_db_path,
@@ -107,7 +110,7 @@ pub fn spawn(
             .map_err(|e| format!("spawn cdp isolate thread: {e}"))?;
     }
 
-    let advertised = local.clone();
+    let advertised_host = advertised.clone();
     let listener_active_target = active_target.clone();
     thread::Builder::new()
         .name("moo-cdp-listener".into())
@@ -115,7 +118,7 @@ pub fn spawn(
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let context = CdpConnContext {
-                    advertised_host: advertised.clone(),
+                    advertised_host: advertised_host.clone(),
                     session_tx: session_tx.clone(),
                     map_path: map_path.clone(),
                     bundle: bundle.clone(),

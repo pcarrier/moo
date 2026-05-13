@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -29,6 +29,35 @@ pub fn normalize_base_url(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+pub(crate) fn http_url_for_addr(addr: SocketAddr) -> String {
+    format!("http://{addr}")
+}
+
+pub(crate) fn wildcard_visit_addr_for_addr(addr: SocketAddr) -> Option<SocketAddr> {
+    let port = addr.port();
+    match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn wildcard_visit_url_for_addr(addr: SocketAddr) -> Option<String> {
+    wildcard_visit_addr_for_addr(addr).map(http_url_for_addr)
+}
+
+fn listening_message(addr: SocketAddr) -> String {
+    let listen_url = http_url_for_addr(addr);
+    match wildcard_visit_url_for_addr(addr) {
+        Some(visit_url) => format!("listening on {listen_url} — visit {visit_url}"),
+        None => format!("listening on {listen_url}"),
+    }
+}
+
 pub fn serve(
     host_addr: &str,
     port: u16,
@@ -38,6 +67,7 @@ pub fn serve(
     db: &str,
 ) -> Result<(), String> {
     let listener = TcpListener::bind((host_addr, port)).map_err(|e| e.to_string())?;
+    let local_addr = listener.local_addr().map_err(|e| e.to_string())?;
     // Pool size needs headroom for read-only commands (describe/triples/etc)
     // to overlap with long-running `step` calls that hold an isolate for the
     // duration of LLM streaming.
@@ -57,6 +87,7 @@ pub fn serve(
     let pool = Arc::new(Pool::new(workers, db, base_url.clone()));
     driver::restart_ongoing(pool.clone(), bundle());
     let db = Arc::new(db.to_string());
+    eprintln!("moo: {}", listening_message(local_addr));
 
     for stream in listener.incoming() {
         match stream {
@@ -811,5 +842,43 @@ mod tests {
             writer.write_all(html).unwrap();
         }
         assert_eq!(decode_ui_html(&compressed).unwrap(), html);
+    }
+
+    #[test]
+    fn http_url_for_addr_formats_ipv6_with_brackets() {
+        let addr: SocketAddr = "[::1]:49152".parse().unwrap();
+        assert_eq!(http_url_for_addr(addr), "http://[::1]:49152");
+    }
+
+    #[test]
+    fn wildcard_visit_url_uses_loopback_url() {
+        assert_eq!(
+            wildcard_visit_url_for_addr("0.0.0.0:49152".parse().unwrap()).as_deref(),
+            Some("http://127.0.0.1:49152")
+        );
+        assert_eq!(
+            wildcard_visit_url_for_addr("[::]:49152".parse().unwrap()).as_deref(),
+            Some("http://[::1]:49152")
+        );
+        assert_eq!(
+            wildcard_visit_url_for_addr("127.0.0.1:49152".parse().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn listening_message_includes_visit_url_for_wildcard() {
+        assert_eq!(
+            listening_message("0.0.0.0:49152".parse().unwrap()),
+            "listening on http://0.0.0.0:49152 — visit http://127.0.0.1:49152"
+        );
+        assert_eq!(
+            listening_message("[::]:49152".parse().unwrap()),
+            "listening on http://[::]:49152 — visit http://[::1]:49152"
+        );
+        assert_eq!(
+            listening_message("127.0.0.1:49152".parse().unwrap()),
+            "listening on http://127.0.0.1:49152"
+        );
     }
 }
