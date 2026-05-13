@@ -230,7 +230,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setBusy(true);
     setMessage(null);
     setToolsLoaded(false);
-    const listed = await api.mcp.list();
+    const listed = await api("mcp-list", {});
     if (!listed.ok) {
       setMessage(listed.error.message);
       setBusy(false);
@@ -244,11 +244,11 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     const statuses: Record<string, boolean> = {};
     await Promise.all(nextServers.map(async (s) => {
       if (!s.oauth) return;
-      const status = await api.mcp.oauth.status(s.id);
+      const status = await api("mcp-oauth-status", { serverId: s.id });
       if (status.ok) statuses[s.id] = status.value.status.authenticated;
     }));
     setAuth(statuses);
-    const allTools = await api.mcp.tools();
+    const allTools = await api("mcp-tools", {});
     if (allTools.ok) setTools(allTools.value.tools);
     else {
       setTools([]);
@@ -273,7 +273,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setMessage(null);
     try {
       const config = configFromDraft(draft());
-      const saved = await api.mcp.save(config);
+      const saved = await api("mcp-save", config);
       const err = errorMessage(saved);
       if (err || !saved.ok) {
         setMessage(err || "failed to save");
@@ -282,7 +282,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
       setSelected(saved.value.server.id);
       setDraft(draftFromServer(saved.value.server));
       if (options.login && saved.value.server.oauth) {
-        const started = await api.mcp.oauth.start({ serverId: saved.value.server.id, origin: window.location.origin, returnChatId: bag.chatId() || undefined });
+        const started = await api("mcp-oauth-start", { serverId: saved.value.server.id, origin: window.location.origin, returnChatId: bag.chatId() || undefined });
         if (!started.ok) {
           setMessage(started.error.message);
           return;
@@ -302,7 +302,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
   async function login(id: string) {
     setBusy(true);
     setMessage(null);
-    const started = await api.mcp.oauth.start({ serverId: id, origin: window.location.origin, returnChatId: bag.chatId() || undefined });
+    const started = await api("mcp-oauth-start", { serverId: id, origin: window.location.origin, returnChatId: bag.chatId() || undefined });
     setBusy(false);
     if (!started.ok) {
       setMessage(started.error.message);
@@ -313,7 +313,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
 
   async function logout(id: string) {
     setBusy(true);
-    const removed = await api.mcp.oauth.logout(id);
+    const removed = await api("mcp-oauth-logout", { serverId: id });
     if (!removed.ok) setMessage(removed.error.message);
     else {
       setMessage("logged out");
@@ -324,7 +324,7 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
 
   async function remove(id: string) {
     setBusy(true);
-    const removed = await api.mcp.remove(id);
+    const removed = await api("mcp-remove", { id });
     if (!removed.ok) setMessage(removed.error.message);
     else {
       if (selected() === id) {

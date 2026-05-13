@@ -65,8 +65,8 @@ describe("new chat layout", () => {
   });
 
   it("offers git branch selection as a second step", () => {
-    expect(sidebar).toContain("api.fs.gitBranches");
-    expect(sidebar).toContain("api.fs.pullBranches");
+    expect(sidebar).toContain('api("fs-git-branches"');
+    expect(sidebar).toContain('api("fs-git-pull-branches"');
     expect(sidebar).toContain("const [pendingProjectPath, setPendingProjectPath] = createSignal<string | null>(null);");
     expect(sidebar).toContain("<Show when={pendingProjectPath()} fallback=");
     const fallbackStart = sidebar.indexOf("<Show when={pendingProjectPath()} fallback=");

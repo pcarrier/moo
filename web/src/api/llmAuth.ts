@@ -1,4 +1,3 @@
-import { callCommand } from "./contract";
 import type { ApiCommand } from "./contract";
 
 export type LlmProviderId = "openai" | "anthropic" | "qwen" | "xai";
@@ -50,7 +49,7 @@ export type LlmAuthSettings = {
   updatedAt?: number;
 };
 
-type LlmAuthSaveInput = Partial<Record<LlmProviderId, LlmProviderSaveSettings>> & { serverBaseUrl?: string | null; compaction?: Partial<LlmCompactionSettings>; retries?: Partial<LlmRetrySettings>; ui?: Partial<UiBehaviorSettings> };
+export type LlmAuthSaveInput = Partial<Record<LlmProviderId, LlmProviderSaveSettings>> & { serverBaseUrl?: string | null; compaction?: Partial<LlmCompactionSettings>; retries?: Partial<LlmRetrySettings>; ui?: Partial<UiBehaviorSettings> };
 
 export type LlmDeviceLogin = {
   provider: LlmProviderId;
@@ -69,18 +68,3 @@ export type LlmAuthCommands =
   | ApiCommand<"llm-auth-oauth-device-start", { provider?: LlmProviderId }, { device: LlmDeviceLogin }>
   | ApiCommand<"llm-auth-oauth-device-poll", { state: string }, { pending: true; interval: number; expiresAt: number } | { pending: false; settings: LlmAuthSettings }>
   | ApiCommand<"llm-auth-oauth-logout", { provider?: LlmProviderId }, { settings: LlmAuthSettings }>;
-
-export const llmAuthApi = {
-  get: () => callCommand("llm-auth-get", {}),
-  save: (params: LlmAuthSaveInput) =>
-    callCommand("llm-auth-save", params),
-  oauthStart: (params: { provider?: LlmProviderId; origin?: string; redirectUri?: string; clientId?: string; scope?: string; authorizationUrl?: string; tokenUrl?: string } = {}) =>
-    callCommand("llm-auth-oauth-start", params),
-  oauthComplete: (state: string, code: string) =>
-    callCommand("llm-auth-oauth-complete", { state, code }),
-  oauthDeviceStart: (provider: LlmProviderId = "openai") =>
-    callCommand("llm-auth-oauth-device-start", { provider }),
-  oauthDevicePoll: (state: string) =>
-    callCommand("llm-auth-oauth-device-poll", { state }),
-  oauthLogout: (provider: LlmProviderId = "openai") => callCommand("llm-auth-oauth-logout", { provider }),
-};

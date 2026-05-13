@@ -17,10 +17,6 @@ export type ApiCommand<K extends string, Req extends Record<string, unknown>, Re
   res: Res;
 };
 
-export type AnyApiCommand = ApiCommand<string, Record<string, unknown>, unknown>;
-
-export type ApiCommandRequest<C extends AnyApiCommand> = C["req"] & { command: C["command"] };
-
 export type KnownApiCommand =
   | ChatCommands
   | FsCommands
@@ -31,19 +27,17 @@ export type KnownApiCommand =
   | V8Commands
   | LlmAuthCommands
   | TraceCommands
-  | SkillCommands
   | SkillCommands;
 
+export type KnownCommandName = KnownApiCommand["command"];
 export type ApiCommandMap = {
   [K in KnownCommandName]: Extract<KnownApiCommand, { command: K }>;
 };
-
-export type KnownCommandName = KnownApiCommand["command"];
 export type ApiCommandReq<K extends KnownCommandName> = ApiCommandMap[K]["req"];
 export type ApiCommandRes<K extends KnownCommandName> = ApiCommandMap[K]["res"];
 export type ApiCommandResult<K extends KnownCommandName> = Promise<ApiResult<ApiCommandRes<K>>>;
 
-export async function callCommand<K extends KnownCommandName>(
+export function api<K extends KnownCommandName>(
   command: K,
   req: ApiCommandReq<K>,
 ): ApiCommandResult<K> {

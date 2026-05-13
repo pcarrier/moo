@@ -1,12 +1,9 @@
-import { callCommand } from "./contract";
-import type { ApiCommand, ApiCommandReq, ApiCommandResult } from "./contract";
-import { optional } from "./utils";
+import type { ApiCommand } from "./contract";
 import type {
   GraphSummariesValue,
   MemoryBindings,
   MemoryPattern,
   MemoryWrite,
-  PointerEntry,
   Predicate,
   TriplesValue,
   PointersValue,
@@ -28,46 +25,3 @@ export type MemoryCommands =
   | ApiCommand<"triple-restore", { graph: string; subject: string; predicate: string; object: string }, MemoryWrite & { graph: string; restored: number }>
   | ApiCommand<"vocabulary", Record<string, never>, { predicates: Predicate[] }>
   | ApiCommand<"vocab-define", { name: string; description?: string; example?: string }, unknown>;
-
-function triples(params: ApiCommandReq<"triples"> = {}): ApiCommandResult<"triples"> {
-  return callCommand("triples", params);
-}
-
-export const memoryApi = {
-  query: (patterns: MemoryPattern[], opts?: { project?: string; limit?: number }) =>
-    callCommand("memory-query", {
-      patterns,
-      ...optional({ project: opts?.project, limit: opts?.limit }),
-    }),
-  triples,
-  assert: (args: MemoryWriteArgs) =>
-    callCommand("assert", args),
-  retract: (args: MemoryWriteArgs) =>
-    callCommand("retract", args),
-  vocabulary: () =>
-    callCommand("vocabulary", {}),
-  defineVerb: (name: string, description?: string, example?: string) =>
-    callCommand("vocab-define", { name, ...optional({ description, example }) }),
-  pointers: {
-    list: (prefix?: string) =>
-      callCommand("pointers", optional({ prefix })),
-    remove: (name: string, opts?: { recursive?: boolean }) =>
-      callCommand("pointer-rm", { name, ...optional({ recursive: opts?.recursive }) }),
-  },
-  graphs: {
-    summaries: (opts?: { project?: string | boolean; removed?: "exclude" | "include" | "only" }) =>
-      callCommand("graph-summaries", optional({ project: opts?.project, removed: opts?.removed })),
-    remove: (graph: string) =>
-      callCommand("graph-rm", { graph }),
-  },
-  subject: {
-    remove: (graph: string, subject: string) =>
-      callCommand("subject-rm", { graph, subject }),
-  },
-  triple: {
-    remove: (graph: string, subject: string, predicate: string, object: string) =>
-      callCommand("triple-rm", { graph, subject, predicate, object }),
-    restore: (graph: string, subject: string, predicate: string, object: string) =>
-      callCommand("triple-restore", { graph, subject, predicate, object }),
-  },
-};

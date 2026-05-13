@@ -174,7 +174,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.skills.get(id, skillContext(bag));
+      const result = await api("skill-get", { id, ...skillContext(bag) });
       if (!result.ok) return setMessage(result.error.message);
       if (!result.value.skill) return setMessage("skill not found");
       const next = draftFromSkill(result.value.skill);
@@ -191,7 +191,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.skills.save(toSaveInput(draft()));
+      const result = await api("skill-save", toSaveInput(draft()));
       if (!result.ok) return setMessage(result.error.message || "failed to save");
       const next = draftFromSkill(result.value.skill);
       setSelected(result.value.skill.id);
@@ -215,7 +215,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setMessage(null);
     try {
       if (canPersistRefresh) {
-        const result = await api.skills.refresh(selectedId, skillContext(bag));
+        const result = await api("skill-refresh", { id: selectedId, ...skillContext(bag) });
         if (!result.ok) return setMessage(result.error.message || "fetch failed");
         if (!result.value.ok || !result.value.skill) return setMessage(result.value.error || "fetch failed");
         const next = draftFromSkill(result.value.skill);
@@ -226,7 +226,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
         return;
       }
 
-      const result = await api.skills.download(value);
+      const result = await api("skill-download", { url: value });
       if (!result.ok) return setMessage(result.error.message || "fetch failed");
       setDraft((current) => ({
         ...current,
@@ -245,7 +245,7 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.skills.remove(id);
+      const result = await api("skill-remove", { id });
       if (!result.ok) setMessage(result.error.message);
       else {
         if (selected() === id) reset();

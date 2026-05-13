@@ -122,7 +122,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
         setVisibleFrameDoc(null);
         return;
       }
-      const r = await api.ui.bundle(uiId);
+      const r = await api("ui-bundle", { uiId });
       if (activeAppKey() !== appKey) return;
       if (!r.ok) {
         showFrameDoc(appKey, buildUiSrcdoc(`<p>${escapeHtml(r.error.message)}</p>`, "", ""));
@@ -157,27 +157,27 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
       if (msg.method === "state:get") {
         const inst = activeInstanceId();
         if (!inst) throw new Error("no UI instance is open");
-        const r = await api.ui.state.get(inst);
+        const r = await api("ui-state-get", { instanceId: inst });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "state:set") {
         const inst = activeInstanceId();
         if (!inst) throw new Error("no UI instance is open");
-        const r = await api.ui.state.set(inst, msg.state ?? {});
+        const r = await api("ui-state-set", { instanceId: inst, state: msg.state ?? {} });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "call") {
         const uiId = activeUiId();
         if (!uiId) throw new Error("no UI is open");
-        const r = await api.ui.call({ uiId, instanceId: activeInstanceId(), chatId: bag.chatId(), name: String(msg.name || "default"), input: msg.input ?? {} });
+        const r = await api("ui-call", { uiId, instanceId: activeInstanceId(), chatId: bag.chatId(), name: String(msg.name || "default"), input: msg.input ?? {} });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:query") {
-        const r = await api.memory.query(msg.patterns ?? [], msg.opts ?? undefined);
+        const r = await api("memory-query", { patterns: msg.patterns ?? [], ...(msg.opts ?? {}) });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:triples") {
-        const r = await api.memory.triples({
+        const r = await api("triples", {
           subject: typeof msg.subject === "string" ? msg.subject : undefined,
           predicate: typeof msg.predicate === "string" ? msg.predicate : undefined,
           object: typeof msg.object === "string" ? msg.object : undefined,
@@ -186,11 +186,11 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:assert") {
-        const r = await api.memory.assert({ subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
+        const r = await api("assert", { subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:retract") {
-        const r = await api.memory.retract({ subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
+        const r = await api("retract", { subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "open") {

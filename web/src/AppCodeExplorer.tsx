@@ -171,7 +171,7 @@ export function AppCodeExplorer(props: { bag: Bag; uiId: string }) {
   const [bundle, { refetch: refetchBundle }] = createResource(
     () => props.uiId.trim(),
     async (uiId) => {
-      const r = await api.ui.bundle(uiId);
+      const r = await api("ui-bundle", { uiId });
       if (!r.ok) throw new Error(r.error.message);
       return r.value;
     },

@@ -142,9 +142,9 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         return;
       }
       const [trace, v8, r] = await Promise.all([
-        api.traces.saveSettings(currentTrace.config),
-        api.v8.saveSettings(currentV8.settings),
-        api.llmAuth.save({
+        api("trace-config-save", { config: currentTrace.config }),
+        api("v8-settings-save", { settings: currentV8.settings }),
+        api("llm-auth-save", {
         serverBaseUrl: serverBaseUrl(),
         openai: {
           authMode: d.openai.authMode,
@@ -213,7 +213,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setError(null);
     setDeviceLogin(null);
     try {
-      const r = await api.llmAuth.oauthDeviceStart(id);
+      const r = await api("llm-auth-oauth-device-start", { provider: id });
       if (r.ok) {
         setDeviceLogin(r.value.device);
         void pollDeviceLogin(r.value.device.state, r.value.device.interval);
@@ -229,7 +229,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const wait = Math.max(1000, intervalSeconds * 1000);
     while (deviceLogin()?.state === state) {
       await new Promise((resolve) => setTimeout(resolve, wait));
-      const r = await api.llmAuth.oauthDevicePoll(state);
+      const r = await api("llm-auth-oauth-device-poll", { state });
       if (!r.ok) {
         setError(r.error.message);
         setDeviceLogin(null);
@@ -251,7 +251,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setError(null);
     setDeviceLogin(null);
     try {
-      const r = await api.llmAuth.oauthLogout(id);
+      const r = await api("llm-auth-oauth-logout", { provider: id });
       if (r.ok) {
         props.bag.setCachedSettings(r.value.settings);
         hydrate(r.value.settings);
@@ -288,7 +288,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setTestingTrace(true);
     setError(null);
     setTraceTestMessage(null);
-    const result = await api.traces.testSettings(currentTrace.config);
+    const result = await api("trace-config-test", { config: currentTrace.config });
     setTestingTrace(false);
     if (!result.ok) {
       setTraceTestPassed(false);

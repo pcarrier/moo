@@ -533,8 +533,7 @@ async function fileDiffPayloadForHash(
   if (!normalized) return null;
   let cached = fileDiffPayloadCache.get(normalized);
   if (!cached) {
-    cached = api.objects
-      .get(normalized as Sha256Hash)
+    cached = api("object-get", { hash: normalized as Sha256Hash })
       .then((result) =>
         result.ok ? parseFileDiffPayloadObject(result.value.object) : null,
       )
@@ -928,7 +927,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [explorerError, setExplorerError] = createSignal<string | null>(null);
 
   async function loadRecentPaths() {
-    const recent = await api.chat.recentPaths();
+    const recent = await api("chat-recent-paths", {});
     setRecentPathsLoaded(true);
     if (!recent.ok) {
       setRecentRepoKinds({});
@@ -947,7 +946,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   }
 
   async function loadRecentRepoKinds() {
-    const recent = await api.chat.recentPaths(true);
+    const recent = await api("chat-recent-paths", { includeRepos: true });
     if (!recent.ok) return;
     const kinds: Record<string, GitBranchesValue["repoKind"]> = {};
     for (const repo of recent.value.repos || [])
@@ -1049,7 +1048,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const seq = ++branchLoadSeq;
     setBranchesLoading(true);
     setBranchesError(null);
-    const r = await api.fs.gitBranches(expandHome(displayPath));
+    const r = await api("fs-git-branches", { path: expandHome(displayPath) });
     if (seq !== branchLoadSeq) return r.ok ? r.value : null;
     setBranchesLoading(false);
     if (!r.ok) {
@@ -1079,7 +1078,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const path = branchPath() || explorerPath();
     setBranchesPulling(true);
     setBranchesError(null);
-    const r = await api.fs.pullBranches(expandHome(path));
+    const r = await api("fs-git-pull-branches", { path: expandHome(path) });
     setBranchesPulling(false);
     if (!r.ok) {
       setBranchesError(r.error.message);
@@ -1091,7 +1090,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   async function loadExplorer(path: string) {
     setExplorerBusy(true);
     setExplorerError(null);
-    const r = await api.fs.list(expandHome(path));
+    const r = await api("fs-list", { path: expandHome(path) });
     setExplorerBusy(false);
     if (!r.ok) {
       setExplorerError(r.error.message);
@@ -1187,7 +1186,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       delete next[path];
       return next;
     });
-    const result = await api.chat.removeRecentPath(expandHome(path));
+    const result = await api("chat-remove-recent-path", { path: expandHome(path) });
     if (!result.ok) {
       setRecentPaths(previous);
       setExplorerError(result.error.message);
@@ -2536,7 +2535,7 @@ function BrowserTab(props: {
     });
     const root = rootPath();
     const revision = fileSizeRevisionForPath(path, trailSourceItems(props.bag));
-    void api.fs.read(path, root, true).then((r) => {
+    void api("fs-read", { path, basePath: root, includeDiff: true }).then((r) => {
       if (seq !== readSeq) return;
       if (!r.ok) {
         setFile((prev) => ({
@@ -3807,7 +3806,7 @@ function ExpandedFileDiffCard(props: {
 
         setSizeLoading(true);
         try {
-          const r = await api.fs.read(nextPath, basePath);
+          const r = await api("fs-read", { path: nextPath, basePath });
           if (request !== sizeRequest) return;
           const nextSize = r.ok && r.value.kind !== "dir" ? r.value.size : null;
           if (nextSize !== null) {
@@ -4093,7 +4092,7 @@ function DiffDetailTab(props: {
         }
         if (wantsSource) setSourceLoading(true);
         try {
-          const r = await api.fs.read(nextPath, basePath);
+          const r = await api("fs-read", { path: nextPath, basePath });
           if (request !== sizeRequest) return;
           const nextSize = r.ok && r.value.kind !== "dir" ? r.value.size : null;
           if (nextSize !== null) {
@@ -4678,7 +4677,7 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
 
   onMount(() => {
     if (bag.traceSettingsCache()) return;
-    void api.traces.settings().then((result) => {
+    void api("trace-config-get", {}).then((result) => {
       if (result.ok) bag.setCachedTraceSettings(result.value);
     });
   });
