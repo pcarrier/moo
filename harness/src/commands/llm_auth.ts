@@ -235,7 +235,9 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
     apiKey: typeof apiKeyInput === "string" && !apiKeyInput.startsWith("••••") ? apiKeyInput.trim() || null : current.apiKey ?? null,
     baseUrl: typeof providerInput.baseUrl === "string" ? providerInput.baseUrl.trim() || null : current.baseUrl ?? null,
   };
-  if (id !== "openai" || providerInput.clearOAuth === true || authMode !== "oauth") {
+  // Preserve OpenAI OAuth credentials across auth-mode changes; only an
+  // explicit disconnect should clear them.
+  if (id !== "openai" || providerInput.clearOAuth === true) {
     next.accessToken = null;
     next.refreshToken = null;
     next.expiresAt = null;

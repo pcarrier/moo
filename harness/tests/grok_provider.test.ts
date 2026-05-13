@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { buildStreamingLLMRequest, inferProviderForModel, modelContextBudget, normalizeUsage, resolveProvider } from "../src/agent";
-import { llmAuthGetCommand } from "../src/commands/llm_auth";
+import { llmAuthGetCommand, llmAuthSaveCommand } from "../src/commands/llm_auth";
 import { applyDefaultChatSettings, modelOptionsFor, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
 import { modelLongContextUsageKey, modelMetadataFor } from "../src/llm_models";
 
 const refs = new Map<string, string>();
-const objects = new Map<string, any>();
+const objects = new Map<string, { kind: string; content: string }>();
 let objectId = 0;
 let envValues = new Map<string, string>();
 
@@ -19,7 +19,7 @@ let envValues = new Map<string, string>();
 (globalThis as any).__op_facts_swap = () => ({ store: "test", added: 0, removed: 0 });
 (globalThis as any).__op_object_put = (kind: string, content: string) => {
   const hash = "sha256:" + String(++objectId).padStart(64, "0");
-  objects.set(hash, { kind, value: JSON.parse(content) });
+  objects.set(hash, { kind, content });
   return hash;
 };
 (globalThis as any).__op_object_get = (hash: string) => objects.get(hash) ?? null;
@@ -98,6 +98,40 @@ describe("OpenAI-compatible provider support", () => {
     const result = await llmAuthGetCommand();
     expect(result.value.settings.providers.xai).toMatchObject({ authMode: "env" });
     expect(result.value.settings.providers.deepseek).toMatchObject({ authMode: "env" });
+  });
+
+  test("preserves OpenAI OAuth credentials across auth mode changes", async () => {
+    refs.set("settings", "sha256:oauth");
+    objects.set("sha256:oauth", {
+      kind: "llm:AuthSettings",
+      content: JSON.stringify({
+        providers: {
+          openai: {
+            authMode: "oauth",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: 123456,
+            oauthSubject: "subject",
+            oauthAccountId: "account",
+          },
+        },
+      }),
+    });
+
+    const saved = await llmAuthSaveCommand({ openai: { authMode: "env" } });
+    expect(saved.value.settings.providers.openai).toMatchObject({
+      authMode: "env",
+      hasAccessToken: true,
+      hasRefreshToken: true,
+      expiresAt: 123456,
+      oauthSubject: "subject",
+      oauthAccountId: "account",
+    });
+
+    const storedHash = refs.get("settings")!;
+    const storedOpenAI = JSON.parse(objects.get(storedHash)!.content).providers.openai;
+    expect(storedOpenAI.accessToken).toBe("access-token");
+    expect(storedOpenAI.refreshToken).toBe("refresh-token");
   });
 
   test("uses Grok-specific context windows", () => {

@@ -893,10 +893,9 @@ fn apply_llm_provider_input(current: &Value, id: &str, input: Option<&Value>) ->
                 .unwrap_or(Value::Null),
         );
     }
-    if id != "openai"
-        || input_obj.get("clearOAuth").and_then(Value::as_bool) == Some(true)
-        || auth_mode != "oauth"
-    {
+    // Keep OpenAI OAuth credentials when switching away from OAuth so the user
+    // can switch back without reconnecting; only explicit disconnect clears it.
+    if id != "openai" || input_obj.get("clearOAuth").and_then(Value::as_bool) == Some(true) {
         next.insert("accessToken".to_string(), Value::Null);
         next.insert("refreshToken".to_string(), Value::Null);
         next.insert("expiresAt".to_string(), Value::Null);
@@ -1799,6 +1798,54 @@ mod tests {
         let loaded = llm_auth_get(db_path);
         assert_eq!(loaded["value"]["settings"], *settings);
         let _ = std::fs::remove_file(&db_path_buf);
+    }
+
+    #[test]
+    fn llm_auth_save_preserves_openai_oauth_tokens_across_mode_changes() {
+        let current = json!({
+            "authMode": "oauth",
+            "accessToken": "access-token",
+            "refreshToken": "refresh-token",
+            "expiresAt": 123456,
+            "oauthSubject": "subject",
+            "oauthAccountId": "account",
+        });
+
+        let env_saved =
+            apply_llm_provider_input(&current, "openai", Some(&json!({ "authMode": "env" })));
+
+        assert_eq!(env_saved["authMode"], "env");
+        assert_eq!(env_saved["accessToken"], "access-token");
+        assert_eq!(env_saved["refreshToken"], "refresh-token");
+        assert_eq!(env_saved["expiresAt"], 123456);
+        assert_eq!(env_saved["oauthSubject"], "subject");
+        assert_eq!(env_saved["oauthAccountId"], "account");
+
+        let api_key_saved = apply_llm_provider_input(
+            &env_saved,
+            "openai",
+            Some(&json!({ "authMode": "apiKey", "apiKey": "sk-test" })),
+        );
+
+        assert_eq!(api_key_saved["authMode"], "apiKey");
+        assert_eq!(api_key_saved["accessToken"], "access-token");
+        assert_eq!(api_key_saved["refreshToken"], "refresh-token");
+        assert_eq!(api_key_saved["expiresAt"], 123456);
+        assert_eq!(api_key_saved["oauthSubject"], "subject");
+        assert_eq!(api_key_saved["oauthAccountId"], "account");
+
+        let cleared = apply_llm_provider_input(
+            &api_key_saved,
+            "openai",
+            Some(&json!({ "authMode": "apiKey", "clearOAuth": true })),
+        );
+
+        assert_eq!(cleared["authMode"], "apiKey");
+        assert!(cleared["accessToken"].is_null());
+        assert!(cleared["refreshToken"].is_null());
+        assert!(cleared["expiresAt"].is_null());
+        assert!(cleared["oauthSubject"].is_null());
+        assert_eq!(cleared["oauthAccountId"], "account");
     }
 
     #[test]
