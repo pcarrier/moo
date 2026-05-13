@@ -197,6 +197,44 @@ function providerFailureReason(status: number): string {
   return "provider request failed before an HTTP response";
 }
 
+export type MissingAuthProvider = {
+  name: string;
+  keyEnvHint: string;
+  model?: string | null;
+  effort?: string | null;
+  authMode?: string | null;
+};
+
+export function missingLlmAuthMessage(provider: Pick<MissingAuthProvider, "name" | "keyEnvHint">, action: "step" | "resume" = "step"): string {
+  const prefix = action === "resume" ? "Cannot resume this chat because " : "";
+  return [
+    prefix + "LLM authentication is not configured for " + provider.name + ".",
+    "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
+  ].join("\n");
+}
+
+export function missingLlmAuthDetail(provider: MissingAuthProvider, action: "step" | "resume" = "step") {
+  return {
+    source: "authentication",
+    provider: provider.name,
+    authMode: provider.authMode ?? null,
+    keyEnvHint: provider.keyEnvHint,
+    message: missingLlmAuthMessage(provider, action),
+    ...(provider.model ? { model: provider.model } : {}),
+  };
+}
+
+async function recordMissingLlmAuthError(chatId: string, provider: MissingAuthProvider, action: "step" | "resume") {
+  await recordErrorStep(
+    chatId,
+    "authentication",
+    missingLlmAuthDetail(provider, action),
+    provider.model,
+    provider.effort,
+  );
+  await setChatOngoing(chatId, false);
+}
+
 export async function stepCommand(input: Input) {
   const chatId = String(input.chatId || "demo").trim() || "demo";
   const message = String(input.message || "").trim();
@@ -528,14 +566,7 @@ export async function stepPreludeCommand(input: Input) {
   const selectedProvider = await getChatProvider(chatId);
   const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
   if (!provider.apiKey) {
-    await reply(
-      chatId,
-      [
-        "LLM authentication is not configured for " + provider.name + ".",
-        "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
-      ].join("\n"),
-    );
-    await setChatOngoing(chatId, false);
+    await recordMissingLlmAuthError(chatId, provider, "step");
     return { ok: true, value: { kind: "done" } };
   }
 
@@ -557,14 +588,7 @@ export async function stepResumeCommand(input: Input) {
   const selectedProvider = await getChatProvider(chatId);
   const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
   if (!provider.apiKey) {
-    await reply(
-      chatId,
-      [
-        "Cannot resume this chat because LLM authentication is not configured for " + provider.name + ".",
-        "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
-      ].join("\n"),
-    );
-    await setChatOngoing(chatId, false);
+    await recordMissingLlmAuthError(chatId, provider, "resume");
     return { ok: true, value: { kind: "done" } };
   }
 
