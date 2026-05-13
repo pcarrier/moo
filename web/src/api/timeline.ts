@@ -105,13 +105,10 @@ export type FileDiffItem = {
 };
 
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export type TodoPriority = "high" | "normal" | "low";
-
 export type AgentTodo = {
   id: string;
   text: string;
   status: TodoStatus;
-  priority?: TodoPriority;
   note?: string;
   createdAt?: string;
   updatedAt?: string;

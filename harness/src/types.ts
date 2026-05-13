@@ -457,13 +457,12 @@ export type TraceDiagnosis = { total?: number; groups?: TraceDiagnosisGroup[]; r
 export type TraceDiagnostic = TraceDiagnosis;
 export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export type TodoPriority = "high" | "normal" | "low";
 export type TodoIdInput = string | number;
-export type AgentTodo = { id: string; text: string; status: TodoStatus; priority: TodoPriority; note?: string; createdAt: string; updatedAt: string };
+export type AgentTodo = { id: string; text: string; status: TodoStatus; note?: string; createdAt: string; updatedAt: string };
 export type AgentTodoState = { version: 1; updatedAt: string; items: AgentTodo[] };
-export type TodoAddInput = { text: string; status?: TodoStatus; priority?: TodoPriority; note?: string };
-export type TodoUpdateInput = { id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority | null; note?: string | null };
-export type AgentTodoPatch = { id?: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority | null; note?: string | null };
+export type TodoAddInput = { text: string; status?: TodoStatus; note?: string };
+export type TodoUpdateInput = { id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null };
+export type AgentTodoPatch = { id?: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null };
 export type TodoPatch = { items?: AgentTodoPatch[]; add?: TodoAddInput[]; update?: TodoUpdateInput[]; clearDone?: boolean; clearStatuses?: TodoStatus[] };
 
 export type MooTracesApi = {

@@ -29,9 +29,6 @@ describe("timeline TODO UI", () => {
     expect(timeline).toContain('<TodoMarkdownInline className="ongoing-todo-text" content={label(item)} />');
     expect(timeline).toContain('function TodoMetaBubbles');
     expect(timeline).toContain('class="todo-bubble todo-status-bubble"');
-    expect(timeline).not.toContain('todo-priority-bubble');
-    expect(timeline).not.toContain('todoPriorityLabel');
-    expect(timeline).not.toContain('props.item.priority');
     expect(timeline).toContain('function TodoMarkdownInline');
     expect(timeline).toContain('function TodoMarkdownBlock');
     expect(timeline).toContain('renderMarkdownInline(props.content.replace(/\\n+/g, " "))');
@@ -128,7 +125,6 @@ describe("timeline TODO UI", () => {
     expect(css).toContain('font-weight: 700;');
     expect(css).toContain('.ongoing-todo.todo-done .ongoing-todo-text');
     expect(css).toContain('.todo-bubble');
-    expect(css).not.toContain('.todo-priority-bubble');
     expect(css).toContain('padding: 0.18em 0.45em;');
     expect(css).toContain('padding-right: 7em;');
     expect(css).toContain('gap: 0.02em;');
