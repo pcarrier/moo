@@ -1348,7 +1348,12 @@ fn op_trace_enter(
     mut rv: v8::ReturnValue,
 ) {
     let parsed = json_arg(scope, &args, 0);
-    let Some(id) = parsed.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(id) = parsed
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         throw(scope, "trace_enter requires id");
         return;
     };
@@ -1398,7 +1403,6 @@ fn op_trace_enter(
     });
     set_string_return(scope, &mut rv, &trace_current_json().to_string());
 }
-
 
 fn op_trace_current(
     scope: &mut v8::PinScope,
