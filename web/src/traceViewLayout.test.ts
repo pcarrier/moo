@@ -380,7 +380,10 @@ describe("hierarchical trace view", () => {
     expect(sidebar).toContain('title: nextTitle || "Untitled"');
     expect(sidebar).toContain('title: label,');
     expect(sidebar).toContain('title: `${action} ${todoText}`');
-    expect(sidebar).toContain('const previousText = previous && previous.text !== todo?.text ? `was: ${previous.id}. ${previous.text}` : "";');
+    expect(sidebar).toContain('function todoTrailItems(item: TodoDiffItem): AgentTrailItem[]');
+    expect(sidebar).toContain('return changes.map((change, index) => {');
+    expect(sidebar).toContain('id: changes.length === 1 ? item.id : `${item.id}:${index}`');
+    expect(sidebar).toContain('timelineKey: `todo-diff:${item.id}`');
     expect(sidebar).toContain('function todoChangeTextForTrail(change: TodoDiffChange): string');
     expect(sidebar).toContain('[`todo-status-${props.item.todoStatus}`]: !!props.item.todoStatus');
     expect(css).toContain('.agent-trail-title {\n  min-width: 0;');
@@ -416,7 +419,8 @@ describe("right sidebar diff tabs", () => {
   });
 
   test("trail TODO entries prefer live timeline rows over stale trail rows", () => {
-    expect(sidebar).toContain('if (item.type === "todo-diff") return todoTrailItem(item);');
+    expect(sidebar).toContain('if (item.type === "todo-diff") return todoTrailItems(item);');
+    expect(sidebar).toContain('.flatMap((item) => {');
     expect(sidebar).not.toContain('if (item.type === "file-diff") return diffTimelineItem(item);');
     expect(sidebar).not.toContain('if (item.type === "memory-diff") return memoryTrailItem(item);');
     expect(sidebar).toContain("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);");

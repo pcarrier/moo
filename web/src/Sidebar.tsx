@@ -3101,9 +3101,9 @@ function trailSourceItems(bag: Bag): TimelineItem[] {
 
 function buildTrailItems(bag: Bag): AgentTrailItem[] {
   return trailSourceItems(bag)
-    .map((item) => {
+    .flatMap((item) => {
       if (item.type === "trail") return trailTimelineItem(item);
-      if (item.type === "todo-diff") return todoTrailItem(item);
+      if (item.type === "todo-diff") return todoTrailItems(item);
       if (item.type === "step" && item.kind === "agent:Subagent")
         return subagentTimelineItem(item);
       return null;
@@ -3199,7 +3199,7 @@ function formatTrailDuration(ms: number): string {
 }
 
 function todoChangeTextForTrail(change: TodoDiffChange): string {
-  const item = change.kind === "removed" ? change.before : change.after;
+  const item = todoFromChange(change);
   if (item.status === "dropped") return "X";
   if (item.status === "blocked") return "!";
   if (item.status === "done") return "-";
@@ -3207,29 +3207,40 @@ function todoChangeTextForTrail(change: TodoDiffChange): string {
   return "~";
 }
 
-function todoTrailItem(item: TodoDiffItem): AgentTrailItem | null {
+function todoFromChange(change: TodoDiffChange) {
+  return change.kind === "removed" ? change.before : change.after;
+}
+
+function previousTodoFromChange(change: TodoDiffChange) {
+  return change.kind === "updated" ? change.before : undefined;
+}
+
+function todoTrailItems(item: TodoDiffItem): AgentTrailItem[] {
   const changes = Array.isArray(item.changes) ? item.changes : [];
-  if (!changes.length) return null;
-  const first = changes[0];
-  const todo = first && ("after" in first ? first.after : first.before);
-  const previous = first?.kind === "updated" ? first.before : undefined;
-  const action = first ? todoChangeTextForTrail(first) : "~";
-  const todoText = todo ? `${todo.id}. ${todo.text}` : "TODO changed";
-  const note = todo?.note ? String(todo.note).trim() : "";
-  const previousText = previous && previous.text !== todo?.text ? `was: ${previous.id}. ${previous.text}` : "";
-  const detail = [note, previousText].filter(Boolean).join("\n");
-  return {
-    id: item.id,
-    at: item.at,
-    title: `${action} ${todoText}`,
-    timelineKey: `todo-diff:${item.id}`,
-    kind: "todo-diff",
-    tone: "todo",
-    detail,
-    titleMarkdown: true,
-    detailMarkdown: true,
-    todoStatus: todo?.status,
-  };
+  return changes.map((change, index) => {
+    const todo = todoFromChange(change);
+    const previous = previousTodoFromChange(change);
+    const action = todoChangeTextForTrail(change);
+    const todoText = `${todo.id}. ${todo.text}`;
+    const note = todo.note ? String(todo.note).trim() : "";
+    const previousText =
+      previous && previous.text !== todo.text
+        ? `was: ${previous.id}. ${previous.text}`
+        : "";
+    const detail = [note, previousText].filter(Boolean).join("\n");
+    return {
+      id: changes.length === 1 ? item.id : `${item.id}:${index}`,
+      at: item.at,
+      title: `${action} ${todoText}`,
+      timelineKey: `todo-diff:${item.id}`,
+      kind: "todo-diff",
+      tone: "todo",
+      detail,
+      titleMarkdown: true,
+      detailMarkdown: true,
+      todoStatus: todo.status,
+    };
+  });
 }
 
 function renderTrailMarkdownInline(content: string): string {
