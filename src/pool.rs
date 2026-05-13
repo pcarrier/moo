@@ -470,11 +470,10 @@ impl V8Observability {
         queue.max_queue_wait_ms = queue.max_queue_wait_ms.max(queue_wait_ms);
         queue.total_queue_wait_ms = queue.total_queue_wait_ms.saturating_add(queue_wait_ms);
         queue.observed_queue_waits = queue.observed_queue_waits.saturating_add(1);
-        queue.average_queue_wait_ms = if queue.observed_queue_waits == 0 {
-            0
-        } else {
-            queue.total_queue_wait_ms / queue.observed_queue_waits
-        };
+        queue.average_queue_wait_ms = queue
+            .total_queue_wait_ms
+            .checked_div(queue.observed_queue_waits)
+            .unwrap_or(0);
     }
 
     fn generation_started(&self, lane: &str, id: usize, generation: u64) {
@@ -2086,7 +2085,9 @@ mod tests {
     #[test]
     fn ui_call_uses_dedicated_lane_without_chat_lock() {
         assert_eq!(
-            route_input(r#"{"command":"ui-call","chatId":"abc","uiId":"linear-active-tickets","name":"refresh"}"#),
+            route_input(
+                r#"{"command":"ui-call","chatId":"abc","uiId":"linear-active-tickets","name":"refresh"}"#
+            ),
             (Lane::Ui, None)
         );
         assert!(needs_fresh_context(

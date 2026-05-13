@@ -233,8 +233,7 @@ export function cachedPathAutocompleteSearchValue(
 export async function cachedPathAutocompleteList(path: string): Promise<FsEntry[]> {
   let cached = pathAutocompleteListCache.get(path);
   if (!cached) {
-    const promise = api.fs
-      .list(path)
+    const promise = api("fs-list", { path })
       .then((result) =>
         result.ok && Array.isArray(result.value.entries)
           ? result.value.entries
@@ -264,8 +263,7 @@ export async function cachedPathAutocompleteSearch(
   const key = basePath + "\0" + query + "\0" + limit;
   let cached = pathAutocompleteSearchCache.get(key);
   if (!cached) {
-    const promise = api.fs
-      .search(basePath, query, limit)
+    const promise = api("fs-search", { path: basePath, query, limit })
       .then((result) =>
         result.ok && Array.isArray(result.value.entries)
           ? result.value.entries

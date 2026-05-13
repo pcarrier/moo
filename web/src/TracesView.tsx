@@ -513,7 +513,7 @@ function HashBlock(props: { label: string; hash: string | null; object?: StoreOb
       return;
     }
     let cancelled = false;
-    api.objects.get(hash).then((result) => {
+    api("object-get", { hash }).then((result) => {
       if (cancelled) return;
       if (!result.ok) {
         setLoadError(result.error?.message || "object load failed");
@@ -739,8 +739,8 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
 
   async function loadTraceTreeFromRoot(root: TraceRow, maxDepth: number): Promise<TraceTreeLoad> {
     return root.kind === "chat" && root.chatId
-      ? await unwrap(api.traces.chatTree({ chatId: root.chatId, maxDepth }), "trace chat tree load")
-      : await unwrap(api.traces.subtree({ id: root.id, maxDepth }), "trace tree load");
+      ? await unwrap(api("trace-chat-tree", { chatId: root.chatId, maxDepth }), "trace chat tree load")
+      : await unwrap(api("trace-subtree", { id: root.id, maxDepth }), "trace tree load");
   }
 
   const failedChats = createMemo(() => {
@@ -823,7 +823,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       if (afterNs != null) rootArgs.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) rootArgs.startedBeforeNs = beforeNs;
-      const value = await unwrap(api.traces.roots(rootArgs), "trace roots load");
+      const value = await unwrap(api("trace-roots", rootArgs), "trace roots load");
       if (!isCurrentRoots(request)) return;
       const next = opts.more ? mergeRootRowsNewestFirst(traceRoots(), value.roots) : [...value.roots].sort(compareRowsNewestFirst);
       setTraceRoots(next);
@@ -900,7 +900,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     setTreeState("loading");
     setError(null);
     try {
-      const value = await unwrap(api.traces.chatTree({ chatId, maxDepth: DEFAULT_TREE_DEPTH }), "trace chat tree load");
+      const value = await unwrap(api("trace-chat-tree", { chatId, maxDepth: DEFAULT_TREE_DEPTH }), "trace chat tree load");
       if (!isCurrentSelection(request)) return;
       const canonicalRoot = value.root || value.nodes.find(isCanonicalRoot) || value.nodes[0] || null;
       if (!canonicalRoot) {
@@ -937,7 +937,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     setDetailState("loading");
     setError(null);
     try {
-      const value = await unwrap(api.traces.node({ id }), "trace span lookup");
+      const value = await unwrap(api("trace-node", { id }), "trace span lookup");
       if (!isCurrentSelection(request)) return;
       setDetail(value);
       const chain = [...value.ancestors, value.node];
@@ -968,7 +968,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       if (afterNs != null) args.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) args.startedBeforeNs = beforeNs;
-      const value = await unwrap(api.traces.failed(args), "trace failed load");
+      const value = await unwrap(api("trace-failed", args), "trace failed load");
       if (!isCurrentFailed(request)) return;
       setFailures(value.failures);
       setFailedState("idle");
@@ -999,7 +999,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
       if (afterNs != null) args.startedAfterNs = afterNs;
       const beforeNs = startedBeforeNs();
       if (beforeNs != null) args.startedBeforeNs = beforeNs;
-      const value = await unwrap(api.traces.search(args), "trace search load");
+      const value = await unwrap(api("trace-search", args), "trace search load");
       if (!isCurrentSearch(request)) return;
       setSearchHits(value.hits);
       setSearchState("idle");
@@ -1016,7 +1016,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     setTreeState("loading");
     setError(null);
     try {
-      const value = await unwrap(api.traces.subtree({ id, maxDepth: SUBTREE_DEPTH }), "trace subtree load");
+      const value = await unwrap(api("trace-subtree", { id, maxDepth: SUBTREE_DEPTH }), "trace subtree load");
       if (request != null && !isCurrentSelection(request)) return;
       setNodes(opts.append ? mergeRows(nodes(), value.nodes) : value.nodes);
       const focus = opts.focus || id;
@@ -1095,7 +1095,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     setSelectedId(id);
     setDetailState("loading");
     try {
-      const value = await unwrap(api.traces.node({ id }), "trace node load");
+      const value = await unwrap(api("trace-node", { id }), "trace node load");
       if (request != null && !isCurrentSelection(request)) return;
       setDetail(value);
       const bestRoot = value.root || traceRootOf(value.node, value.ancestors);
@@ -1347,14 +1347,14 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     if (!root || !nodes().some(rowIsRunning)) return;
     const request = selectionRequest;
     try {
-      const value = await unwrap(api.traces.subtree({ id: root, maxDepth: SUBTREE_DEPTH }), "trace subtree refresh");
+      const value = await unwrap(api("trace-subtree", { id: root, maxDepth: SUBTREE_DEPTH }), "trace subtree refresh");
       if (!isCurrentSelection(request)) return;
       preserveTimelineScroll(() => {
         setNodes(mergeRows(nodes(), value.nodes));
       });
       const selected = selectedId();
       if (!selected || !value.nodes.some((node) => node.id === selected)) return;
-      const detailValue = await unwrap(api.traces.node({ id: selected }), "trace node refresh");
+      const detailValue = await unwrap(api("trace-node", { id: selected }), "trace node refresh");
       if (!isCurrentSelection(request)) return;
       setDetail(detailValue);
     } catch {
@@ -1446,7 +1446,7 @@ export function TracesView(props: { bag: Bag; onToggleSidebar?: () => void; onOp
     syncedSidebarTraceId = trace.id;
     void (async () => {
       try {
-        const value = await unwrap(api.traces.node({ id: trace.id }), "trace sidebar trace load");
+        const value = await unwrap(api("trace-node", { id: trace.id }), "trace sidebar trace load");
         if (!isCurrentSelection(request)) return;
         const chain = [...value.ancestors, value.node];
         const root = value.root || traceRootOf(value.node, value.ancestors);

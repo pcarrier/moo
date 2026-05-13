@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const stateSource = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
-const chatApiSource = readFileSync(new URL("./api/chat.ts", import.meta.url), "utf8");
 
 describe("timeline fork action", () => {
   test("navigates to a seeded fork before the backend copy finishes", () => {
@@ -17,7 +16,7 @@ describe("timeline fork action", () => {
     expect(forkBlock).toContain("const creation = (async () => {");
     expect(forkBlock).toContain("pendingChatCreations.set(requestedChatId, creation);");
     expect(forkBlock).toContain("await selectChat(requestedChatId, false);");
-    expect(forkBlock).toContain("api.chat.fork(id as ChatId, step as StepId, requestedChatId)");
+    expect(forkBlock).toContain('api("chat-fork", { chatId: id as ChatId, step: step as StepId, forkChatId: requestedChatId })');
     expect(forkBlock.indexOf("await selectChat(requestedChatId, false);")).toBeGreaterThan(
       forkBlock.indexOf("pendingChatCreations.set(requestedChatId, creation);"),
     );
@@ -41,7 +40,6 @@ describe("timeline fork action", () => {
   });
 
   test("passes the optimistic fork id to chat-fork", () => {
-    expect(chatApiSource).toContain("fork: (chatId: ChatId, step: StepId, forkChatId?: ChatId) =>");
-    expect(chatApiSource).toContain("...(forkChatId ? { forkChatId } : {}),");
+    expect(stateSource).toContain('api("chat-fork", { chatId: id as ChatId, step: step as StepId, forkChatId: requestedChatId })');
   });
 });

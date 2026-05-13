@@ -1741,7 +1741,11 @@ pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
         seq,
         status: status.to_string(),
         started_ns,
-        ended_ns: if status == "running" { None } else { Some(started_ns) },
+        ended_ns: if status == "running" {
+            None
+        } else {
+            Some(started_ns)
+        },
         input_hash: input_hash.map(ToString::to_string),
         output_hash: None,
         error_hash: None,
@@ -2016,15 +2020,17 @@ pub fn trace_failed(
     min_duration_ns: Option<i64>,
     max_duration_ns: Option<i64>,
 ) -> Result<Vec<TraceRow>, String> {
-    let mut query = TraceSearch::default();
-    query.limit = limit;
-    query.chat_id = chat_id.map(ToString::to_string);
-    query.has_error = true;
-    query.before_ns = before_ns;
-    query.started_after_ns = started_after_ns;
-    query.started_before_ns = started_before_ns;
-    query.min_duration_ns = min_duration_ns;
-    query.max_duration_ns = max_duration_ns;
+    let query = TraceSearch {
+        limit,
+        chat_id: chat_id.map(ToString::to_string),
+        has_error: true,
+        before_ns,
+        started_after_ns,
+        started_before_ns,
+        min_duration_ns,
+        max_duration_ns,
+        ..Default::default()
+    };
     trace_search(query)
 }
 

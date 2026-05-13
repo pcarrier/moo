@@ -1,6 +1,6 @@
 import type { ApiResult } from "./transport";
 import { call } from "./transport";
-import type { ChatCommands } from "./chat";
+import type { ChatCommands, DescribeSnapshotReq, DescribeUpdateReq } from "./chat";
 import type { FsCommands } from "./fs";
 import type { MemoryCommands } from "./memory";
 import type { McpCommands } from "./mcp";
@@ -10,16 +10,13 @@ import type { V8Commands } from "./v8";
 import type { LlmAuthCommands } from "./llmAuth";
 import type { TraceCommands } from "./traces";
 import type { SkillCommands } from "./skills";
+import type { DescribeSnapshotValue, DescribeUpdateValue } from "./types";
 
 export type ApiCommand<K extends string, Req extends Record<string, unknown>, Res> = {
   command: K;
   req: Req;
   res: Res;
 };
-
-export type AnyApiCommand = ApiCommand<string, Record<string, unknown>, unknown>;
-
-export type ApiCommandRequest<C extends AnyApiCommand> = C["req"] & { command: C["command"] };
 
 export type KnownApiCommand =
   | ChatCommands
@@ -31,21 +28,21 @@ export type KnownApiCommand =
   | V8Commands
   | LlmAuthCommands
   | TraceCommands
-  | SkillCommands
   | SkillCommands;
 
+export type KnownCommandName = KnownApiCommand["command"];
 export type ApiCommandMap = {
   [K in KnownCommandName]: Extract<KnownApiCommand, { command: K }>;
 };
-
-export type KnownCommandName = KnownApiCommand["command"];
 export type ApiCommandReq<K extends KnownCommandName> = ApiCommandMap[K]["req"];
 export type ApiCommandRes<K extends KnownCommandName> = ApiCommandMap[K]["res"];
 export type ApiCommandResult<K extends KnownCommandName> = Promise<ApiResult<ApiCommandRes<K>>>;
 
-export async function callCommand<K extends KnownCommandName>(
-  command: K,
-  req: ApiCommandReq<K>,
-): ApiCommandResult<K> {
-  return call<ApiCommandRes<K>>({ command, ...req });
+// `describe` is one wire command with two return shapes selected by `mode`.
+// Overloads narrow the response without forcing call sites to cast.
+export function api(command: "describe", req: DescribeSnapshotReq): Promise<ApiResult<DescribeSnapshotValue>>;
+export function api(command: "describe", req: DescribeUpdateReq): Promise<ApiResult<DescribeUpdateValue>>;
+export function api<K extends KnownCommandName>(command: K, req: ApiCommandReq<K>): ApiCommandResult<K>;
+export function api(command: string, req: Record<string, unknown>) {
+  return call({ command, ...req });
 }

@@ -6,7 +6,7 @@ const stateSource = readFileSync(new URL("./state.ts", import.meta.url), "utf8")
 describe("chat timeline LRU cache", () => {
   test("caches snapshot describe results even after switching away", () => {
     const snapshotBlockStart = stateSource.indexOf(`const r = await retryChatLoad(
-        () => api.chat.describeSnapshot(id, limit)`);
+        () => api("describe", { chatId: id, mode: "snapshot", limit })`);
     expect(snapshotBlockStart).toBeGreaterThanOrEqual(0);
     const snapshotBlockEnd = stateSource.indexOf("} else {", snapshotBlockStart);
     const snapshotBlock = stateSource.slice(snapshotBlockStart, snapshotBlockEnd);
@@ -20,10 +20,12 @@ describe("chat timeline LRU cache", () => {
   test("caches incremental describe results even after switching away", () => {
     const incrementalBlockStart = stateSource.indexOf(`const r = await retryChatLoad(
           () =>
-            api.chat.describeUpdate`);
+            api("describe", {
+              chatId: id,
+              mode: "update",`);
     expect(incrementalBlockStart).toBeGreaterThanOrEqual(0);
     const incrementalBlockEnd = stateSource.indexOf(`const r = await retryChatLoad(
-        () => api.chat.describeSnapshot`, incrementalBlockStart);
+        () => api("describe", { chatId: id, mode: "snapshot"`, incrementalBlockStart);
     const incrementalBlock = stateSource.slice(incrementalBlockStart, incrementalBlockEnd);
 
     expect(incrementalBlock).toContain("if (r.ok) cacheDescribeUpdate(id, r.value);");

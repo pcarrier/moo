@@ -28,8 +28,8 @@ describe("hierarchical trace view", () => {
       expect(tracesApi).toContain(command);
     }
     for (const oldCommand of ["trace-recent", "trace-diagnose", "trace-errors", "trace-get", "trace-tree", "trace-chat"]) {
-      expect(tracesApi).not.toContain(`callCommand("${oldCommand}"`);
-      expect(tracesView).not.toContain(`callCommand("${oldCommand}"`);
+      expect(tracesApi).not.toContain(`"${oldCommand}"`);
+      expect(tracesView).not.toContain(`api("${oldCommand}"`);
     }
     expect(tracesApi).not.toContain("trace-summary");
   });
@@ -159,8 +159,8 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain('if (scope !== "any") rootArgs.scope = scope;');
     expect(tracesView).toContain('let rootsRequest = 0');
     expect(tracesView).toContain('if (!isCurrentRoots(request)) return');
-    expect(tracesView).toContain('api.traces.roots(rootArgs)');
-    expect(tracesApi).toContain('roots: (args: TraceSearchArgs = {}) => callCommand("trace-roots", args)');
+    expect(tracesView).toContain('api("trace-roots", rootArgs)');
+    expect(tracesApi).toContain('"trace-roots"');
   });
 
   test("paginates roots by started time", () => {
@@ -246,7 +246,7 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain('"frontend", "chat"');
     expect(tracesView).toContain("args.scope = scopeFilter()");
     expect(tracesApi).toContain('ApiCommand<"trace-frontend"');
-    expect(tracesApi).toContain('callCommand("trace-search"');
+    expect(tracesApi).toContain('"trace-search"');
     expect(apiTypes).toContain('scope?: "chat" | "global" | "any"');
   });
 
@@ -304,7 +304,7 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain("syncedSidebarTraceId");
     expect(tracesView).toContain("props.bag.activeRightSidebarTab?.()");
     expect(tracesView).toContain('if (!tab || tab.kind !== "trace") return');
-    expect(tracesView).toContain('unwrap(api.traces.node({ id: trace.id }), "trace sidebar trace load")');
+    expect(tracesView).toContain('unwrap(api("trace-node", { id: trace.id }), "trace sidebar trace load")');
     expect(tracesView).toContain("const root = value.root || traceRootOf(value.node, value.ancestors)");
     expect(tracesView).toContain("await selectTraceRoot(root, { request, focusId: value.node.id, expandIds, preserveTab: true })");
   });
@@ -321,9 +321,9 @@ describe("hierarchical trace view", () => {
     expect(tracesView).toContain('<Show when={state().node.errorHash}>');
     expect(tracesView).toContain('<HashBlock label="Errors" hash={hash()}');
     expect(tracesView).toContain('<DataBlock label="Trace data" value={state().node.dataJson}');
-    expect(tracesView).toContain("api.objects.get(hash)");
+    expect(tracesView).toContain('api("object-get", { hash })');
     expect(tracesView).toContain("props.onOpenStore?.(hash())");
-    expect(tracesView).not.toContain("api.traces.summary");
+    expect(tracesView).not.toContain('"trace-summary"');
     expect(tracesView).not.toContain('<HashBlock label="Error"');
     expect(tracesView).not.toContain('<h3>Summary</h3>');
     expect(tracesView).not.toContain('<h3>Children</h3>');

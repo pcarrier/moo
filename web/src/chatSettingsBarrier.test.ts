@@ -123,7 +123,7 @@ describe("chat settings write integration", () => {
       "await waitForChatSettingsWrites(chat);",
     );
     const directStepRpc = stateSource.indexOf(
-      "const r = await api.chat.step(chat, text, attachments);",
+      `const r = await api("step", { chatId: chat, message: text,`,
     );
     expect(directStepWait).toBeGreaterThanOrEqual(0);
     expect(directStepRpc).toBeGreaterThan(directStepWait);
@@ -132,13 +132,13 @@ describe("chat settings write integration", () => {
       "await waitForChatSettingsWrites(head.chatId);",
     );
     const queuedStepRpc = stateSource.indexOf(
-      `const r = await api.chat.step(\n          head.chatId,`,
+      `const r = await api("step", {\n          chatId: head.chatId,`,
     );
     expect(queuedStepWait).toBeGreaterThanOrEqual(0);
     expect(queuedStepRpc).toBeGreaterThan(queuedStepWait);
 
     const resumeWait = stateSource.indexOf(
-      `await waitForChatSettingsWrites(id);\n    const r = await api.chat.resume(id);`,
+      `await waitForChatSettingsWrites(id);\n    const r = await api("resume", { chatId: id });`,
     );
     expect(resumeWait).toBeGreaterThanOrEqual(0);
   });
@@ -154,7 +154,7 @@ describe("chat stop queue integration", () => {
       "addToSet(setInterruptingChats, interruptingChats, id);",
     );
     const interruptRpc = stateSource.indexOf(
-      "const r = await api.chat.interrupt(id);",
+      `const r = await api("interrupt", { chatId: id });`,
     );
     const clearInterrupting = stateSource.indexOf(
       "deleteFromSet(setInterruptingChats, interruptingChats, id);",

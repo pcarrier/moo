@@ -1513,7 +1513,7 @@ function createComposerAutocomplete(options: ComposerAutocompleteOptions) {
     if (cached) return;
 
     const timer = window.setTimeout(async () => {
-      const r = await api.chat.autocomplete(query, 12);
+      const r = await api("chat-autocomplete", { query, limit: 12 });
       if (seq !== autocompleteRequestSeq) return;
       if (r.ok) {
         chatAutocompleteCache.set(query.toLowerCase(), r.value.suggestions);
@@ -2889,7 +2889,7 @@ function RunJSBody(props: {
     });
     try {
       const object = await withTimeout(
-        api.objects.get(hash as any),
+        api("object-get", { hash: hash as any }),
         30_000,
         "Timed out loading result",
       );

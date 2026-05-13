@@ -145,23 +145,23 @@ export type DismissedReply = {
 
 export function createState() {
   const chatModelsSingle = createSingleFlight(
-    api.chat.models,
+    (chatId: ChatId) => api("chat-models", { chatId }),
     (id: string) => id,
   );
-  const uiListSingle = createSingleFlight(api.ui.list, () => "ui-list");
-  const uiChatSingle = createSingleFlight(api.ui.chat, (id: string) => id);
-  const mcpListSingle = createSingleFlight(api.mcp.list, () => "mcp-list");
-  const settingsSingle = createSingleFlight(api.llmAuth.get, () => "settings");
+  const uiListSingle = createSingleFlight(() => api("ui-list", {}), () => "ui-list");
+  const uiChatSingle = createSingleFlight((chatId: ChatId) => api("ui-chat", { chatId }), (id: string) => id);
+  const mcpListSingle = createSingleFlight(() => api("mcp-list", {}), () => "mcp-list");
+  const settingsSingle = createSingleFlight(() => api("llm-auth-get", {}), () => "settings");
   const v8SettingsSingle = createSingleFlight(
-    api.v8.settings,
+    () => api("v8-settings-get", {}),
     () => "v8-settings",
   );
   const traceSettingsSingle = createSingleFlight(
-    api.traces.settings,
+    () => api("trace-config-get", {}),
     () => "trace-settings",
   );
   const skillsListSingle = createSingleFlight(
-    api.skills.list,
+    (opts: { enabled?: boolean; chatId?: string | null; root?: string | null } = {}) => api("skills-list", opts),
     (opts?: { enabled?: boolean; chatId?: string | null; root?: string | null }) =>
       `skills:${opts?.chatId ?? ""}:${opts?.root ?? ""}:${opts?.enabled ?? ""}`,
   );
@@ -1868,7 +1868,7 @@ export function createState() {
     }
     const id = chatId();
     if (id && closing?.kind === "app" && closing.instanceId) {
-      const r = await api.ui.close(id, closing.uiId, closing.instanceId);
+      const r = await api("ui-close", { chatId: id, uiId: closing.uiId, instanceId: closing.instanceId });
       if (!r.ok) reportError(`close app ${closing.uiId}`, r.error);
       else await refreshChatUis();
     }
@@ -1940,7 +1940,7 @@ export function createState() {
         },
       });
     }
-    const r = await api.fs.read(requestedPath, basePath, true);
+    const r = await api("fs-read", { path: requestedPath, basePath, includeDiff: true });
     if (repoFileReadSeq.get(tabId) !== seq) return;
     if (!r.ok) {
       updateFileTab(tabId, (prev) => ({
@@ -2099,7 +2099,7 @@ export function createState() {
         store: { hash: normalized, object: null, loading: true, error: null },
       });
     }
-    const r = await api.objects.get(normalized);
+    const r = await api("object-get", { hash: normalized });
     if (storePreviewReadSeq.get(tabId) !== seq) return;
     if (!r.ok) {
       updateStorePreviewTab(tabId, () => ({
@@ -2762,7 +2762,7 @@ export function createState() {
     const normalizedExistingHidden = existingHidden
       ? withExpectedChatWorktreePath(existingHidden)
       : null;
-    const r = await api.chat.list();
+    const r = await api("chats", {});
     if (r.ok) {
       const listedChats = withExpectedChatWorktreePaths(r.value.chats).filter(
         (chat) => !chatDeleteSeqByChat.has(chat.chatId),
@@ -2826,7 +2826,7 @@ export function createState() {
       setChatMemory({});
       return;
     }
-    const r = await api.chat.settings(ids);
+    const r = await api("chat-settings", { chatIds: ids });
     if (requestSeq !== chatMemoryRequestSeq) return;
     if (!r.ok) {
       reportError("chat memory", r.error);
@@ -2876,7 +2876,7 @@ export function createState() {
     );
     if (bypassSingleFlight) chatModelsSingle.forget(id);
     const r = await retryChatLoad(
-      () => (bypassSingleFlight ? api.chat.models(id) : chatModelsSingle(id)),
+      () => (bypassSingleFlight ? api("chat-models", { chatId: id }) : chatModelsSingle(id)),
       () => chatId() === id && requestSeq === chatModelRequestSeq,
     );
     if (chatId() !== id || requestSeq !== chatModelRequestSeq) return;
@@ -2949,7 +2949,9 @@ export function createState() {
       if (incremental) {
         const r = await retryChatLoad(
           () =>
-            api.chat.describeUpdate(id, {
+            api("describe", {
+              chatId: id,
+              mode: "update",
               limit: Math.min(TIMELINE_PAGE_SIZE, limit),
               sinceAt,
             }),
@@ -2973,7 +2975,7 @@ export function createState() {
         return;
       }
       const r = await retryChatLoad(
-        () => api.chat.describeSnapshot(id, limit),
+        () => api("describe", { chatId: id, mode: "snapshot", limit }),
         keepCurrentChat,
       );
       if (r.ok) {
@@ -3212,7 +3214,7 @@ export function createState() {
     // the rows in place instead of blanking the page first.
     if (!graphSummariesLoaded()) setGraphSummariesLoaded(false);
     try {
-      const r = await api.memory.graphs.summaries({ removed });
+      const r = await api("graph-summaries", { removed });
       if (r.ok) setGraphSummaries(r.value.graphs);
       else reportError("graph summaries", r.error);
     } catch (err) {
@@ -3224,7 +3226,7 @@ export function createState() {
 
   async function refreshPointers(prefix?: string) {
     try {
-      const r = await api.memory.pointers.list(prefix);
+      const r = await api("pointers", { prefix });
       if (r.ok) setPointers(r.value.pointers);
       else reportError("pointers", r.error);
     } catch (err) {
@@ -3235,10 +3237,7 @@ export function createState() {
   }
 
   async function removePointer(name: string, recursive = false) {
-    const r = await api.memory.pointers.remove(
-      name,
-      recursive ? { recursive: true } : undefined,
-    );
+    const r = await api("pointer-rm", { name, ...(recursive ? { recursive: true } : {}) });
     if (!r.ok) {
       reportError(
         recursive ? "delete pointer hierarchy" : "delete pointer",
@@ -3283,7 +3282,7 @@ export function createState() {
       resetTriplesValue();
     }
     try {
-      const r = await api.memory.triples({
+      const r = await api("triples", {
         removed,
         ...(graph ? { graph } : {}),
       });
@@ -3310,7 +3309,7 @@ export function createState() {
   }
 
   async function refreshVocabulary() {
-    const r = await api.memory.vocabulary();
+    const r = await api("vocabulary", {});
     setVocabularyLoaded(true);
     if (r.ok) setVocabulary(r.value.predicates);
     else reportError("vocabulary", r.error);
@@ -3408,7 +3407,7 @@ export function createState() {
       try {
         do {
           v8StatsRefreshQueued = false;
-          const r = await api.v8.stats();
+          const r = await api("v8-stats", {});
           setV8StatsLoaded(true);
           if (r.ok) setV8Stats(r.value);
           else reportError("v8 stats", r.error);
@@ -3469,7 +3468,7 @@ export function createState() {
     instanceId: string,
   ): Promise<{ uiId: string | null; chatId: string | null } | null> {
     const subject = "uiinst:" + normalizeUiInstanceId(instanceId);
-    const r = await api.memory.triples({ subject });
+    const r = await api("triples", { subject });
     if (!r.ok) {
       reportError("resolve app instance " + instanceId, r.error);
       return null;
@@ -3692,7 +3691,7 @@ export function createState() {
       return;
     }
     setCompactionsLoading(true);
-    const r = await api.chat.compactions(id);
+    const r = await api("compactions", { chatId: id });
     if (chatId() !== id) return;
     setCompactionsLoading(false);
     if (r.ok) setCompactions(r.value);
@@ -3758,7 +3757,7 @@ export function createState() {
     setChatsLoaded(true);
 
     const creation = (async () => {
-      const r = await api.chat.new({
+      const r = await api("chat-new", {
         chatId: requestedChatId,
         path,
         branch: opts?.branch ?? undefined,
@@ -3864,7 +3863,7 @@ export function createState() {
       }
     }
 
-    const r = await api.chat.remove(id);
+    const r = await api("chat-rm", { chatId: id });
     if (!r.ok) {
       if (chatDeleteSeqByChat.get(id) === deleteSeq)
         chatDeleteSeqByChat.delete(id);
@@ -3875,7 +3874,7 @@ export function createState() {
   }
 
   async function removeGraph(graph: string) {
-    const r = await api.memory.graphs.remove(graph);
+    const r = await api("graph-rm", { graph });
     if (!r.ok) {
       reportError(`remove graph ${graph}`, r.error);
       return;
@@ -3972,7 +3971,7 @@ export function createState() {
     if (urlMode === "push") pushUrl();
     else if (urlMode === "replace") replaceUrl();
 
-    const r = await api.ui.open(chat, uiId, instanceId);
+    const r = await api("ui-open", { chatId: chat, uiId, instanceId });
     if (!r.ok) {
       if (openUiId() === uiId && openUiInstanceId() === (instanceId ?? null)) {
         setOpenUiId(null);
@@ -4013,7 +4012,7 @@ export function createState() {
   }
 
   async function removeUi(uiId: string) {
-    const r = await api.ui.remove(uiId);
+    const r = await api("ui-remove", { uiId });
     if (!r.ok) {
       reportError(`delete app ${uiId}`, r.error);
       return;
@@ -4072,7 +4071,7 @@ export function createState() {
   let suppressPendingSave = false;
 
   async function loadPendingMessages() {
-    const r = await api.chat.pendingMessages();
+    const r = await api("pending-messages", {});
     if (!r.ok) {
       reportError("load pending messages", r.error);
       pendingLoaded = true;
@@ -4101,7 +4100,7 @@ export function createState() {
   createEffect(() => {
     const pen = pending();
     if (!pendingLoaded || suppressPendingSave) return;
-    void api.chat.savePendingMessages(pen).then((r) => {
+    void api("pending-messages-save", { messages: pen }).then((r) => {
       if (!r.ok) reportError("save pending messages", r.error);
     });
   });
@@ -4213,7 +4212,7 @@ export function createState() {
     appendOptimisticUserInput(chat, id, text, attachments);
     if (!(await waitForChatCreation(chat))) return;
     await waitForChatSettingsWrites(chat);
-    const r = await api.chat.step(chat, text, attachments);
+    const r = await api("step", { chatId: chat, message: text, ...(attachments.length ? { attachments } : {}) });
     if (!r.ok) reportError(`${label} ${chat}`, r.error);
   }
 
@@ -4269,11 +4268,11 @@ export function createState() {
           continue;
         }
         await waitForChatSettingsWrites(head.chatId);
-        const r = await api.chat.step(
-          head.chatId,
-          head.text,
-          head.attachments || [],
-        );
+        const r = await api("step", {
+          chatId: head.chatId,
+          message: head.text,
+          ...(head.attachments && head.attachments.length ? { attachments: head.attachments } : {}),
+        });
         if (!r.ok) {
           reportError(`step ${head.chatId}`, r.error);
           deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
@@ -4357,7 +4356,7 @@ export function createState() {
     const mutationSeq = ++timelineMutationSeq;
     const optimisticDeletedAt = Date.now();
     patchMessageVisibility(id, step, optimisticDeletedAt);
-    const r = await api.chat.deleteMessage(id, step);
+    const r = await api("message-delete", { chatId: id, step });
     if (!r.ok) {
       patchMessageVisibility(id, step, null);
       reportError("hide message", r.error);
@@ -4378,7 +4377,7 @@ export function createState() {
     );
     const previousDeletedAt = previousItem?.deletedAt;
     patchMessageVisibility(id, step, null);
-    const r = await api.chat.restoreMessage(id, step);
+    const r = await api("message-restore", { chatId: id, step });
     if (!r.ok) {
       patchMessageVisibility(id, step, previousDeletedAt ?? Date.now());
       reportError("restore message", r.error);
@@ -4535,7 +4534,7 @@ export function createState() {
     setChatsLoaded(true);
 
     const creation = (async () => {
-      const r = await api.chat.fork(id as ChatId, step as StepId, requestedChatId);
+      const r = await api("chat-fork", { chatId: id as ChatId, step: step as StepId, forkChatId: requestedChatId });
       if (!r.ok) {
         reportError("fork chat", r.error);
         setChats((current) =>
@@ -4588,7 +4587,7 @@ export function createState() {
     ++chatModelRequestSeq;
     chatModelsSingle.forget(id);
     return chatSettingsWrites.run(id, async () => {
-      const r = await api.chat.setModel(id, model);
+      const r = await api("chat-model-set", { chatId: id, model });
       chatModelsSingle.forget(id);
       if (writeSeq !== chatModelWriteSeqByChat.get(id)) {
         if (pendingModelWritesByChat.get(id)?.seq === writeSeq)
@@ -4649,7 +4648,7 @@ export function createState() {
     ++chatModelRequestSeq;
     chatModelsSingle.forget(id);
     return chatSettingsWrites.run(id, async () => {
-      const r = await api.chat.setEffort(id, effort);
+      const r = await api("chat-effort-set", { chatId: id, effort });
       chatModelsSingle.forget(id);
       if (writeSeq !== chatEffortWriteSeqByChat.get(id)) {
         if (pendingEffortWritesByChat.get(id)?.seq === writeSeq)
@@ -4683,7 +4682,7 @@ export function createState() {
   }
 
   async function renameChat(id: string, title: string | null) {
-    const r = await api.chat.rename(id, title);
+    const r = await api("chat-rename", { chatId: id, title });
     if (r.ok) updateChatSummary(id, { title: r.value.title });
     else reportError(`rename ${id}`, r.error);
   }
@@ -4713,7 +4712,7 @@ export function createState() {
       ),
     );
 
-    const r = await api.chat.archive(id, archived);
+    const r = await api("chat-archive", { chatId: id, archived });
     if (chatArchiveWriteSeqByChat.get(id) !== writeSeq) {
       if (pendingArchiveWritesByChat.get(id)?.seq === writeSeq) {
         pendingArchiveWritesByChat.delete(id);
@@ -4756,7 +4755,7 @@ export function createState() {
     deleteFromSet(setInterruptedChats, interruptedChats, id);
     addToSet(setDispatchingChats, dispatchingChats, id);
     await waitForChatSettingsWrites(id);
-    const r = await api.chat.compact(id);
+    const r = await api("compact", { chatId: id });
     if (!r.ok) {
       deleteFromSet(setDispatchingChats, dispatchingChats, id);
       deleteFromSet(setInterruptingChats, interruptingChats, id);
@@ -4771,7 +4770,7 @@ export function createState() {
     deleteFromSet(setInterruptedChats, interruptedChats, id);
     addToSet(setDispatchingChats, dispatchingChats, id);
     await waitForChatSettingsWrites(id);
-    const r = await api.chat.resume(id);
+    const r = await api("resume", { chatId: id });
     if (!r.ok) {
       deleteFromSet(setDispatchingChats, dispatchingChats, id);
       reportError(`resume ${id}`, r.error);
@@ -4800,7 +4799,7 @@ export function createState() {
     // Keep queued follow-ups paused until the interrupt RPC reaches Rust.
     // Draining earlier can start a fresh turn that the delayed interrupt then
     // aborts, leaving the user's follow-up apparently queued/stuck.
-    const r = await api.chat.interrupt(id);
+    const r = await api("interrupt", { chatId: id });
     deleteFromSet(setInterruptingChats, interruptingChats, id);
     if (!r.ok) reportError(`interrupt ${id}`, r.error);
     if (options.resumeQueued) queueMicrotask(drain);
@@ -5348,10 +5347,10 @@ export function createState() {
       return;
     }
     if (kind === "llmAuth") {
-      const r = await api.llmAuth.oauthComplete(
-        initialOAuthCallback.state,
-        initialOAuthCallback.code,
-      );
+      const r = await api("llm-auth-oauth-complete", {
+        state: initialOAuthCallback.state,
+        code: initialOAuthCallback.code,
+      });
       if (!r.ok) {
         console.error("llm-auth-oauth", r.error);
         alert(r.error.message);
@@ -5364,10 +5363,10 @@ export function createState() {
       setOpenUiInstanceId(null);
       return;
     }
-    const r = await api.mcp.oauth.complete(
-      initialOAuthCallback.state,
-      initialOAuthCallback.code,
-    );
+    const r = await api("mcp-oauth-complete", {
+      state: initialOAuthCallback.state,
+      code: initialOAuthCallback.code,
+    });
     let returnChatId: string | null = null;
     if (!r.ok) {
       console.error("mcp-oauth", r.error);
@@ -5845,40 +5844,36 @@ export function createState() {
     setCachedTraceSettings,
     refreshChatUis,
     retract: async (s: string, p: string, o: string) => {
-      const r = await api.memory.retract({
-        subject: s,
-        predicate: p,
-        object: o,
-      });
+      const r = await api("retract", { subject: s, predicate: p, object: o });
       if (!r.ok) reportError("retract", r.error);
       await refreshFactsView();
       await refreshVocabulary();
     },
     removeSubject: async (graph: string, s: string) => {
-      const r = await api.memory.subject.remove(graph, s);
+      const r = await api("subject-rm", { graph, subject: s });
       if (!r.ok) reportError("delete subject", r.error);
       await refreshFactsView();
       await refreshVocabulary();
     },
     removeTriple: async (graph: string, s: string, p: string, o: string) => {
-      const r = await api.memory.triple.remove(graph, s, p, o);
+      const r = await api("triple-rm", { graph, subject: s, predicate: p, object: o });
       if (!r.ok) reportError("delete triple", r.error);
       await refreshFactsView();
       await refreshVocabulary();
     },
     restoreTriple: async (graph: string, s: string, p: string, o: string) => {
-      const r = await api.memory.triple.restore(graph, s, p, o);
+      const r = await api("triple-restore", { graph, subject: s, predicate: p, object: o });
       if (!r.ok) reportError("undelete triple", r.error);
       await refreshFactsView();
       await refreshVocabulary();
     },
     submitForm: async (requestId: string, values: Record<string, unknown>) => {
-      const r = await api.chat.submit(chatId()!, requestId, values);
+      const r = await api("submit", { chatId: chatId()!, requestId, values });
       if (!r.ok) reportError("submit form", r.error);
       await refreshTimeline();
     },
     cancelForm: async (requestId: string) => {
-      const r = await api.chat.cancel(chatId()!, requestId);
+      const r = await api("submit", { chatId: chatId()!, requestId, cancelled: true });
       if (!r.ok) reportError("cancel form", r.error);
       await refreshTimeline();
     },
