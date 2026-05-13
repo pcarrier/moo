@@ -81,6 +81,7 @@ function defaultSettings(): LlmAuthSettings {
       anthropic: defaultProviderSettings(),
       qwen: defaultProviderSettings(),
       xai: defaultProviderSettings(),
+      deepseek: defaultProviderSettings(),
     },
     compaction: normalizeCompactionSettings(null),
     retries: normalizeRetryPolicy(DEFAULT_LLM_RETRY_POLICY),
@@ -116,6 +117,7 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
       anthropic: normalizeProviderSettings(raw.providers?.anthropic, "anthropic"),
       qwen: normalizeProviderSettings(raw.providers?.qwen, "qwen"),
       xai: normalizeProviderSettings(raw.providers?.xai, "xai"),
+      deepseek: normalizeProviderSettings(raw.providers?.deepseek, "deepseek"),
     },
     compaction: normalizeCompactionSettings(raw.compaction),
     retries: normalizeRetryPolicy(raw.retries),
@@ -157,8 +159,14 @@ async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAut
     const prefix = id + ":";
     if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim() || providerFallback;
   }
-  const envName = id === "openai" ? "OPENAI_MODEL" : id === "anthropic" ? "ANTHROPIC_MODEL" : id === "qwen" ? "QWEN_MODEL" : "XAI_MODEL";
-  return (await moo.env.get({ name: envName })) || providerFallback;
+  const modelEnv: Record<LlmAuthProviderId, string> = {
+    openai: "OPENAI_MODEL",
+    anthropic: "ANTHROPIC_MODEL",
+    qwen: "QWEN_MODEL",
+    xai: "XAI_MODEL",
+    deepseek: "DEEPSEEK_MODEL",
+  };
+  return (await moo.env.get({ name: modelEnv[id] })) || providerFallback;
 }
 
 
@@ -203,6 +211,7 @@ function redact(settings: LlmAuthSettings) {
       anthropic: redactProvider(settings.providers.anthropic),
       qwen: redactProvider(settings.providers.qwen),
       xai: redactProvider(settings.providers.xai),
+      deepseek: redactProvider(settings.providers.deepseek),
     },
   };
 }

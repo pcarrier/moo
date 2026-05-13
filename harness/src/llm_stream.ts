@@ -9,6 +9,7 @@ type LlmAccumulatorState = {
   model: string | null;
   usage: any | null;
   error: any | null;
+  reasoningContent: string;
   lastTokenProgressUsed: number;
   anthropicToolIndex: number | null;
   anthropicToolBlockToCall: Record<string, number>;
@@ -28,6 +29,7 @@ export function llmStreamInitEffect(input: Input): Effect<{ state: LlmAccumulato
       model: null,
       usage: null,
       error: null,
+      reasoningContent: "",
       lastTokenProgressUsed: estimated,
       anthropicToolIndex: null,
       anthropicToolBlockToCall: {},
@@ -83,6 +85,7 @@ export function llmStreamFinalizeEffect(input: Input): Effect<any> {
         toolCalls: state.toolCalls,
         errorBody: formatStreamErrorBody(state.error),
         headers: input.headers && typeof input.headers === "object" ? input.headers : null,
+        reasoningContent: state.reasoningContent || null,
         model: state.model,
         usage: state.usage,
       }
@@ -92,6 +95,7 @@ export function llmStreamFinalizeEffect(input: Input): Effect<any> {
         content: state.content,
         toolCalls: state.toolCalls,
         errorBody: null,
+        reasoningContent: state.reasoningContent || null,
         model: state.model,
         usage: state.usage,
       };
@@ -115,6 +119,7 @@ export function llmStreamErrorEffect(input: Input): Effect<any> {
       toolCalls: state.toolCalls,
       errorBody,
       headers: input.headers && typeof input.headers === "object" ? input.headers : null,
+      reasoningContent: state.reasoningContent || null,
       model: state.model,
       usage: state.usage,
     };
@@ -145,6 +150,7 @@ function normalizeLlmAccumulatorState(raw: any): LlmAccumulatorState {
     model: typeof raw?.model === "string" && raw.model ? raw.model : null,
     usage: raw?.usage ?? null,
     error: raw?.error ?? null,
+    reasoningContent: typeof raw?.reasoningContent === "string" ? raw.reasoningContent : "",
     lastTokenProgressUsed: Number(raw?.lastTokenProgressUsed ?? 0) || 0,
     anthropicToolIndex: Number.isFinite(Number(raw?.anthropicToolIndex)) ? Number(raw.anthropicToolIndex) : null,
     anthropicToolBlockToCall: raw?.anthropicToolBlockToCall && typeof raw.anthropicToolBlockToCall === "object"
@@ -225,6 +231,9 @@ function accumulateLlmStreamEvent(
   if (!delta || typeof delta !== "object") return;
   if (typeof delta.content === "string" && delta.content) {
     appendLlmContentDelta(state, delta.content, streamEvents, events);
+  }
+  if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+    state.reasoningContent += delta.reasoning_content;
   }
   if (Array.isArray(delta.tool_calls)) {
     for (const tc of delta.tool_calls) {

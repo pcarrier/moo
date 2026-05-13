@@ -1015,6 +1015,7 @@ export async function stepHandleLlmCommand(input: Input) {
     toolCalls: any[];
     errorBody: string | null;
     headers?: Record<string, unknown> | null;
+    reasoningContent?: string | null;
     model: string | null;
     usage: any | null;
   };
@@ -1057,7 +1058,7 @@ export async function stepHandleLlmCommand(input: Input) {
     usage: normalizedUsage,
   });
   if (normalizedUsage && purpose !== "compact") {
-    const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" ? input.requestProvider : "openai";
+    const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" || input.requestProvider === "deepseek" ? input.requestProvider : "openai";
     const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel } : null);
     if (tokenEvent) moo.events.publish({ payload: tokenEvent });
     await recordUsage(chatId, usedModel, normalizedUsage);
@@ -1241,6 +1242,7 @@ export async function stepHandleLlmCommand(input: Input) {
     messages.push({
       role: "assistant",
       content: llmResult.content || null,
+      ...(llmResult.reasoningContent ? { reasoning_content: llmResult.reasoningContent } : {}),
       tool_calls: llmResult.toolCalls,
     });
     await traceMark("llm.assistant_tool_message", { chatId, messages: messages.length, content: llmResult.content || "", toolCalls: llmResult.toolCalls });

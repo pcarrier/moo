@@ -3275,6 +3275,8 @@ function ModelPicker(props: { bag: Bag }) {
     if (info()?.provider === "openai") return "OpenAI reasoning effort";
     if (info()?.provider === "anthropic" && effortSupported())
       return "Anthropic thinking effort";
+    if (info()?.provider === "deepseek" && effortSupported())
+      return "DeepSeek thinking effort";
     return "effort is only sent to providers/models that support it";
   };
   return (

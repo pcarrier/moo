@@ -1,4 +1,4 @@
-export type ProviderName = "openai" | "qwen" | "anthropic" | "xai";
+export type ProviderName = "openai" | "qwen" | "anthropic" | "xai" | "deepseek";
 
 export type ModelPrice = {
   /** USD per million regular input tokens. */
@@ -56,7 +56,7 @@ export type ProviderMetadata = {
 
 export const DEFAULT_CONTEXT_TOKENS = 128_000;
 
-export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai"];
+export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai", "deepseek"];
 
 export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
   openai: {
@@ -184,6 +184,36 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
       },
     ],
   },
+  deepseek: {
+    id: "deepseek",
+    title: "DeepSeek",
+    envKey: "DEEPSEEK_API_KEY",
+    baseUrlEnv: "DEEPSEEK_BASE_URL",
+    defaultBaseUrl: "https://api.deepseek.com",
+    fallbackModel: "deepseek-v4-flash",
+    inferPrefixes: ["deepseek"],
+    models: [
+      {
+        id: "deepseek-v4-flash",
+        aliases: ["deepseek-chat", "deepseek-reasoner"],
+        match: "^deepseek-(?:v4-flash|chat|reasoner)(?:[-.]|$)",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 384_000,
+        pricing: { input: 0.14, cachedInput: 0.0028, output: 0.28 },
+        capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true },
+        defaultOption: true,
+      },
+      {
+        id: "deepseek-v4-pro",
+        match: "^deepseek-v4-pro(?:[-.]|$)",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 384_000,
+        pricing: { input: 0.435, cachedInput: 0.003625, output: 0.87 },
+        capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true },
+        defaultOption: true,
+      },
+    ],
+  },
 };
 
 function lower(value: string | null | undefined): string {
@@ -250,6 +280,7 @@ export function modelSupportsTools(provider: ProviderName | null | undefined, mo
     return /^qwen3(?:[.-]|$)/.test(id) || /^qwen-(?:plus|max|turbo|flash)(?:[-.]|$)/.test(id);
   }
   if (id.startsWith("grok")) return metadata?.capabilities?.toolCalls === true;
+  if (id.startsWith("deepseek")) return metadata?.capabilities?.toolCalls === true;
   if (/(?:^|[-.])(?:audio|realtime|image|transcribe|tts|search|embedding|moderation|whisper|dall-e|deep-research)(?:[-.]|$)/.test(id)) return false;
   return /^gpt-5(?:[.-]|$)/.test(id) || /^gpt-4(?:\.1|o)?(?:[.-]|$)/.test(id) || /^o(?:3|4)(?:[.-]|$)/.test(id) || /^chatgpt-/.test(id);
 }
@@ -264,8 +295,14 @@ export function defaultModelPricing(): Record<string, ModelPrice> {
   const out: Record<string, ModelPrice> = {};
   for (const provider of PROVIDERS) {
     for (const model of PROVIDER_METADATA[provider].models) {
-      if (model.pricing) out[model.id] = model.pricing;
-      if (model.longContext) out[model.id + "#long-context"] = model.longContext.pricing;
+      if (model.pricing) {
+        out[model.id] = model.pricing;
+        for (const alias of model.aliases ?? []) out[alias] = model.pricing;
+      }
+      if (model.longContext) {
+        out[model.id + "#long-context"] = model.longContext.pricing;
+        for (const alias of model.aliases ?? []) out[alias + "#long-context"] = model.longContext.pricing;
+      }
     }
   }
   return out;

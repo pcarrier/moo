@@ -5,7 +5,7 @@ import { appendStep } from "./steps";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
 import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
 import { formatTodosForPrompt } from "./todos";
-import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, normalizeProvider as normalizeProviderName } from "./llm_models";
+import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, normalizeProvider as normalizeProviderName, type ProviderName } from "./llm_models";
 export { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 import { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 
@@ -177,7 +177,7 @@ export async function recordErrorStep(
 
 // -- provider --------------------------------------------------------------
 
-export function inferProviderForModel(model: string | null | undefined): "openai" | "qwen" | "anthropic" | "xai" | null {
+export function inferProviderForModel(model: string | null | undefined): ProviderName | null {
   return inferProviderForModelId(model);
 }
 
@@ -208,7 +208,7 @@ async function selectedEffortForChat(chatId: string): Promise<string | null> {
   return normalizeEffort(await selectedChatFact(chatId, CHAT_EFFORT_PREDICATE));
 }
 
-async function selectedProviderForChat(chatId: string): Promise<"openai" | "qwen" | "anthropic" | "xai" | null> {
+async function selectedProviderForChat(chatId: string): Promise<ProviderName | null> {
   return normalizeProviderName(await selectedChatFact(chatId, CHAT_PROVIDER_PREDICATE));
 }
 
@@ -247,7 +247,9 @@ async function defaultEffort(): Promise<string | null> {
     (await moo.env.get({ name: "ANTHROPIC_EFFORT" })) ||
       (await moo.env.get({ name: "ANTHROPIC_THINKING_EFFORT" })) ||
       (await moo.env.get({ name: "OPENAI_REASONING_EFFORT" })) ||
-      (await moo.env.get({ name: "OPENAI_EFFORT" })),
+      (await moo.env.get({ name: "OPENAI_EFFORT" })) ||
+      (await moo.env.get({ name: "DEEPSEEK_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "DEEPSEEK_EFFORT" })),
   );
 }
 
@@ -258,6 +260,7 @@ export function usesResponsesApi(provider: LLMProvider): boolean {
 export function effortLevelsForProvider(provider: Pick<LLMProvider, "name" | "model">): string[] {
   if (provider.name === "anthropic") return anthropicEffortLevels(provider.model);
   if (provider.name === "openai") return openaiEffortLevels(provider.model);
+  if (provider.name === "deepseek") return deepseekEffortLevels(provider.model);
   return [];
 }
 
@@ -278,6 +281,17 @@ function openaiEffortLevels(model: string | null | undefined): string[] {
   if (/^gpt-5(?:[.-]|$)/.test(id)) return ["minimal", "low", "medium", "high"];
   if (/^o(?:1|3|4)(?:[.-]|$)/.test(id)) return ["low", "medium", "high"];
   return [];
+}
+
+function deepseekEffortLevels(model: string | null | undefined): string[] {
+  const id = String(model ?? "").trim().toLowerCase();
+  return /^deepseek-(?:v4|reasoner)(?:[-.]|$)/.test(id) ? ["none", "low", "medium", "high", "xhigh", "max"] : [];
+}
+
+function deepseekEffortForRequest(effort: string | null | undefined): "high" | "max" | null {
+  const normalized = normalizeEffort(effort);
+  if (!normalized || normalized === "none") return null;
+  return normalized === "max" || normalized === "xhigh" ? "max" : "high";
 }
 
 const ANTHROPIC_DEFAULT_THINKING_BUDGETS: EffortBudgetMap = {
@@ -351,6 +365,17 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
     if (!effort) return;
     if (responsesApi) body.reasoning = { effort };
     else body.reasoning_effort = effort;
+    return;
+  }
+  if (provider.name === "deepseek") {
+    const effort = effortAllowed(deepseekEffortLevels(provider.model), provider.effort);
+    if (!effort || effort === "none") {
+      body.thinking = { type: "disabled" };
+      return;
+    }
+    body.thinking = { type: "enabled" };
+    const requestEffort = deepseekEffortForRequest(effort);
+    if (requestEffort) body.reasoning_effort = requestEffort;
     return;
   }
   if (provider.name === "anthropic" && supportsAnthropicThinking(provider.model)) {
@@ -621,14 +646,18 @@ function anthropicOutputText(body: any): string {
 export function normalizeUsage(usage: any): RawUsage | null {
   if (!usage) return null;
   const details = usage.prompt_tokens_details || usage.input_tokens_details;
-  if (usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined) {
+  if (usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined || usage.prompt_cache_hit_tokens !== undefined || usage.prompt_cache_miss_tokens !== undefined) {
+    const cached = details?.cached_tokens ?? details?.cache_read_input_tokens ?? usage.prompt_cache_hit_tokens;
     return {
       ...usage,
-      prompt_tokens_details: details
+      prompt_tokens: usage.prompt_tokens ?? (usage.prompt_cache_hit_tokens != null || usage.prompt_cache_miss_tokens != null
+        ? Number(usage.prompt_cache_hit_tokens ?? 0) + Number(usage.prompt_cache_miss_tokens ?? 0)
+        : undefined),
+      prompt_tokens_details: details || usage.prompt_cache_hit_tokens !== undefined
         ? {
-            ...details,
-            cached_tokens: details.cached_tokens ?? details.cache_read_input_tokens,
-            cache_creation_tokens: details.cache_creation_tokens ?? details.cache_creation_input_tokens,
+            ...(details ?? {}),
+            cached_tokens: cached,
+            cache_creation_tokens: details?.cache_creation_tokens ?? details?.cache_creation_input_tokens,
           }
         : usage.prompt_tokens_details,
     };
@@ -649,16 +678,18 @@ export function normalizeUsage(usage: any): RawUsage | null {
   return usage;
 }
 
-async function defaultProviderName(): Promise<"openai" | "qwen" | "anthropic" | "xai"> {
+async function defaultProviderName(): Promise<ProviderName> {
   if (await moo.env.get({ name: "OPENAI_MODEL" })) return "openai";
   if (await moo.env.get({ name: "QWEN_MODEL" })) return "qwen";
   if (await moo.env.get({ name: "ANTHROPIC_MODEL" })) return "anthropic";
   if (await moo.env.get({ name: "XAI_MODEL" })) return "xai";
+  if (await moo.env.get({ name: "DEEPSEEK_MODEL" })) return "deepseek";
 
   if (await moo.env.get({ name: "OPENAI_API_KEY" })) return "openai";
   if (await moo.env.get({ name: "ANTHROPIC_API_KEY" })) return "anthropic";
   if ((await moo.env.get({ name: "QWEN_API_KEY" })) || (await moo.env.get({ name: "DASHSCOPE_API_KEY" }))) return "qwen";
   if ((await moo.env.get({ name: "XAI_API_KEY" })) || (await moo.env.get({ name: "GROK_API_KEY" }))) return "xai";
+  if (await moo.env.get({ name: "DEEPSEEK_API_KEY" })) return "deepseek";
   return "openai";
 }
 
@@ -676,6 +707,10 @@ export async function resolveProvider(modelOverride?: string | null, effortOverr
   if (which === "xai") {
     const configured = await providerConfiguredCredential("xai");
     return { name: "xai", apiKey: configured.apiKey, baseUrl: configured.baseUrl, model: modelOverride || configured.model, effort: null, keyEnvHint: configured.keyEnvHint, authMode: configured.authMode };
+  }
+  if (which === "deepseek") {
+    const configured = await providerConfiguredCredential("deepseek");
+    return { name: "deepseek", apiKey: configured.apiKey, baseUrl: configured.baseUrl, model: modelOverride || configured.model, effort: normalizeEffort(effortOverride) || (await defaultEffort()), keyEnvHint: configured.keyEnvHint, authMode: configured.authMode };
   }
   const configuredOpenAI = await providerConfiguredCredential("openai");
   return { name: "openai", apiKey: configuredOpenAI.apiKey, baseUrl: configuredOpenAI.baseUrl, model: modelOverride || configuredOpenAI.model, effort: normalizeEffort(effortOverride) || (await defaultEffort()), keyEnvHint: configuredOpenAI.keyEnvHint, authMode: configuredOpenAI.authMode, oauthAccountId: configuredOpenAI.oauthAccountId };
@@ -809,6 +844,8 @@ export type RawUsage = {
   prompt_tokens?: number;
   completion_tokens?: number;
   prompt_tokens_details?: { cached_tokens?: number; cache_creation_tokens?: number };
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
   estimated?: boolean;
 };
 

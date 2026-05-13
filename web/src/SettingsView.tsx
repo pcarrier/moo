@@ -35,6 +35,7 @@ const PROVIDERS: ProviderMeta[] = [
   { id: "anthropic", title: "Anthropic", envLabel: "ANTHROPIC_API_KEY", defaultBaseUrl: "https://api.anthropic.com/v1" },
   { id: "qwen", title: "Qwen", envLabel: "QWEN_API_KEY or DASHSCOPE_API_KEY", defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
   { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
+  { id: "deepseek", title: "DeepSeek", envLabel: "DEEPSEEK_API_KEY", defaultBaseUrl: "https://api.deepseek.com" },
 ];
 
 
@@ -86,6 +87,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     anthropic: blankDraft(),
     qwen: blankDraft(),
     xai: blankDraft(),
+    deepseek: blankDraft(),
   });
   const [compactionThresholdPercent, setCompactionThresholdPercent] = createSignal("50");
   const [maxAttempts, setMaxAttempts] = createSignal("3");
@@ -103,7 +105,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
 
   function hydrate(next: LlmAuthSettings) {
     setSettings(next);
-    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), xai: blankDraft() };
+    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), xai: blankDraft(), deepseek: blankDraft() };
     for (const meta of PROVIDERS) {
       const p = next.providers[meta.id];
       providerDrafts[meta.id] = {
@@ -165,6 +167,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           authMode: d.xai.authMode,
           apiKey: d.xai.apiKey === "••••" ? undefined : d.xai.apiKey,
           baseUrl: d.xai.baseUrl,
+        },
+        deepseek: {
+          authMode: d.deepseek.authMode,
+          apiKey: d.deepseek.apiKey === "••••" ? undefined : d.deepseek.apiKey,
+          baseUrl: d.deepseek.baseUrl,
         },
         compaction: {
           thresholdPercent: Number(compactionThresholdPercent()),

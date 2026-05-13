@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { inferProviderForModel, modelContextBudget, resolveProvider } from "../src/agent";
+import { buildStreamingLLMRequest, inferProviderForModel, modelContextBudget, normalizeUsage, resolveProvider } from "../src/agent";
 import { llmAuthGetCommand } from "../src/commands/llm_auth";
 import { applyDefaultChatSettings, modelOptionsFor, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
@@ -30,16 +30,28 @@ afterEach(() => {
   envValues.clear();
 });
 
-describe("Grok/xAI provider support", () => {
+describe("OpenAI-compatible provider support", () => {
   test("infers and parses xAI-prefixed Grok models", () => {
     expect(inferProviderForModel("grok-4-fast")).toBe("xai");
     expect(splitModelId("xai:grok-4-fast")).toEqual({ provider: "xai", model: "grok-4-fast" });
+  });
+
+  test("infers and parses DeepSeek-prefixed models", () => {
+    expect(inferProviderForModel("deepseek-v4-flash")).toBe("deepseek");
+    expect(splitModelId("deepseek:deepseek-v4-pro")).toEqual({ provider: "deepseek", model: "deepseek-v4-pro" });
   });
 
   test("includes Grok defaults in model options", async () => {
     const options = await modelOptionsFor("xai", "grok-4-fast");
     expect(options.map((option) => option.id)).toContain("xai:grok-4-fast");
     expect(options.map((option) => option.id)).not.toContain("xai:grok-code-fast-1");
+  });
+
+  test("includes DeepSeek defaults in model options", async () => {
+    const options = await modelOptionsFor("deepseek", "deepseek-v4-flash");
+    expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-flash");
+    expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-pro");
+    expect(modelSupportsToolCalls("deepseek-chat")).toBe(true);
   });
 
 
@@ -77,14 +89,33 @@ describe("Grok/xAI provider support", () => {
     expect(provider).toMatchObject({ name: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-4-fast", effort: null });
   });
 
+  test("defaults DeepSeek credentials to DeepSeek API and V4 Flash", async () => {
+    const provider = await resolveProvider(null, null, "deepseek");
+    expect(provider).toMatchObject({ name: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", effort: null });
+  });
+
   test("redacted auth settings include xAI provider", async () => {
     const result = await llmAuthGetCommand();
     expect(result.value.settings.providers.xai).toMatchObject({ authMode: "env" });
+    expect(result.value.settings.providers.deepseek).toMatchObject({ authMode: "env" });
   });
 
   test("uses Grok-specific context windows", () => {
     expect(modelContextBudget({ name: "xai", model: "grok-4-fast" })).toBe(2_000_000);
     expect(modelMetadataFor("xai", "grok-4-fast")?.rateLimits).toMatchObject({ requestsPerMinute: 600, tokensPerMinute: 4_000_000 });
+  });
+
+  test("uses DeepSeek-specific context windows and request options", async () => {
+    expect(modelContextBudget({ name: "deepseek", model: "deepseek-v4-flash" })).toBe(1_000_000);
+    const provider = await resolveProvider("deepseek-v4-pro", "max", "deepseek");
+    const request = buildStreamingLLMRequest(provider, [{ role: "user", content: "hello" }], null);
+    expect(request.url).toBe("https://api.deepseek.com/chat/completions");
+    expect(request.requestEffort).toBe("max");
+    expect(request.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "max" });
+    const noThinking = buildStreamingLLMRequest({ ...provider, effort: "none" }, [{ role: "user", content: "hello" }], null);
+    expect(noThinking.body).toMatchObject({ thinking: { type: "disabled" } });
+    const defaultThinking = buildStreamingLLMRequest({ ...provider, effort: null }, [{ role: "user", content: "hello" }], null);
+    expect((defaultThinking.body as any).thinking).toBeUndefined();
   });
 
   test("tracks Grok pricing and capabilities", async () => {
@@ -94,5 +125,14 @@ describe("Grok/xAI provider support", () => {
     expect(modelLongContextUsageKey("grok-4-fast", 128_001)).toBe("grok-4-fast#long-context");
     expect(modelSupportsToolCalls("grok-4-fast")).toBe(true);
     expect(estimateCostUsd({ models: { "grok-4-fast": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.75);
+  });
+
+  test("tracks DeepSeek pricing, aliases, and cache usage", async () => {
+    const pricing = await loadPricing();
+    expect(priceFor("deepseek-v4-flash", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
+    expect(priceFor("deepseek-chat", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
+    expect(priceFor("deepseek-v4-pro", pricing)).toEqual({ input: 0.435, cachedInput: 0.003625, output: 0.87 });
+    expect(normalizeUsage({ prompt_tokens: 10, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 6, completion_tokens: 2 })?.prompt_tokens_details?.cached_tokens).toBe(4);
+    expect(estimateCostUsd({ models: { "deepseek-v4-flash": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.4228);
   });
 });

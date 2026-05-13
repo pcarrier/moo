@@ -1,4 +1,5 @@
 import type { UiAppBundle, UiAppManifest } from "../../shared/src/ui";
+import type { ProviderName } from "./llm_models";
 export type Quad = [string, string, string, string]; // [graph, s, p, o]
 export type FactHistoryRow = [string, string, string, string, string, string]; // [graph, s, p, o, action, at]
 export type Triple = [string, string, string]; // [s, p, o]
@@ -346,7 +347,7 @@ export type ProcResult = {
 };
 
 export type LLMProvider = {
-  name: "openai" | "qwen" | "anthropic" | "xai";
+  name: ProviderName;
   apiKey: string | null;
   baseUrl: string;
   model: string;

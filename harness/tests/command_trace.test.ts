@@ -145,3 +145,35 @@ describe("command tracing", () => {
     }
   });
 });
+
+
+describe("LLM stream provider details", () => {
+  beforeEach(() => {
+    roots.clear();
+    spans.clear();
+    rows.clear();
+    finished.length = 0;
+    currentTrace = null;
+    traceSeq = 0;
+    objectSeq = 0;
+  });
+
+  test("preserves DeepSeek reasoning content for tool-call continuations", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      events: [
+        JSON.stringify({ choices: [{ delta: { reasoning_content: "think ", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "runJS", arguments: "{\"code\"" } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { reasoning_content: "more", tool_calls: [{ index: 0, function: { arguments: ":\"return 1\"}" } }] } }] }),
+      ],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.reasoningContent).toBe("think more");
+    expect((accumulated.value as any).state.toolCalls[0].function.arguments).toBe('{"code":"return 1"}');
+
+    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    expect(finalized.ok).toBe(true);
+    expect((finalized.value as any).reasoningContent).toBe("think more");
+  });
+});

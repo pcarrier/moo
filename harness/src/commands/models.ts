@@ -26,7 +26,7 @@ export type ModelOption = {
 
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
   const raw = String(value ?? "").trim();
-  const match = /^(openai|qwen|anthropic|xai):(.*)$/i.exec(raw);
+  const match = /^(openai|qwen|anthropic|xai|deepseek):(.*)$/i.exec(raw);
   if (!match) return { provider: null, model: raw };
   return { provider: normalizeProvider(match[1]), model: match[2].trim() };
 }
@@ -156,7 +156,9 @@ export async function defaultChatEffort(): Promise<string | null> {
       (await moo.env.get({ name: "ANTHROPIC_EFFORT" })) ||
       (await moo.env.get({ name: "ANTHROPIC_THINKING_EFFORT" })) ||
       (await moo.env.get({ name: "OPENAI_REASONING_EFFORT" })) ||
-      (await moo.env.get({ name: "OPENAI_EFFORT" })),
+      (await moo.env.get({ name: "OPENAI_EFFORT" })) ||
+      (await moo.env.get({ name: "DEEPSEEK_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "DEEPSEEK_EFFORT" })),
   );
 }
 
@@ -240,6 +242,7 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   for (const model of configuredModelsFrom(await moo.env.get({ name: "QWEN_MODELS" }))) add("qwen", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) add("anthropic", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) add("xai", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) add("deepseek", splitModelId(model).model);
   return out;
 }
 
