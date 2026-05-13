@@ -2992,6 +2992,9 @@ function RunJSBody(props: {
               label="Args"
               klass="runjs-args"
               content={parsed().args}
+              language="hjson"
+              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunJSBlock}
             />
           </Show>
           <Show

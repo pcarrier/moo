@@ -34,7 +34,7 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain('const object = await withTimeout(');
   });
 
-  test("runJS code and result blocks use 10-line previews with a lightbox", () => {
+  test("runJS code, args, and result blocks use 10-line previews with a lightbox", () => {
     expect(timeline).toContain("const RUNJS_BLOCK_PREVIEW_LINES = 10;");
     expect(timeline).toContain("maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}");
     expect(timeline).toContain("const maxPreviewHeight =");
@@ -42,6 +42,11 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain("function runJSBlockLanguageForContent(content: string, language?: string)");
     expect(timeline).toContain('if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";');
     expect(timeline).toContain('if (looksLikeMarkdownText(trimmed)) return "markdown";');
+    expect(timeline).toContain('label="Args"');
+    expect(timeline).toContain('klass="runjs-args"');
+    expect(timeline).toContain('language="hjson"');
+    expect(timeline).toContain('content={parsed().args}');
+    expect(timeline).toContain('onOpenFull={props.onOpenRunJSBlock}');
     expect(timeline).toContain('class="runjs-lightbox-backdrop"');
     expect(timeline).toContain('role="button"');
     expect(timeline).toContain('"runjs-block-preview": true');
