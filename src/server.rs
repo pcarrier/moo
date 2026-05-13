@@ -38,6 +38,15 @@ pub fn serve(
     db: &str,
 ) -> Result<(), String> {
     let listener = TcpListener::bind((host_addr, port)).map_err(|e| e.to_string())?;
+    let bound_port = listener
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(port);
+    let display_host = match host_addr {
+        "0.0.0.0" | "::" => "127.0.0.1",
+        other => other,
+    };
+    println!("moo serve listening on http://{display_host}:{bound_port}");
     // Pool size needs headroom for read-only commands (describe/triples/etc)
     // to overlap with long-running `step` calls that hold an isolate for the
     // duration of LLM streaming.
