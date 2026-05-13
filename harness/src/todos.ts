@@ -3,12 +3,18 @@ import { decodeJsonPointer, encodeJsonPointer } from "./lib";
 import { appendStep } from "./steps";
 
 export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+export type TodoPriority = "high" | "normal" | "low";
 export type TodoIdInput = string | number;
+
+export type TodoAddInput = { text: string; status?: TodoStatus; priority?: TodoPriority; note?: string };
+export type TodoUpdateInput = { id: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority | null; note?: string | null };
+export type AgentTodoPatch = { id?: TodoIdInput; text?: string; status?: TodoStatus; priority?: TodoPriority | null; note?: string | null };
 
 export type AgentTodo = {
   id: string;
   text: string;
   status: TodoStatus;
+  priority: TodoPriority;
   note?: string;
   createdAt: string;
   updatedAt: string;
@@ -37,13 +43,15 @@ export type TodoDiffSummary = {
 };
 
 export type TodoPatch = {
-  add?: Array<{ text: string; status?: TodoStatus; note?: string }>;
-  update?: Array<{ id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null }>;
+  items?: AgentTodoPatch[];
+  add?: TodoAddInput[];
+  update?: TodoUpdateInput[];
   clearDone?: boolean;
   clearStatuses?: TodoStatus[];
 };
 
 const VALID_STATUSES = new Set<TodoStatus>(["todo", "doing", "done", "blocked", "dropped"]);
+const VALID_PRIORITIES = new Set<TodoPriority>(["high", "normal", "low"]);
 const MAX_ITEMS = 50;
 const MAX_TEXT = 160;
 
@@ -72,7 +80,7 @@ function todoDiffChanges(before: AgentTodoState, after: AgentTodoState): TodoDif
       continue;
     }
     if (!prev || !next) continue;
-    const fields = (["text", "status", "note"] as const).filter((field) => (prev[field] || "") !== (next[field] || ""));
+    const fields = (["text", "status", "priority", "note"] as const).filter((field) => (prev[field] || "") !== (next[field] || ""));
     if (fields.length) changes.push({ kind: "updated", before: prev, after: next, fields });
   }
   return changes;
@@ -151,6 +159,10 @@ function cleanStatus(value: unknown, fallback: TodoStatus = "todo"): TodoStatus 
   return typeof value === "string" && VALID_STATUSES.has(value as TodoStatus) ? value as TodoStatus : fallback;
 }
 
+function cleanPriority(value: unknown, fallback: TodoPriority = "normal"): TodoPriority {
+  return typeof value === "string" && VALID_PRIORITIES.has(value as TodoPriority) ? value as TodoPriority : fallback;
+}
+
 
 function normalizeTodoId(value: unknown): string | null {
   if (typeof value === "string") {
@@ -186,7 +198,7 @@ function normalizeState(value: unknown): AgentTodoState {
     try { text = cleanText(item.text); } catch { continue; }
     const createdAt = typeof item.createdAt === "string" && item.createdAt ? item.createdAt : at;
     const updatedAt = typeof item.updatedAt === "string" && item.updatedAt ? item.updatedAt : createdAt;
-    const todo: AgentTodo = { id, text, status: cleanStatus(item.status), createdAt, updatedAt };
+    const todo: AgentTodo = { id, text, status: cleanStatus(item.status), priority: cleanPriority(item.priority), createdAt, updatedAt };
     const note = cleanOptionalText(item.note);
     if (note) todo.note = note;
     seen.add(id);
@@ -209,6 +221,33 @@ async function writeTodos(chatId: string, state: AgentTodoState, before?: AgentT
   return next;
 }
 
+function applyTodoUpdate(item: AgentTodo, patch: TodoUpdateInput | AgentTodoPatch, at: string): void {
+  if (patch.text !== undefined) item.text = cleanText(patch.text);
+  if (patch.status !== undefined) item.status = cleanStatus(patch.status, item.status);
+  if (Object.prototype.hasOwnProperty.call(patch, "priority")) item.priority = patch.priority == null ? "normal" : cleanPriority(patch.priority, item.priority);
+  if (Object.prototype.hasOwnProperty.call(patch, "note")) {
+    const note = cleanOptionalText(patch.note);
+    if (note) item.note = note;
+    else delete item.note;
+  }
+  item.updatedAt = at;
+}
+
+function appendTodo(items: AgentTodo[], add: TodoAddInput | AgentTodoPatch, at: string): void {
+  if (items.length >= MAX_ITEMS) return;
+  const item: AgentTodo = {
+    id: nextTodoId(items),
+    text: cleanText(add?.text),
+    status: cleanStatus(add?.status),
+    priority: cleanPriority(add?.priority),
+    createdAt: at,
+    updatedAt: at,
+  };
+  const note = cleanOptionalText(add?.note);
+  if (note) item.note = note;
+  items.push(item);
+}
+
 export async function patchTodos(chatId: string, patch: TodoPatch): Promise<AgentTodoState> {
   const state = await getTodos(chatId);
   const before = normalizeState(state);
@@ -223,41 +262,33 @@ export async function patchTodos(chatId: string, patch: TodoPatch): Promise<Agen
       if (!id) continue;
       const item = items.find((candidate) => candidate.id === id);
       if (!item) continue;
-      if (upd.text !== undefined) item.text = cleanText(upd.text);
-      if (upd.status !== undefined) item.status = cleanStatus(upd.status, item.status);
-      if (Object.prototype.hasOwnProperty.call(upd, "note")) {
-        const note = cleanOptionalText(upd.note);
-        if (note) item.note = note;
-        else delete item.note;
+      applyTodoUpdate(item, upd, at);
+    }
+  }
+  if (Array.isArray(patch.items)) {
+    for (const entry of patch.items) {
+      const id = normalizeTodoId(entry?.id);
+      if (id) {
+        const item = items.find((candidate) => candidate.id === id);
+        if (item) applyTodoUpdate(item, entry, at);
+        continue;
       }
-      item.updatedAt = at;
+      appendTodo(items, entry, at);
     }
   }
   if (Array.isArray(patch.add)) {
-    for (const add of patch.add) {
-      if (items.length >= MAX_ITEMS) break;
-      const item: AgentTodo = {
-        id: nextTodoId(items),
-        text: cleanText(add?.text),
-        status: cleanStatus(add?.status),
-        createdAt: at,
-        updatedAt: at,
-      };
-      const note = cleanOptionalText(add?.note);
-      if (note) item.note = note;
-      items.push(item);
-    }
+    for (const add of patch.add) appendTodo(items, add, at);
   }
   return await writeTodos(chatId, { version: 1, updatedAt: at, items }, before);
 }
 
-export async function addTodo(chatId: string, input: { text: string; status?: TodoStatus; note?: string }): Promise<AgentTodo> {
+export async function addTodo(chatId: string, input: TodoAddInput): Promise<AgentTodo> {
   const before = await getTodos(chatId);
   const after = await patchTodos(chatId, { add: [input] });
   return after.items[before.items.length] ?? after.items[after.items.length - 1]!;
 }
 
-export async function updateTodo(chatId: string, input: { id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null }): Promise<AgentTodo> {
+export async function updateTodo(chatId: string, input: TodoUpdateInput): Promise<AgentTodo> {
   const id = normalizeTodoId(input.id);
   const after = await patchTodos(chatId, { update: [input] });
   const item = id ? after.items.find((candidate) => candidate.id === id) : null;
@@ -290,8 +321,9 @@ export async function formatTodosForPrompt(chatId: string): Promise<string | nul
   }
   const lines: string[] = [];
   for (const item of active) {
+    const priority = item.priority !== "normal" ? ` ${item.priority}` : "";
     const note = item.note ? ` — ${truncateText(item.note, 80)}` : "";
-    lines.push(`- ${item.status} ${item.id}: ${truncateText(item.text, 90)}${note}`);
+    lines.push(`- ${item.status}${priority} ${item.id}: ${truncateText(item.text, 90)}${note}`);
   }
   return lines.join("\n");
 }

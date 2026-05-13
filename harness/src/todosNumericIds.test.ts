@@ -83,6 +83,34 @@ describe("agent TODO ID coercion", () => {
     expect(state.items.find((item) => item.id === "2")?.status).toBe("done");
   });
 
+  test("patch items without IDs add todos with priorities", async () => {
+    const state = await patchTodos("item-add", {
+      items: [
+        { text: "Add abstract to runtime spec", status: "doing", priority: "high" },
+        { text: "Validate docs", status: "todo", priority: "normal" },
+      ],
+    });
+
+    expect(state.items.map((item) => ({ id: item.id, text: item.text, status: item.status, priority: item.priority }))).toEqual([
+      { id: "1", text: "Add abstract to runtime spec", status: "doing", priority: "high" },
+      { id: "2", text: "Validate docs", status: "todo", priority: "normal" },
+    ]);
+  });
+
+  test("patch items with IDs update existing todos and can reset priority", async () => {
+    await patchTodos("item-update", { items: [{ text: "Draft", priority: "high" }] });
+
+    const state = await patchTodos("item-update", {
+      items: [{ id: 1, text: "Draft spec", status: "doing", priority: null, note: "Started" }],
+    });
+
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]?.text).toBe("Draft spec");
+    expect(state.items[0]?.status).toBe("doing");
+    expect(state.items[0]?.priority).toBe("normal");
+    expect(state.items[0]?.note).toBe("Started");
+  });
+
   test("normalizes numeric IDs loaded from storage without reallocating", async () => {
     refs.set(
       "chat/stored-number/todos",
