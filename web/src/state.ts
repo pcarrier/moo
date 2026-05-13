@@ -2923,7 +2923,7 @@ export function createState() {
               mode: "update",
               limit: Math.min(TIMELINE_PAGE_SIZE, limit),
               sinceAt,
-            }) as Promise<ApiResult<DescribeUpdateValue>>,
+            }),
           keepCurrentChat,
         );
         if (r.ok) cacheDescribeUpdate(id, r.value);
@@ -2944,7 +2944,7 @@ export function createState() {
         return;
       }
       const r = await retryChatLoad(
-        () => api("describe", { chatId: id, mode: "snapshot", limit }) as Promise<ApiResult<DescribeSnapshotValue>>,
+        () => api("describe", { chatId: id, mode: "snapshot", limit }),
         keepCurrentChat,
       );
       if (r.ok) {
