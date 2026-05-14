@@ -403,7 +403,7 @@ impl V8Observability {
             generation_started_at: now,
             ..Default::default()
         };
-        self.workers.lock().unwrap().insert(
+        self.workers.lock().expect("workers lock").insert(
             key.clone(),
             V8WorkerState {
                 snapshot,
@@ -426,7 +426,7 @@ impl V8Observability {
     fn register_pool(&self, lane: &str) {
         self.queues
             .lock()
-            .unwrap()
+            .expect("queues lock")
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
                 lane: lane.to_string(),
@@ -435,7 +435,7 @@ impl V8Observability {
     }
 
     fn job_queued(&self, lane: &str) {
-        let mut queues = self.queues.lock().unwrap();
+        let mut queues = self.queues.lock().expect("queues lock");
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -448,7 +448,7 @@ impl V8Observability {
     }
 
     fn job_dequeued(&self, lane: &str) {
-        let mut queues = self.queues.lock().unwrap();
+        let mut queues = self.queues.lock().expect("queues lock");
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -459,7 +459,7 @@ impl V8Observability {
     }
 
     fn observe_queue_wait(&self, lane: &str, queue_wait_ms: u64) {
-        let mut queues = self.queues.lock().unwrap();
+        let mut queues = self.queues.lock().expect("queues lock");
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -479,7 +479,7 @@ impl V8Observability {
     fn generation_started(&self, lane: &str, id: usize, generation: u64) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap().get_mut(&key) {
+        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
             state.snapshot.generation = generation;
             state.snapshot.status = "idle".to_string();
             state.snapshot.generation_started_at = now;
@@ -508,7 +508,7 @@ impl V8Observability {
     fn job_start(&self, lane: &str, id: usize, generation: u64, command: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap().get_mut(&key) {
+        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
             state.snapshot.status = "busy".to_string();
             state.snapshot.current_command = Some(command.to_string());
             state.snapshot.current_job_started_at = Some(now);
@@ -533,7 +533,7 @@ impl V8Observability {
         let key = worker_key(lane, id);
         let now = now_ms();
         let mut event_detail = None;
-        if let Some(state) = self.workers.lock().unwrap().get_mut(&key) {
+        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
             let snapshot = &mut state.snapshot;
             snapshot.status = "idle".to_string();
             snapshot.current_command = None;
@@ -621,7 +621,7 @@ impl V8Observability {
     fn recycle(&self, lane: &str, id: usize, generation: u64, reason: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap().get_mut(&key) {
+        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
             state.snapshot.recycles = state.snapshot.recycles.saturating_add(1);
             state.snapshot.status = "recycling".to_string();
             state.snapshot.last_recycle_reason = Some(reason.to_string());
@@ -643,7 +643,7 @@ impl V8Observability {
     fn worker_exit(&self, lane: &str, id: usize, generation: u64) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap().get_mut(&key) {
+        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
             state.snapshot.status = "stopped".to_string();
             state.snapshot.current_command = None;
             state.snapshot.current_job_started_at = None;
@@ -668,7 +668,7 @@ impl V8Observability {
         let mut workers: Vec<V8WorkerSnapshot> = self
             .workers
             .lock()
-            .unwrap()
+            .expect("workers lock")
             .values()
             .map(|state| {
                 let mut snapshot = state.snapshot.clone();
@@ -680,7 +680,7 @@ impl V8Observability {
             .collect();
         workers.sort_by(|a, b| a.lane.cmp(&b.lane).then(a.worker_id.cmp(&b.worker_id)));
         let mut pools: Vec<V8PoolQueueSnapshot> =
-            self.queues.lock().unwrap().values().cloned().collect();
+            self.queues.lock().expect("queues lock").values().cloned().collect();
         pools.sort_by(|a, b| a.lane.cmp(&b.lane));
         let mut totals = V8TotalsSnapshot {
             workers: workers.len(),
@@ -721,7 +721,7 @@ impl V8Observability {
             totals.max_queued = totals.max_queued.max(pool.max_queued);
         }
         let cache_entries = workers.iter().map(|w| w.cache_entries).sum();
-        let events = self.events.lock().unwrap().iter().cloned().collect();
+        let events = self.events.lock().expect("events lock").iter().cloned().collect();
         V8StatsSnapshot {
             generated_at,
             workers,
@@ -741,7 +741,7 @@ impl V8Observability {
     }
 
     fn push_event(&self, event: V8Event) {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock().expect("events lock");
         events.push_back(event.clone());
         while events.len() > V8_EVENTS_MAX {
             events.pop_front();
@@ -782,7 +782,7 @@ fn worker_key(lane: &str, id: usize) -> String {
 fn config_value(name: &str) -> Option<String> {
     V8_CONFIG_OVERRIDES
         .lock()
-        .unwrap()
+        .expect("v8 config overrides lock")
         .get(name)
         .cloned()
         .or_else(|| std::env::var(name).ok())
@@ -804,7 +804,7 @@ fn read_bool_env(name: &str, default: bool) -> bool {
 }
 
 pub fn apply_v8_env_text(text: &str) {
-    let mut overrides = V8_CONFIG_OVERRIDES.lock().unwrap();
+    let mut overrides = V8_CONFIG_OVERRIDES.lock().expect("v8 config overrides lock");
     overrides.clear();
     for raw in text.lines() {
         let line = raw.trim();
@@ -826,7 +826,7 @@ pub fn apply_v8_env_text(text: &str) {
 
 pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     let settings = normalize_v8_runtime_settings(settings.clone());
-    let mut overrides = V8_CONFIG_OVERRIDES.lock().unwrap();
+    let mut overrides = V8_CONFIG_OVERRIDES.lock().expect("v8 config overrides lock");
     overrides.clear();
     if let Some(value) = settings.max_workers {
         overrides.insert("MOO_V8_WORKERS".to_string(), value.to_string());
@@ -1205,7 +1205,7 @@ impl Pool {
     /// Arc and locks it via `.lock().await` (async) or `.blocking_lock()`
     /// (sync, outside a tokio runtime).
     pub fn chat_lock(&self, key: &str) -> Arc<TokioMutex<()>> {
-        let mut locks = self.chat_locks.lock().unwrap();
+        let mut locks = self.chat_locks.lock().expect("chat locks");
         locks
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(())))
@@ -1260,7 +1260,7 @@ fn recv_job_result(
 }
 
 fn recv_locked<T>(rx: &Arc<Mutex<mpsc::Receiver<T>>>) -> Option<T> {
-    rx.lock().unwrap().recv().ok()
+    rx.lock().expect("rx lock").recv().ok()
 }
 
 fn spawn_workers(name: &str, count: usize, rx: mpsc::Receiver<Job>, db: &str) {
@@ -1273,7 +1273,7 @@ fn spawn_workers(name: &str, count: usize, rx: mpsc::Receiver<Job>, db: &str) {
         thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || worker_loop(rx, db, lane, i))
-            .unwrap_or_else(|_| panic!("spawn {thread_name}"));
+            .expect("failed to spawn thread");
     }
 }
 
@@ -1700,7 +1700,7 @@ fn spawn_async_tool_workers(name: &str, count: usize, rx: mpsc::Receiver<AsyncTo
         thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || async_tool_worker_loop(rx, db, lane, i))
-            .unwrap_or_else(|_| panic!("spawn {thread_name}"));
+            .expect("failed to spawn thread");
     }
 }
 

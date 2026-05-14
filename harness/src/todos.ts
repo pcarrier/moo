@@ -21,6 +21,7 @@ export type AgentTodo = {
 export type AgentTodoState = {
   version: 1;
   updatedAt: string;
+  nextId: number;
   items: AgentTodo[];
 };
 
@@ -51,6 +52,7 @@ export type TodoPatch = {
 const VALID_STATUSES = new Set<TodoStatus>(["todo", "doing", "done", "blocked", "dropped"]);
 const MAX_ITEMS = 50;
 const MAX_TEXT = 160;
+const FIRST_TODO_ID = 1;
 
 function pointerName(chatId: string): string {
   return `chat/${chatId}/todos`;
@@ -166,26 +168,55 @@ function normalizeTodoId(value: unknown): string | null {
   return null;
 }
 
-function nextTodoId(items: Array<{ id?: unknown }>, seen = new Set<string>()): string {
+function numericTodoId(value: unknown): number | null {
+  const id = normalizeTodoId(value);
+  if (!id || !/^[1-9]\d*$/.test(id)) return null;
+  const parsed = Number(id);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function normalizeNextTodoId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= FIRST_TODO_ID) return value;
+  if (typeof value === "string" && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return null;
+}
+
+function nextTodoId(state: Pick<AgentTodoState, "items" | "nextId">, seen = new Set<string>()): string {
+  let next = Math.max(FIRST_TODO_ID, state.nextId);
+  while (seen.has(String(next)) || state.items.some((item) => item.id === String(next))) next += 1;
+  if (!Number.isSafeInteger(next)) throw new Error("todo ID limit reached");
+  state.nextId = next + 1;
+  return String(next);
+}
+
+function nextTodoIdAfter(items: Array<{ id?: unknown }>): number {
   let max = 0;
   for (const item of items) {
-    const id = normalizeTodoId(item.id) ?? "";
-    if (/^[1-9]\d*$/.test(id)) max = Math.max(max, Number(id));
+    const id = numericTodoId(item.id);
+    if (id) max = Math.max(max, id);
   }
-  let next = max + 1;
-  while (seen.has(String(next))) next += 1;
-  return String(next);
+  return max + 1;
 }
 
 function normalizeState(value: unknown): AgentTodoState {
   const at = nowIso();
   const raw = value && typeof value === "object" ? value as any : {};
   const items = Array.isArray(raw.items) ? raw.items : [];
+  const firstAvailableId = Math.max(FIRST_TODO_ID, nextTodoIdAfter(items));
   const seen = new Set<string>();
   const out: AgentTodo[] = [];
+  const normalized: AgentTodoState = {
+    version: 1,
+    updatedAt: typeof raw.updatedAt === "string" && raw.updatedAt ? raw.updatedAt : at,
+    nextId: Math.max(normalizeNextTodoId(raw.nextId) ?? firstAvailableId, firstAvailableId),
+    items: out,
+  };
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
-    const id = normalizeTodoId(item.id) ?? nextTodoId(out, seen);
+    const id = normalizeTodoId(item.id) ?? nextTodoId(normalized, seen);
     if (seen.has(id)) continue;
     let text: string;
     try { text = cleanText(item.text); } catch { continue; }
@@ -198,7 +229,8 @@ function normalizeState(value: unknown): AgentTodoState {
     out.push(todo);
     if (out.length >= MAX_ITEMS) break;
   }
-  return { version: 1, updatedAt: typeof raw.updatedAt === "string" && raw.updatedAt ? raw.updatedAt : at, items: out };
+  normalized.nextId = Math.max(normalized.nextId, nextTodoIdAfter(out));
+  return normalized;
 }
 
 export async function getTodos(chatId: string): Promise<AgentTodoState> {
@@ -225,10 +257,10 @@ function applyTodoUpdate(item: AgentTodo, patch: TodoUpdateInput | AgentTodoPatc
   item.updatedAt = at;
 }
 
-function appendTodo(items: AgentTodo[], add: TodoAddInput | AgentTodoPatch, at: string): void {
-  if (items.length >= MAX_ITEMS) return;
+function appendTodo(state: AgentTodoState, add: TodoAddInput | AgentTodoPatch, at: string): void {
+  if (state.items.length >= MAX_ITEMS) return;
   const item: AgentTodo = {
-    id: nextTodoId(items),
+    id: nextTodoId(state),
     text: cleanText(add?.text),
     status: cleanStatus(add?.status),
     createdAt: at,
@@ -236,17 +268,22 @@ function appendTodo(items: AgentTodo[], add: TodoAddInput | AgentTodoPatch, at: 
   };
   const note = cleanOptionalText(add?.note);
   if (note) item.note = note;
-  items.push(item);
+  state.items.push(item);
 }
 
 export async function patchTodos(chatId: string, patch: TodoPatch): Promise<AgentTodoState> {
   const state = await getTodos(chatId);
   const before = normalizeState(state);
   const at = nowIso();
-  let items = state.items.slice();
+  const next = normalizeState(state);
+  next.updatedAt = at;
+  let items = next.items;
   const clear = new Set<TodoStatus>(Array.isArray(patch.clearStatuses) ? patch.clearStatuses.filter((s) => VALID_STATUSES.has(s)) : []);
   if (patch.clearDone) clear.add("done");
-  if (clear.size) items = items.filter((item) => !clear.has(item.status));
+  if (clear.size) {
+    items = items.filter((item) => !clear.has(item.status));
+    next.items = items;
+  }
   if (Array.isArray(patch.update)) {
     for (const upd of patch.update) {
       const id = normalizeTodoId(upd?.id);
@@ -264,13 +301,13 @@ export async function patchTodos(chatId: string, patch: TodoPatch): Promise<Agen
         if (item) applyTodoUpdate(item, entry, at);
         continue;
       }
-      appendTodo(items, entry, at);
+      appendTodo(next, entry, at);
     }
   }
   if (Array.isArray(patch.add)) {
-    for (const add of patch.add) appendTodo(items, add, at);
+    for (const add of patch.add) appendTodo(next, add, at);
   }
-  return await writeTodos(chatId, { version: 1, updatedAt: at, items }, before);
+  return await writeTodos(chatId, next, before);
 }
 
 export async function addTodo(chatId: string, input: TodoAddInput): Promise<AgentTodo> {
@@ -289,7 +326,8 @@ export async function updateTodo(chatId: string, input: TodoUpdateInput): Promis
 
 export async function clearTodos(chatId: string, input?: { statuses?: TodoStatus[] }): Promise<AgentTodoState> {
   if (Array.isArray(input?.statuses) && input.statuses.length) return await patchTodos(chatId, { clearStatuses: input.statuses });
-  return await writeTodos(chatId, { version: 1, updatedAt: nowIso(), items: [] });
+  const before = await getTodos(chatId);
+  return await writeTodos(chatId, { ...before, updatedAt: nowIso(), items: [] }, before);
 }
 
 function truncateText(text: string, max: number): string {

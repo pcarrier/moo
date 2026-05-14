@@ -285,6 +285,19 @@ export function modelSupportsTools(provider: ProviderName | null | undefined, mo
   return /^gpt-5(?:[.-]|$)/.test(id) || /^gpt-4(?:\.1|o)?(?:[.-]|$)/.test(id) || /^o(?:3|4)(?:[.-]|$)/.test(id) || /^chatgpt-/.test(id);
 }
 
+export function modelSupportsVision(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
+  const metadata = modelMetadataFor(provider, model);
+  if (metadata?.capabilities?.vision != null) return metadata.capabilities.vision;
+  const id = lower(model);
+  if (!id) return false;
+  if (id.startsWith("deepseek")) return false;
+  if (id.startsWith("grok")) return metadata?.capabilities?.vision === true;
+  if (id.startsWith("claude-")) return true;
+  if (id.startsWith("qwen")) return /(?:omni|vl)/.test(id);
+  if (/(?:^|[-.])(?:audio|realtime|image|transcribe|tts|search|embedding|moderation|whisper|dall-e|deep-research)(?:[-.]|$)/.test(id)) return false;
+  return /^gpt-5(?:[.-]|$)/.test(id) || /^gpt-4(?:\.1|o)?(?:[.-]|$)/.test(id) || /^o(?:3|4)(?:[.-]|$)/.test(id) || /^chatgpt-/.test(id);
+}
+
 export function modelLongContextUsageKey(model: string | null | undefined, promptTokens: number): string | null {
   const metadata = modelMetadataFor(null, model);
   if (!metadata?.longContext) return null;

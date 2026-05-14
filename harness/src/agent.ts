@@ -5,7 +5,7 @@ import { appendStep } from "./steps";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
 import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
 import { formatTodosForPrompt } from "./todos";
-import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, normalizeProvider as normalizeProviderName, type ProviderName } from "./llm_models";
+import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, modelSupportsVision, normalizeProvider as normalizeProviderName, type ProviderName } from "./llm_models";
 export { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 import { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
 
@@ -84,8 +84,37 @@ export function stripDynamicContextMessages(messages: any[]): any[] {
   return Array.isArray(messages) ? messages.filter((message) => !isDynamicContextMessage(message)) : [];
 }
 
+export function messagesHaveImageAttachments(messages: any[] | null | undefined): boolean {
+  if (!Array.isArray(messages)) return false;
+  return messages.some((message) =>
+    Array.isArray(message?.content) &&
+    message.content.some((part: any) => part?.type === "image_url"),
+  );
+}
+
 function messagesForProvider(messages: any[]): any[] {
   return Array.isArray(messages) ? messages.map(messageForProvider).filter((message) => message != null) : [];
+}
+
+function providerSupportsAttachments(provider: Pick<LLMProvider, "name" | "model">): boolean {
+  return modelSupportsVision(normalizeProviderName(provider.name), provider.model);
+}
+
+function stripImageAttachmentsFromMessages(messages: any[]): any[] {
+  return messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message;
+    return {
+      ...message,
+      content: message.content.filter((part: any) => part?.type !== "image_url"),
+    };
+  });
+}
+
+function messagesForRequest(provider: LLMProvider, messages: any[]): any[] {
+  const providerMessages = messagesForProvider(messages);
+  return providerSupportsAttachments(provider)
+    ? providerMessages
+    : stripImageAttachmentsFromMessages(providerMessages);
 }
 
 export function messagesForTrace(messages: any[] | null | undefined, tools?: any[] | null): TraceMetadata {
@@ -140,13 +169,17 @@ export async function reply(
   effort?: string | null,
   thoughtDurationNs?: number | null,
   draftId?: string | null,
+  reasoningContent?: string | null,
 ) {
   const payloadBody: any = { text, at: await moo.time.nowMs({}) };
   if (Number.isFinite(thoughtDurationNs) && thoughtDurationNs! >= 0) {
     payloadBody.thoughtDurationNs = Math.round(thoughtDurationNs!);
   }
   if (typeof draftId === "string" && draftId) payloadBody.draftId = draftId;
-  await traceMark("timeline.reply", { chatId, chars: text.length, hasThoughtDuration: Number.isFinite(thoughtDurationNs), model: model ?? null, effort: normalizeEffort(effort) ?? null });
+  if (typeof reasoningContent === "string" && reasoningContent.trim()) {
+    payloadBody.reasoningContent = reasoningContent;
+  }
+  await traceMark("timeline.reply", { chatId, chars: text.length, hasThoughtDuration: Number.isFinite(thoughtDurationNs), hasReasoningContent: typeof reasoningContent === "string" && reasoningContent.trim().length > 0, model: model ?? null, effort: normalizeEffort(effort) ?? null });
   const payload = await moo.objects.putJSON({ kind: "agent:Reply", value: payloadBody });
   const { stepId } = await appendStep(chatId, {
     kind: "agent:Reply",
@@ -232,6 +265,9 @@ export const ALL_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "x
 type EffortLevel = (typeof ALL_EFFORT_LEVELS)[number];
 type EffortBudgetMap = Partial<Record<EffortLevel, number>>;
 
+export const DEEPSEEK_THINK_MAX_SYSTEM_PROMPT =
+  "DeepSeek Think Max mode: push reasoning to its fullest extent before answering. Explore the boundary of your reasoning capability, then provide the final answer.";
+
 export function normalizeEffort(value: unknown): EffortLevel | null {
   const effort = decodeSimpleTurtleString(String(value ?? "")).trim().toLowerCase();
   return (ALL_EFFORT_LEVELS as readonly string[]).includes(effort) ? effort as EffortLevel : null;
@@ -285,13 +321,35 @@ function openaiEffortLevels(model: string | null | undefined): string[] {
 
 function deepseekEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "").trim().toLowerCase();
-  return /^deepseek-(?:v4|reasoner)(?:[-.]|$)/.test(id) ? ["none", "low", "medium", "high", "xhigh", "max"] : [];
+  return /^deepseek-(?:v4|chat|reasoner)(?:[-.]|$)/.test(id) ? ["none", "high", "max"] : [];
 }
 
-function deepseekEffortForRequest(effort: string | null | undefined): "high" | "max" | null {
+function deepseekEffortForRequest(effort: string | null | undefined): "none" | "high" | "max" | null {
   const normalized = normalizeEffort(effort);
-  if (!normalized || normalized === "none") return null;
-  return normalized === "max" || normalized === "xhigh" ? "max" : "high";
+  if (!normalized || normalized === "minimal") return null;
+  if (normalized === "none") return "none";
+  if (normalized === "max" || normalized === "xhigh") return "max";
+  return "high";
+}
+
+function deepseekRequestEffort(provider: Pick<LLMProvider, "model" | "effort">): "none" | "high" | "max" | null {
+  if (!deepseekEffortLevels(provider.model).length) return null;
+  return deepseekEffortForRequest(provider.effort) ?? "high";
+}
+
+function requestEffortForProvider(provider: LLMProvider): EffortLevel | null {
+  if (provider.name === "deepseek") return deepseekRequestEffort(provider);
+  return effortAllowed(effortLevelsForProvider(provider), provider.effort);
+}
+
+function withDeepSeekThinkMaxPrompt(provider: LLMProvider, messages: any[]): any[] {
+  if (provider.name !== "deepseek" || deepseekRequestEffort(provider) !== "max") return messages;
+  const prompt = { role: "system", content: DEEPSEEK_THINK_MAX_SYSTEM_PROMPT };
+  const out = [...messages];
+  let insertAt = 0;
+  while (insertAt < out.length && out[insertAt]?.role === "system") insertAt++;
+  out.splice(insertAt, 0, prompt);
+  return out;
 }
 
 const ANTHROPIC_DEFAULT_THINKING_BUDGETS: EffortBudgetMap = {
@@ -359,23 +417,23 @@ function anthropicThinkingBudget(model: string | null | undefined, effort: strin
 }
 
 function applyEffort(provider: LLMProvider, body: Record<string, unknown>, responsesApi = false) {
+  if (provider.name === "deepseek") {
+    const effort = deepseekRequestEffort(provider);
+    if (!effort) return;
+    if (effort === "none") {
+      body.thinking = { type: "disabled" };
+      return;
+    }
+    body.thinking = { type: "enabled" };
+    body.reasoning_effort = effort;
+    return;
+  }
   if (!provider.effort) return;
   if (provider.name === "openai") {
     const effort = effortAllowed(openaiEffortLevels(provider.model), provider.effort);
     if (!effort) return;
     if (responsesApi) body.reasoning = { effort };
     else body.reasoning_effort = effort;
-    return;
-  }
-  if (provider.name === "deepseek") {
-    const effort = effortAllowed(deepseekEffortLevels(provider.model), provider.effort);
-    if (!effort || effort === "none") {
-      body.thinking = { type: "disabled" };
-      return;
-    }
-    body.thinking = { type: "enabled" };
-    const requestEffort = deepseekEffortForRequest(effort);
-    if (requestEffort) body.reasoning_effort = requestEffort;
     return;
   }
   if (provider.name === "anthropic" && supportsAnthropicThinking(provider.model)) {
@@ -392,7 +450,7 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
 }
 
 export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[], tools: any[] | null) {
-  const providerMessages = messagesForProvider(messages);
+  const providerMessages = withDeepSeekThinkMaxPrompt(provider, messagesForRequest(provider, messages));
   if (provider.name === "anthropic") {
     const anthropic = toAnthropicMessages(providerMessages);
     const body: Record<string, unknown> = {
@@ -414,7 +472,7 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
       responsesApi: false,
       headers: llmProviderHeaders(provider),
       requestModel: provider.model || null,
-      requestEffort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+      requestEffort: requestEffortForProvider(provider),
       requestAuthMode: provider.authMode || null,
     };
   }
@@ -424,7 +482,7 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
   const responsesInput = responsesApi ? toResponsesInput(outboundMessages) : null;
   const instructions = responsesApi ? extractInstructions(outboundMessages) : undefined;
   const body: Record<string, unknown> = responsesApi
-    ? { model: provider.model, input: responsesInput, stream: true, store: false, ...(instructions !== undefined ? { instructions } : {}) }
+    ? { model: provider.model, instructions: instructions ?? "", input: responsesInput, stream: true, store: false }
     : {
         model: provider.model,
         messages: outboundMessages,
@@ -445,7 +503,7 @@ export function buildStreamingLLMRequest(provider: LLMProvider, messages: any[],
     responsesApi,
     headers: llmProviderHeaders(provider),
     requestModel: provider.model || null,
-    requestEffort: effortAllowed(effortLevelsForProvider(provider), provider.effort),
+    requestEffort: requestEffortForProvider(provider),
     requestAuthMode: provider.authMode || null,
   };
 }
@@ -624,6 +682,27 @@ export function toResponsesInput(messages: any[]): any[] {
   return input;
 }
 
+function stripDeepSeekThinkTags(text: string): string {
+  let out = "";
+  let i = 0;
+  let inThink = false;
+  while (i < text.length) {
+    if (text.startsWith("<think>", i)) {
+      inThink = true;
+      i += "<think>".length;
+      continue;
+    }
+    if (text.startsWith("</think>", i)) {
+      inThink = false;
+      i += "</think>".length;
+      continue;
+    }
+    if (!inThink) out += text[i];
+    i++;
+  }
+  return out;
+}
+
 function responseOutputText(body: any): string {
   if (typeof body?.output_text === "string") return body.output_text.trim();
   const parts: string[] = [];
@@ -647,12 +726,21 @@ export function normalizeUsage(usage: any): RawUsage | null {
   if (!usage) return null;
   const details = usage.prompt_tokens_details || usage.input_tokens_details;
   if (usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined || usage.prompt_cache_hit_tokens !== undefined || usage.prompt_cache_miss_tokens !== undefined) {
+    const hasCacheHit = usage.prompt_cache_hit_tokens !== undefined;
+    const hasCacheMiss = usage.prompt_cache_miss_tokens !== undefined;
+    const cacheHit = Number(usage.prompt_cache_hit_tokens ?? 0);
+    const cacheMiss = Number(usage.prompt_cache_miss_tokens ?? 0);
+    const cacheBreakdownTotal = (hasCacheHit || hasCacheMiss) && Number.isFinite(cacheHit) && Number.isFinite(cacheMiss)
+      ? Math.max(0, cacheHit) + Math.max(0, cacheMiss)
+      : undefined;
+    const promptFromCacheBreakdown = hasCacheHit && hasCacheMiss ? cacheBreakdownTotal : undefined;
     const cached = details?.cached_tokens ?? details?.cache_read_input_tokens ?? usage.prompt_cache_hit_tokens;
     return {
       ...usage,
-      prompt_tokens: usage.prompt_tokens ?? (usage.prompt_cache_hit_tokens != null || usage.prompt_cache_miss_tokens != null
-        ? Number(usage.prompt_cache_hit_tokens ?? 0) + Number(usage.prompt_cache_miss_tokens ?? 0)
-        : undefined),
+      // DeepSeek reports prompt_cache_hit_tokens + prompt_cache_miss_tokens as the
+      // billable prompt total. Prefer that explicit billing split when present so
+      // an OpenAI-compatible prompt_tokens total cannot double-count cached input.
+      prompt_tokens: promptFromCacheBreakdown ?? usage.prompt_tokens ?? cacheBreakdownTotal,
       prompt_tokens_details: details || usage.prompt_cache_hit_tokens !== undefined
         ? {
             ...(details ?? {}),
@@ -826,7 +914,7 @@ async function callStreamingChatSummary(
         body: JSON.stringify({
           model: state.model || provider.model,
           usage: normalizeUsage(state.usage),
-          choices: [{ message: { content: state.content } }],
+          choices: [{ message: { content: provider.name === "deepseek" ? stripDeepSeekThinkTags(state.content) : state.content } }],
         }),
       };
     } finally {
@@ -853,6 +941,9 @@ export type LlmStreamProgress = {
   estimatedPromptTokens: number;
   tokenBudget: number;
   tokenThreshold: number;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   source?: string;
   estimated?: boolean;
   reset?: boolean;
@@ -974,14 +1065,20 @@ export async function recordUsage(
   const cached = Number(usage.prompt_tokens_details?.cached_tokens ?? 0);
   const cacheWrite = Number(usage.prompt_tokens_details?.cache_creation_tokens ?? 0);
   const output = Number(usage.completion_tokens ?? 0);
-  if (!promptTotal && !cached && !cacheWrite && !output) return;
+  const cacheMiss = Number(usage.prompt_cache_miss_tokens);
+  const regularInput = Number.isFinite(cacheMiss)
+    ? Math.max(0, cacheMiss)
+    : Math.max(0, promptTotal - cached - cacheWrite);
+  if (!promptTotal && !cached && !cacheWrite && !regularInput && !output) return;
   const ref = chatRefs(chatId).usage;
   const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
   const usageModel = modelLongContextUsageKey(model, promptTotal) || model;
   const slot = current.models[usageModel] ?? { input: 0, cachedInput: 0, cacheWriteInput: 0, output: 0 };
   if (slot.cacheWriteInput == null) slot.cacheWriteInput = 0;
   // Keep `input` as regular, non-cache-read/write input so cost math stays additive.
-  slot.input += Math.max(0, promptTotal - cached - cacheWrite);
+  // DeepSeek exposes prompt_cache_miss_tokens directly; prefer it over deriving
+  // miss tokens from prompt_tokens if both cache counters are present.
+  slot.input += regularInput;
   slot.cachedInput += Math.max(0, cached);
   slot.cacheWriteInput += Math.max(0, cacheWrite);
   slot.output += output;
@@ -990,7 +1087,7 @@ export async function recordUsage(
   await traceMark("usage.record", {
     chatId,
     model: usageModel,
-    input: Math.max(0, promptTotal - cached - cacheWrite),
+    input: regularInput,
     cachedInput: Math.max(0, cached),
     cacheWriteInput: Math.max(0, cacheWrite),
     output,

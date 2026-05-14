@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { buildStreamingLLMRequest, inferProviderForModel, modelContextBudget, normalizeUsage, resolveProvider } from "../src/agent";
+import { DEEPSEEK_THINK_MAX_SYSTEM_PROMPT, buildStreamingLLMRequest, inferProviderForModel, modelContextBudget, normalizeUsage, recordUsage, resolveProvider } from "../src/agent";
 import { llmAuthGetCommand, llmAuthSaveCommand } from "../src/commands/llm_auth";
-import { applyDefaultChatSettings, modelOptionsFor, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
+import { applyDefaultChatSettings, chatModelInfo, modelOptionsFor, modelSupportsAttachments, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
 import { modelLongContextUsageKey, modelMetadataFor } from "../src/llm_models";
+import { stepCommand } from "../src/commands/step";
 
 const refs = new Map<string, string>();
 const objects = new Map<string, { kind: string; content: string }>();
 let objectId = 0;
 let envValues = new Map<string, string>();
 
+(globalThis as any).__op_now = () => 1_000;
 (globalThis as any).__op_env_get = (name: string) => envValues.get(name) ?? null;
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
@@ -52,6 +54,8 @@ describe("OpenAI-compatible provider support", () => {
     expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-flash");
     expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-pro");
     expect(modelSupportsToolCalls("deepseek-chat")).toBe(true);
+    expect(modelSupportsAttachments("deepseek", "deepseek-v4-flash")).toBe(false);
+    expect(options.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(false);
   });
 
 
@@ -146,10 +150,66 @@ describe("OpenAI-compatible provider support", () => {
     expect(request.url).toBe("https://api.deepseek.com/chat/completions");
     expect(request.requestEffort).toBe("max");
     expect(request.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "max" });
+    expect((request.body as any).messages).toEqual([
+      { role: "system", content: DEEPSEEK_THINK_MAX_SYSTEM_PROMPT },
+      { role: "user", content: "hello" },
+    ]);
+
     const noThinking = buildStreamingLLMRequest({ ...provider, effort: "none" }, [{ role: "user", content: "hello" }], null);
+    expect(noThinking.requestEffort).toBe("none");
     expect(noThinking.body).toMatchObject({ thinking: { type: "disabled" } });
+    expect((noThinking.body as any).reasoning_effort).toBeUndefined();
+
+    const highThinking = buildStreamingLLMRequest({ ...provider, effort: "high" }, [{ role: "user", content: "hello" }], null);
+    expect(highThinking.requestEffort).toBe("high");
+    expect(highThinking.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "high" });
+
     const defaultThinking = buildStreamingLLMRequest({ ...provider, effort: null }, [{ role: "user", content: "hello" }], null);
-    expect((defaultThinking.body as any).thinking).toBeUndefined();
+    expect(defaultThinking.requestEffort).toBe("high");
+    expect(defaultThinking.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "high" });
+
+    const attachmentRequest = buildStreamingLLMRequest(provider, [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "see attached" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      },
+    ], null);
+    expect(JSON.stringify((attachmentRequest.body as any).messages)).not.toContain("image_url");
+    expect((attachmentRequest.body as any).messages[1].content).toEqual([
+      { type: "text", text: "see attached" },
+    ]);
+
+    const options = await modelOptionsFor("deepseek", "deepseek-v4-pro");
+    expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-pro");
+  });
+
+  test("reports attachment support in chat model info", async () => {
+    refs.set("chat/deepseek-attachments/provider", "deepseek");
+    refs.set("chat/deepseek-attachments/model", "deepseek-v4-flash");
+
+    const info = await chatModelInfo("deepseek-attachments");
+
+    expect(info.supportsAttachments).toBe(false);
+    expect(info.modelOptions.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(false);
+    expect(info.modelOptions.find((option) => option.id === "xai:grok-4-fast")?.supportsAttachments).toBe(true);
+  });
+
+  test("rejects DeepSeek image attachments before starting a step", async () => {
+    refs.set("chat/deepseek-step/provider", "deepseek");
+    refs.set("chat/deepseek-step/model", "deepseek-v4-flash");
+
+    const result = await stepCommand({
+      chatId: "deepseek-step",
+      message: "see attached",
+      attachments: [{ type: "image", mimeType: "image/png", dataUrl: "data:image/png;base64,AAAA" }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({ source: "unsupported_attachments", provider: "deepseek", model: "deepseek-v4-flash" });
+    expect(JSON.stringify(result.error)).toContain("does not support image attachments");
   });
 
   test("tracks Grok pricing and capabilities", async () => {
@@ -166,7 +226,12 @@ describe("OpenAI-compatible provider support", () => {
     expect(priceFor("deepseek-v4-flash", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
     expect(priceFor("deepseek-chat", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
     expect(priceFor("deepseek-v4-pro", pricing)).toEqual({ input: 0.435, cachedInput: 0.003625, output: 0.87 });
-    expect(normalizeUsage({ prompt_tokens: 10, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 6, completion_tokens: 2 })?.prompt_tokens_details?.cached_tokens).toBe(4);
+    const normalizedCacheUsage = normalizeUsage({ prompt_tokens: 20, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 6, completion_tokens: 2 });
+    expect(normalizedCacheUsage?.prompt_tokens).toBe(10);
+    expect(normalizedCacheUsage?.prompt_tokens_details?.cached_tokens).toBe(4);
+    await recordUsage("deepseek-cache-test", "deepseek-v4-flash", normalizedCacheUsage);
+    const stored = JSON.parse(refs.get("chat/deepseek-cache-test/usage")!.slice("json:".length));
+    expect(stored.models["deepseek-v4-flash"]).toEqual({ input: 6, cachedInput: 4, cacheWriteInput: 0, output: 2 });
     expect(estimateCostUsd({ models: { "deepseek-v4-flash": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.4228);
   });
 });

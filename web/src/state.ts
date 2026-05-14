@@ -77,6 +77,7 @@ import {
   persistModelMru,
 } from "./state/modelMru";
 import { createSingleFlight, retryChatLoad } from "./state/async";
+import { createToastSystem, wsErrorMessage, type Toast } from "./state/toasts";
 import {
   chatCacheHasData,
   isDescribeFreshForSummary,
@@ -141,6 +142,7 @@ export type DismissedReply = {
   chatId: string;
   draftId: string;
   content: string;
+  reasoningContent?: string;
   at: number;
 };
 
@@ -388,6 +390,7 @@ export function createState() {
       selectedModelId: modelId,
       effectiveModel: modelName,
       effectiveModelId: modelId,
+      supportsAttachments: option?.supportsAttachments ?? model.supportsAttachments,
     };
   }
 
@@ -1021,73 +1024,7 @@ export function createState() {
   let eventsStarted = false;
   let startupRun = 0;
 
-  // Toast queue for surfacing API/WS failures to the user. Each entry
-  // self-dismisses after a few seconds; the UI can also dismiss by id.
-  type Toast = {
-    id: number;
-    source: string;
-    message: string;
-    details?: string;
-    at: number;
-  };
-  const [toasts, setToasts] = createSignal<Toast[]>([]);
-  let toastSeq = 0;
-  function notify(source: string, message: string, details?: string) {
-    const id = ++toastSeq;
-    setToasts([...toasts(), { id, source, message, details, at: Date.now() }]);
-    window.setTimeout(() => dismissToast(id), 6000);
-  }
-  function dismissToast(id: number) {
-    setToasts(toasts().filter((t) => t.id !== id));
-  }
-  function wsErrorMessage(err: unknown): string {
-    return err && typeof err === "object" && "message" in (err as any)
-      ? String((err as any).message)
-      : String(err);
-  }
-  function wsErrorDetails(err: unknown): string | undefined {
-    if (!err || typeof err !== "object") return undefined;
-    const e = err as Record<string, unknown>;
-    const parts: string[] = [];
-    for (const key of ["stack", "backtrace", "trace", "details", "detail"]) {
-      const value = e[key];
-      if (typeof value === "string" && value.trim()) parts.push(value);
-    }
-    if (parts.length === 0 && "data" in e) {
-      parts.push(formatErrorData(e.data));
-    }
-    return parts.length > 0 ? parts.join("\n\n") : undefined;
-  }
-  function formatErrorData(data: unknown): string {
-    if (typeof data === "string")
-      return data.length > 4000 ? data.slice(0, 4000) + "…" : data;
-    try {
-      const text = JSON.stringify(data, null, 2);
-      return text.length > 4000 ? text.slice(0, 4000) + "…" : text;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return "Unable to format error details: " + message;
-    }
-  }
-  function isTransientWsError(err: unknown): boolean {
-    return /^ws (disconnected|closed|not bound|request timed out)/i.test(
-      wsErrorMessage(err),
-    );
-  }
-  function reportError(source: string, err: unknown) {
-    const message = wsErrorMessage(err);
-    // Don't toast in-flight requests that fail because the WS dropped or a
-    // background RPC got stuck behind a busy worker. The ws-status indicator
-    // shows disconnects, and reconnect/ref handlers resync data once the
-    // backend catches up. Without this filter, transient stalls flood the
-    // screen with one toast per pending call (models/apps/describe/etc.).
-    if (isTransientWsError(err)) return;
-    notify(
-      source,
-      message,
-      wsErrorDetails(err) ?? "No additional details were provided.",
-    );
-  }
+  const { toasts, dismissToast, notify, reportError } = createToastSystem();
   // Streaming reply buffer keyed by the current chat. Cleared by:
   // - draft-end events from the agent
   // - new chat selection
@@ -1097,6 +1034,7 @@ export function createState() {
     chatId: string;
     draftId: string;
     content: string;
+    reasoningContent?: string;
     at: number;
   } | null>(null);
   const endedDraftReplyIds = new Map<string, number>();
@@ -1112,9 +1050,10 @@ export function createState() {
     chatId: string,
     draftId: string,
     content: string,
+    reasoningContent = "",
     at = Date.now(),
   ) {
-    if (!content.trim()) return;
+    if (!content.trim() && !reasoningContent.trim()) return;
     setDismissedReplies((items) => {
       const id = dismissedReplyId(chatId, draftId);
       const without = items.filter((item) => item.id !== id);
@@ -1126,6 +1065,7 @@ export function createState() {
           chatId,
           draftId,
           content,
+          reasoningContent,
           at: previous?.at ?? at,
         },
       ];
@@ -1136,18 +1076,26 @@ export function createState() {
   function dismissCurrentDraftReply(chatId: string) {
     const cur = untrack(draftReply);
     if (!cur || cur.chatId !== chatId) return;
-    rememberDismissedReply(chatId, cur.draftId, cur.content);
+    rememberDismissedReply(chatId, cur.draftId, cur.content, cur.reasoningContent ?? "");
   }
 
   function pruneDismissedReplies(chatId: string, rows: TimelineItem[]) {
-    const replyTexts = rows
-      .filter((item) => item.type === "step" && item.kind === "agent:Reply")
+    const replyRows = rows.filter(
+      (item) => item.type === "step" && item.kind === "agent:Reply",
+    );
+    const replyDraftIds = new Set(
+      replyRows
+        .map((item) => (item as any).draftId)
+        .filter((draftId): draftId is string => typeof draftId === "string" && !!draftId),
+    );
+    const replyTexts = replyRows
       .map((item) => String((item as any).text ?? "").trim())
       .filter(Boolean);
-    if (replyTexts.length === 0) return;
+    if (replyDraftIds.size === 0 && replyTexts.length === 0) return;
     setDismissedReplies((items) =>
       items.filter((item) => {
         if (item.chatId !== chatId) return true;
+        if (replyDraftIds.has(item.draftId)) return false;
         const content = item.content.trim();
         return (
           !content ||
@@ -5118,6 +5066,35 @@ export function createState() {
       }
       return;
     }
+    if (ev.kind === "reasoning-draft") {
+      const cid = chatId();
+      if (cid && ev.chatId === cid) {
+        deleteFromSet(setCompactingChats, compactingChats, cid);
+        if (
+          dismissedReplies().some(
+            (item) => item.chatId === cid && item.draftId === ev.draftId,
+          )
+        ) {
+          rememberDismissedReply(cid, ev.draftId, ev.content ?? "", ev.reasoningContent ?? "");
+          const cur = draftReply();
+          if (cur?.draftId === ev.draftId) setDraftReply(null);
+          return;
+        }
+        endedDraftReplyIds.delete(ev.draftId);
+        const previous = draftReply();
+        setDraftReply({
+          chatId: cid,
+          draftId: ev.draftId,
+          content: ev.content ?? previous?.content ?? "",
+          reasoningContent: ev.reasoningContent ?? "",
+          at:
+            previous?.draftId === ev.draftId
+              ? (previous?.at ?? (Number(ev.at) || Date.now()))
+              : Number(ev.at) || Date.now(),
+        });
+      }
+      return;
+    }
     if (ev.kind === "draft") {
       const cid = chatId();
       if (cid && ev.chatId === cid) {
@@ -5130,7 +5107,7 @@ export function createState() {
             (item) => item.chatId === cid && item.draftId === ev.draftId,
           )
         ) {
-          rememberDismissedReply(cid, ev.draftId, ev.content);
+          rememberDismissedReply(cid, ev.draftId, ev.content, ev.reasoningContent ?? "");
           const cur = draftReply();
           if (cur?.draftId === ev.draftId) setDraftReply(null);
           return;
@@ -5141,6 +5118,7 @@ export function createState() {
           chatId: cid,
           draftId: ev.draftId,
           content: ev.content,
+          reasoningContent: ev.reasoningContent ?? previous?.reasoningContent ?? "",
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))

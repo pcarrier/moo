@@ -7,6 +7,7 @@ type Row = { id: string; rootId: string; rootKind: string; parentId?: string | n
 const roots = new Map<string, Root>();
 const spans = new Map<string, Span>();
 const rows = new Map<string, Row>();
+const objectPuts: Array<{ kind: string; content: string }> = [];
 const finished: Array<{ id: string; status: string; data: unknown }> = [];
 let currentTrace: { id: string; traceId: string; rootId: string; parentId: string } | null = null;
 let traceSeq = 0;
@@ -25,7 +26,10 @@ function installOps() {
   g.__op_ref_delete = () => true;
   g.__op_refs_list = () => [];
   g.__op_refs_entries = () => "[]";
-  g.__op_object_put = () => `sha256:${String(++objectSeq).padStart(64, "0")}`;
+  g.__op_object_put = (kind: string, content: string) => {
+    objectPuts.push({ kind, content });
+    return `sha256:${String(++objectSeq).padStart(64, "0")}`;
+  };
   g.__op_object_get = () => null;
   g.__op_http_fetch = () => ({ status: 200, headers: "{}", body: "{}" });
   g.__op_http_stream_open = () => ({ handle: 1, status: 200, headers: "{}" });
@@ -103,12 +107,14 @@ function installOps() {
 
 installOps();
 const { dispatch } = await import("../src/commands");
+const { reply } = await import("../src/agent");
 
 describe("command tracing", () => {
   beforeEach(() => {
     roots.clear();
     spans.clear();
     rows.clear();
+    objectPuts.length = 0;
     finished.length = 0;
     currentTrace = null;
     traceSeq = 0;
@@ -144,6 +150,58 @@ describe("command tracing", () => {
       (globalThis as any).__op_trace_ensure_span = originalEnsureSpan;
     }
   });
+
+  test("persists model reasoning content with replies", async () => {
+    const reasoning = "**thinking**\n\n- item";
+    await reply("chat1", "answer", "deepseek-v4-pro", "max", 123, "draft1", reasoning);
+
+    const payload = objectPuts.find((put) => put.kind === "agent:Reply");
+    expect(payload).toBeDefined();
+    expect(JSON.parse(payload!.content)).toMatchObject({
+      text: "answer",
+      draftId: "draft1",
+      reasoningContent: reasoning,
+    });
+  });
+
+  test("persists reasoning-only tool-call drafts", async () => {
+    const reasoning = "checked tools first";
+    const result = await dispatch({
+      command: "step-next",
+      state: {
+        chatId: "chat1",
+        phase: "handleLlm",
+        thoughtDurationNs: 0,
+        inflight: {
+          purpose: "step",
+          draftId: "draft2",
+          messages: [],
+          requestModel: "deepseek-v4-pro",
+          requestEffort: "max",
+          countThoughtDuration: true,
+        },
+      },
+      llmResult: {
+        status: 200,
+        ok: true,
+        content: "",
+        reasoningContent: reasoning,
+        toolCalls: [{ id: "call_1", type: "function", function: { name: "runJS", arguments: "{}" } }],
+        errorBody: null,
+        model: "deepseek-v4-pro",
+        usage: null,
+      },
+    } as any);
+
+    expect(result.ok).toBe(true);
+    const payload = objectPuts.find((put) => put.kind === "agent:Reply");
+    expect(payload).toBeDefined();
+    expect(JSON.parse(payload!.content)).toMatchObject({
+      text: "",
+      draftId: "draft2",
+      reasoningContent: reasoning,
+    });
+  });
 });
 
 
@@ -152,10 +210,52 @@ describe("LLM stream provider details", () => {
     roots.clear();
     spans.clear();
     rows.clear();
+    objectPuts.length = 0;
     finished.length = 0;
     currentTrace = null;
     traceSeq = 0;
     objectSeq = 0;
+  });
+
+  test("parses DeepSeek think tags out of streamed content", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: { provider: "deepseek", model: "deepseek-v4-pro", draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" } },
+      events: [
+        JSON.stringify({ choices: [{ delta: { content: "<thi" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "nk>think" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "ing</thi" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "nk> summary" } }] }),
+      ],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.content).toBe(" summary");
+    expect((accumulated.value as any).state.reasoningContent).toBe("thinking");
+    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "reasoning-draft" && ev.reasoningContent === "thinking")).toBe(true);
+    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "draft" && ev.content === " summary")).toBe(true);
+
+    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    expect(finalized.ok).toBe(true);
+    expect((finalized.value as any).content).toBe(" summary");
+    expect((finalized.value as any).reasoningContent).toBe("thinking");
+  });
+
+  test("strips DeepSeek non-think closing marker", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: { provider: "deepseek", model: "deepseek-v4-flash" },
+      events: [
+        JSON.stringify({ choices: [{ delta: { content: "</thi" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "nk> summary" } }] }),
+      ],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.content).toBe(" summary");
+    expect((accumulated.value as any).state.reasoningContent).toBe("");
   });
 
   test("preserves DeepSeek reasoning content for tool-call continuations", async () => {

@@ -67,7 +67,7 @@ export const err = <E>(error: E): Err<E extends string ? ErrorInfo : E> => ({
 
 export function errorInfo(error: unknown, fallback = "operation failed"): ErrorInfo {
   if (error && typeof error === "object") {
-    const anyError = error as any;
+    const anyError = error as Record<string, unknown>;
     return {
       message: typeof anyError.message === "string" && anyError.message ? anyError.message : fallback,
       ...(typeof anyError.stack === "string" ? { stack: anyError.stack } : {}),
@@ -245,7 +245,7 @@ export class Effect<A, E = ErrorInfo> {
       if (signal.aborted) return err(interruptError());
       return await new Promise<Result<void, ErrorInfo>>((resolve) => {
         let done = false;
-        let timer: any = null;
+        let timer: ReturnType<typeof setTimeout> | null = null;
         const finish = (result: Result<void, ErrorInfo>) => {
           if (done) return;
           done = true;
@@ -324,15 +324,15 @@ export class Effect<A, E = ErrorInfo> {
     });
   }
 
-  static all<T extends readonly Effect<any, any>[]>(effects: T): Effect<{ [K in keyof T]: T[K] extends Effect<infer A, any> ? A : never }, T[number] extends Effect<any, infer E> ? E : never> {
+  static all<T extends readonly Effect<unknown, unknown>[]>(effects: T): Effect<{ [K in keyof T]: T[K] extends Effect<infer A, unknown> ? A : never }, T[number] extends Effect<any, infer E> ? E : never> {
     return new Effect<any, any>(async (scope, signal) => {
       const values: unknown[] = [];
       for (const effect of effects) {
         const result = await effect.thunk(scope, signal);
-        if (!result.ok) return result as any;
+        if (!result.ok) return result as Err<unknown>;
         values.push(result.value);
       }
-      return ok(values as any);
+      return ok(values) as unknown as Ok<{ [K in keyof T]: T[K] extends Effect<infer A, unknown> ? A : never }>;
     });
   }
 
@@ -340,8 +340,8 @@ export class Effect<A, E = ErrorInfo> {
     return new Effect<any, any>(async (scope, signal) => {
       const results = await Promise.all(effects.map((effect) => effect.thunk(scope, signal)));
       const failed = results.find((result) => !result.ok);
-      if (failed) return failed as any;
-      return ok(results.map((result) => (result as Ok<unknown>).value) as any);
+      if (failed) return failed as Err<unknown>;
+      return ok(results.map((result) => (result as Ok<unknown>).value)) as unknown as Ok<{ [K in keyof T]: T[K] extends Effect<infer A, unknown> ? A : never }>;
     });
   }
 

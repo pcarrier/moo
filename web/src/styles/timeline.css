@@ -34,6 +34,8 @@
 }
 
 .conversation-main > .timeline {
+  --timeline-padding: 0.45rem 0.65rem;
+  --timeline-gap: 0.32rem;
   flex: 1 1 0;
   min-inline-size: 0;
   min-block-size: 0;
@@ -431,10 +433,10 @@
 .timeline {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0.2em 0.5em;
+  padding: var(--timeline-padding, 0.2em 0.5em);
   display: flex;
   flex-direction: column;
-  gap: 0.08em;
+  gap: var(--timeline-gap, 0.08em);
   min-inline-size: 0;
   max-inline-size: 100%;
   min-height: 0;
@@ -511,6 +513,25 @@
       "title title title"
       "model model model"
       "tokens tokens tokens";
+  }
+
+  .conv-token-slot {
+    justify-content: flex-start;
+  }
+
+  .token-meter {
+    inline-size: auto;
+    max-inline-size: 100%;
+    flex: 0 0 auto;
+  }
+
+  .token-meter-head {
+    display: none;
+  }
+
+  .token-bar {
+    inline-size: clamp(5rem, 28cqw, 8rem);
+    flex: 0 0 clamp(5rem, 28cqw, 8rem);
   }
 
   .model-picker {
@@ -699,6 +720,52 @@
 .step.reply {
   background: var(--bubble-reply);
   align-self: flex-start;
+}
+
+.reply-thinking {
+  align-self: stretch;
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0.32rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+  border-radius: 0;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+  color: var(--muted);
+}
+
+.reply-thinking > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+  inline-size: 100%;
+  min-inline-size: 0;
+  cursor: pointer;
+  font-size: 0.68em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+
+.reply-thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reply-thinking-body {
+  margin: 0.3em 0 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.78em;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.reply-thinking-dots {
+  --loading-dot-size: 0.35em;
+  --loading-dot-gap: 0.18em;
 }
 
 .step.shell-command {
@@ -922,11 +989,11 @@
   box-sizing: border-box;
   cursor: pointer;
   display: flex;
-  align-items: baseline;
-  gap: 0.5em;
+  align-items: center;
+  gap: 0.45em;
   list-style: none;
   min-inline-size: 0;
-  padding: 0.18em 0.45em;
+  padding: 0.28rem 0.5rem;
   user-select: none;
 }
 
@@ -969,11 +1036,12 @@
 .dismissed-body {
   display: flex;
   flex-direction: column;
-  gap: 0.08em;
-  padding: 0 0.45em 0.45em 1.8em;
+  gap: 0.32rem;
+  padding: 0 0.5rem 0.5rem 1.7rem;
 }
 
 .dismissed-body .step {
+  align-self: stretch;
   opacity: 0.78;
 }
 

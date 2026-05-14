@@ -11,6 +11,7 @@ import {
   defaultModelIds,
   inferProviderForModelId,
   modelSupportsTools,
+  modelSupportsVision,
   normalizeProvider,
   PROVIDERS,
   type ProviderName,
@@ -22,6 +23,7 @@ export type ModelOption = {
   provider: ProviderName;
   model: string;
   label: string;
+  supportsAttachments?: boolean;
 };
 
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
@@ -214,6 +216,10 @@ export function modelSupportsToolCalls(model: string): boolean {
   return modelSupportsTools(inferProviderNameForModel(model), model);
 }
 
+export function modelSupportsAttachments(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
+  return modelSupportsVision(provider, model);
+}
+
 function configuredModelsFrom(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -230,7 +236,13 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   const add = (provider: ProviderName, model: string) => {
     const trimmed = model.trim();
     if (!trimmed || !modelSupportsToolCalls(trimmed)) return;
-    out.push({ id: modelOptionId(provider, trimmed), provider, model: trimmed, label: provider + " / " + trimmed });
+    out.push({
+      id: modelOptionId(provider, trimmed),
+      provider,
+      model: trimmed,
+      label: provider + " / " + trimmed,
+      supportsAttachments: modelSupportsAttachments(provider, trimmed),
+    });
   };
 
   for (const model of configuredModelsFrom(await moo.env.get({ name: "MOO_LLM_MODELS" }))) {
@@ -255,7 +267,13 @@ export async function modelOptionsFor(selectedProvider: ProviderName | null, sel
     const id = modelOptionId(provider, trimmed);
     if (seen.has(id)) return;
     seen.add(id);
-    options.push({ id, provider, model: trimmed, label: provider + " / " + trimmed });
+    options.push({
+      id,
+      provider,
+      model: trimmed,
+      label: provider + " / " + trimmed,
+      supportsAttachments: modelSupportsAttachments(provider, trimmed),
+    });
   };
 
   if (selectedProvider && selectedModel) add(selectedProvider, selectedModel);
@@ -282,11 +300,13 @@ export async function chatModelInfo(chatId: string) {
   const effectiveProvider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
   const efforts = effortLevelsForProvider(effectiveProvider);
   const effortSupported = efforts.length > 0;
-  const defaultEffort = effortSupported ? effortAllowedForModel(efforts, await defaultChatEffort()) : null;
+  const configuredEffort = effortSupported ? effortAllowedForModel(efforts, await defaultChatEffort()) : null;
+  const defaultEffort = configuredEffort || (effectiveProvider.name === "deepseek" && effortSupported ? "high" : null);
   const supportedSelectedEffort = effortAllowedForModel(efforts, selectedEffort);
   const modelOptions = await modelOptionsFor(selectedProvider || effectiveProvider.name, selectedModel);
   const selectedModelId = selectedProvider && selectedModel ? modelOptionId(selectedProvider, selectedModel) : null;
   const effectiveModelId = modelOptionId(effectiveProvider.name, effectiveProvider.model);
+  const supportsAttachments = modelSupportsAttachments(effectiveProvider.name, effectiveProvider.model);
   return {
     chatId,
     provider: effectiveProvider.name,
@@ -297,6 +317,7 @@ export async function chatModelInfo(chatId: string) {
     effectiveModelId,
     models: modelOptions.map((option) => option.id),
     modelOptions,
+    supportsAttachments,
     defaultEffort,
     selectedEffort: supportedSelectedEffort,
     effectiveEffort: supportedSelectedEffort || defaultEffort,

@@ -20,6 +20,6 @@ describe("filesystem editing prompt", () => {
     expect(prompt).toContain("delete({path:string})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("failures return status=\'failed\' plus output");
     expect(prompt).toContain("check result.status/output and stop on failed");
-    expect(prompt).toContain("prefer fs.patch for patch operations on existing files");
+    expect(prompt).toContain("prefer moo.fs.patch for patch operations on existing files");
   });
 });

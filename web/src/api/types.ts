@@ -47,6 +47,7 @@ export type ChatModelOption = {
   provider: string;
   model: string;
   label: string;
+  supportsAttachments?: boolean;
 };
 
 export type ChatAutocompleteSuggestion = {
@@ -67,6 +68,7 @@ export type ChatModelInfo = {
   effectiveModelId?: string;
   models: string[];
   modelOptions?: ChatModelOption[];
+  supportsAttachments?: boolean;
   defaultEffort: string | null;
   selectedEffort: string | null;
   effectiveEffort: string | null;

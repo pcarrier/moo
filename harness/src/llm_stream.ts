@@ -10,6 +10,8 @@ type LlmAccumulatorState = {
   usage: any | null;
   error: any | null;
   reasoningContent: string;
+  deepseekThinkOpen: boolean;
+  deepseekTagBuffer: string;
   lastTokenProgressUsed: number;
   anthropicToolIndex: number | null;
   anthropicToolBlockToCall: Record<string, number>;
@@ -30,6 +32,8 @@ export function llmStreamInitEffect(input: Input): Effect<{ state: LlmAccumulato
       usage: null,
       error: null,
       reasoningContent: "",
+      deepseekThinkOpen: false,
+      deepseekTagBuffer: "",
       lastTokenProgressUsed: estimated,
       anthropicToolIndex: null,
       anthropicToolBlockToCall: {},
@@ -76,12 +80,13 @@ export function llmStreamFinalizeCommand(input: Input) {
 export function llmStreamFinalizeEffect(input: Input): Effect<any> {
   return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.finalize", data: llmStreamInputSummary(input), fn: async () => {
     const state = normalizeLlmAccumulatorState(input.state);
+    const content = finalLlmContent(state);
     const status = Number(input.status ?? 0) || 0;
     const result = state.error != null
       ? {
         status,
         ok: false,
-        content: state.content,
+        content,
         toolCalls: state.toolCalls,
         errorBody: formatStreamErrorBody(state.error),
         headers: input.headers && typeof input.headers === "object" ? input.headers : null,
@@ -92,7 +97,7 @@ export function llmStreamFinalizeEffect(input: Input): Effect<any> {
       : {
         status,
         ok: true,
-        content: state.content,
+        content,
         toolCalls: state.toolCalls,
         errorBody: null,
         reasoningContent: state.reasoningContent || null,
@@ -111,11 +116,12 @@ export function llmStreamErrorCommand(input: Input) {
 export function llmStreamErrorEffect(input: Input): Effect<any> {
   return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.error", data: llmStreamInputSummary(input), fn: async () => {
     const state = normalizeLlmAccumulatorState(input.state);
+    const content = finalLlmContent(state);
     const errorBody = formatStreamErrorBody(input.errorBody ?? input.error ?? "stream failed");
     const result = {
       status: Number(input.status ?? 0) || 0,
       ok: false,
-      content: state.content,
+      content,
       toolCalls: state.toolCalls,
       errorBody,
       headers: input.headers && typeof input.headers === "object" ? input.headers : null,
@@ -151,6 +157,8 @@ function normalizeLlmAccumulatorState(raw: any): LlmAccumulatorState {
     usage: raw?.usage ?? null,
     error: raw?.error ?? null,
     reasoningContent: typeof raw?.reasoningContent === "string" ? raw.reasoningContent : "",
+    deepseekThinkOpen: raw?.deepseekThinkOpen === true,
+    deepseekTagBuffer: typeof raw?.deepseekTagBuffer === "string" ? raw.deepseekTagBuffer : "",
     lastTokenProgressUsed: Number(raw?.lastTokenProgressUsed ?? 0) || 0,
     anthropicToolIndex: Number.isFinite(Number(raw?.anthropicToolIndex)) ? Number(raw.anthropicToolIndex) : null,
     anthropicToolBlockToCall: raw?.anthropicToolBlockToCall && typeof raw.anthropicToolBlockToCall === "object"
@@ -230,10 +238,10 @@ function accumulateLlmStreamEvent(
   const delta = parsed?.choices?.[0]?.delta;
   if (!delta || typeof delta !== "object") return;
   if (typeof delta.content === "string" && delta.content) {
-    appendLlmContentDelta(state, delta.content, streamEvents, events);
+    appendProviderContentDelta(state, delta.content, streamEvents, events);
   }
   if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-    state.reasoningContent += delta.reasoning_content;
+    appendLlmReasoningDelta(state, delta.reasoning_content, streamEvents, events);
   }
   if (Array.isArray(delta.tool_calls)) {
     for (const tc of delta.tool_calls) {
@@ -251,11 +259,30 @@ function accumulateLlmStreamEvent(
   }
 }
 
+function appendProviderContentDelta(state: LlmAccumulatorState, delta: string, streamEvents: any, events: any[]) {
+  if (isDeepSeekStream(streamEvents)) {
+    const parsed = splitDeepSeekThinkDelta(state, delta);
+    if (parsed.reasoning) appendLlmReasoningDelta(state, parsed.reasoning, streamEvents, events);
+    if (!parsed.content) return;
+    appendLlmContentDelta(state, parsed.content, streamEvents, events);
+    return;
+  }
+  appendLlmContentDelta(state, delta, streamEvents, events);
+}
+
+function appendLlmReasoningDelta(state: LlmAccumulatorState, delta: string, streamEvents: any, events: any[]) {
+  state.reasoningContent += delta;
+  const draft = streamEvents?.draftEvent;
+  if (draft && typeof draft === "object") {
+    events.push({ ...draft, kind: "reasoning-draft", content: state.content, reasoningContent: state.reasoningContent, delta });
+  }
+}
+
 function appendLlmContentDelta(state: LlmAccumulatorState, delta: string, streamEvents: any, events: any[]) {
   state.content += delta;
   const draft = streamEvents.draftEvent;
   if (draft && typeof draft === "object") {
-    events.push({ ...draft, content: state.content, delta });
+    events.push({ ...draft, content: state.content, reasoningContent: state.reasoningContent || undefined, delta });
   }
   const tokenEvent = streamEvents.tokenProgressEvent;
   if (tokenEvent && typeof tokenEvent === "object") {
@@ -267,6 +294,68 @@ function appendLlmContentDelta(state: LlmAccumulatorState, delta: string, stream
       state.lastTokenProgressUsed = used;
     }
   }
+}
+
+function finalLlmContent(state: LlmAccumulatorState): string {
+  if (state.deepseekTagBuffer) {
+    const parsed = splitDeepSeekThinkDelta(state, "");
+    if (parsed.reasoning) appendLlmReasoningDelta(state, parsed.reasoning, {}, []);
+    if (parsed.content) state.content += parsed.content;
+    if (state.deepseekTagBuffer) {
+      const trailing = state.deepseekTagBuffer;
+      state.deepseekTagBuffer = "";
+      if (state.deepseekThinkOpen) appendLlmReasoningDelta(state, trailing, {}, []);
+      else state.content += trailing;
+    }
+  }
+  return state.content;
+}
+
+function isDeepSeekStream(streamEvents: any): boolean {
+  const provider = String(streamEvents?.provider ?? "").trim().toLowerCase();
+  if (provider === "deepseek") return true;
+  const model = String(streamEvents?.model ?? "").trim().toLowerCase();
+  return model.startsWith("deepseek");
+}
+
+function splitDeepSeekThinkDelta(state: LlmAccumulatorState, delta: string): { content: string; reasoning: string } {
+  const combined = state.deepseekTagBuffer + delta;
+  state.deepseekTagBuffer = "";
+  let content = "";
+  let reasoning = "";
+  let i = 0;
+  while (i < combined.length) {
+    const lt = combined.indexOf("<", i);
+    if (lt < 0) {
+      const text = combined.slice(i);
+      if (state.deepseekThinkOpen) reasoning += text;
+      else content += text;
+      break;
+    }
+    const before = combined.slice(i, lt);
+    if (state.deepseekThinkOpen) reasoning += before;
+    else content += before;
+    if (combined.startsWith("<think>", lt)) {
+      state.deepseekThinkOpen = true;
+      i = lt + "<think>".length;
+      continue;
+    }
+    if (combined.startsWith("</think>", lt)) {
+      state.deepseekThinkOpen = false;
+      i = lt + "</think>".length;
+      continue;
+    }
+    const maybeOpen = "<think>".startsWith(combined.slice(lt));
+    const maybeClose = "</think>".startsWith(combined.slice(lt));
+    if (maybeOpen || maybeClose) {
+      state.deepseekTagBuffer = combined.slice(lt);
+      break;
+    }
+    if (state.deepseekThinkOpen) reasoning += "<";
+    else content += "<";
+    i = lt + 1;
+  }
+  return { content, reasoning };
 }
 
 function parseStreamJsonEvent(raw: string): any {

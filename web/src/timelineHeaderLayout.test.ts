@@ -74,6 +74,24 @@ describe("timeline loading header layout", () => {
     expect(body).toContain("border-radius: 0");
   });
 
+  test("keeps the token meter compact in narrow headers", () => {
+    const narrowStart = css.indexOf("@container conversation-main (max-width: 30rem)");
+    expect(narrowStart).toBeGreaterThan(0);
+    const loadingStart = css.indexOf(".conv-header.chat-loading", narrowStart);
+    expect(loadingStart).toBeGreaterThan(narrowStart);
+    const narrowBlock = css.slice(narrowStart, loadingStart);
+
+    expect(narrowBlock).toContain(".conv-token-slot");
+    expect(narrowBlock).toContain("justify-content: flex-start");
+    expect(narrowBlock).toContain(".token-meter {");
+    expect(narrowBlock).toContain("inline-size: auto");
+    expect(narrowBlock).toContain("flex: 0 0 auto");
+    expect(narrowBlock).toContain(".token-meter-head");
+    expect(narrowBlock).toContain("display: none");
+    expect(narrowBlock).toContain(".token-bar {");
+    expect(narrowBlock).toContain("inline-size: clamp(5rem, 28cqw, 8rem)");
+    expect(narrowBlock).toContain("flex: 0 0 clamp(5rem, 28cqw, 8rem)");
+  });
 
   test("renders token usage against full context with a compaction marker", () => {
     expect(timeline).toContain("tokens.used / safeBudget()");

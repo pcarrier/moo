@@ -743,6 +743,10 @@ async function loadTimelineSnapshot(
       if (typeof draftId === "string" && draftId) {
         item.draftId = draftId;
       }
+      const reasoningContent = payload?.value?.reasoningContent;
+      if (typeof reasoningContent === "string" && reasoningContent.trim()) {
+        item.reasoningContent = reasoningContent;
+      }
     }
     return item;
   };

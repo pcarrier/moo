@@ -49,6 +49,7 @@ import {
   timelineItemKey,
   timelineJumpKeys,
   timelineRenderEntries,
+  timelineThoughtKey,
   type DismissedTimelineEntry,
   type TimelineRenderEntry,
 } from "./timeline/utils";
@@ -79,6 +80,17 @@ import {
   shortHash,
   type ParsedRunJS,
 } from "./timeline/format";
+import {
+  compactErrorDetail,
+  compactionErrorDetail,
+  compactionLabel,
+  compactionSummaryText,
+  errorDiagnosticLines,
+  firstNonEmpty,
+  formatErrorPayloadForView,
+  formatValue,
+  logSummary,
+} from "./timeline/display";
 
 import type { Bag, DismissedReply } from "./state";
 import { absoluteTime, displayChatId } from "./state";
@@ -646,6 +658,7 @@ export function Timeline(props: {
         at: Date.now(),
         text: "",
         draftId,
+        reasoningContent: "",
       });
       draftReplyProxies.set(draftId, item);
     }
@@ -661,16 +674,18 @@ export function Timeline(props: {
     target.effort = source.effort;
     target.thoughtDurationNs = source.thoughtDurationNs;
     target.draftId = source.draftId;
+    target.reasoningContent = source.reasoningContent;
   };
   const syncActiveDraftProxy = (
     target: StepItem,
-    draft: { draftId: string; content: string; at: number },
+    draft: { draftId: string; content: string; reasoningContent?: string; at: number },
   ) => {
     target.step = `draft:${draft.draftId}` as StepItem["step"];
     target.kind = "agent:Reply";
     target.status = "agent:Running";
     target.at = Number(draft.at) || Date.now();
     target.text = draft.content;
+    target.reasoningContent = draft.reasoningContent;
     target.draftId = draft.draftId;
   };
 
@@ -691,7 +706,7 @@ export function Timeline(props: {
         syncDraftProxy(proxy, item);
         return proxy;
       });
-    if (!draft || draft.chatId !== bag.chatId() || !draft.content) return rows;
+    if (!draft || draft.chatId !== bag.chatId() || (!draft.content && !draft.reasoningContent)) return rows;
     if (
       rows.some(
         (item) =>
@@ -711,7 +726,11 @@ export function Timeline(props: {
     if (!id) return [];
     return bag
       .dismissedReplies()
-      .filter((reply) => reply.chatId === id && reply.content.trim());
+      .filter(
+        (reply) =>
+          reply.chatId === id &&
+          (reply.content.trim() || reply.reasoningContent?.trim()),
+      );
   });
   const renderEntryCache = new Map<string, TimelineRenderEntry>();
   const renderedTimeline = createMemo(() =>
@@ -726,7 +745,8 @@ export function Timeline(props: {
   );
   const hasStreamingReply = () =>
     Boolean(
-      bag.draftReply()?.chatId === bag.chatId() && bag.draftReply()?.content,
+      bag.draftReply()?.chatId === bag.chatId() &&
+        (bag.draftReply()?.content || bag.draftReply()?.reasoningContent),
     );
   const showStandaloneThinking = () =>
     (bag.thinking() || bag.compacting()) && !hasStreamingReply() && !hasRunningToolRow();
@@ -847,6 +867,8 @@ export function Timeline(props: {
                         onOpenImage={openLightbox}
                         onOpenRunJSBlock={openRunJSBlockLightbox}
                       />
+                    ) : entry.kind === "thought" ? (
+                      <ThoughtBox item={entry.item} />
                     ) : (
                       <Item
                         item={entry.item}
@@ -1089,7 +1111,22 @@ function PendingItem(props: {
   let fileInput: HTMLInputElement | undefined;
   let blurTimer: number | null = null;
   const [autocompleteEnabled, setAutocompleteEnabled] = createSignal(false);
+  const attachmentsSupported = () => props.bag.chatModel()?.supportsAttachments !== false;
+  const attachmentTitle = () =>
+    attachmentsSupported()
+      ? "attach image"
+      : "selected model does not support image attachments";
+  const notifyUnsupportedAttachments = () =>
+    props.bag.notify(
+      "attachments",
+      "Selected model does not support image attachments.",
+      "Switch to a vision-capable model or remove the images.",
+    );
   const addImages = async (files: File[]) => {
+    if (!attachmentsSupported()) {
+      if (files.some((f) => f.type.startsWith("image/"))) notifyUnsupportedAttachments();
+      return;
+    }
     const next = await imageAttachmentsFromFiles(files);
     props.bag.addPendingAttachments(props.item().id, next);
   };
@@ -1182,9 +1219,16 @@ function PendingItem(props: {
         <button
           type="button"
           class="attach-btn"
-          title="attach image"
-          aria-label="attach image"
-          onClick={() => fileInput?.click()}
+          title={attachmentTitle()}
+          aria-label={attachmentTitle()}
+          onClick={() => {
+            if (!attachmentsSupported()) {
+              notifyUnsupportedAttachments();
+              return;
+            }
+            fileInput?.click();
+          }}
+          disabled={!attachmentsSupported()}
         >
           +
         </button>
@@ -1195,6 +1239,7 @@ function PendingItem(props: {
           accept="image/*"
           multiple
           onChange={handleFilePick}
+          disabled={!attachmentsSupported()}
         />
         <div class="composer-field">
           <AutocompleteDropdown autocomplete={autocomplete} />
@@ -1654,7 +1699,25 @@ function InputBar(props: {
   const [attachments, setAttachments] = createSignal<ImageAttachment[]>([]);
   const [playPromptMode, setPlayPromptMode] =
     createSignal<PlayPromptMode>(null);
+  const attachmentsSupported = () => bag.chatModel()?.supportsAttachments !== false;
+  const attachmentsDisabled = () => disabled() || !attachmentsSupported();
+  const attachmentTitle = () => {
+    if (disabled()) return "start a new chat to attach images";
+    if (!attachmentsSupported())
+      return "selected model does not support image attachments";
+    return "attach image";
+  };
+  const notifyUnsupportedAttachments = () =>
+    bag.notify(
+      "attachments",
+      "Selected model does not support image attachments.",
+      "Switch to a vision-capable model or remove the images.",
+    );
   const addImages = async (files: File[]) => {
+    if (!attachmentsSupported()) {
+      if (files.some((f) => f.type.startsWith("image/"))) notifyUnsupportedAttachments();
+      return;
+    }
     const next = await imageAttachmentsFromFiles(files);
     if (!next.length) return;
     setAttachments([...attachments(), ...next]);
@@ -1663,6 +1726,11 @@ function InputBar(props: {
   const handlePaste = (e: ClipboardEvent) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.some((f) => f.type.startsWith("image/"))) return;
+    if (!attachmentsSupported()) {
+      e.preventDefault();
+      notifyUnsupportedAttachments();
+      return;
+    }
     e.preventDefault();
     addImages(files);
   };
@@ -1719,6 +1787,10 @@ function InputBar(props: {
     const message = bag.wipText().trim();
     const imgs = attachments();
     if (!message && imgs.length === 0) return;
+    if (imgs.length > 0 && !attachmentsSupported()) {
+      notifyUnsupportedAttachments();
+      return;
+    }
     closeRestartPrompt();
     bag.setWipText("");
     setAttachments([]);
@@ -1825,10 +1897,16 @@ function InputBar(props: {
         <button
           type="button"
           class="attach-btn"
-          title="attach image"
-          aria-label="attach image"
-          onClick={() => fileInput?.click()}
-          disabled={disabled()}
+          title={attachmentTitle()}
+          aria-label={attachmentTitle()}
+          onClick={() => {
+            if (!attachmentsSupported()) {
+              notifyUnsupportedAttachments();
+              return;
+            }
+            fileInput?.click();
+          }}
+          disabled={attachmentsDisabled()}
         >
           +
         </button>
@@ -1839,7 +1917,7 @@ function InputBar(props: {
           accept="image/*"
           multiple
           onChange={handleFilePick}
-          disabled={disabled()}
+          disabled={attachmentsDisabled()}
         />
         <div class="composer-field">
           <AutocompleteDropdown autocomplete={autocomplete} />
@@ -1928,18 +2006,31 @@ function dismissedEntryLabel(entry: DismissedTimelineEntry): string {
   return displayStepKind(entry.item.kind).toLowerCase();
 }
 
-function DismissedDraft(props: { reply: DismissedReply }) {
+function DismissedDraftThought(props: { reply: DismissedReply }) {
   return (
-    <div
-      class="step reply draft dismissed-draft"
-      data-timeline-key={`draft:${props.reply.id}`}
-    >
-      <div class="meta">partial reply · cancelled</div>
+    <ReasoningBlock
+      content={props.reply.reasoningContent ?? ""}
+      streaming={false}
+      timelineKey={`thought:draft:${props.reply.id}`}
+    />
+  );
+}
+
+function DismissedDraft(props: { reply: DismissedReply }) {
+  const text = () => props.reply.content.trim();
+  return (
+    <Show when={text()}>
       <div
-        class="body markdown"
-        innerHTML={renderMarkdown(props.reply.content)}
-      />
-    </div>
+        class="step reply draft dismissed-draft"
+        data-timeline-key={`draft:${props.reply.id}`}
+      >
+        <div class="meta">partial reply · cancelled</div>
+        <div
+          class="body markdown"
+          innerHTML={renderMarkdown(props.reply.content)}
+        />
+      </div>
+    </Show>
   );
 }
 
@@ -1983,14 +2074,20 @@ function DismissedBlock(props: {
         <For each={props.group.entries}>
           {(entry) =>
             entry.kind === "draft" ? (
-              <DismissedDraft reply={entry.reply} />
+              <>
+                <DismissedDraftThought reply={entry.reply} />
+                <DismissedDraft reply={entry.reply} />
+              </>
             ) : (
-              <Item
-                item={entry.item}
-                bag={props.bag}
-                onOpenImage={props.onOpenImage}
-                onOpenRunJSBlock={props.onOpenRunJSBlock}
-              />
+              <>
+                <ThoughtBox item={entry.item} />
+                <Item
+                  item={entry.item}
+                  bag={props.bag}
+                  onOpenImage={props.onOpenImage}
+                  onOpenRunJSBlock={props.onOpenRunJSBlock}
+                />
+              </>
             )
           }
         </For>
@@ -2077,13 +2174,6 @@ function Item(props: {
     </Show>
   );
 }
-
-function logSummary(message: string): string {
-  const normalized = message.replace(/\s+/g, " ").trim();
-  if (!normalized) return "(empty log)";
-  return normalized.length > 180 ? normalized.slice(0, 179) + "…" : normalized;
-}
-
 function Log(props: { item: LogItem; bag: Bag; timelineKey: string }) {
   const open = () => props.bag.openLogPreviewInSidebar(props.item);
   return (
@@ -2263,6 +2353,7 @@ function displayStepKind(kind: string): string {
 
 function activeReplyStatusLabel(item: StepItem, compacting: boolean): string {
   if (item.text.trim()) return "Streaming…";
+  if (item.reasoningContent?.trim()) return "Streaming…";
   return compacting ? "Compacting…" : "Thinking…";
 }
 
@@ -2308,6 +2399,46 @@ function showStandardStepFooter(item: StepItem): boolean {
   );
 }
 
+function ReasoningBlock(props: {
+  content: string;
+  streaming: boolean;
+  timelineKey: string;
+}) {
+  const text = () => props.content.trim();
+  const html = () => renderMarkdown(text());
+  const open = () => props.streaming;
+  return (
+    <Show when={text()}>
+      <details
+        class="step reply-thinking"
+        data-timeline-key={props.timelineKey}
+        open={open()}
+      >
+        <summary>
+          <span>{props.streaming ? "Thinking" : "Thought"}</span>
+          <Show when={props.streaming}>
+            <LoadingDots
+              class="reply-thinking-dots"
+              label="streaming thinking"
+            />
+          </Show>
+        </summary>
+        <div class="body markdown reply-thinking-body" innerHTML={html()} />
+      </details>
+    </Show>
+  );
+}
+
+function ThoughtBox(props: { item: StepItem }) {
+  return (
+    <ReasoningBlock
+      content={props.item.reasoningContent ?? ""}
+      streaming={props.item.status !== "agent:Done"}
+      timelineKey={timelineThoughtKey(props.item)}
+    />
+  );
+}
+
 function Step(props: {
   item: StepItem;
   bag: Bag;
@@ -2318,101 +2449,93 @@ function Step(props: {
 }) {
   const cls = createMemo(() => stepClass(props.item));
   const showStandardMeta = () => showStandardStepMeta(props.item);
+  const renderStep = () =>
+    props.item.kind !== "agent:Reply" ||
+    !!props.item.text.trim() ||
+    !props.item.reasoningContent?.trim();
   return (
-    <div class={cls()} data-timeline-key={props.timelineKey}>
-      <Show when={showStandardMeta()}>
-        <div class="meta">
-          {stepMetaLabel(props.item, props.bag.compacting())}
-          {stepMetaSuffix(props.item)}
-        </div>
-      </Show>
-      <Show when={props.item.kind === "agent:Reply" && props.item.text}>
-        <div
-          class="body markdown"
-          innerHTML={renderMarkdown(props.item.text)}
-        />
-      </Show>
-      <Show when={props.item.kind === "agent:UserInput"}>
-        <Show when={props.item.text}>
-          <div
-            class="body markdown"
-            innerHTML={renderUserMessage(props.item.text)}
-          />
-        </Show>
-        <Show when={props.item.attachments?.length}>
-          <div class="timeline-attachments">
-            <For each={props.item.attachments}>
-              {(att) => (
-                <button
-                  type="button"
-                  class="timeline-attachment"
-                  title={att.name || "image"}
-                  aria-label={
-                    att.name ? `open image ${att.name}` : "open image"
-                  }
-                  onClick={() => props.onOpenImage(att)}
-                >
-                  <img src={att.dataUrl} alt={att.name || "image"} />
-                </button>
-              )}
-            </For>
+    <Show when={renderStep()}>
+      <div class={cls()} data-timeline-key={props.timelineKey}>
+        <Show when={showStandardMeta()}>
+          <div class="meta">
+            {stepMetaLabel(props.item, props.bag.compacting())}
+            {stepMetaSuffix(props.item)}
           </div>
         </Show>
-      </Show>
-      <Show when={props.item.kind === "agent:ShellCommand"}>
-        <ShellBody item={props.item} expansion={props.expansion} />
-      </Show>
-      <Show when={props.item.kind === "agent:RunJS"}>
-        <RunJSBody
-          item={props.item}
-          bag={props.bag}
-          expansion={props.expansion}
-          onOpenRunJSBlock={props.onOpenRunJSBlock}
-        />
-      </Show>
-      <Show when={props.item.kind === "agent:Subagent"}>
-        <SubagentBody
-          item={props.item}
-          bag={props.bag}
-          expansion={props.expansion}
-        />
-      </Show>
-      <Show when={props.item.kind === "agent:Error"}>
-        <ErrorBody item={props.item} />
-      </Show>
-      <Show when={props.item.kind === "agent:Compaction"}>
-        <CompactionBody item={props.item} />
-      </Show>
-      <Show
-        when={
-          props.item.kind === "agent:Tick" ||
-          props.item.kind === "agent:ToolCall"
-        }
-      >
-        <Show when={props.item.text}>
-          <div class="body">{props.item.text}</div>
+        <Show when={props.item.kind === "agent:Reply" && props.item.text}>
+          <div
+            class="body markdown"
+            innerHTML={renderMarkdown(props.item.text)}
+          />
         </Show>
-      </Show>
-      <Show when={showStandardStepFooter(props.item)}>
-        <StepFooter item={props.item} bag={props.bag} />
-      </Show>
-    </div>
+        <Show when={props.item.kind === "agent:UserInput"}>
+          <Show when={props.item.text}>
+            <div
+              class="body markdown"
+              innerHTML={renderUserMessage(props.item.text)}
+            />
+          </Show>
+          <Show when={props.item.attachments?.length}>
+            <div class="timeline-attachments">
+              <For each={props.item.attachments}>
+                {(att) => (
+                  <button
+                    type="button"
+                    class="timeline-attachment"
+                    title={att.name || "image"}
+                    aria-label={
+                      att.name ? `open image ${att.name}` : "open image"
+                    }
+                    onClick={() => props.onOpenImage(att)}
+                  >
+                    <img src={att.dataUrl} alt={att.name || "image"} />
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </Show>
+        <Show when={props.item.kind === "agent:ShellCommand"}>
+          <ShellBody item={props.item} expansion={props.expansion} />
+        </Show>
+        <Show when={props.item.kind === "agent:RunJS"}>
+          <RunJSBody
+            item={props.item}
+            bag={props.bag}
+            expansion={props.expansion}
+            onOpenRunJSBlock={props.onOpenRunJSBlock}
+          />
+        </Show>
+        <Show when={props.item.kind === "agent:Subagent"}>
+          <SubagentBody
+            item={props.item}
+            bag={props.bag}
+            expansion={props.expansion}
+          />
+        </Show>
+        <Show when={props.item.kind === "agent:Error"}>
+          <ErrorBody item={props.item} />
+        </Show>
+        <Show when={props.item.kind === "agent:Compaction"}>
+          <CompactionBody item={props.item} />
+        </Show>
+        <Show
+          when={
+            props.item.kind === "agent:Tick" ||
+            props.item.kind === "agent:ToolCall"
+          }
+        >
+          <Show when={props.item.text}>
+            <div class="body">{props.item.text}</div>
+          </Show>
+        </Show>
+        <Show when={showStandardStepFooter(props.item)}>
+          <StepFooter item={props.item} bag={props.bag} />
+        </Show>
+      </div>
+    </Show>
   );
 }
-
-function compactionSummaryText(text: string): string {
-  return text
-    .replace(/^(?:automatic |manual )?compaction\n?/, "")
-    .replace(/^compacted earlier turns\n?/, "")
-    .trim();
-}
-
-function compactionLabel(text: string): string {
-  if (/^automatic compaction(?:\n|$)/.test(text)) return "automatic compaction";
-  if (/^manual compaction(?:\n|$)/.test(text)) return "manual compaction";
-  return "compacted earlier turns";
-}
-
 function ParentChatLink(props: { bag: Bag }) {
   const parent = () => props.bag.currentChatParent();
   const label = () => {
@@ -3207,15 +3330,6 @@ function CollapsibleBlock(props: {
     </Show>
   );
 }
-
-function firstNonEmpty(lines: string[]): string {
-  for (const l of lines) {
-    const t = l.trim();
-    if (t) return t;
-  }
-  return lines[0] || "";
-}
-
 function ModelPicker(props: { bag: Bag }) {
   const { bag } = props;
   const info = () => bag.chatModel();
@@ -3276,8 +3390,16 @@ function ModelPicker(props: { bag: Bag }) {
     if (info()?.provider === "anthropic" && effortSupported())
       return "Anthropic thinking effort";
     if (info()?.provider === "deepseek" && effortSupported())
-      return "DeepSeek thinking effort";
+      return "DeepSeek thinking mode";
     return "effort is only sent to providers/models that support it";
+  };
+  const effortLabel = (effort: string | null | undefined) => {
+    if (!effort) return "";
+    if (info()?.provider !== "deepseek") return effort;
+    if (effort === "none") return "Non-think";
+    if (effort === "high") return "Think High";
+    if (effort === "max") return "Think Max";
+    return effort;
   };
   return (
     <div class="model-picker" title="model and effort for this chat">
@@ -3300,11 +3422,11 @@ function ModelPicker(props: { bag: Bag }) {
         >
           <option value="__default">
             {info()?.defaultEffort
-              ? `default (${info()?.defaultEffort})`
+              ? `default (${effortLabel(info()?.defaultEffort)})`
               : "default"}
           </option>
           <For each={info()?.efforts ?? []}>
-            {(effort) => <option value={effort}>{effort}</option>}
+            {(effort) => <option value={effort}>{effortLabel(effort)}</option>}
           </For>
         </select>
       </Show>
@@ -3397,36 +3519,6 @@ function TokenBar(props: {
     </div>
   );
 }
-
-function compactErrorDetail(detail: unknown): string {
-  if (!detail || typeof detail !== "object") return "";
-  const d = detail as Record<string, any>;
-  const parts = [
-    typeof d.reason === "string" ? d.reason : "",
-    typeof d.error === "string" ? d.error : "",
-    typeof d.message === "string" ? d.message : "",
-    typeof d.body?.error?.message === "string" ? d.body.error.message : "",
-    typeof d.body?.message === "string" ? d.body.message : "",
-  ]
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (parts.length) return parts[0];
-  try {
-    const text = JSON.stringify(detail, null, 2).trim();
-    return text === "{}" ? "" : text;
-  } catch {
-    return String(detail ?? "").trim();
-  }
-}
-
-function compactionErrorDetail(item: StepItem): Record<string, any> | null {
-  const error = item.error as Record<string, any> | undefined;
-  const detail = error?.detail as Record<string, any> | undefined;
-  if (detail?.phase === "compaction" || detail?.source === "compaction") return detail;
-  if (error?.phase === "compaction" || error?.kind === "compaction") return error;
-  return null;
-}
-
 function compactionTrigger(detail: Record<string, any>): "manual" | "automatic" {
   return detail.trigger === "manual" ? "manual" : "automatic";
 }
@@ -3444,18 +3536,7 @@ function compactionFailureIntro(detail: Record<string, any>): string {
     return `The model provider returned a stream error after accepting the ${trigger} compaction request.`;
   }
   return `${compactionTriggerTitle(detail)} compaction failed before the conversation could be summarized.`;
-}
-
-function errorDiagnosticLines(detail: Record<string, any> | undefined | null): string {
-  if (!detail) return "";
-  return [
-    typeof detail.hint === "string" && detail.hint.trim() ? detail.hint.trim() : "",
-    typeof detail.requestId === "string" && detail.requestId.trim() ? `Request ID: ${detail.requestId.trim()}` : "",
-    typeof detail.retryAfter === "string" && detail.retryAfter.trim() ? `Retry after: ${detail.retryAfter.trim()}` : "",
-  ].filter(Boolean).join("\n");
-}
-
-function CompactionErrorBody(props: { item: StepItem; detail: Record<string, any> }) {
+}function CompactionErrorBody(props: { item: StepItem; detail: Record<string, any> }) {
   const message = () => String(props.detail.message || props.detail.reason || "").trim();
   const diagnostics = () => errorDiagnosticLines(props.detail);
   const technicalDetails = () => formatErrorPayloadForView(props.item.error);
@@ -3550,22 +3631,6 @@ function highlightErrorPayloadForView(body: unknown): string {
   const text = typeof body === "string" ? body : formatErrorPayloadForView(body);
   return text ? highlightAuto(text) : "";
 }
-
-function formatErrorPayloadForView(body: unknown): string {
-  if (body == null || body === "") return "";
-  if (typeof body === "string") {
-    const trimmed = body.trim();
-    if (!trimmed) return "";
-    const formatted = formatHjsonTextForView(trimmed);
-    return formatted === trimmed ? trimmed : formatted;
-  }
-  try {
-    return formatHjson(body);
-  } catch {
-    return String(body);
-  }
-}
-
 function Input(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   return (
     <Show
@@ -3755,14 +3820,6 @@ function AnswerSummary(props: {
     </dl>
   );
 }
-
-function formatValue(v: unknown): string {
-  if (v == null) return "—";
-  if (typeof v === "boolean") return v ? "yes" : "no";
-  if (typeof v === "string") return v;
-  return formatHjson(v);
-}
-
 function FieldRow(props: { field: FormField }) {
   const f = props.field;
   return (

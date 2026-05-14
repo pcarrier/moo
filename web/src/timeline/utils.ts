@@ -7,6 +7,7 @@ export type DismissedTimelineEntry =
 
 export type TimelineRenderEntry =
   | { kind: "item"; item: TimelineItem }
+  | { kind: "thought"; item: StepItem }
   | {
       kind: "dismissed";
       id: string;
@@ -86,6 +87,10 @@ export function timelineItemKey(item: TimelineItem): string {
   return `file-diff:${item.id}`;
 }
 
+export function timelineThoughtKey(item: StepItem): string {
+  return `thought:${replyDraftKey(item) ?? `step:${item.step}`}`;
+}
+
 export function timelineAnchorKey(item: TimelineItem): string {
   if (item.type === "step") return `step:${item.step}`;
   return timelineItemKey(item);
@@ -93,6 +98,7 @@ export function timelineAnchorKey(item: TimelineItem): string {
 
 export function timelineJumpKeys(item: TimelineItem): string[] {
   const keys = [timelineAnchorKey(item)];
+  if (hasReplyReasoning(item)) keys.push(timelineThoughtKey(item));
   const renderKey = timelineItemKey(item);
   if (!keys.includes(renderKey)) keys.push(renderKey);
   if (
@@ -210,6 +216,15 @@ export function timelineRenderEntries(
       dismissed.push(row.entry);
     } else {
       flushDismissed();
+      if (hasReplyReasoning(row.item)) {
+        const thoughtKey = timelineThoughtKey(row.item);
+        const previousThought = cache?.get(thoughtKey);
+        rendered.push(
+          previousThought?.kind === "thought" && previousThought.item === row.item
+            ? previousThought
+            : { kind: "thought", item: row.item },
+        );
+      }
       const key = timelineItemKey(row.item);
       const previous = cache?.get(key);
       rendered.push(
@@ -222,13 +237,25 @@ export function timelineRenderEntries(
   flushDismissed();
   if (cache) {
     cache.clear();
-    for (const entry of rendered)
-      cache.set(
-        entry.kind === "dismissed" ? entry.id : timelineItemKey(entry.item),
-        entry,
-      );
+    for (const entry of rendered) {
+      const key =
+        entry.kind === "dismissed"
+          ? entry.id
+          : entry.kind === "thought"
+            ? timelineThoughtKey(entry.item)
+            : timelineItemKey(entry.item);
+      cache.set(key, entry);
+    }
   }
   return rendered;
+}
+
+function hasReplyReasoning(item: TimelineItem): item is StepItem {
+  return (
+    item.type === "step" &&
+    item.kind === "agent:Reply" &&
+    !!item.reasoningContent?.trim()
+  );
 }
 
 export function formatThoughtDuration(ms: number): string {

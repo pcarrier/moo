@@ -62,6 +62,8 @@ export type StepItem = {
   thoughtDurationNs?: number;
   // Streaming draft id that produced this finalized reply, when available.
   draftId?: string;
+  // Reasoning/thinking streamed before the final reply content, when available.
+  reasoningContent?: string;
   // Present when a user message is hidden from future LLM prompts.
   deletedAt?: number | string;
 };

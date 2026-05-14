@@ -37,3 +37,11 @@ describe("describe incremental timeline updates", () => {
     expect(describeSource).toContain('updatedAt: factTimestamp(s["?updatedAt"]) || undefined');
   });
 });
+
+
+describe("describe reply reasoning", () => {
+  test("returns persisted reasoning content on reply timeline items", () => {
+    expect(describeSource).toContain("const reasoningContent = payload?.value?.reasoningContent");
+    expect(describeSource).toContain("item.reasoningContent = reasoningContent");
+  });
+});

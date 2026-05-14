@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { addTodo, getTodos, patchTodos, updateTodo } from "./todos";
+import { addTodo, clearTodos, getTodos, patchTodos, updateTodo } from "./todos";
 
 const todos = readFileSync(new URL("./todos.ts", import.meta.url), "utf8");
 
 describe("agent TODO IDs", () => {
   test("allocates sequential numeric IDs instead of random prefixed IDs", () => {
     expect(todos).toContain("function nextTodoId");
-    expect(todos).toContain("id: nextTodoId(items)");
+    expect(todos).toContain("id: nextTodoId(state)");
     expect(todos).not.toContain('id: host.newId("todo")');
   });
 });
@@ -126,5 +126,48 @@ describe("agent TODO ID coercion", () => {
     const updated = await updateTodo("stored-number", { id: "2", status: "done" });
     expect(updated.id).toBe("2");
     expect(updated.status).toBe("done");
+  });
+
+  test("does not reuse IDs after clearing all todos", async () => {
+    await addTodo("clear-all", { text: "First" });
+    await addTodo("clear-all", { text: "Second" });
+    await clearTodos("clear-all");
+
+    const added = await addTodo("clear-all", { text: "Third" });
+    const state = await getTodos("clear-all");
+
+    expect(added.id).toBe("3");
+    expect(state.nextId).toBe(4);
+    expect(state.items.map((item) => item.id)).toEqual(["3"]);
+  });
+
+  test("does not reuse IDs after clearing the highest numeric todo", async () => {
+    await addTodo("clear-done", { text: "First" });
+    await addTodo("clear-done", { text: "Second", status: "done" });
+
+    await clearTodos("clear-done", { statuses: ["done"] });
+    const added = await addTodo("clear-done", { text: "Third" });
+
+    expect(added.id).toBe("3");
+    expect((await getTodos("clear-done")).items.map((item) => item.id)).toEqual(["1", "3"]);
+  });
+
+  test("respects stored next IDs above the current max", async () => {
+    refs.set(
+      "chat/stored-next/todos",
+      "json:" + JSON.stringify({
+        version: 1,
+        updatedAt: "earlier",
+        nextId: 5,
+        items: [{ id: 1, text: "Stored", status: "todo", createdAt: "earlier", updatedAt: "earlier" }],
+      }),
+    );
+
+    const added = await addTodo("stored-next", { text: "Later" });
+    const state = await getTodos("stored-next");
+
+    expect(added.id).toBe("5");
+    expect(state.nextId).toBe(6);
+    expect(state.items.map((item) => item.id)).toEqual(["1", "5"]);
   });
 });

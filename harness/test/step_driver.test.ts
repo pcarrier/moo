@@ -142,6 +142,6 @@ describe("trace helpers", () => {
   test("keeps synchronous moo helpers synchronous under trace proxy", async () => {
     const { moo } = await import("../src/moo");
     expect(typeof moo.validate.pointerName("p")).toBe("boolean");
-    expect(String(moo.term.string("literal:value"))).toBe('"literal:value"');
+    expect(String(moo.term.string({ s: "literal:value" }))).toBe('"literal:value"');
   });
 });
