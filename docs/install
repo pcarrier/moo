@@ -3,9 +3,6 @@ set -eu
 
 repo="pcarrier/moo"
 bin_dir="${BIN_DIR:-$HOME/.local/bin}"
-tmp_dir="$(mktemp -d)"
-cleanup() { rm -rf "$tmp_dir"; }
-trap cleanup EXIT INT TERM
 
 uname_s="$(uname -s)"
 uname_m="$(uname -m)"
@@ -17,13 +14,35 @@ case "$uname_s:$uname_m" in
 esac
 
 api="https://api.github.com/repos/$repo/releases/latest"
-asset_url="$(curl -fsSL -H "Accept: application/vnd.github+json" "$api" | sed -n 's/.*"browser_download_url": "\([^"]*moo-[^"]*-'"$target"'\.tar\.gz\)".*/\1/p' | head -n 1)"
+release="$(curl -fsSL -H "Accept: application/vnd.github+json" "$api")"
+latest_tag="$(printf '%s\n' "$release" | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -n 1)"
+latest_version="$(printf '%s\n' "$latest_tag" | sed 's/^[^0-9]*//')"
+if [ -z "$latest_version" ]; then
+  echo "could not determine latest release version" >&2
+  exit 1
+fi
+
+installed="$bin_dir/moo"
+if [ -x "$installed" ]; then
+  installed_output="$("$installed" --version 2>/dev/null || true)"
+  installed_version="$(printf '%s\n' "$installed_output" | sed -n '1s/^[^0-9]*//p')"
+  if [ "$installed_version" = "$latest_version" ]; then
+    echo "moo $latest_version is already installed at $installed"
+    exit 0
+  fi
+fi
+
+asset_url="$(printf '%s\n' "$release" | sed -n 's/.*"browser_download_url": "\([^"]*moo-[^"]*\.tar\.gz\)".*/\1/p' | grep -F -- "-$target.tar.gz" | head -n 1)"
 if [ -z "$asset_url" ]; then
   echo "could not find release asset for $target" >&2
   exit 1
 fi
 
 mkdir -p "$bin_dir"
+tmp_dir="$(mktemp -d)"
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT INT TERM
+
 curl -fL --progress-bar "$asset_url" -o "$tmp_dir/moo.tar.gz"
 tar -xzf "$tmp_dir/moo.tar.gz" -C "$tmp_dir"
 moo_bin="$(find "$tmp_dir" -type f -name moo | head -n 1)"
