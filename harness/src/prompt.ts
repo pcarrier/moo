@@ -1,5 +1,6 @@
 import { moo } from "./moo";
 import * as host from "./host_ops";
+import type { ProcResult } from "./types";
 // Ultra-compact prompt: telegraphic, LLM-to-LLM. No prose padding.
 
 export const COMPACTION_SUMMARY_SYSTEM_PROMPT =
@@ -85,6 +86,7 @@ async function agentsMdLines(scratch: string): Promise<string[]> {
 }
 
 const cliTools = ["git", "jj", "gh", "nix", "bun", "deno", "node", "python3", "ruby", "awk", "jq", "sed", "curl", "fd", "find", "rg", "sqlite3"];
+const unavailableProcResult: ProcResult = { code: 127, stdout: "", stderr: "", durationNs: 0, timedOut: false };
 let cliToolsCache: Promise<Set<string>> | null = null;
 
 function availableCliTools(): Promise<Set<string>> {
@@ -128,8 +130,8 @@ async function repoInfoLine(scratch: string): Promise<{ line: string; hideJjTool
     const jjAvailable = jjTool.code === 0;
     const gitAvailable = gitTool.code === 0;
     const [jj, git] = await Promise.all([
-      jjAvailable ? moo.proc.run({ cmd: "jj", args: ["root"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve({ code: 127, stdout: "", stderr: "" } as any),
-      gitAvailable ? moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve({ code: 127, stdout: "", stderr: "" } as any),
+      jjAvailable ? moo.proc.run({ cmd: "jj", args: ["root"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
+      gitAvailable ? moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
     ]);
     const jjRoot = jj.code === 0 ? jj.stdout.trim() : "";
     const gitRoot = git.code === 0 ? git.stdout.trim() : "";
@@ -154,7 +156,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
   const repoInfo = await repoInfoLine(scratch);
   const cliLine = await cliToolsLine(repoInfo.hideJjTools);
   const traceLines = host.tracingEnabled() ? [
-    "moo.traces{current,get,events,tree,recent,search,failed,summary,diagnose,errorOf,errors,mark,span}: every runJS has a durable SQLite trace; current({})→Promise<{traceId?,id,rootId?,stepId?,parentId}|null>; get/events/tree accept {traceId?,stepId?,limit?}; recent/search/failed accept {limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?,includeEvents?}; summary({traceId?,stepId?,includeEvents?})→Promise<TraceSummary|null>; diagnose({limit?,chatId?,includeEvents?,examplesPerGroup?})→Promise<TraceDiagnosis>; errorOf({row})→string|null; errors({traceId?,stepId?,limit?})→Promise<TraceErrorInfo[]>; mark({message,data?})→Promise<string|null>; span({name,data?,fn}) nests work. For failure review use moo.traces.failed/summary; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runJS.",
+    "moo.traces{current,get,events,tree,recent,search,failed,summary,diagnose,errorOf,errors,mark,span}: every runTS has a durable SQLite trace; current({})→Promise<{traceId?,id,rootId?,stepId?,parentId}|null>; get/events/tree accept {traceId?,stepId?,limit?}; recent/search/failed accept {limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?,includeEvents?}; summary({traceId?,stepId?,includeEvents?})→Promise<TraceSummary|null>; diagnose({limit?,chatId?,includeEvents?,examplesPerGroup?})→Promise<TraceDiagnosis>; errorOf({row})→string|null; errors({traceId?,stepId?,limit?})→Promise<TraceErrorInfo[]>; mark({message,data?})→Promise<string|null>; span({name,data?,fn}) nests work. For failure review use moo.traces.failed/summary; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runTS.",
   ] : [];
   const subagentSpecHash = await moo.pointers.get({ name: `chat/${chatId}/subagent-spec` });
   const subagentSpec = subagentSpecHash ? (await moo.objects.getJSON<any>({ hash: subagentSpecHash }))?.value : null;
@@ -165,12 +167,12 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "Don't call moo.agent.run unless explicitly enabled; default depth limit 1.",
   ] : [];
   return [
-    "agent=moo. tool=runJS({label,description,code,args?}) → async IIFE; `moo`, `chatId`, `repo`, `scratch` & optional `args` in scope.",
+    "agent=moo. tool=runTS({label,description,code,args?}) → TypeScript 6 + ES2025 async body; `moo`, `chatId`, `repo`, `scratch` & optional `args` in scope.",
     "label+description: Markdown for the tool-call row. label ≤6 words, imperative, sentence case. description: one concrete sentence (paths/predicates/why); use links/code when useful.",
-    "code: JS body; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
+    "code: TypeScript body compiled with bundled Moo type definitions; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
     "args: pass complex strings/data (patches, scripts, JSON blobs) via `args` instead of embedding/escaping them in `code`.",
-    "runtime: harness JS only; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
-    "runJS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside JS strings.",
+    "runtime: harness V8 ES2025 only; TypeScript 6 type-checks against bundled ES2025 + Moo definitions; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
+    "runTS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside TypeScript strings.",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "When asked to tweak/fix/update code or a named file/path, edit the code; do not merely remember the request or acknowledge a preference.",
     "moo.todos: optional; use `moo.todos` only for substantial multi-step work where tracking helps. Keep items terse; don't update guessed/stale IDs. Method signatures are in the moo.todos API line below.",
@@ -200,14 +202,14 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "  RDF terms: use exact terms returned by moo.facts.match/moo.sparql.query for delete/retract; don't add/remove quotes. Use moo.term.string({s:'x'}) for literals that look like IRIs/numbers/bools, moo.term.iri({uri:'prefix:Local'}) for uppercase/ambiguous CURIEs.",
     "moo.fs{read,readLines,write,list,glob,stat,canonical,exists,ensureDir,patch,delete}: read({path})→Promise<string>; readLines({path:string,ranges:[number,number][],opts?:{numbered?:boolean}})→Promise<string[]> (1-based inclusive ranges; sorted/collapsed overlaps; inserts `…` for omitted lines; numbered yields aligned `   1: text`); write({path,content})→Promise<void>; list({path})/glob({pattern})→Promise<string[]>; stat({path?})→Promise<{kind,size,mtime}|null>; canonical({path})→Promise<string>; exists({path})→Promise<boolean>; ensureDir({path})→Promise<void>; patch({path:string,diff:string})→Promise<{status:string,output?:string|null}> applies unified/context patch to existing file; delete({path:string})→Promise<{status:string,output?:string|null}> deletes a file; failures return status='failed' plus output. Relative paths resolve under scratch.",
     "edits: prefer moo.fs.patch for patch operations on existing files; check result.status/output and stop on failed. Before brittle replacements, verify target text with `rg`/`moo.fs.readLines`; use targeted `moo.fs.write` updates or CLI/editor commands when simpler, then reread when context may have changed.",
-    "moo.proc{run,runChecked}: run({cmd,args?,cwd?,stdin?,timeoutMs?,env?,check?,maxOutputBytes?})→Promise<{code,stdout,stderr,durationNs,timedOut,stdoutTruncated?,stderrTruncated?}>; runChecked({cmd,args?,cwd?,stdin?,timeoutMs?,env?,maxOutputBytes?})→Promise<ProcResult>. cwd defaults to scratch; relative cwd resolves under scratch; runChecked throws on nonzero.",
+    "moo.proc{run,runChecked}: run({cmd,args?,cwd?,stdin?,timeoutMs?,env?,check?,maxOutputBytes?})→Promise<{code,stdout,stderr,durationNs,timedOut,stdoutTruncated?,stderrTruncated?}>; runChecked({cmd,args?,cwd?,stdin?,timeoutMs?,env?,maxOutputBytes?})→Promise<ProcResult>. Default cwd is scratch; relative cwd resolves under scratch; runChecked throws on nonzero.",
     "WORKTREE RULE: `scratch` is the per-chat worktree and the default cwd/root for moo.fs/moo.proc operations.",
     "moo.workspace{current}: current({chatId?,root?})→Promise<{root,fs:{read,readLines,write,list,glob,stat,canonical,exists,ensureDir,patch,delete},proc:{run,runChecked}}>; scoped fs/proc use the workspace root.",
-    "moo.http{fetch,stream}: fetch({method?,url,headers?,body?,timeoutMs?})→Promise<{status,body,headers}>; stream({method?,url,headers?,body?,timeoutMs?})→Promise<{status,headers,next():Promise<string|null>,close():Promise<void>}>.",
+    "moo.http{fetch,stream}: fetch({method?,url,headers?,body?,timeoutMs?})→Promise<{status,body,headers,bodyTruncated}>; stream({method?,url,headers?,body?,timeoutMs?})→Promise<{status,headers,next():Promise<string|null>,close():Promise<void>}>.",
     "moo.events{publish}: publish({payload})→void // ephemeral WS broadcast.",
     "moo.env{get,getMany}: get({name})→Promise<string|null>; getMany({names})→Promise<Record<string,string|null>>.",
     "moo.chat{refs,scratch,touch,list,create,remove,setTitle,recordSummary,archive,unarchive}: refs({chatId})→Promise<ChatRefs>; scratch({chatId})→Promise<string>; touch({chatId})→Promise<void>; list()→Promise<ChatSummary[]>; create({chatId?,path?,branch?})→Promise<string>; remove({chatId})→Promise<{chatId,refsDeleted,quadsCleared}>; setTitle({chatId,title,manual?})→Promise<{chatId,previousTitle,title,changed}>; recordSummary({chatId?,summary,title})→Promise<{chatId,entryId,title?}>; archive({chatId})→Promise<number>; unarchive({chatId})→Promise<null>.",
-    "  trail sidebar = title + moo.chat.recordSummary entries. TITLE NOW: on a new chat, call moo.chat.setTitle({chatId,title:'<2-5 word title>'}) immediately before other work (skip only purely trivial chitchat); later retitle when subject/goal shifts or title is stale, not for routine progress. At each milestone call moo.chat.recordSummary({summary:'<1-2 sentence outcome>',title:'<short outcome title>'}); chatId only for cross-chat/admin. Summaries=outcomes, not plans. Don't use runJS labels as progress trail.",
+    "  trail sidebar = title + moo.chat.recordSummary entries. TITLE NOW: on a new chat, call moo.chat.setTitle({chatId,title:'<2-5 word title>'}) immediately before other work (skip only purely trivial chitchat); later retitle when subject/goal shifts or title is stale, not for routine progress. At each milestone call moo.chat.recordSummary({summary:'<1-2 sentence outcome>',title:'<short outcome title>'}); chatId only for cross-chat/admin. Summaries=outcomes, not plans. Don't use runTS labels as progress trail.",
     "moo.ui{ask,choose,say}: ask({chatId,spec:{title?,fields,submitLabel?}})→Promise<string>; choose({chatId,spec:{title?,items}})→Promise<string>; say({chatId,text})→Promise<{chatId,stepId,payloadHash}>.",
     "  moo.ui.ask/choose pause until submit; return request/step id. field type ∈ text|textarea|url|number|boolean|select|secretRef; fields/items non-empty.",
     "moo.ui.apps{register,open}: register({id?,manifest:{id,title,description?,icon?,entry?,api?},bundle:{html?,css?,js?,files?},handler?})→Promise<{uiId,ui,manifestHash,bundleHash,handlerHash,refs}>; open({chatId,uiId,instanceId?,state?})→Promise<{chatId,uiId,instanceId,stateTarget,stateRef,createdState,facts}>.",
@@ -217,7 +219,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "  moo.mcp setup: when the user asks to add/change an MCP, don't ask for URL if provider/server is named and its endpoint is well-known; infer id/title/url/transport, ask only for ambiguous/custom fields. Secrets: avoid raw tokens in LLM-visible chat when possible; prefer OAuth or direct manual entry at `/mcp`.",
     mcpNames,
     "moo.agent{run,fork,claim,complete}: run({label,task,context?,expectedOutput?,maxSteps?,timeoutMs?,model?,effort?,worktree?})→Promise<{status:'done'|'failed'|'cancelled'|'timeout'|'wait-input',childChatId,output,error?,durationNs,usage?}>; fork({chatId,fromStepId?})→Promise<{chatId,runId,forkedFrom}>; claim({store,graph,runId,leaseMs?})/complete({store,graph,stepId,status?}) are internals.",
-    "  subagents: in runJS, start independent work before awaiting for parallelism: const a=moo.agent.run({...}); const b=moo.agent.run({...}); return await Promise.all([a,b]). Only for substantial independent tasks.",
+    "  subagents: in runTS, start independent work before awaiting for parallelism: const a=moo.agent.run({...}); const b=moo.agent.run({...}); return await Promise.all([a,b]). Only for substantial independent tasks.",
     ...traceLines,
     "",
     "moo.memory: RDF triples in user-wide SQLite. global graph memory:facts; project scope via moo.memory.project({projectId?}). user profile: user:me.",
@@ -235,7 +237,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
 }
 
 const fsProcDefaultLines = [
-  "  `moo.fs.*` and `moo.proc.*` default to the active chat scratch directory; use relative paths normally and absolute paths only when intentionally operating elsewhere.",
+  "  `moo.fs.*` use scratch as their default root, and `moo.proc.*` uses scratch as its default cwd; use relative paths normally and absolute paths only when intentionally operating elsewhere.",
 ];
 
 const repoWorktreeLines = [

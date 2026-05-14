@@ -1,4 +1,4 @@
-/* Conversation timeline, Markdown rendering, runJS output, and message controls. */
+/* Conversation timeline, Markdown rendering, runTS output, and message controls. */
 
 /* -- conversation column ------------------------------------------------ */
 
@@ -774,7 +774,7 @@
 }
 
 .step.run-j-s {
-  background: var(--bubble-runjs);
+  background: var(--bubble-runts);
   align-self: flex-start;
   box-sizing: border-box;
   max-width: 100%;
@@ -782,7 +782,7 @@
   width: 100%;
   overflow: hidden;
 }
-/* Code/result blocks inside runJS are wrapped in <pre>, which already
+/* Code/result blocks inside runTS are wrapped in <pre>, which already
    inherits the ui-monospace rule. The title and description are prose, so
    the bubble itself stays in the system font. */
 
@@ -1049,16 +1049,16 @@
   align-self: stretch;
 }
 
-/* runJS bubble: label-as-headline, code + result both folded by default. */
-/* runJS is a single-line summary by default; click expands to show full
+/* runTS bubble: label-as-headline, code + result both folded by default. */
+/* runTS is a single-line summary by default; click expands to show full
    description + code + result folds. */
-details.runjs-step {
+details.runts-step {
   display: block;
   min-width: 0;
   max-width: 100%;
 }
 
-details.runjs-step > summary {
+details.runts-step > summary {
   cursor: pointer;
   list-style: none;
   display: flex;
@@ -1070,39 +1070,39 @@ details.runjs-step > summary {
   overflow: hidden;
   white-space: nowrap;
 }
-details.runjs-step > summary::-webkit-details-marker {
+details.runts-step > summary::-webkit-details-marker {
   display: none;
 }
 
-.runjs-label {
+.runts-label {
   font-weight: 600;
   flex-shrink: 0;
 }
 
-.runjs-loading {
+.runts-loading {
   flex-shrink: 0;
   margin-right: 0.1em;
   vertical-align: baseline;
 }
 
-.runjs-markdown {
+.runts-markdown {
   display: inline;
 }
-.runjs-markdown :not(pre) > code {
+.runts-markdown :not(pre) > code {
   white-space: nowrap;
 }
-.runjs-markdown pre code {
-  /* Preserve fenced code block line breaks in expanded runJS/subagent prompts. */
+.runts-markdown pre code {
+  /* Preserve fenced code block line breaks in expanded runTS/subagent prompts. */
   white-space: inherit;
 }
-.runjs-desc-full.runjs-markdown {
+.runts-desc-full.runts-markdown {
   display: block;
 }
-.runjs-desc-full.runjs-markdown p {
+.runts-desc-full.runts-markdown p {
   margin: 0.25em 0;
 }
 
-.runjs-desc-inline {
+.runts-desc-inline {
   font-size: 0.88em;
   line-height: 1.3;
   flex: 1 1 0;
@@ -1116,11 +1116,11 @@ details.runjs-step > summary::-webkit-details-marker {
   white-space: nowrap;
 }
 
-.runjs-desc-separator {
+.runts-desc-separator {
   flex: 0 0 auto;
 }
 
-.runjs-desc-text.runjs-markdown {
+.runts-desc-text.runts-markdown {
   display: block;
   flex: 1 1 0;
   min-width: 0;
@@ -1130,23 +1130,23 @@ details.runjs-step > summary::-webkit-details-marker {
   white-space: nowrap;
 }
 
-.runjs-desc-text > * {
+.runts-desc-text > * {
   display: inline;
 }
 
 /* Hide the inline preview once open; show the full description instead. */
-details.runjs-step[open] .runjs-desc-inline {
+details.runts-step[open] .runts-desc-inline {
   display: none;
 }
-details.runjs-step:not([open]) .runjs-desc-full {
+details.runts-step:not([open]) .runts-desc-full {
   display: none;
 }
-details.runjs-step:not([open]) > .runjs-body,
-details.runjs-step:not([open]) > .step-footer {
+details.runts-step:not([open]) > .runts-body,
+details.runts-step:not([open]) > .step-footer {
   display: none;
 }
 
-.runjs-body {
+.runts-body {
   display: flex;
   flex-direction: column;
   gap: 0.35em;
@@ -1155,7 +1155,7 @@ details.runjs-step:not([open]) > .step-footer {
   max-inline-size: 100%;
 }
 
-.runjs-desc-full {
+.runts-desc-full {
   min-inline-size: 0;
   max-inline-size: 100%;
   margin: 0 0 0.05em;
@@ -1164,8 +1164,8 @@ details.runjs-step:not([open]) > .step-footer {
   line-height: 1.3;
 }
 
-/* runJS code + result: shown as clearly separated labeled blocks once expanded. */
-.runjs-block {
+/* runTS code + result: shown as clearly separated labeled blocks once expanded. */
+.runts-block {
   display: flex;
   flex-direction: column;
   gap: 0.12em;
@@ -1173,21 +1173,21 @@ details.runjs-step:not([open]) > .step-footer {
   max-inline-size: 100%;
 }
 
-.runjs-block-heading {
+.runts-block-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5em;
 }
 
-.runjs-block-title {
+.runts-block-title {
   display: flex;
   align-items: baseline;
   gap: 0.45em;
   min-width: 0;
 }
 
-.runjs-block-label {
+.runts-block-label {
   align-self: flex-start;
   font-size: 0.68em;
   font-weight: 650;
@@ -1196,7 +1196,7 @@ details.runjs-step:not([open]) > .step-footer {
   color: color-mix(in srgb, currentColor 65%, transparent);
 }
 
-.runjs-block-meta {
+.runts-block-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1204,12 +1204,12 @@ details.runjs-step:not([open]) > .step-footer {
   color: color-mix(in srgb, currentColor 48%, transparent);
 }
 
-.runjs-block-preview {
-  --runjs-preview-lines: 10;
+.runts-block-preview {
+  --runts-preview-lines: 10;
   position: relative;
   display: block;
   width: 100%;
-  max-block-size: calc(var(--runjs-preview-lines) * 1.3em);
+  max-block-size: calc(var(--runts-preview-lines) * 1.3em);
   overflow: hidden;
   padding: 0;
   border: 0;
@@ -1221,21 +1221,21 @@ details.runjs-step:not([open]) > .step-footer {
   text-align: start;
 }
 
-.runjs-block-preview:focus-visible {
+.runts-block-preview:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--fg) 35%, transparent);
   outline-offset: 2px;
 }
 
-.runjs-block-preview:hover .runjs-code,
-.runjs-block-preview:hover .runjs-args,
-.runjs-block-preview:hover .runjs-out,
-.runjs-block-preview:focus-visible .runjs-code,
-.runjs-block-preview:focus-visible .runjs-args,
-.runjs-block-preview:focus-visible .runjs-out {
+.runts-block-preview:hover .runts-code,
+.runts-block-preview:hover .runts-args,
+.runts-block-preview:hover .runts-out,
+.runts-block-preview:focus-visible .runts-code,
+.runts-block-preview:focus-visible .runts-args,
+.runts-block-preview:focus-visible .runts-out {
   border-left-color: color-mix(in srgb, currentColor 42%, transparent);
 }
 
-.runjs-block-fade {
+.runts-block-fade {
   pointer-events: none;
   position: absolute;
   inset-inline: 0;
@@ -1245,9 +1245,9 @@ details.runjs-step:not([open]) > .step-footer {
   mask-image: linear-gradient(to bottom, transparent, black);
 }
 
-.runjs-body .runjs-code,
-.runjs-body .runjs-args,
-.runjs-body .runjs-out {
+.runts-body .runts-code,
+.runts-body .runts-args,
+.runts-body .runts-out {
   display: block;
   box-sizing: border-box;
   max-inline-size: 100%;
@@ -1263,19 +1263,19 @@ details.runjs-step:not([open]) > .step-footer {
   word-break: break-word;
 }
 
-.runjs-body .runjs-error {
+.runts-body .runts-error {
   border-left-color: color-mix(in srgb, crimson 70%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .runjs-body .runjs-code,
-  :root:not([data-theme="light"]) .runjs-body .runjs-args,
-  :root:not([data-theme="light"]) .runjs-body .runjs-out {
+  :root:not([data-theme="light"]) .runts-body .runts-code,
+  :root:not([data-theme="light"]) .runts-body .runts-args,
+  :root:not([data-theme="light"]) .runts-body .runts-out {
     background: rgba(255, 255, 255, 0.05);
   }
 }
 
-.runjs-lightbox-backdrop {
+.runts-lightbox-backdrop {
   position: fixed;
   inset: 0;
   z-index: 90;
@@ -1286,7 +1286,7 @@ details.runjs-step:not([open]) > .step-footer {
   background: color-mix(in srgb, var(--bg) 82%, rgba(0, 0, 0, 0.55));
 }
 
-.runjs-lightbox {
+.runts-lightbox {
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -1297,7 +1297,7 @@ details.runjs-step:not([open]) > .step-footer {
   box-shadow: none;
 }
 
-.runjs-lightbox-header {
+.runts-lightbox-header {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -1305,19 +1305,19 @@ details.runjs-step:not([open]) > .step-footer {
   border-bottom: 1px solid var(--line);
 }
 
-.runjs-lightbox-title-wrap {
+.runts-lightbox-title-wrap {
   flex: 1;
   min-width: 0;
 }
 
-.runjs-lightbox-title {
+.runts-lightbox-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 650;
 }
 
-.runjs-lightbox-meta {
+.runts-lightbox-meta {
   margin-top: 0.1rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1326,33 +1326,33 @@ details.runjs-step:not([open]) > .step-footer {
   font-size: 0.78em;
 }
 
-.runjs-lightbox-copy,
-.runjs-lightbox-close {
+.runts-lightbox-copy,
+.runts-lightbox-close {
   border-radius: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
 
-.runjs-lightbox-copy {
+.runts-lightbox-copy {
   border: 1px solid var(--line);
   padding: 0.18rem 0.45rem;
   font: inherit;
   font-size: 0.82em;
 }
 
-.runjs-lightbox-close {
+.runts-lightbox-close {
   border: none;
   font-size: 1.4rem;
   line-height: 1;
 }
 
-.runjs-lightbox-copy:hover,
-.runjs-lightbox-close:hover {
+.runts-lightbox-copy:hover,
+.runts-lightbox-close:hover {
   color: var(--fg);
 }
 
-.runjs-lightbox-content {
+.runts-lightbox-content {
   margin: 0;
   padding: 0.85rem;
   overflow: auto;
@@ -1364,9 +1364,9 @@ details.runjs-step:not([open]) > .step-footer {
 
 .shell-out,
 .tool-out,
-.runjs-code,
-.runjs-args,
-.runjs-out {
+.runts-code,
+.runts-args,
+.runts-out {
   display: block;
   box-sizing: border-box;
   max-inline-size: 100%;
@@ -1577,8 +1577,8 @@ details.collapsible > pre {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .shell-out,
   :root:not([data-theme="light"]) .tool-out,
-  :root:not([data-theme="light"]) .runjs-code,
-  :root:not([data-theme="light"]) .runjs-out,
+  :root:not([data-theme="light"]) .runts-code,
+  :root:not([data-theme="light"]) .runts-out,
   :root:not([data-theme="light"]) details.collapsible {
     background: rgba(255, 255, 255, 0.05);
   }
@@ -1614,7 +1614,7 @@ details.collapsible > pre {
   color: var(--fg);
 }
 
-.runjs-arrow {
+.runts-arrow {
   color: var(--muted);
   font-size: 0.85em;
   margin: 0.4em 0 0.15em;

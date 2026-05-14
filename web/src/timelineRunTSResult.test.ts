@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
-const runjsFormat = readFileSync(new URL("./timeline/format.ts", import.meta.url), "utf8");
+const runtsFormat = readFileSync(new URL("./timeline/format.ts", import.meta.url), "utf8");
 const timelineCss = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
 
-describe("timeline runJS result rendering", () => {
-  test("renders a Result row even when the runJS result is empty", () => {
-    expect(runjsFormat).toContain("hasResult: runjs.result != null");
-    expect(runjsFormat).toContain("let hasResult = false;");
-    expect(runjsFormat).toContain("hasResult = true;");
+describe("timeline runTS result rendering", () => {
+  test("renders a Result row even when the runTS result is empty", () => {
+    expect(runtsFormat).toContain("hasResult: runts.result != null");
+    expect(runtsFormat).toContain("let hasResult = false;");
+    expect(runtsFormat).toContain("hasResult = true;");
     expect(timeline).toContain("<Show when={parsed().hasResult}>");
     expect(timeline).not.toContain("<Show when={parsed().result}>");
   });
@@ -24,7 +24,7 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain('<LoadingDots label="loading result" />');
     expect(timeline).not.toContain('setHydratedResult(null);');
     expect(timeline).not.toContain('const [hydratedHash, setHydratedHash]');
-    expect(timeline).not.toContain('<pre class="runjs-out">Loading…</pre>');
+    expect(timeline).not.toContain('<pre class="runts-out">Loading…</pre>');
   });
 
   test("lazy result hydration falls back to text content and times out", () => {
@@ -34,29 +34,29 @@ describe("timeline runJS result rendering", () => {
     expect(timeline).toContain('const object = await withTimeout(');
   });
 
-  test("runJS code, args, and result blocks use 10-line previews with a lightbox", () => {
-    expect(timeline).toContain("const RUNJS_BLOCK_PREVIEW_LINES = 10;");
-    expect(timeline).toContain("maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}");
+  test("runTS code, args, and result blocks use 10-line previews with a lightbox", () => {
+    expect(timeline).toContain("const RUNTS_BLOCK_PREVIEW_LINES = 10;");
+    expect(timeline).toContain("maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}");
     expect(timeline).toContain("const maxPreviewHeight =");
     expect(timeline).toContain("setTruncated(previewEl.scrollHeight > maxPreviewHeight + 1);");
-    expect(timeline).toContain("function runJSBlockLanguageForContent(content: string, language?: string)");
+    expect(timeline).toContain("function runTSBlockLanguageForContent(content: string, language?: string)");
     expect(timeline).toContain('if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";');
     expect(timeline).toContain('if (looksLikeMarkdownText(trimmed)) return "markdown";');
     expect(timeline).toContain('label="Args"');
-    expect(timeline).toContain('klass="runjs-args"');
+    expect(timeline).toContain('klass="runts-args"');
     expect(timeline).toContain('language="hjson"');
     expect(timeline).toContain('content={parsed().args}');
-    expect(timeline).toContain('onOpenFull={props.onOpenRunJSBlock}');
-    expect(timeline).toContain('class="runjs-lightbox-backdrop"');
+    expect(timeline).toContain('onOpenFull={props.onOpenRunTSBlock}');
+    expect(timeline).toContain('class="runts-lightbox-backdrop"');
     expect(timeline).toContain('role="button"');
-    expect(timeline).toContain('"runjs-block-preview": true');
-    expect(timeline).toContain('class="runjs-lightbox-copy"');
+    expect(timeline).toContain('"runts-block-preview": true');
+    expect(timeline).toContain('class="runts-lightbox-copy"');
     expect(timeline).toContain("if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;");
-    expect(timeline).toContain('class="runjs-block-fade"');
-    expect(timeline).toContain('style={{ "--runjs-preview-lines": String(previewLineLimit()) }}');
-    expect(timelineCss).toContain("max-block-size: calc(var(--runjs-preview-lines) * 1.3em);");
-    expect(timeline).not.toContain('class="runjs-block-open"');
-    expect(timeline).not.toContain('class="runjs-block-more"');
+    expect(timeline).toContain('class="runts-block-fade"');
+    expect(timeline).toContain('style={{ "--runts-preview-lines": String(previewLineLimit()) }}');
+    expect(timelineCss).toContain("max-block-size: calc(var(--runts-preview-lines) * 1.3em);");
+    expect(timeline).not.toContain('class="runts-block-open"');
+    expect(timeline).not.toContain('class="runts-block-more"');
   });
   test("renders error response payloads as highlighted HJSON", () => {
     expect(timeline).toContain('function highlightErrorPayloadForView(body: unknown): string {');

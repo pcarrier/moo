@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderMarkdown, renderUserMessage } from "./markdown";
+import { renderMarkdown, renderMarkdownInline, renderMarkdownWithBreaks, renderUserMessage } from "./markdown";
 
 describe("renderUserMessage", () => {
   test("preserves single newlines in user input", () => {
@@ -18,6 +18,22 @@ describe("renderUserMessage", () => {
 
   test("does not change assistant markdown soft line breaks", () => {
     expect(renderMarkdown("alpha\nbeta")).toBe("<p>alpha\nbeta</p>\n");
+  });
+
+  test("escapes raw HTML in default markdown output", () => {
+    expect(renderMarkdown('hello <img src=x onerror="alert(1)"> <script>alert(2)</script>'))
+      .toBe('<p>hello &lt;img src=x onerror=&quot;alert(1)&quot;&gt; &lt;script&gt;alert(2)&lt;/script&gt;</p>\n');
+    expect(renderMarkdownInline('<span onclick="alert(1)">x</span>'))
+      .toBe('&lt;span onclick=&quot;alert(1)&quot;&gt;x&lt;/span&gt;');
+    expect(renderMarkdownWithBreaks('alpha\n<section onclick="alert(1)">beta</section>'))
+      .toBe('<p>alpha</p>\n&lt;section onclick=&quot;alert(1)&quot;&gt;beta&lt;/section&gt;');
+  });
+
+  test("renders unsafe markdown link and image protocols as inert attributes", () => {
+    expect(renderMarkdown('[bad](javascript:alert(1)) ![x](data:text/html,evil)'))
+      .toBe('<p><a href="">bad</a> <img src="" alt="x"></p>\n');
+    expect(renderMarkdown('[bad](//evil.test/path) [ok](https://example.test/path)'))
+      .toBe('<p><a href="">bad</a> <a href="https://example.test/path">ok</a></p>\n');
   });
 
   test("does not add hard newline markers to code block lines", () => {

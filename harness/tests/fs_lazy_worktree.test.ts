@@ -85,6 +85,8 @@ function addFile(path: string, content: string) {
 (globalThis as any).__op_facts_match = () => [];
 (globalThis as any).__op_facts_match_all = () => [];
 (globalThis as any).__op_facts_history = () => [];
+(globalThis as any).__op_facts_refs = () => [];
+(globalThis as any).__op_facts_graph_summaries = () => "[]";
 (globalThis as any).__op_facts_count = () => 0;
 (globalThis as any).__op_chat_fact_summaries = () => [];
 (globalThis as any).__op_trace_start_root = () => Promise.resolve("trace:test");
@@ -95,9 +97,12 @@ function addFile(path: string, content: string) {
 (globalThis as any).__op_trace_insert = () => Promise.resolve("trace:event");
 (globalThis as any).__op_trace_mark = () => Promise.resolve(null);
 (globalThis as any).__op_trace_finish = () => Promise.resolve(null);
+(globalThis as any).__op_trace_set_parent = () => null;
+(globalThis as any).__op_trace_enabled = () => false;
+(globalThis as any).__op_broadcast = () => {};
 
 const { fsListCommand, recentChatPathsCommand, removeRecentChatPathCommand } = await import("../src/commands/chats");
-const { moo } = await import("../src/moo");
+const { moo, withMooChatContext } = await import("../src/moo");
 
 describe("fsListCommand", () => {
   beforeEach(() => {
@@ -189,6 +194,44 @@ describe("filesystem API", () => {
     files.clear();
     procCalls.length = 0;
     addDir("/repo", []);
+  });
+
+  test("defaults active moo.fs operations to the chat scratch root", async () => {
+    refs.set("chat/active/created-at", "1");
+    refs.set("chat/active/path", "/repo");
+    addFile("/home/test/moo/active/src/example.txt", "from scratch");
+
+    await expect(withMooChatContext("active", () => moo.fs.read({ path: "src/example.txt" }))).resolves.toBe("from scratch");
+    await withMooChatContext("active", () => moo.fs.write({ path: "generated.txt", content: "created" }));
+
+    expect(files.get("/home/test/moo/active/generated.txt")).toBe("created");
+  });
+
+  test("defaults active moo.proc cwd to the chat scratch root", async () => {
+    refs.set("chat/active/created-at", "1");
+    refs.set("chat/active/path", "/repo");
+    addDir("/home/test/moo/active", []);
+
+    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: "pwd", args: ["-P"] }))).resolves.toMatchObject({
+      code: 0,
+      stdout: "/home/test/moo/active\n",
+    });
+
+    expect(procCalls.at(-1)).toMatchObject({ cmd: "pwd", cwd: "/home/test/moo/active" });
+  });
+
+  test("resolves relative moo.proc cwd under the chat scratch root", async () => {
+    refs.set("chat/active/created-at", "1");
+    refs.set("chat/active/path", "/repo");
+    addDir("/home/test/moo/active", ["src"]);
+    addDir("/home/test/moo/active/src", []);
+
+    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: "pwd", args: ["-P"], cwd: "src" }))).resolves.toMatchObject({
+      code: 0,
+      stdout: "/home/test/moo/active/src\n",
+    });
+
+    expect(procCalls.at(-1)).toMatchObject({ cmd: "pwd", cwd: "/home/test/moo/active/src" });
   });
 
   test("exposes split patch and delete helpers", async () => {

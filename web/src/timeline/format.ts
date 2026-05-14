@@ -24,7 +24,7 @@ export function formatByteCount(bytes: unknown): string {
 }
 
 
-export type ParsedRunJS = {
+export type ParsedRunTS = {
   label: string;
   description: string;
   args: string;
@@ -36,23 +36,23 @@ export type ParsedRunJS = {
   durationNs?: number;
 };
 
-export function normalizeRunJS(runjs: NonNullable<StepItem["runjs"]>): ParsedRunJS {
-  const hasArgs = Object.prototype.hasOwnProperty.call(runjs, "args");
+export function normalizeRunTS(runts: NonNullable<StepItem["runts"]>): ParsedRunTS {
+  const hasArgs = Object.prototype.hasOwnProperty.call(runts, "args");
   return {
-    label: cleanRunJSLabel(String(runjs.label ?? "")),
-    description: String(runjs.description ?? "").trim(),
-    args: hasArgs ? formatRunJSArgs(runjs.args) : "",
+    label: cleanRunTSLabel(String(runts.label ?? "")),
+    description: String(runts.description ?? "").trim(),
+    args: hasArgs ? formatRunTSArgs(runts.args) : "",
     hasArgs,
-    code: trimRunJSBlock(String(runjs.code ?? "")),
-    result: trimRunJSBlock(String(runjs.result ?? "")),
-    hasResult: runjs.result != null,
-    error: trimRunJSBlock(String(runjs.error ?? "")),
+    code: trimRunTSBlock(String(runts.code ?? "")),
+    result: trimRunTSBlock(String(runts.result ?? "")),
+    hasResult: runts.result != null,
+    error: trimRunTSBlock(String(runts.error ?? "")),
     durationNs:
-      typeof runjs.durationNs === "number" ? runjs.durationNs : undefined,
+      typeof runts.durationNs === "number" ? runts.durationNs : undefined,
   };
 }
 
-export function parseRunJS(text: string): ParsedRunJS {
+export function parseRunTS(text: string): ParsedRunTS {
   const lines = text.split("\n");
   let label = "";
   let description = "";
@@ -101,26 +101,26 @@ export function parseRunJS(text: string): ParsedRunJS {
   }
 
   return {
-    label: cleanRunJSLabel(label),
+    label: cleanRunTSLabel(label),
     description: description.trim(),
     args: "",
     hasArgs: false,
-    code: trimRunJSBlock(codeBuf.join("\n")),
-    result: trimRunJSBlock(resultBuf.join("\n")),
+    code: trimRunTSBlock(codeBuf.join("\n")),
+    result: trimRunTSBlock(resultBuf.join("\n")),
     hasResult,
-    error: trimRunJSBlock(errorBuf.join("\n")),
+    error: trimRunTSBlock(errorBuf.join("\n")),
   };
 }
 
-function cleanRunJSLabel(label: string): string {
+function cleanRunTSLabel(label: string): string {
   return label.replace(/^\s*\[code\]\s*:?[ \t]*/i, "").trim();
 }
 
-function trimRunJSBlock(text: string): string {
+function trimRunTSBlock(text: string): string {
   return text.replace(/\r?\n$/, "");
 }
 
-export function formatRunJSArgs(args: unknown): string {
+export function formatRunTSArgs(args: unknown): string {
   if (typeof args === "undefined") return "undefined";
   if (typeof args === "string") {
     const formatted = maybeFormatHjsonTextForView(args.trim());

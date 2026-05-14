@@ -1113,7 +1113,7 @@ function linkifyHighlightedTurtle(text: string): HighlightPart[] {
   return parts.length ? parts : [{ html: highlightTurtleBlock(text) }];
 }
 
-// Lightweight Turtle tinting (matches the runJS/shell highlighter so the
+// Lightweight Turtle tinting (matches the runTS/shell highlighter so the
 // look is consistent with the rest of the timeline).
 export function highlightTurtleBlock(text: string): string {
   const tokens: Array<[RegExp, string]> = [

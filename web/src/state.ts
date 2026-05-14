@@ -45,7 +45,7 @@ import {
   type V8SettingsValue,
 } from "./api";
 import { collapseHome, setHomeDir_ } from "./paths";
-import { EventStream } from "./events";
+import { EventStream, type Event as WsEvent } from "./events";
 import { createChatSettingsWriteBarrier } from "./chatSettingsBarrier";
 import { checkPsk, getPsk, setPsk } from "./auth";
 import {
@@ -87,6 +87,15 @@ import {
   timelineCacheKey,
   trailCacheKey,
 } from "./state/chatCache";
+import {
+  compactTimelineRows as compactTimelineRowsWithOptions,
+  mergeTimelineRows as mergeTimelineRowsWithOptions,
+  mergeTimelineUpdateRows as mergeTimelineUpdateRowsWithOptions,
+  newestTimelineWatermark,
+  sortTimelineItems,
+  timelineItemKey,
+  type TimelineRowCompactionOptions,
+} from "./state/timelineRows";
 import { displayChatId } from "./state/time";
 import type {
   BrowserNavState,
@@ -129,6 +138,7 @@ const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:traces",
 ];
 const RIGHT_SIDEBAR_TABS_MAX = 8;
+const RIGHT_SIDEBAR_DIFF_EXPANSION_STATE_MAX = 300;
 const CHAT_CACHE_MAX = 12;
 const CHAT_CACHE_KEY = "moo.chat.cache.v2";
 const CHAT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -229,9 +239,6 @@ export function createState() {
     },
   };
   const [hiddenTimelineItems, setHiddenTimelineItems] = createSignal(0);
-  const shouldShowTimelineItem = (item: TimelineItem) =>
-    item.type !== "todo-diff" ||
-    (Array.isArray(item.changes) && item.changes.length > 0);
   const [olderTimelineLoading, setOlderTimelineLoading] = createSignal(false);
   const [timelineRefreshing, setTimelineRefreshing] = createSignal(false);
   const [trail, setTrail] = createSignal<TimelineItem[]>([]);
@@ -710,7 +717,7 @@ export function createState() {
       totalCodeCalls:
         value.overview.totalCodeCalls ??
         mergedTimeline.filter(
-          (it) => it.type === "step" && it.kind === "agent:RunJS",
+          (it) => it.type === "step" && (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
         ).length,
     });
   }
@@ -727,7 +734,7 @@ export function createState() {
       totalCodeCalls:
         value.overview.totalCodeCalls ??
         value.timeline.items.filter(
-          (it) => it.type === "step" && it.kind === "agent:RunJS",
+          (it) => it.type === "step" && (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
         ).length,
     });
     setHiddenTimelineItems(value.timeline.hiddenItems);
@@ -1079,17 +1086,19 @@ export function createState() {
     rememberDismissedReply(chatId, cur.draftId, cur.content, cur.reasoningContent ?? "");
   }
 
+  function isReplyStep(item: TimelineItem): item is Extract<TimelineItem, { type: "step" }> {
+    return item.type === "step" && item.kind === "agent:Reply";
+  }
+
   function pruneDismissedReplies(chatId: string, rows: TimelineItem[]) {
-    const replyRows = rows.filter(
-      (item) => item.type === "step" && item.kind === "agent:Reply",
-    );
+    const replyRows = rows.filter(isReplyStep);
     const replyDraftIds = new Set(
       replyRows
-        .map((item) => (item as any).draftId)
+        .map((item) => item.draftId)
         .filter((draftId): draftId is string => typeof draftId === "string" && !!draftId),
     );
     const replyTexts = replyRows
-      .map((item) => String((item as any).text ?? "").trim())
+      .map((item) => item.text.trim())
       .filter(Boolean);
     if (replyDraftIds.size === 0 && replyTexts.length === 0) return;
     setDismissedReplies((items) =>
@@ -1305,6 +1314,27 @@ export function createState() {
     return out;
   }
 
+  function normalizeDiffExpansionKey(key: string): string {
+    const normalized = String(key || "");
+    return normalized && normalized.length <= 2000 ? normalized : "";
+  }
+
+  function normalizeDiffExpansionShown(
+    state: Record<string, number> | undefined,
+  ): Record<string, number> {
+    if (!state || typeof state !== "object") return {};
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(state).slice(
+      -RIGHT_SIDEBAR_DIFF_EXPANSION_STATE_MAX,
+    )) {
+      const normalizedKey = normalizeDiffExpansionKey(key);
+      const shown = Math.trunc(Number(value));
+      if (!normalizedKey || !Number.isFinite(shown) || shown <= 0) continue;
+      out[normalizedKey] = Math.min(shown, 1_000_000);
+    }
+    return out;
+  }
+
   function defaultRightSidebarState(
     layout?: RightSidebarLayoutState,
   ): RightSidebarState {
@@ -1318,7 +1348,9 @@ export function createState() {
       width: clampRightSidebarWidth(layout?.width),
       collapsed: layout?.collapsed === true,
       maximized: false,
+      totalDiffExpanded: false,
       expandedDiffViewState: {},
+      diffExpansionShown: {},
     };
   }
 
@@ -1364,9 +1396,11 @@ export function createState() {
       width: clampRightSidebarWidth(state?.width ?? layout?.width),
       collapsed: state?.collapsed ?? layout?.collapsed === true,
       maximized: state?.maximized ?? false,
+      totalDiffExpanded: state?.totalDiffExpanded === true,
       expandedDiffViewState: normalizeExpandedDiffViewState(
         state?.expandedDiffViewState,
       ),
+      diffExpansionShown: normalizeDiffExpansionShown(state?.diffExpansionShown),
     };
   }
 
@@ -1757,6 +1791,52 @@ export function createState() {
       };
     });
   }
+
+  function rightSidebarDiffListExpanded(): boolean {
+    return currentRightSidebarState()?.totalDiffExpanded ?? false;
+  }
+
+  function setRightSidebarDiffListExpanded(expanded: boolean) {
+    updateCurrentRightSidebarState((state) =>
+      state.totalDiffExpanded === expanded
+        ? state
+        : { ...state, totalDiffExpanded: expanded },
+    );
+  }
+
+  function rightSidebarDiffExpansionShown(key: string): number {
+    const normalizedKey = normalizeDiffExpansionKey(key);
+    if (!normalizedKey) return 0;
+    return currentRightSidebarState()?.diffExpansionShown?.[normalizedKey] ?? 0;
+  }
+
+  function setRightSidebarDiffExpansionShown(key: string, shown: number) {
+    const normalizedKey = normalizeDiffExpansionKey(key);
+    if (!normalizedKey) return;
+    const nextShown = Math.min(
+      Math.max(0, Math.trunc(Number(shown) || 0)),
+      1_000_000,
+    );
+    updateCurrentRightSidebarState((state) => {
+      const current = state.diffExpansionShown ?? {};
+      if ((current[normalizedKey] ?? 0) === nextShown) return state;
+      const entries = Object.entries(current).filter(
+        ([candidate]) => candidate !== normalizedKey,
+      );
+      if (nextShown > 0) entries.push([normalizedKey, nextShown]);
+      return {
+        ...state,
+        diffExpansionShown: Object.fromEntries(
+          entries.slice(-RIGHT_SIDEBAR_DIFF_EXPANSION_STATE_MAX),
+        ),
+      };
+    });
+  }
+
+  const sidebarDiffExpansionStore = {
+    shown: rightSidebarDiffExpansionShown,
+    setShown: setRightSidebarDiffExpansionShown,
+  };
 
   function setActiveRightSidebarTab(tabId: string) {
     const tab = rightSidebarTabs().find((candidate) => candidate.id === tabId);
@@ -2842,20 +2922,6 @@ export function createState() {
   let timelineMutationSeq = 0;
   const serverTimelineWatermarkByChat = new Map<string, number>();
 
-  function newestTimelineWatermark(items: TimelineItem[]): number {
-    let latest = 0;
-    for (const item of items) {
-      const at = Number((item as any).at ?? 0);
-      const updatedAt = item.type === "step" ? Number((item as any).updatedAt ?? 0) : 0;
-      const watermark = Math.max(
-        Number.isFinite(at) ? at : 0,
-        Number.isFinite(updatedAt) ? updatedAt : 0,
-      );
-      if (watermark > latest) latest = watermark;
-    }
-    return latest;
-  }
-
   function rememberServerTimelineWatermark(id: string, items: TimelineItem[]) {
     const latest = newestTimelineWatermark(items);
     if (latest <= 0) return;
@@ -2947,138 +3013,29 @@ export function createState() {
     }
   }
 
-  // The drain loop inserts optimistic UserInput rows (id `opt-…`) the moment
-  // the user submits, since /api/run for `step` returns immediately and the
-  // driver hasn't recorded the real fact yet. A describe that lands during
-  // that window would otherwise wipe the opt row. Keep any opt whose text
-  // hasn't yet shown up in the server's UserInput list (FIFO match for
-  // back-to-back duplicates).
-  function timelineItemKey(item: TimelineItem): string {
-    if (item.type === "step") {
-      return item.kind === "agent:Reply" && item.draftId
-        ? `step:draft:${item.draftId}`
-        : `step:${item.step}`;
-    }
-    if (item.type === "input") return `input:${item.requestId}`;
-    if (item.type === "input-response")
-      return `input-response:${item.responseId}`;
-    if (item.type === "log") return `log:${item.id}`;
-    if (item.type === "trail") return `trail:${item.id}`;
-    if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-    if (item.type === "todo-diff") return `todo-diff:${item.id}`;
-    if (item.type === "blob-add") return `blob-add:${item.id}`;
-    return `file-diff:${item.id}`;
-  }
-
-  function deepEqual(a: unknown, b: unknown): boolean {
-    if (a === b) return true;
-    if (a == null || b == null) return a === b;
-    if (typeof a !== "object" || typeof b !== "object") return false;
-    if (Array.isArray(a)) {
-      if (!Array.isArray(b) || a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i += 1) {
-        if (!deepEqual(a[i], b[i])) return false;
-      }
-      return true;
-    }
-    if (Array.isArray(b)) return false;
-    const ao = a as Record<string, unknown>;
-    const bo = b as Record<string, unknown>;
-    const keys = Object.keys(ao);
-    if (keys.length !== Object.keys(bo).length) return false;
-    for (const key of keys) {
-      if (!Object.prototype.hasOwnProperty.call(bo, key)) return false;
-      if (!deepEqual(ao[key], bo[key])) return false;
-    }
-    return true;
-  }
-
-  function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean {
-    // Reuse the previous object when the server-rendered row is unchanged so
-    // Solid signals don't churn. A generic structural compare keeps this honest
-    // as TimelineItem grows new fields.
-    return deepEqual(a, b);
-  }
-
-  function preserveTimelineItems(
-    server: TimelineItem[],
-    current: TimelineItem[],
-  ): TimelineItem[] {
-    const currentByKey = new Map(
-      current.map((item) => [timelineItemKey(item), item]),
-    );
-    return server.flatMap((item) => {
-      if (!shouldShowTimelineItem(item)) return [];
-      const previous = currentByKey.get(timelineItemKey(item));
-      return [previous && timelineItemEqual(previous, item) ? previous : item];
-    });
-  }
-
-  function sortTimelineItems(items: TimelineItem[]): TimelineItem[] {
-    return [...items].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
-  }
-
-  function trimTimelineRows(items: TimelineItem[]): TimelineItem[] {
-    const max =
-      Math.max(timelineLimit(), INITIAL_TIMELINE_LIMIT) + LIVE_TIMELINE_SLACK;
-    if (items.length <= max) return items;
-    return sortTimelineItems(items).slice(-max);
-  }
-
-  function rememberTimelineKeys(items: TimelineItem[]) {
-    for (const item of items)
-      timelineShown.set(timelineItemKey(item), item.at ?? Date.now());
-    if (timelineShown.size <= MAX_REMEMBERED_TIMELINE_KEYS) return;
-    const keep = [...timelineShown.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, MAX_REMEMBERED_TIMELINE_KEYS);
-    timelineShown.clear();
-    for (const [key, at] of keep) timelineShown.set(key, at);
+  function timelineRowCompactionOptions(): TimelineRowCompactionOptions {
+    return {
+      limit: timelineLimit(),
+      minimumLimit: INITIAL_TIMELINE_LIMIT,
+      liveSlack: LIVE_TIMELINE_SLACK,
+      rememberedKeys: timelineShown,
+      maxRememberedKeys: MAX_REMEMBERED_TIMELINE_KEYS,
+      nowMs: Date.now,
+    };
   }
 
   function compactTimelineRows(items: TimelineItem[]): TimelineItem[] {
-    const trimmed = trimTimelineRows(items.filter(shouldShowTimelineItem));
-    rememberTimelineKeys(trimmed);
-    return trimmed;
-  }
-
-  function dedupeTimelineRows(items: TimelineItem[]): TimelineItem[] {
-    const byKey = new Map<string, TimelineItem>();
-    for (const item of items) byKey.set(timelineItemKey(item), item);
-    return sortTimelineItems([...byKey.values()]);
-  }
-
-  function withoutConfirmedOptimisticRows(
-    server: TimelineItem[],
-    current: TimelineItem[],
-  ): TimelineItem[] {
-    const remaining = new Map<string, number>();
-    for (const item of server) {
-      if (item.type === "step" && (item as any).kind === "agent:UserInput") {
-        const text = (item as any).text ?? "";
-        remaining.set(text, (remaining.get(text) ?? 0) + 1);
-      }
-    }
-    return current.filter((item) => {
-      if (!(item.type === "step" && item.step?.startsWith?.("opt-")))
-        return true;
-      const text = (item as any).text ?? "";
-      const count = remaining.get(text) ?? 0;
-      if (count <= 0) return true;
-      remaining.set(text, count - 1);
-      return false;
-    });
+    return compactTimelineRowsWithOptions(items, timelineRowCompactionOptions());
   }
 
   function mergeTimelineUpdateRows(
     server: TimelineItem[],
     current: TimelineItem[],
   ): TimelineItem[] {
-    return compactTimelineRows(
-      dedupeTimelineRows([
-        ...withoutConfirmedOptimisticRows(server, current),
-        ...preserveTimelineItems(server, current),
-      ]),
+    return mergeTimelineUpdateRowsWithOptions(
+      server,
+      current,
+      timelineRowCompactionOptions(),
     );
   }
 
@@ -3086,32 +3043,10 @@ export function createState() {
     server: TimelineItem[],
     current: TimelineItem[],
   ): TimelineItem[] {
-    const stableServer = preserveTimelineItems(server, current);
-    const opts = current.filter(
-      (it): it is TimelineItem & { type: "step"; step: string; text: string } =>
-        it.type === "step" && (it as any).step?.startsWith?.("opt-"),
-    );
-    if (opts.length === 0) return compactTimelineRows(stableServer);
-    const remaining = new Map<string, number>();
-    for (const it of stableServer) {
-      if (it.type === "step" && (it as any).kind === "agent:UserInput") {
-        const t = (it as any).text ?? "";
-        remaining.set(t, (remaining.get(t) ?? 0) + 1);
-      }
-    }
-    const survivors: TimelineItem[] = [];
-    for (const opt of opts) {
-      const t = (opt as any).text ?? "";
-      const n = remaining.get(t) ?? 0;
-      if (n > 0) {
-        remaining.set(t, n - 1);
-      } else {
-        survivors.push(opt);
-      }
-    }
-    if (survivors.length === 0) return compactTimelineRows(stableServer);
-    return compactTimelineRows(
-      sortTimelineItems([...stableServer, ...survivors]),
+    return mergeTimelineRowsWithOptions(
+      server,
+      current,
+      timelineRowCompactionOptions(),
     );
   }
 
@@ -4337,7 +4272,7 @@ export function createState() {
       (item) => item.type === "step" && item.kind === "agent:UserInput",
     ).length;
     const runJsAfter = after.filter(
-      (item) => item.type === "step" && item.kind === "agent:RunJS",
+      (item) => item.type === "step" && (item.kind === "agent:RunTS" || item.kind === "agent:RunJS"),
     ).length;
     return {
       items,
@@ -4786,7 +4721,7 @@ export function createState() {
   bindWS(events);
   void refreshSettingsCache();
   void refreshSkills();
-  const offEvents = events.on((ev: any) => {
+  const offEvents = events.on((ev: WsEvent) => {
     if (ev.kind === "ping") return;
     if (ev.kind === "ui-open") {
       if (ev.chatId === chatId()) {
@@ -4811,6 +4746,17 @@ export function createState() {
           ? undefined
           : rows + " queued row" + (rows === 1 ? "" : "s"),
       );
+      return;
+    }
+    if (ev.kind === "trace-init-error") {
+      const detail = typeof ev.endpoint === "string" && ev.endpoint
+        ? ev.backend === "clickhouse"
+          ? "ClickHouse " + ev.endpoint
+          : ev.endpoint
+        : typeof ev.backend === "string"
+          ? ev.backend
+          : undefined;
+      notify("tracing", ev.message || "trace initialization failed", detail);
       return;
     }
     if (ev.kind === "v8") {
@@ -4877,7 +4823,7 @@ export function createState() {
         setTimeline((items) =>
           compactTimelineRows([
             ...items.filter(
-              (item: any) => !(item.type === "file-diff" && item.id === id),
+              (item) => !(item.type === "file-diff" && item.id === id),
             ),
             {
               type: "file-diff",
@@ -4889,7 +4835,6 @@ export function createState() {
               stats: ev.stats,
               before: ev.before,
               after: ev.after,
-              changes: ev.changes,
               hash: ev.hash,
               at: ev.at || Date.now(),
             } as TimelineItem,
@@ -4912,18 +4857,13 @@ export function createState() {
         setTimeline((items) =>
           compactTimelineRows([
             ...items.filter(
-              (item: any) => !(item.type === "todo-diff" && item.id === id),
+              (item) => !(item.type === "todo-diff" && item.id === id),
             ),
             {
               type: "todo-diff",
               id,
               step: ev.stepId,
               chatId: ev.chatId,
-              path: ev.path,
-              diff: ev.diff,
-              stats: ev.stats,
-              before: ev.before,
-              after: ev.after,
               changes: ev.changes,
               todos: ev.todos,
               hash: ev.hash,
@@ -4941,7 +4881,7 @@ export function createState() {
         setTimeline((items) =>
           compactTimelineRows([
             ...items.filter(
-              (item: any) => !(item.type === "memory-diff" && item.id === id),
+              (item) => !(item.type === "memory-diff" && item.id === id),
             ),
             {
               type: "memory-diff",
@@ -4973,7 +4913,7 @@ export function createState() {
         setTimeline((items) =>
           compactTimelineRows([
             ...items.filter(
-              (item: any) => !(item.type === "blob-add" && item.id === id),
+              (item) => !(item.type === "blob-add" && item.id === id),
             ),
             {
               type: "blob-add",
@@ -4993,32 +4933,33 @@ export function createState() {
       return;
     }
 
-    if (ev.kind === "runjs-step-finished") {
+    if (ev.kind === "runts-step-finished") {
       const cid = chatId();
       if (cid && ev.chatId === cid && ev.stepId) {
         setTimeline((items) =>
           compactTimelineRows(
-            items.map((item: any) => {
+            items.map((item) => {
               if (item.type !== "step" || item.step !== ev.stepId) return item;
-              const runjs = item.runjs
+              const existingRunts = item.runts ?? item.runjs;
+              const runts = existingRunts
                 ? {
-                    ...item.runjs,
+                    ...existingRunts,
                     error:
                       typeof ev.error === "string"
                         ? ev.error
-                        : item.runjs.error,
+                        : existingRunts.error,
                     durationNs:
                       typeof ev.durationNs === "number"
                         ? ev.durationNs
-                        : item.runjs.durationNs,
+                        : existingRunts.durationNs,
                   }
-                : item.runjs;
+                : item.runts;
               return {
                 ...item,
                 status: ev.status || (ev.error ? "agent:Failed" : "agent:Done"),
                 resultHash: ev.resultHash || item.resultHash,
-                lazyRunjsResult: !!(ev.resultHash || item.resultHash),
-                runjs,
+                lazyRuntsResult: !!(ev.resultHash || item.resultHash),
+                runts,
               } as TimelineItem;
             }),
           ),
@@ -5721,6 +5662,9 @@ export function createState() {
     expandedDiffViewState,
     setExpandedDiffViewMode,
     setExpandedDiffViewScrollTop,
+    rightSidebarDiffListExpanded,
+    setRightSidebarDiffListExpanded,
+    sidebarDiffExpansionStore: () => sidebarDiffExpansionStore,
     closeRightSidebarTab,
     openDiffInSidebar,
     openMemoryDiffInSidebar,

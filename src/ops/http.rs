@@ -25,6 +25,7 @@ thread_local! {
     static STREAMS: RefCell<HashMap<u64, StreamReader>> = RefCell::new(HashMap::new());
 }
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+const HTTP_FETCH_BODY_LIMIT_BYTES: usize = 50_000_000;
 
 fn op_http_fetch(
     scope: &mut v8::PinScope,
@@ -97,21 +98,12 @@ fn op_http_fetch(
         }
     };
 
-    let (status, response_headers, body_text) = match response_result {
+    let (status, response_headers, body_capture) = match response_result {
         Ok(mut resp) => {
             let status = resp.status().as_u16();
             let response_headers = headers_to_json(resp.headers());
-            let mut buf = Vec::new();
-            let _ = resp
-                .body_mut()
-                .as_reader()
-                .take(50_000_000)
-                .read_to_end(&mut buf);
-            (
-                status,
-                response_headers,
-                String::from_utf8_lossy(&buf).into_owned(),
-            )
+            let body_capture = read_limited_body(resp.body_mut().as_reader(), HTTP_FETCH_BODY_LIMIT_BYTES);
+            (status, response_headers, body_capture)
         }
         Err(e) => {
             throw(scope, &format!("http_fetch {url}: {e}"));
@@ -119,11 +111,14 @@ fn op_http_fetch(
         }
     };
 
+    let body_text = String::from_utf8_lossy(&body_capture.bytes).into_owned();
     let obj = v8::Object::new(scope);
     let status_value = v8::Number::new(scope, status as f64);
     set_object_value(scope, obj, "status", status_value.into());
     set_object_str(scope, obj, "headers", &response_headers);
     set_object_str(scope, obj, "body", &body_text);
+    let truncated_value = v8::Boolean::new(scope, body_capture.truncated);
+    set_object_value(scope, obj, "bodyTruncated", truncated_value.into());
     rv.set(obj.into());
 }
 
@@ -145,6 +140,48 @@ fn headers_to_json(headers: &ureq::http::HeaderMap) -> String {
         }
     }
     Value::Object(out).to_string()
+}
+
+#[derive(Default)]
+struct CapturedBody {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn read_limited_body(mut reader: impl Read, limit: usize) -> CapturedBody {
+    let mut captured = CapturedBody::default();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        let remaining = limit.saturating_sub(captured.bytes.len());
+        if remaining > 0 {
+            captured.bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+        }
+        if read > remaining {
+            captured.truncated = true;
+            break;
+        }
+    }
+    captured
+}
+
+fn read_stream_chunk(
+    streams: &mut HashMap<u64, StreamReader>,
+    handle: u64,
+    buf: &mut [u8],
+) -> Result<usize, std::io::Error> {
+    let Some(reader) = streams.get_mut(&handle) else {
+        return Ok(0);
+    };
+    let result = reader.read(buf);
+    if !matches!(result, Ok(n) if n > 0) {
+        streams.remove(&handle);
+    }
+    result
 }
 
 // ---- streaming HTTP -----------------------------------------------------
@@ -265,13 +302,7 @@ fn op_http_stream_next(
         .unwrap_or(0);
 
     let mut buf = [0u8; 4096];
-    let result: Result<usize, std::io::Error> = STREAMS.with(|s| {
-        let mut map = s.borrow_mut();
-        match map.get_mut(&handle) {
-            Some(reader) => reader.read(&mut buf),
-            None => Ok(0),
-        }
-    });
+    let result: Result<usize, std::io::Error> = STREAMS.with(|s| read_stream_chunk(&mut s.borrow_mut(), handle, &mut buf));
 
     match result {
         Ok(0) => rv.set(v8::null(scope).into()),
@@ -299,4 +330,63 @@ fn op_http_stream_close(
     STREAMS.with(|s| {
         s.borrow_mut().remove(&handle);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_limited_body, read_stream_chunk, StreamReader};
+    use std::collections::HashMap;
+    use std::io::{Cursor, Error, ErrorKind, Read};
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Error> {
+            Err(Error::new(ErrorKind::Other, "boom"))
+        }
+    }
+
+    #[test]
+    fn read_limited_body_reports_truncation() {
+        let captured = read_limited_body(Cursor::new(vec![b'x'; 12]), 5);
+        assert_eq!(captured.bytes, vec![b'x'; 5]);
+        assert!(captured.truncated);
+    }
+
+    #[test]
+    fn read_limited_body_keeps_exact_limit_complete() {
+        let captured = read_limited_body(Cursor::new(b"hello".to_vec()), 5);
+        assert_eq!(captured.bytes, b"hello");
+        assert!(!captured.truncated);
+    }
+
+    #[test]
+    fn stream_chunk_removes_handle_on_eof() {
+        let mut streams: HashMap<u64, StreamReader> = HashMap::new();
+        streams.insert(7, Box::new(Cursor::new(Vec::<u8>::new())));
+        let mut buf = [0_u8; 8];
+
+        assert_eq!(read_stream_chunk(&mut streams, 7, &mut buf).unwrap(), 0);
+        assert!(!streams.contains_key(&7));
+    }
+
+    #[test]
+    fn stream_chunk_removes_handle_on_error() {
+        let mut streams: HashMap<u64, StreamReader> = HashMap::new();
+        streams.insert(8, Box::new(FailingReader));
+        let mut buf = [0_u8; 8];
+
+        assert!(read_stream_chunk(&mut streams, 8, &mut buf).is_err());
+        assert!(!streams.contains_key(&8));
+    }
+
+    #[test]
+    fn stream_chunk_keeps_handle_after_data() {
+        let mut streams: HashMap<u64, StreamReader> = HashMap::new();
+        streams.insert(9, Box::new(Cursor::new(b"ok".to_vec())));
+        let mut buf = [0_u8; 8];
+
+        assert_eq!(read_stream_chunk(&mut streams, 9, &mut buf).unwrap(), 2);
+        assert!(streams.contains_key(&9));
+    }
 }

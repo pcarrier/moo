@@ -110,14 +110,14 @@ function putJSON(kind: string, value: unknown): string {
 }
 
 describe("LLM prompt context", () => {
-  test("includes post-compaction RunJS calls and results", async () => {
+  test("includes post-compaction RunTS calls and results", async () => {
     installHostOps();
-    const chatId = "prompt-context-runjs";
+    const chatId = "prompt-context-runts";
     const c = chatRefs(chatId);
     refs.set(c.compaction, "json:" + JSON.stringify({ summary: "Earlier work.", throughAt: 1000, at: 1000 }));
 
     const userPayload = putJSON("agent:UserInput", { message: "What did the tool say?" });
-    const runPayload = putJSON("agent:RunJS", { label: "Inspect thing", description: "Read the thing.", code: "return 'secret-tool-result';" });
+    const runPayload = putJSON("agent:RunTS", { label: "Inspect thing", description: "Read the thing.", code: "return 'secret-tool-result';" });
     const runResult = putJSON("agent:ToolResult", { ok: true, value: "secret-tool-result" });
 
     facts.set(c.facts, [
@@ -127,7 +127,7 @@ describe("LLM prompt context", () => {
       [c.graph, "step:user", "agent:createdAt", "1001"],
       [c.graph, "step:user", "agent:payload", userPayload],
       [c.graph, "step:run", "rdf:type", "agent:Step"],
-      [c.graph, "step:run", "agent:kind", "agent:RunJS"],
+      [c.graph, "step:run", "agent:kind", "agent:RunTS"],
       [c.graph, "step:run", "agent:status", "agent:Done"],
       [c.graph, "step:run", "agent:createdAt", "1002"],
       [c.graph, "step:run", "agent:payload", runPayload],
@@ -138,12 +138,12 @@ describe("LLM prompt context", () => {
     const joined = JSON.stringify(messages);
 
     expect(joined).toContain("What did the tool say?");
-    expect(joined).toContain("[RunJS · Done]");
+    expect(joined).toContain("[RunTS · Done]");
     expect(joined).toContain("Inspect thing");
     expect(joined).toContain("secret-tool-result");
     const runMessage = messages.find((m) => JSON.stringify(m).includes("Inspect thing"));
     expect(runMessage?.role).toBe("system");
     expect(runMessage?.content).toContain("Internal tool transcript for context only");
-    expect(messages.some((m) => m.role === "assistant" && JSON.stringify(m).includes("[RunJS · Done]"))).toBe(false);
+    expect(messages.some((m) => m.role === "assistant" && JSON.stringify(m).includes("[RunTS · Done]"))).toBe(false);
   });
 });

@@ -684,7 +684,7 @@ fn await_and_stringify_async(
         loop {
             if cancelled.load(Ordering::SeqCst) {
                 cancel_pending_async_ops();
-                return Err("runJS cancelled".to_string());
+                return Err("runTS cancelled".to_string());
             }
             scope.perform_microtask_checkpoint();
             if promise.state() != v8::PromiseState::Pending {
@@ -1330,8 +1330,8 @@ fn op_trace_start_root(
         parent_id: Some(&parent_id),
         chat_id: None,
         run_id: None,
-        kind: "runjs",
-        name: "runjs.execute",
+        kind: "runts",
+        name: "runts.execute",
         started_ns,
         input_hash: Some(&input_hash),
         invoked_from_step_id: None,
@@ -1667,8 +1667,8 @@ fn trace_insert_child(
             parent_id: None,
             chat_id: None,
             run_id: None,
-            kind: "runjs-recovered",
-            name: "runjs.recovered",
+            kind: "runts-recovered",
+            name: "runts.recovered",
             started_ns: now_ns(),
             input_hash: Some(&root_input_hash),
             invoked_from_step_id: None,
@@ -1856,7 +1856,7 @@ fn op_timer_start(
     let start = ASYNC_HOST_STATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let Some(state) = borrow.as_mut() else {
-            return Err("timers are only available while executing runJS".to_string());
+            return Err("timers are only available while executing runTS".to_string());
         };
         let id = state.next_id;
         state.next_id = state.next_id.saturating_add(1);
@@ -1961,7 +1961,7 @@ fn op_agent_run(
     let start = ASYNC_HOST_STATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let Some(state) = borrow.as_mut() else {
-            return Err("agent_run is only available while executing runJS".to_string());
+            return Err("agent_run is only available while executing runTS".to_string());
         };
         if request.trim().is_empty() {
             return Err("agent_run requires a request JSON string".to_string());
@@ -2108,7 +2108,7 @@ globalThis.main = () => {
   __op_trace_finish(parent.id, 'ok', JSON.stringify({ parent: true }));
 
   __op_trace_ensure_root(JSON.stringify({ id: 'chattrace:c1', chatId: 'c1', kind: 'chat', name: 'chat.timeline', startedNs: 5_000_000 }));
-  __op_trace_ensure_span(JSON.stringify({ id: 'traceevt:tool:c1', parentId: 'chattrace:c1', chatId: 'c1', kind: 'tool', name: 'harness.runjs_tool', startedNs: 5_000_001 }));
+  __op_trace_ensure_span(JSON.stringify({ id: 'traceevt:tool:c1', parentId: 'chattrace:c1', chatId: 'c1', kind: 'tool', name: 'harness.runts_tool', startedNs: 5_000_001 }));
   const root = JSON.parse(__op_trace_enter(JSON.stringify({ id: 'traceevt:tool:c1', rootId: 'chattrace:c1' })));
   const span = __op_trace_insert(JSON.stringify({ kind: 'span', name: 'work', status: 'running', data: { phase: 1 } }));
   const previous = __op_trace_set_parent(span);
@@ -2438,7 +2438,7 @@ globalThis.main = () => {
     }
 
     #[test]
-    fn timers_resolve_async_runjs_promises() {
+    fn timers_resolve_async_runts_promises() {
         let source = r#"
 globalThis.main = async () => {
   const events = [];

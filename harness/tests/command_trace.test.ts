@@ -186,7 +186,7 @@ describe("command tracing", () => {
         ok: true,
         content: "",
         reasoningContent: reasoning,
-        toolCalls: [{ id: "call_1", type: "function", function: { name: "runJS", arguments: "{}" } }],
+        toolCalls: [{ id: "call_1", type: "function", function: { name: "runTS", arguments: "{}" } }],
         errorBody: null,
         model: "deepseek-v4-pro",
         usage: null,
@@ -264,7 +264,7 @@ describe("LLM stream provider details", () => {
       chatId: "chat1",
       state: {},
       events: [
-        JSON.stringify({ choices: [{ delta: { reasoning_content: "think ", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "runJS", arguments: "{\"code\"" } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { reasoning_content: "think ", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "runTS", arguments: "{\"code\"" } }] } }] }),
         JSON.stringify({ choices: [{ delta: { reasoning_content: "more", tool_calls: [{ index: 0, function: { arguments: ":\"return 1\"}" } }] } }] }),
       ],
     } as any);

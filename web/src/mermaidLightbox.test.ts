@@ -25,4 +25,19 @@ describe("mermaid lightbox gestures", () => {
     expect(contentRule).toContain("inline-size: max-content;");
     expect(mermaid).not.toContain("content.style.transform =");
   });
+
+  test("dismisses when clicking outside the diagram content", () => {
+    expect(mermaid).toContain("const target = event.target;");
+    expect(mermaid).toContain("if (!(target instanceof Node)) return;");
+    expect(mermaid).toContain("if (content.contains(target) || toolbar.contains(target)) return;");
+    expect(mermaid).toContain("close();");
+    expect(mermaid).not.toContain("if (event.target === overlay) close();");
+  });
+
+  test("does not dismiss immediately after dragging to pan", () => {
+    expect(mermaid).toContain("let movedDuringDrag = false;");
+    expect(mermaid).toContain("if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) movedDuringDrag = true;");
+    expect(mermaid).toContain("if (suppressNextOutsideClick) {");
+    expect(mermaid).toContain("if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);");
+  });
 });

@@ -287,7 +287,7 @@ export type StepKind =
   | "agent:UserInput"
   | "agent:Reply"
   | "agent:ShellCommand"
-  | "agent:RunJS"
+  | "agent:RunTS"
   | "agent:Subagent"
   | "agent:ToolCall"
   | "agent:FileDiff"
@@ -408,7 +408,7 @@ export type TraceCurrent = { traceId?: string | null; id: string; rootId?: strin
 export type TraceTreeNode = TraceRow & { children: TraceTreeNode[] };
 export type TraceChat = { id: string; title: string | null };
 export type TraceErrorCategory =
-  | "runjs_compile"
+  | "runts_compile"
   | "patch_mismatch"
   | "missing_file"
   | "missing_tool"
@@ -473,6 +473,7 @@ export type MooTracesApi = {
   tree(args?: { traceId?: string; stepId?: string; limit?: number }): Promise<TraceTreeNode | null>;
   recent(args?: TraceRecentArgs): Promise<TraceSearchRow[]>;
   search(args?: TraceSearchArgs): Promise<TraceSearchRow[]>;
+  failed(args: TraceFailedArgs & { includeEvents: true }): Promise<TraceSummary[]>;
   failed(args?: TraceFailedArgs): Promise<TraceSearchRow[]>;
   summary(args?: { traceId?: string; stepId?: string; includeEvents?: boolean }): Promise<TraceSummary | null>;
   diagnose(args?: TraceFailedArgs & { examplesPerGroup?: number }): Promise<TraceDiagnosis>;
@@ -661,7 +662,7 @@ export type Moo = {
       headers?: Record<string, string>;
       body?: unknown;
       timeoutMs?: number;
-    }): Promise<{ status: number; body: string; headers: Record<string, string | string[]> }>;
+    }): Promise<{ status: number; body: string; headers: Record<string, string | string[]>; bodyTruncated: boolean }>;
     stream(opts: {
       method?: string;
       url: string;

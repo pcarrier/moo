@@ -3,13 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+bun install --cwd shared --frozen-lockfile --no-progress
+bun install --cwd web --frozen-lockfile --no-progress
+bun install --cwd harness --frozen-lockfile --no-progress
+
 cargo check
-bun install --cwd shared
 bun --cwd shared typecheck --pretty false
-bun install --cwd web
 bun --cwd web typecheck --pretty false
 bun --cwd web typecheck:test --pretty false
 bun --cwd web test
-bun install --cwd harness
 bun --cwd harness typecheck --pretty false
 bun --cwd harness test

@@ -213,12 +213,12 @@
 :root[data-theme="dark"] .error-body {
   color: rgba(255, 255, 255, 0.85);
 }
-:root[data-theme="dark"] .runjs-body .runjs-code,
-:root[data-theme="dark"] .runjs-body .runjs-out,
+:root[data-theme="dark"] .runts-body .runts-code,
+:root[data-theme="dark"] .runts-body .runts-out,
 :root[data-theme="dark"] .shell-out,
 :root[data-theme="dark"] .tool-out,
-:root[data-theme="dark"] .runjs-code,
-:root[data-theme="dark"] .runjs-out,
+:root[data-theme="dark"] .runts-code,
+:root[data-theme="dark"] .runts-out,
 :root[data-theme="dark"] details.collapsible,
 :root[data-theme="dark"] .turtle-prefixes {
   background: rgba(255, 255, 255, 0.05);

@@ -10,6 +10,7 @@ import {
 import {
   defaultModelIds,
   inferProviderForModelId,
+  modelMetadataFor,
   modelSupportsTools,
   modelSupportsVision,
   normalizeProvider,
@@ -24,6 +25,7 @@ export type ModelOption = {
   model: string;
   label: string;
   supportsAttachments?: boolean;
+  availability?: string;
 };
 
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
@@ -220,6 +222,10 @@ export function modelSupportsAttachments(provider: ProviderName | null | undefin
   return modelSupportsVision(provider, model);
 }
 
+function modelAvailability(provider: ProviderName | null | undefined, model: string | null | undefined): string | undefined {
+  return modelMetadataFor(provider, model)?.availability;
+}
+
 function configuredModelsFrom(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -242,6 +248,7 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
       model: trimmed,
       label: provider + " / " + trimmed,
       supportsAttachments: modelSupportsAttachments(provider, trimmed),
+      availability: modelAvailability(provider, trimmed),
     });
   };
 
@@ -273,6 +280,7 @@ export async function modelOptionsFor(selectedProvider: ProviderName | null, sel
       model: trimmed,
       label: provider + " / " + trimmed,
       supportsAttachments: modelSupportsAttachments(provider, trimmed),
+      availability: modelAvailability(provider, trimmed),
     });
   };
 
@@ -298,6 +306,7 @@ export async function chatModelInfo(chatId: string) {
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const effectiveProvider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
+  const authMode = effectiveProvider.authMode ?? null;
   const efforts = effortLevelsForProvider(effectiveProvider);
   const effortSupported = efforts.length > 0;
   const configuredEffort = effortSupported ? effortAllowedForModel(efforts, await defaultChatEffort()) : null;
@@ -310,6 +319,7 @@ export async function chatModelInfo(chatId: string) {
   return {
     chatId,
     provider: effectiveProvider.name,
+    authMode,
     selectedProvider,
     selectedModel,
     selectedModelId,

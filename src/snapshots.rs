@@ -4,12 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rusqlite::params;
 use rusty_v8 as v8;
 use serde::Serialize;
 
-use crate::broadcast;
-use crate::host::with_db;
 use crate::util::{now_ms, sha256_object_hash};
 
 const HEAP_SNAPSHOT_KIND: &str = "v8:heapSnapshot";
@@ -22,9 +19,6 @@ struct HeapSnapshotMetadata {
     hash: String,
     blob_path: String,
     metadata_path: String,
-    subject: String,
-    ref_name: String,
-    graph: String,
     chat_id: Option<String>,
     command: Option<String>,
     reason: String,
@@ -100,22 +94,18 @@ fn persist_heap_snapshot(
     detail: &str,
 ) -> Result<String, String> {
     let hash = sha256_object_hash(HEAP_SNAPSHOT_KIND, bytes);
-    let target = fact_target(input_json);
-    let subject = format!("v8:snapshot/{}", hash.replace(':', "_"));
     let at = now_ms();
     let size = bytes.len();
+    let chat_id = input_field(input_json, "chatId").filter(|s| !s.trim().is_empty());
     let command = input_field(input_json, "command");
-    let stored = write_heap_snapshot_files(
+    write_heap_snapshot_files(
         HeapSnapshotMetadata {
             kind: HEAP_SNAPSHOT_KIND,
             hash: hash.clone(),
             blob_path: String::new(),
             metadata_path: String::new(),
-            subject: subject.clone(),
-            ref_name: target.ref_name.clone(),
-            graph: target.graph.clone(),
-            chat_id: target.chat_id.clone(),
-            command: command.clone(),
+            chat_id,
+            command,
             reason: reason.to_string(),
             detail: detail.to_string(),
             source: source.to_string(),
@@ -125,43 +115,6 @@ fn persist_heap_snapshot(
         bytes,
     )?;
 
-    with_db(|conn| -> Result<(), String> {
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-        let facts = [
-            ("rdf:type", "v8:HeapSnapshot".to_string()),
-            ("v8:object", hash.clone()),
-            ("v8:metadata", stored.metadata_path.clone()),
-        ];
-
-        for (predicate, object) in facts {
-            let inserted = tx
-                .execute(
-                    "insert or ignore into quads(ref_name, graph, subject, predicate, object)
-                     values (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        &target.ref_name,
-                        &target.graph,
-                        &subject,
-                        predicate,
-                        &object
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-            if inserted > 0 {
-                tx.execute(
-                    "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
-                     values (?1, ?2, ?3, ?4, ?5, 'add', 'system', ?6)",
-                    params![&target.ref_name, &target.graph, &subject, predicate, &object, at],
-                )
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-
-    broadcast::facts_changed(&target.ref_name);
     Ok(hash)
 }
 
@@ -254,29 +207,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 tmp.display(),
                 path.display()
             ))
-        }
-    }
-}
-
-struct FactTarget {
-    ref_name: String,
-    graph: String,
-    chat_id: Option<String>,
-}
-
-fn fact_target(input_json: &str) -> FactTarget {
-    let chat_id = input_field(input_json, "chatId").filter(|s| !s.trim().is_empty());
-    if let Some(chat_id) = chat_id {
-        FactTarget {
-            ref_name: format!("chat/{chat_id}/facts"),
-            graph: format!("chat:{chat_id}"),
-            chat_id: Some(chat_id),
-        }
-    } else {
-        FactTarget {
-            ref_name: "memory/facts".to_string(),
-            graph: "memory:facts".to_string(),
-            chat_id: None,
         }
     }
 }

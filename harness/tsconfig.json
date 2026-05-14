@@ -4,8 +4,7 @@
     "lib": [
       "ES2022"
     ],
-    "strict": false,
-    "noImplicitAny": false,
+    "strict": true,
     "isolatedModules": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,

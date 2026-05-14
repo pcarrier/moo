@@ -41,11 +41,22 @@ describe("timeline message visibility", () => {
     expect(state).toContain("await refreshTimeline();");
   });
 
+  test("keeps bottom-stuck autoscroll through recent non-scroll input", () => {
+    expect(timeline).toContain(
+      "const shouldDeferAutoScrollForUserIntent = () =>\n    !stuck && hasRecentUserScrollIntent();",
+    );
+    expect(timeline).toContain("if (stuck) {\n      scrollToBottom();\n      return;\n    }");
+    expect(timeline).not.toContain(
+      "if (stuck) {\n      if (hasRecentUserScrollIntent())",
+    );
+    expect(timeline).toContain("if (stuck) {\n      // Defer to next frame so the DOM has actually grown.");
+  });
+
   test("automatically loads older timeline history near the top", () => {
     expect(timeline).toContain("const OLDER_HISTORY_SCROLL_THRESHOLD_EM = 8;");
     expect(timeline).toContain("const maybeLoadOlderTimeline = () => {");
     expect(timeline).toContain(
-      "if (isNearTop() && bag.hiddenTimelineItems() > 0) void bag.loadOlderTimeline();",
+      "!bag.olderTimelineLoading() &&\n      isNearTop() &&\n      bag.hiddenTimelineItems() > 0",
     );
     expect(timeline).toContain("maybeLoadOlderTimeline();");
   });
@@ -78,6 +89,7 @@ describe("timeline message visibility", () => {
     expect(timeline).toContain("const resetScrollForChatChange = () => {");
     expect(timeline).toContain("stuck = true;");
     expect(timeline).toContain("scrollAnchor = null;");
+    expect(timeline).toContain("userScrollIntentUntil = 0;");
     expect(timeline).toContain("const id = bag.chatId();");
     expect(timeline).toContain("if (id === lastChatId) return;");
     expect(timeline).toContain("resetScrollForChatChange();");
@@ -90,5 +102,20 @@ describe("timeline message visibility", () => {
     expect(timeline).toContain('timelineEl?.addEventListener("pointerdown", markUserScrollIntent');
     expect(timeline).toContain('timelineEl?.addEventListener("keydown", handleScrollIntentKey');
     expect(timeline).toContain("isLikelyLayoutScroll()");
+    expect(timeline).toContain("if (stuck && !hasRecentUserScrollIntent())");
+    expect(timeline).not.toContain("if (hasRecentUserScrollIntent()) {\n        stuck = false;");
+    expect(timeline).toContain("const scrollToBottomUnlessUserIntent = () => {");
+    expect(timeline).toContain("requestAnimationFrame(scrollToBottomUnlessUserIntent)");
+  });
+
+  test("keeps bottom sticky while thinking content streams", () => {
+    expect(timeline).toContain("let scrollRestoreActive = false;");
+    expect(timeline).toContain("scrollRestoreActive = true;");
+    expect(timeline).toContain("scrollRestoreActive ||\n      Date.now() <= stickyLayoutScrollUntil");
+    expect(timeline).toContain("const noteStreamingContentMutation = () => {");
+    expect(timeline).toContain(
+      "if (stuck && !hasRecentUserScrollIntent())\n      stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS",
+    );
+    expect(timeline).toContain("new MutationObserver(noteStreamingContentMutation)");
   });
 });

@@ -48,6 +48,7 @@ export type ChatModelOption = {
   model: string;
   label: string;
   supportsAttachments?: boolean;
+  availability?: string;
 };
 
 export type ChatAutocompleteSuggestion = {
@@ -61,6 +62,7 @@ export type ChatAutocompleteSuggestion = {
 export type ChatModelInfo = {
   chatId: ChatId;
   provider: string;
+  authMode?: string | null;
   selectedProvider?: string | null;
   selectedModel: string | null;
   selectedModelId?: string | null;
@@ -95,7 +97,7 @@ export type {
   TodoDiffChange,
   AgentTodo,
   MemoryFactChange,
-  RunJSDetails,
+  RunTSDetails,
   StepItem,
   SubagentDetails,
   TimelineItem,
@@ -570,7 +572,7 @@ export interface TraceRow {
   parentId: string | null;
   chatId: string | null;
   runId: string | null;
-  kind: "chat" | "turn" | "step" | "llm" | "tool" | "runjs" | "system" | "user" | "frontend" | string;
+  kind: "chat" | "turn" | "step" | "llm" | "tool" | "runts" | "runjs" | "system" | "user" | "frontend" | string;
   name: string;
   depth: number;
   seq: number;

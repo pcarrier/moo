@@ -37,6 +37,7 @@ export interface InflightState {
   requestEffort?: string;
   requestAuthMode?: string;
   countThoughtDuration?: boolean;
+  forceCompact?: boolean;
   [key: string]: unknown;
 }
 
@@ -57,6 +58,7 @@ export interface LlmHandlingState {
   requestEffort?: string;
   requestAuthMode?: string;
   thoughtDurationNs: number;
+  forceCompact?: boolean;
   [key: string]: unknown;
 }
 
@@ -85,6 +87,7 @@ export type StepDriverState = Record<string, unknown> & {
   retryReason?: string;
   retryDelayMs?: number;
   thoughtDurationNs?: number;
+  forceCompact?: boolean;
   inflight?: InflightState;
 };
 
@@ -123,6 +126,7 @@ export interface PrepareInput {
   messages: StepMessage[] | null;
   attempt?: number;
   retryReason?: string;
+  forceCompact?: boolean;
 }
 
 export type StepDriverEffect =
@@ -134,8 +138,41 @@ export type StepDriverEffect =
 
 // ── Functions ───────────────────────────────────────────────────────────
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return isObjectRecord(value) ? value : null;
+}
+
+function stepMessages(value: unknown): StepMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((message): message is StepMessage => {
+    const record = objectRecord(message);
+    return record !== null && typeof record.role === "string";
+  });
+}
+
+function toolResultPayload(value: unknown): ToolResultPayload | null {
+  const record = objectRecord(value);
+  if (!record) return null;
+  return {
+    ...(typeof record.toolCallId === "string" ? { toolCallId: record.toolCallId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, "content") ? { content: record.content } : {}),
+  };
+}
+
 export function initialStepDriverState(input: Record<string, unknown>): StepDriverState {
-  const base = (input?.state && typeof input.state === "object" ? input.state : {}) as Record<string, unknown>;
+  const base = objectRecord(input.state) ?? {};
   const chatId = String(base.chatId ?? input?.chatId ?? "").trim();
   return { ...base, chatId };
 }
@@ -146,13 +183,13 @@ export function stepNextInputEvents(
 ): StepDriverEvent[] {
   const events: StepDriverEvent[] = [];
   if (input?.toolResult != null) {
-    events.push({ type: "ToolResultReceived", toolResult: input.toolResult as ToolResultPayload });
+    events.push({ type: "ToolResultReceived", toolResult: toolResultPayload(input.toolResult) ?? {} });
   }
   if (input?.llmResult != null) {
     events.push({
       type: "LlmResultReceived",
       llmResult: input.llmResult,
-      llmDurationNs: input.llmDurationNs as number | undefined,
+      llmDurationNs: optionalNumber(input.llmDurationNs),
     });
   }
   if (!events.length) events.push({ type: "DriverAdvanced" });
@@ -188,7 +225,7 @@ export function reduceStepDriverState(
     }
 
     case "LlmResultReceived": {
-      const inflight: Record<string, unknown> = (state.inflight as Record<string, unknown> | undefined) ?? {};
+      const inflight = state.inflight ?? {};
       const elapsedNs = Number(event.llmDurationNs) || 0;
       const previousThoughtNs = Number(state.thoughtDurationNs) || 0;
       const thoughtDurationNs = previousThoughtNs + (inflight.countThoughtDuration ? elapsedNs : 0);
@@ -198,20 +235,21 @@ export function reduceStepDriverState(
         llmHandling: {
           chatId: state.chatId,
           attempt: Number(inflight.attempt ?? 1) || 1,
-          purpose: inflight.purpose as string | undefined,
-          draftId: inflight.draftId as string | undefined,
-          messages: inflight.messages as StepMessage[] | undefined,
-          estimatedPromptTokens: inflight.estimatedPromptTokens as number | undefined,
-          tokenBudget: inflight.tokenBudget as number | undefined,
-          tokenThreshold: inflight.tokenThreshold as number | undefined,
-          requestPromptTokens: inflight.requestPromptTokens as number | undefined,
-          requestTokenLimit: inflight.requestTokenLimit as number | undefined,
+          purpose: optionalString(inflight.purpose),
+          draftId: optionalString(inflight.draftId),
+          messages: stepMessages(inflight.messages),
+          estimatedPromptTokens: optionalNumber(inflight.estimatedPromptTokens),
+          tokenBudget: optionalNumber(inflight.tokenBudget),
+          tokenThreshold: optionalNumber(inflight.tokenThreshold),
+          requestPromptTokens: optionalNumber(inflight.requestPromptTokens),
+          requestTokenLimit: optionalNumber(inflight.requestTokenLimit),
           llmResult: event.llmResult,
-          requestProvider: (inflight.requestProvider ?? (state.provider as Record<string, unknown> | undefined)?.name) as string | undefined,
-          requestModel: inflight.requestModel as string | undefined,
-          requestEffort: inflight.requestEffort as string | undefined,
-          requestAuthMode: inflight.requestAuthMode as string | undefined,
+          requestProvider: optionalString(inflight.requestProvider) ?? state.provider?.name,
+          requestModel: optionalString(inflight.requestModel),
+          requestEffort: optionalString(inflight.requestEffort),
+          requestAuthMode: optionalString(inflight.requestAuthMode),
           thoughtDurationNs,
+          forceCompact: inflight.forceCompact === true,
         } satisfies LlmHandlingState,
         phase: "handleLlm" as const,
       };
@@ -222,7 +260,7 @@ export function reduceStepDriverState(
 
     case "ToolContinuationHandled": {
       const handled = event.handled;
-      if (handled?.kind === "tool-js") return { ...state, phase: "return", returnValue: handled };
+      if (handled?.kind === "tool-ts") return { ...state, phase: "return", returnValue: handled };
       if (handled?.kind !== "iterate") return { ...state, phase: "return", returnValue: { kind: handled?.kind || "done" } };
       return {
         ...state,
@@ -235,8 +273,8 @@ export function reduceStepDriverState(
 
     case "LlmHandled": {
       const handled = event.handled;
-      if (handled?.kind === "tool-js") {
-        const handledState = (handled.state ?? {}) as Record<string, unknown>;
+      if (handled?.kind === "tool-ts") {
+        const handledState = objectRecord(handled.state) ?? {};
         return {
           ...state,
           phase: "return" as const,
@@ -257,13 +295,14 @@ export function reduceStepDriverState(
       }
       return {
         ...state,
-        messages: (handled.messages as StepMessage[] | undefined) ?? undefined,
-        usedModel: (handled.usedModel as string | undefined) ?? state.usedModel,
-        requestEffort: (handled.requestEffort as string | undefined) ?? state.requestEffort,
-        pendingToolCalls: (handled.toolCalls as unknown[] | undefined) ?? [],
-        retryAttempt: (handled.retryAttempt as number | undefined) ?? undefined,
-        retryReason: (handled.retryReason as string | undefined) ?? undefined,
-        retryDelayMs: (handled.retryDelayMs as number | undefined) ?? undefined,
+        messages: stepMessages(handled.messages),
+        usedModel: optionalString(handled.usedModel) ?? state.usedModel,
+        requestEffort: optionalString(handled.requestEffort) ?? state.requestEffort,
+        pendingToolCalls: Array.isArray(handled.toolCalls) ? handled.toolCalls : [],
+        retryAttempt: optionalNumber(handled.retryAttempt),
+        retryReason: optionalString(handled.retryReason),
+        retryDelayMs: optionalNumber(handled.retryDelayMs),
+        forceCompact: handled.forceCompact === true,
         inflight: undefined,
         phase: "prepare" as const,
       };
@@ -277,11 +316,13 @@ export function reduceStepDriverState(
       return {
         ...state,
         provider: s.provider as StepDriverState["provider"],
+        mode: s.mode === "step" || s.mode === "resume" || s.mode === "compact" ? s.mode : state.mode,
         messages: undefined,
         thoughtDurationNs: 0,
         retryAttempt: undefined,
         retryReason: undefined,
         retryDelayMs: undefined,
+        forceCompact: false,
         inflight: undefined,
         phase: "prepare" as const,
       };
@@ -295,23 +336,23 @@ export function reduceStepDriverState(
       if (p?.kind !== "llm") {
         return { ...state, phase: "return" as const, returnValue: { kind: "done" } };
       }
-      const providerObj = state.provider as Record<string, unknown> | undefined;
       const nextState: StepDriverState = {
         ...state,
         inflight: {
-          purpose: p.purpose as string | undefined,
-          draftId: p.draftId as string | undefined,
-          messages: p.messages as StepMessage[] | undefined,
-          estimatedPromptTokens: p.estimatedPromptTokens as number | undefined,
-          tokenBudget: p.tokenBudget as number | undefined,
-          tokenThreshold: p.tokenThreshold as number | undefined,
-          requestPromptTokens: p.requestPromptTokens as number | undefined,
-          requestTokenLimit: p.requestTokenLimit as number | undefined,
-          requestProvider: (p.requestProvider ?? providerObj?.name) as string | undefined,
-          requestModel: p.requestModel as string | undefined,
-          requestEffort: p.requestEffort as string | undefined,
-          requestAuthMode: (p.requestAuthMode ?? providerObj?.authMode) as string | undefined,
+          purpose: optionalString(p.purpose),
+          draftId: optionalString(p.draftId),
+          messages: stepMessages(p.messages),
+          estimatedPromptTokens: optionalNumber(p.estimatedPromptTokens),
+          tokenBudget: optionalNumber(p.tokenBudget),
+          tokenThreshold: optionalNumber(p.tokenThreshold),
+          requestPromptTokens: optionalNumber(p.requestPromptTokens),
+          requestTokenLimit: optionalNumber(p.requestTokenLimit),
+          requestProvider: optionalString(p.requestProvider) ?? state.provider?.name,
+          requestModel: optionalString(p.requestModel),
+          requestEffort: optionalString(p.requestEffort),
+          requestAuthMode: optionalString(p.requestAuthMode) ?? state.provider?.authMode,
           countThoughtDuration: !!p.countThoughtDuration,
+          forceCompact: state.forceCompact === true,
           attempt: Number(p.attempt ?? state.retryAttempt ?? 1) || 1,
         },
       };
@@ -384,6 +425,7 @@ export function planStepDriverEffects(state: StepDriverState): StepDriverEffect[
           messages: state.messages ?? null,
           attempt: state.retryAttempt ?? undefined,
           retryReason: state.retryReason ?? undefined,
+          forceCompact: state.forceCompact === true,
         } satisfies PrepareInput,
       }];
     case "return":

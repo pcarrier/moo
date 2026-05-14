@@ -4,6 +4,7 @@ export type SubagentDetails = {
   label?: string | null;
   task?: string | null;
   childChatId?: string | null;
+  parentRunTsStepId?: string | null;
   parentRunJsStepId?: string | null;
   result?: {
     status?: string;
@@ -15,7 +16,7 @@ export type SubagentDetails = {
   } | null;
 };
 
-export type RunJSDetails = {
+export type RunTSDetails = {
   label?: string | null;
   description?: string | null;
   args?: unknown;
@@ -49,7 +50,10 @@ export type StepItem = {
     };
     at?: number | string;
   };
-  runjs?: RunJSDetails;
+  runts?: RunTSDetails;
+  /** Legacy timeline payloads before the runTS rename. */
+  runjs?: RunTSDetails;
+  lazyRuntsResult?: boolean;
   lazyRunjsResult?: boolean;
   resultHash?: string | null;
   subagent?: SubagentDetails;

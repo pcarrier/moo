@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -8,6 +8,9 @@ use rusty_v8 as v8;
 
 use crate::ops::v8util::{required_args, set_object_str, set_object_value};
 use crate::runtime::{install_fn, throw};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_proc_run", op_proc_run)?;
@@ -91,6 +94,7 @@ fn op_proc_run(
     let started = Instant::now();
     let mut command = Command::new(&cmd);
     command.args(&argv);
+    configure_process_group(&mut command);
     if let Some(c) = &cwd {
         command.current_dir(c);
     }
@@ -127,14 +131,14 @@ fn op_proc_run(
     {
         let _ = sin.write_all(text.as_bytes());
     }
-    let mut stdout_pipe = match child.stdout.take() {
+    let stdout_pipe = match child.stdout.take() {
         Some(p) => p,
         None => {
             throw(scope, "proc_run: stdout not piped");
             return;
         }
     };
-    let mut stderr_pipe = match child.stderr.take() {
+    let stderr_pipe = match child.stderr.take() {
         Some(p) => p,
         None => {
             throw(scope, "proc_run: stderr not piped");
@@ -142,16 +146,10 @@ fn op_proc_run(
         }
     };
 
-    let stdout_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
+    let stdout_limit = max_output_bytes;
+    let stderr_limit = max_output_bytes;
+    let stdout_thread = thread::spawn(move || read_limited(stdout_pipe, stdout_limit));
+    let stderr_thread = thread::spawn(move || read_limited(stderr_pipe, stderr_limit));
 
     let mut timed_out = false;
     let status = match timeout_ms {
@@ -162,7 +160,7 @@ fn op_proc_run(
                     Ok(Some(s)) => break s,
                     Ok(None) => {
                         if Instant::now() >= deadline {
-                            let _ = child.kill();
+                            terminate_process_tree(&mut child);
                             timed_out = true;
                             match child.wait() {
                                 Ok(s) => break s,
@@ -190,24 +188,14 @@ fn op_proc_run(
         },
     };
 
-    let stdout_buf = stdout_thread.join().unwrap_or_default();
-    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    let stdout_capture = stdout_thread.join().unwrap_or_default();
+    let stderr_capture = stderr_thread.join().unwrap_or_default();
     let elapsed_ns = started.elapsed().as_nanos() as f64;
     let code = status.code().unwrap_or(-1);
-    let stdout_truncated = max_output_bytes.is_some_and(|max| stdout_buf.len() > max);
-    let stderr_truncated = max_output_bytes.is_some_and(|max| stderr_buf.len() > max);
-    let stdout_slice = if let Some(max) = max_output_bytes {
-        &stdout_buf[..stdout_buf.len().min(max)]
-    } else {
-        &stdout_buf[..]
-    };
-    let stderr_slice = if let Some(max) = max_output_bytes {
-        &stderr_buf[..stderr_buf.len().min(max)]
-    } else {
-        &stderr_buf[..]
-    };
-    let stdout = String::from_utf8_lossy(stdout_slice).into_owned();
-    let stderr = String::from_utf8_lossy(stderr_slice).into_owned();
+    let stdout_truncated = stdout_capture.truncated;
+    let stderr_truncated = stderr_capture.truncated;
+    let stdout = String::from_utf8_lossy(&stdout_capture.bytes).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_capture.bytes).into_owned();
 
     let obj = v8::Object::new(scope);
     let code_value = v8::Number::new(scope, code as f64);
@@ -223,4 +211,128 @@ fn op_proc_run(
     let stderr_truncated_value = v8::Boolean::new(scope, stderr_truncated);
     set_object_value(scope, obj, "stderrTruncated", stderr_truncated_value.into());
     rv.set(obj.into());
+}
+
+#[derive(Default)]
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn read_limited(mut pipe: impl Read, limit: Option<usize>) -> CapturedOutput {
+    let mut captured = CapturedOutput::default();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if let Some(max) = limit {
+            let remaining = max.saturating_sub(captured.bytes.len());
+            if remaining > 0 {
+                captured.bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+            }
+            if read > remaining {
+                captured.truncated = true;
+            }
+        } else {
+            captured.bytes.extend_from_slice(&chunk[..read]);
+        }
+    }
+    captured
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+fn terminate_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            unsafe {
+                let _ = libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_limited;
+    use std::io::Cursor;
+
+    #[cfg(unix)]
+    use super::{configure_process_group, terminate_process_tree};
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn read_limited_bounds_output_while_reading() {
+        let captured = read_limited(Cursor::new(vec![b'x'; 64]), Some(10));
+        assert_eq!(captured.bytes, vec![b'x'; 10]);
+        assert!(captured.truncated);
+    }
+
+    #[test]
+    fn read_limited_reports_complete_output() {
+        let captured = read_limited(Cursor::new(b"hello".to_vec()), Some(10));
+        assert_eq!(captured.bytes, b"hello");
+        assert!(!captured.truncated);
+    }
+
+    #[test]
+    fn read_limited_unbounded_reads_all_output() {
+        let captured = read_limited(Cursor::new(vec![b'y'; 32]), None);
+        assert_eq!(captured.bytes, vec![b'y'; 32]);
+        assert!(!captured.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_process_tree_kills_descendants() {
+        let marker = std::env::temp_dir().join(format!(
+            "moo-proc-tree-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&marker);
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("(sleep 0.4; echo alive > \"$1\") & wait")
+            .arg("sh")
+            .arg(&marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut command);
+
+        let mut child = command.spawn().expect("spawn shell with descendant");
+        std::thread::sleep(Duration::from_millis(50));
+        terminate_process_tree(&mut child);
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_millis(700));
+
+        assert!(
+            !marker.exists(),
+            "descendant survived process-tree termination and wrote {}",
+            marker.display()
+        );
+        let _ = fs::remove_file(&marker);
+    }
 }

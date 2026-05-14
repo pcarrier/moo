@@ -31,12 +31,16 @@ export type ModelMetadata = {
   /** A JS regex source matched against lower-case model ids for versioned models. */
   match?: string;
   contextWindow?: number;
+  /** Context limits for provider-specific interfaces layered over the API. */
+  interfaceContextWindows?: Partial<Record<"api" | "codex", number>>;
   /** Max generated tokens, when the provider documents a separate output cap. */
   maxOutputTokens?: number;
   pricing?: ModelPrice;
   /** Pricing used when the request crosses the provider's long-context threshold. */
   longContext?: { threshold: number; pricing: ModelPrice };
   capabilities?: ModelCapabilities;
+  /** Human-readable availability notes for UI/API model metadata. */
+  availability?: string;
   rateLimits?: ModelRateLimits;
   /** Show in the model picker by default. */
   defaultOption?: boolean;
@@ -68,8 +72,8 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     fallbackModel: "gpt-5.5",
     inferPrefixes: ["gpt-", "o1", "o3", "o4", "chatgpt-"],
     models: [
-      { id: "gpt-5.5", match: "^gpt-5\\.5(?:[.-]|$)", contextWindow: 1_000_000, pricing: { input: 2.5, cachedInput: 0.25, output: 10 }, capabilities: { toolCalls: true }, defaultOption: true },
-      { id: "gpt-5.5-pro", defaultOption: true },
+      { id: "gpt-5.5", match: "^gpt-5\\.5(?!-pro)(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 5, cachedInput: 0.5, output: 30 }, capabilities: { toolCalls: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
+      { id: "gpt-5.5-pro", match: "^gpt-5\\.5-pro(?:[.-]|$)", contextWindow: 1_000_000, pricing: { input: 30, cachedInput: 3, output: 180 }, capabilities: { toolCalls: true }, availability: "ChatGPT Pro, Business, Enterprise, Edu, and API", defaultOption: true },
       { id: "gpt-5.4", defaultOption: true },
       { id: "gpt-5.4-mini", defaultOption: true },
       { id: "gpt-5.4-nano", defaultOption: true },
@@ -265,8 +269,9 @@ export function defaultModelIds(provider: ProviderName): string[] {
   return PROVIDER_METADATA[provider].models.filter((model) => model.defaultOption).map((model) => model.id);
 }
 
-export function modelContextWindow(provider: ProviderName | null | undefined, model: string | null | undefined): number {
-  return modelMetadataFor(provider, model)?.contextWindow ?? DEFAULT_CONTEXT_TOKENS;
+export function modelContextWindow(provider: ProviderName | null | undefined, model: string | null | undefined, iface: "api" | "codex" = "api"): number {
+  const metadata = modelMetadataFor(provider, model);
+  return metadata?.interfaceContextWindows?.[iface] ?? metadata?.contextWindow ?? DEFAULT_CONTEXT_TOKENS;
 }
 
 export function modelSupportsTools(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {

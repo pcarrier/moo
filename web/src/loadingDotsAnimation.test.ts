@@ -27,8 +27,8 @@ describe("loading dot animation", () => {
     expect(timeline).toContain('<LoadingDots class="thinking-dots" label="loading chat" />');
     expect(timeline).toContain('class="thinking-dots"');
     expect(timeline).toContain('label={bag.compacting() ? "compacting" : "thinking"}');
-    expect(timeline).toContain('<LoadingDots class="runjs-loading" label="running" />');
-    expect(timeline.match(/<LoadingDots class="runjs-loading" label="running" \/>/g)).toHaveLength(2);
+    expect(timeline).toContain('<LoadingDots class="runts-loading" label="running" />');
+    expect(timeline.match(/<LoadingDots class="runts-loading" label="running" \/>/g)).toHaveLength(2);
 
     expect(timeline).not.toContain('<span /><span /><span />');
     expect(timeline).not.toContain('class="dot"');
@@ -61,11 +61,11 @@ describe("loading dot animation", () => {
 
   test("does not keep divergent legacy loading dot selectors or animations", () => {
     expect(css).not.toContain(".thinking-dots .dot");
-    expect(css).not.toContain(".runjs-loading > span");
+    expect(css).not.toContain(".runts-loading > span");
     expect(css).not.toContain(".boot-loading-dots span");
-    expect(css).not.toContain("runjs-loading-pulse");
+    expect(css).not.toContain("runts-loading-pulse");
     expect(css).not.toContain("animation: blink 1.2s");
-    expect(css).not.toContain("animation: runjs-loading-pulse 1.05s");
+    expect(css).not.toContain("animation: runts-loading-pulse 1.05s");
     expect(css).not.toContain("animation-delay: 0.18s");
     expect(css).not.toContain("animation-delay: 0.36s");
   });

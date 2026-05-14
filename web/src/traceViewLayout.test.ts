@@ -5,6 +5,7 @@ import { readStylesheetForTest } from "./styleTestUtils.test.ts";
 const css = readStylesheetForTest();
 const tracesView = readFileSync(new URL("./TracesView.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("./Sidebar.tsx", import.meta.url), "utf8");
+const sidebarTrail = readFileSync(new URL("./sidebar/trail.ts", import.meta.url), "utf8");
 const tracesApi = readFileSync(new URL("./api/traces.ts", import.meta.url), "utf8");
 const transport = readFileSync(new URL("./api/transport.ts", import.meta.url), "utf8");
 const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
@@ -377,14 +378,14 @@ describe("hierarchical trace view", () => {
 
 
   test("trail rows mirror timeline TODO typography", () => {
-    expect(sidebar).toContain('title: nextTitle || "Untitled"');
-    expect(sidebar).toContain('title: label,');
-    expect(sidebar).toContain('title: `${action} ${todoText}`');
-    expect(sidebar).toContain('function todoTrailItems(item: TodoDiffItem): AgentTrailItem[]');
-    expect(sidebar).toContain('return changes.map((change, index) => {');
-    expect(sidebar).toContain('id: changes.length === 1 ? item.id : `${item.id}:${index}`');
-    expect(sidebar).toContain('timelineKey: `todo-diff:${item.id}`');
-    expect(sidebar).toContain('function todoChangeTextForTrail(change: TodoDiffChange): string');
+    expect(sidebarTrail).toContain('title: nextTitle || "Untitled"');
+    expect(sidebarTrail).toContain('title: label,');
+    expect(sidebarTrail).toContain('title: `${action} ${todoText}`');
+    expect(sidebarTrail).toContain('function todoTrailItems(item: TodoDiffItem): AgentTrailItem[]');
+    expect(sidebarTrail).toContain('return changes.map((change, index) => {');
+    expect(sidebarTrail).toContain('id: changes.length === 1 ? item.id : `${item.id}:${index}`');
+    expect(sidebarTrail).toContain('timelineKey: `todo-diff:${item.id}`');
+    expect(sidebarTrail).toContain('function todoChangeTextForTrail(change: TodoDiffChange): string');
     expect(sidebar).toContain('[`todo-status-${props.item.todoStatus}`]: !!props.item.todoStatus');
     expect(css).toContain('.agent-trail-title {\n  min-width: 0;');
     expect(css).toContain('font-weight: 600;');
@@ -418,15 +419,38 @@ describe("right sidebar diff tabs", () => {
     expect(state).not.toContain("tab.scope === scope && sameDiffPath(tab.path, diff.path)");
   });
 
+  test("persists right sidebar diff expansion state by chat", () => {
+    expect(state).toContain("totalDiffExpanded: false");
+    expect(state).toContain("diffExpansionShown: {}");
+    expect(state).toContain("function normalizeDiffExpansionShown(");
+    expect(state).toContain("RIGHT_SIDEBAR_DIFF_EXPANSION_STATE_MAX");
+    expect(state).toContain("function rightSidebarDiffListExpanded(): boolean");
+    expect(state).toContain("function setRightSidebarDiffExpansionShown(key: string, shown: number)");
+    expect(state).toContain("sidebarDiffExpansionStore: () => sidebarDiffExpansionStore");
+    expect(sidebar).toContain("const expanded = () => props.bag.rightSidebarDiffListExpanded();");
+    expect(sidebar).toContain("const setExpanded = props.bag.setRightSidebarDiffListExpanded;");
+    expect(sidebar).toContain("onClick={() => setExpanded(!expanded())}");
+    expect(sidebar).toContain("expansion={props.bag.sidebarDiffExpansionStore()}");
+    expect(sidebar).toContain('expansionKeyPrefix={`diff-tab:${props.tab.id}`}');
+    expect(sidebar).not.toContain("expansion={props.bag.expansionStore()}");
+  });
+
   test("trail TODO entries prefer live timeline rows over stale trail rows", () => {
-    expect(sidebar).toContain('if (item.type === "todo-diff") return todoTrailItems(item);');
-    expect(sidebar).toContain('.flatMap((item) => {');
-    expect(sidebar).not.toContain('if (item.type === "file-diff") return diffTimelineItem(item);');
-    expect(sidebar).not.toContain('if (item.type === "memory-diff") return memoryTrailItem(item);');
-    expect(sidebar).toContain("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);");
-    expect(sidebar).toContain("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);");
-    expect(sidebar.indexOf("for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);")).toBeLessThan(
-      sidebar.indexOf("for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);"),
+    expect(sidebarTrail).toContain('if (item.type === "todo-diff") return todoTrailItems(item);');
+    expect(sidebarTrail).toContain('.flatMap((item) => {');
+    expect(sidebarTrail).not.toContain('if (item.type === "file-diff") return diffTimelineItem(item);');
+    expect(sidebarTrail).not.toContain('if (item.type === "memory-diff") return memoryTrailItem(item);');
+    expect(sidebarTrail).toContain("for (const item of source.trail) byKey.set(trailSourceKey(item), item);");
+    expect(sidebarTrail).toContain("for (const item of source.timeline) byKey.set(trailSourceKey(item), item);");
+    expect(sidebarTrail.indexOf("for (const item of source.trail) byKey.set(trailSourceKey(item), item);")).toBeLessThan(
+      sidebarTrail.indexOf("for (const item of source.timeline) byKey.set(trailSourceKey(item), item);"),
     );
   });
+});
+
+
+test("frontend reports structured trace initialization failures", () => {
+  expect(state).toContain('if (ev.kind === "trace-init-error")');
+  expect(state).toContain('trace initialization failed');
+  expect(state).toContain('ClickHouse ');
 });

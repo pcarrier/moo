@@ -76,7 +76,7 @@ export async function memoryQueryCommand(input: Input) {
 export type GraphSummaryRow = [string, number, number]; // [graph, facts, subjects]
 
 export async function graphSummariesCommand(input: Input) {
-  const removedMode = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
+  const removedMode: "include" | "only" | "exclude" = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
   if (removedMode === "exclude") {
     if (input.project !== undefined) {
       const store = await projectMemoryStoreFor(input.project);
@@ -104,14 +104,14 @@ export async function graphSummariesCommand(input: Input) {
     const current = await moo.facts.match({ store, ...{ graph } });
     const currentKeys = new Set((current as Array<[string, string, string, string]>).map((row) => row.join("\u0000")));
     const rows = await moo.facts.history({ store, ...{ graph } });
-    if (removedMode !== "exclude") {
+    if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
         add(row[0], row[1]);
       }
     }
-    if (removedMode !== "only") {
+    if (input.removed !== "only") {
       for (const row of current as Array<[string, string, string, string]>) add(row[0], row[1]);
     }
     const graphs: GraphSummaryRow[] = [...summaries.entries()]
@@ -127,7 +127,7 @@ export async function graphSummariesCommand(input: Input) {
     const current = await moo.facts.match({ store, ...{} });
     const currentKeys = new Set((current as Array<[string, string, string, string]>).map((row) => row.join("\u0000")));
     const rows = await moo.facts.history({ store, ...{} });
-    if (removedMode !== "exclude") {
+    if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
@@ -161,7 +161,7 @@ function latestAddTimes(rows: Array<[string, string, string, string, string, str
 }
 
 export async function triplesCommand(input: Input) {
-  const removedMode = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
+  const removedMode: "include" | "only" | "exclude" = input.removed === "include" || input.removed === "only" ? input.removed : "exclude";
   const rawLimit = Number(input.limit);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 100_000) : 100_000;
   const graph = typeof input.graph === "string" && input.graph.length > 0 ? input.graph : undefined;
@@ -212,14 +212,14 @@ export async function triplesCommand(input: Input) {
       object: input.object ?? null,
     } });
     const triples: Array<[string, string, string, string, string?, string?]> = [];
-    if (removedMode !== "exclude") {
+    if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
         pushTriple(triples, row);
       }
     }
-    if (removedMode !== "only") {
+    if (input.removed !== "only") {
       const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
       for (const row of current as Array<[string, string, string, string]>) {
         const rowKey = row.join("\u0000");
@@ -240,7 +240,7 @@ export async function triplesCommand(input: Input) {
         subject: input.subject ?? null,
         predicate: input.predicate ?? null,
         object: input.object ?? null,
-        limit: limit ? limit - triples.length : null,
+        ...(limit ? { limit: limit - triples.length } : {}),
       } });
       const rows = await moo.facts.history({ store, ...{
         graph: graph ?? null,
@@ -276,7 +276,7 @@ export async function triplesCommand(input: Input) {
       predicate: input.predicate ?? null,
       object: input.object ?? null,
     } });
-    if (removedMode !== "exclude") {
+    if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;

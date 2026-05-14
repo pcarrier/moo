@@ -1049,7 +1049,7 @@
   background: transparent;
 }
 
-.trace-runjs-details {
+.trace-runts-details {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
@@ -1132,18 +1132,18 @@
   }
 }
 
-.trace-runjs-desc {
+.trace-runts-desc {
   margin-bottom: 0.1rem;
 }
 
-.trace-runjs-block {
+.trace-runts-block {
   display: flex;
   flex-direction: column;
   gap: 0.18rem;
   min-width: 0;
 }
 
-.trace-runjs-block-label {
+.trace-runts-block-label {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -1156,7 +1156,7 @@
   text-transform: uppercase;
 }
 
-.trace-runjs-block-label .trace-store-link {
+.trace-runts-block-label .trace-store-link {
   color: var(--fg);
   font-size: 0.68rem;
   font-weight: 500;
@@ -1647,7 +1647,7 @@
 .trace-kind-tool {
   color: #7ee787;
 }
-.trace-kind-runjs {
+.trace-kind-runts {
   color: #f2cc60;
 }
 .trace-kind-system {
@@ -1857,8 +1857,8 @@
 .trace-span-bar.trace-kind-tool {
   background: #2ea043;
 }
-.trace-row-bar.trace-kind-runjs,
-.trace-span-bar.trace-kind-runjs {
+.trace-row-bar.trace-kind-runts,
+.trace-span-bar.trace-kind-runts {
   background: #d29922;
 }
 .trace-row-bar.trace-kind-chat,
@@ -3141,8 +3141,8 @@
 .trace-span-bar.trace-kind-llm { background: #8957e5; }
 .trace-row-bar.trace-kind-tool,
 .trace-span-bar.trace-kind-tool { background: #2ea043; }
-.trace-row-bar.trace-kind-runjs,
-.trace-span-bar.trace-kind-runjs { background: #bc4c00; }
+.trace-row-bar.trace-kind-runts,
+.trace-span-bar.trace-kind-runts { background: #bc4c00; }
 .trace-row-bar.trace-kind-step,
 .trace-span-bar.trace-kind-step { background: #6e7681; }
 

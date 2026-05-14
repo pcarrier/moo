@@ -13,7 +13,7 @@ function skillInput(input: Input): SkillSaveInput {
   if (input.enabled != null) out.enabled = input.enabled !== false;
   if (input.url != null) out.url = String(input.url);
   if (input.content != null) out.content = String(input.content);
-  if (input.frontmatter && typeof input.frontmatter === "object" && !Array.isArray(input.frontmatter)) out.frontmatter = input.frontmatter as any;
+  if (input.frontmatter && typeof input.frontmatter === "object" && !Array.isArray(input.frontmatter)) out.frontmatter = input.frontmatter as SkillFrontmatter;
   return out;
 }
 

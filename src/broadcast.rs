@@ -5,10 +5,13 @@
 // filter accepts it. Dropped subscribers are pruned the next time anyone
 // publishes.
 
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::LazyLock;
+use std::sync::Mutex;
+
+use serde_json::Value;
 
 #[derive(Clone)]
 pub struct Message {
@@ -51,6 +54,8 @@ struct Subscriber {
 }
 
 static SUBSCRIBERS: LazyLock<Mutex<Vec<Subscriber>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static ACTIVE_DRAFTS: LazyLock<Mutex<HashMap<String, HashMap<String, String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Subscription {
@@ -69,18 +74,21 @@ pub fn subscribe() -> Subscription {
     Subscription { id, rx }
 }
 
-pub fn set_filter(id: u64, filter: Filter) {
+pub fn set_filter(id: u64, filter: Filter) -> Vec<String> {
+    let replay = active_drafts_for_filter(&filter);
     if let Ok(mut subs) = SUBSCRIBERS.lock() {
         for sub in subs.iter_mut() {
             if sub.id == id {
                 sub.filter = filter;
-                return;
+                return replay;
             }
         }
     }
+    replay
 }
 
 pub fn publish_msg(msg: Message) {
+    remember_active_draft(&msg.payload);
     let Ok(mut subs) = SUBSCRIBERS.lock() else {
         return;
     };
@@ -97,6 +105,65 @@ pub fn publish(payload: String) {
         payload,
         ref_hint: None,
     });
+}
+
+fn active_drafts_for_filter(filter: &Filter) -> Vec<String> {
+    let Some(chat_id) = filter.chat_id.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(drafts) = ACTIVE_DRAFTS.lock() else {
+        return Vec::new();
+    };
+    let Some(chat_drafts) = drafts.get(chat_id) else {
+        return Vec::new();
+    };
+    chat_drafts.values().cloned().collect()
+}
+
+fn remember_active_draft(payload: &str) {
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(kind) = value.get("kind").and_then(Value::as_str) else {
+        return;
+    };
+    match kind {
+        "draft" | "reasoning-draft" => {
+            let Some(chat_id) = value.get("chatId").and_then(Value::as_str) else {
+                return;
+            };
+            let Some(draft_id) = value.get("draftId").and_then(Value::as_str) else {
+                return;
+            };
+            if let Ok(mut drafts) = ACTIVE_DRAFTS.lock() {
+                drafts
+                    .entry(chat_id.to_string())
+                    .or_default()
+                    .insert(draft_id.to_string(), payload.to_string());
+            }
+        }
+        "draft-end" => {
+            let Some(draft_id) = value.get("draftId").and_then(Value::as_str) else {
+                return;
+            };
+            if let Ok(mut drafts) = ACTIVE_DRAFTS.lock() {
+                if let Some(chat_id) = value.get("chatId").and_then(Value::as_str) {
+                    if let Some(chat_drafts) = drafts.get_mut(chat_id) {
+                        chat_drafts.remove(draft_id);
+                        if chat_drafts.is_empty() {
+                            drafts.remove(chat_id);
+                        }
+                    }
+                    return;
+                }
+                drafts.retain(|_, chat_drafts| {
+                    chat_drafts.remove(draft_id);
+                    !chat_drafts.is_empty()
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn pointer_changed(name: &str) {
@@ -129,4 +196,51 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear_active_drafts() {
+        ACTIVE_DRAFTS.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn replays_latest_active_draft_for_chat_filter() {
+        clear_active_drafts();
+        publish(
+            r#"{"kind":"draft","chatId":"chat1","draftId":"draft1","content":"hel","at":1}"#
+                .to_string(),
+        );
+        publish(
+            r#"{"kind":"draft","chatId":"chat1","draftId":"draft1","content":"hello","at":2}"#
+                .to_string(),
+        );
+        publish(
+            r#"{"kind":"draft","chatId":"chat2","draftId":"draft2","content":"other","at":3}"#
+                .to_string(),
+        );
+
+        let replay = active_drafts_for_filter(&Filter {
+            chat_id: Some("chat1".to_string()),
+        });
+
+        assert_eq!(replay.len(), 1);
+        assert!(replay[0].contains(r#""content":"hello""#));
+        assert!(replay[0].contains(r#""draftId":"draft1""#));
+    }
+
+    #[test]
+    fn draft_end_removes_replay() {
+        clear_active_drafts();
+        publish(r#"{"kind":"reasoning-draft","chatId":"chat1","draftId":"draft1","content":"","reasoningContent":"thinking"}"#.to_string());
+        publish(r#"{"kind":"draft-end","chatId":"chat1","draftId":"draft1"}"#.to_string());
+
+        let replay = active_drafts_for_filter(&Filter {
+            chat_id: Some("chat1".to_string()),
+        });
+
+        assert!(replay.is_empty());
+    }
 }

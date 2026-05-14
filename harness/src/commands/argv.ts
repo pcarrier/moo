@@ -1,9 +1,15 @@
-import { parseProjectArg, type Input } from "./_shared";
+import { parseProjectArg, type ChatCommandName, type FileCommandName, type Input, type MemoryCommandName, type McpCommandName, type StepCommandName, type UiCommandName } from "./_shared";
 
-type ArgvParser = (command: string, args: string[]) => Input;
+type KnownArgvCommand = StepCommandName | ChatCommandName | FileCommandName | MemoryCommandName | McpCommandName | UiCommandName | "enqueue" | "submit" | "vocabulary" | "vocab-define" | "llm-auth-get" | "llm-auth-save" | "llm-auth-oauth-start" | "llm-auth-oauth-complete" | "llm-auth-oauth-device-start" | "llm-auth-oauth-device-poll" | "llm-auth-oauth-logout" | "mcp-oauth-complete" | "mcp-call";
+type ArgvParser<C extends string = KnownArgvCommand> = (command: C, args: string[]) => Input;
+type AnyArgvParser = (command: string, args: string[]) => Input;
+
+function hasCommand<const T extends readonly string[]>(commands: T, command: string): command is T[number] {
+  return (commands as readonly string[]).includes(command);
+}
 
 const DEFAULT_CHAT_ID = "demo";
-const EMPTY_ARGV_COMMANDS = new Set([
+const EMPTY_ARGV_COMMANDS = [
   "chats",
   "chat-recent-paths",
   "llm-auth-get",
@@ -15,32 +21,32 @@ const EMPTY_ARGV_COMMANDS = new Set([
   "vocabulary",
   "mcp-list",
   "ui-list",
-]);
-const CHAT_ONLY_COMMANDS = new Set([
+] as const;
+const CHAT_ONLY_COMMANDS = [
   "resume",
   "describe",
   "tick",
   "chat-models",
   "ui-chat",
-]);
-const PATH_COMMANDS = new Set([
+] as const;
+const PATH_COMMANDS = [
   "fs-list",
   "fs-git-branches",
   "fs-git-pull-branches",
-]);
-const TRIPLE_MUTATION_COMMANDS = new Set([
+] as const;
+const TRIPLE_MUTATION_COMMANDS = [
   "assert",
   "retract",
   "triple-rm",
   "triple-restore",
-]);
-const MCP_SERVER_COMMANDS = new Set([
+] as const;
+const MCP_SERVER_COMMANDS = [
   "mcp-tools",
   "mcp-remove",
   "mcp-oauth-start",
   "mcp-oauth-logout",
   "mcp-oauth-status",
-]);
+] as const;
 
 export function commandPayload(input: Input): { command: string; payload: Input } {
   if (input.command) return { command: input.command, payload: input };
@@ -51,17 +57,20 @@ export function commandPayload(input: Input): { command: string; payload: Input 
 }
 
 function payloadFromArgv(command: string, args: string[]): Input {
-  if (EMPTY_ARGV_COMMANDS.has(command)) return basePayload(command);
-  if (CHAT_ONLY_COMMANDS.has(command)) return chatPayload(command, args);
-  if (PATH_COMMANDS.has(command)) return pathPayload(command, args);
-  if (TRIPLE_MUTATION_COMMANDS.has(command)) return tripleMutationPayload(command, args);
-  if (MCP_SERVER_COMMANDS.has(command)) return mcpServerPayload(command, args);
+  if (hasCommand(EMPTY_ARGV_COMMANDS, command)) return basePayload(command);
+  if (hasCommand(CHAT_ONLY_COMMANDS, command)) return chatPayload(command, args);
+  if (hasCommand(PATH_COMMANDS, command)) return pathPayload(command, args);
+  if (hasCommand(TRIPLE_MUTATION_COMMANDS, command)) return tripleMutationPayload(command, args);
+  if (hasCommand(MCP_SERVER_COMMANDS, command)) return mcpServerPayload(command, args);
 
-  const parser = ARGUMENT_PARSERS[command];
-  return parser ? parser(command, args) : { command, argv: args };
+  if (hasCommand(ARGUMENT_PARSER_KEYS, command)) {
+    const parser = ARGUMENT_PARSERS[command] as unknown as AnyArgvParser;
+    return parser(command, args);
+  }
+  return { command, argv: args };
 }
 
-const ARGUMENT_PARSERS: Record<string, ArgvParser> = {
+const ARGUMENT_PARSERS = {
   step: stepPayload,
   "message-delete": stepReferencePayload,
   "message-restore": stepReferencePayload,
@@ -91,49 +100,50 @@ const ARGUMENT_PARSERS: Record<string, ArgvParser> = {
   "ui-state-set": uiStatePayload,
   "ui-call": uiCallPayload,
   "vocab-define": vocabDefinePayload,
-};
+} satisfies Partial<{ [K in KnownArgvCommand]: ArgvParser<K> }>;
+const ARGUMENT_PARSER_KEYS = Object.keys(ARGUMENT_PARSERS) as Array<keyof typeof ARGUMENT_PARSERS>;
 
-function basePayload(command: string): Input {
+function basePayload(command: KnownArgvCommand): Input {
   return { command };
 }
 
-function chatPayload(command: string, args: string[], fallback = DEFAULT_CHAT_ID): Input {
+function chatPayload(command: "resume" | "tick" | "describe" | "chat-models" | "ui-chat", args: string[], fallback = DEFAULT_CHAT_ID): Input {
   return { command, chatId: args[0] ?? fallback };
 }
 
-function optionalChatPayload(command: string, args: string[]): Input {
+function optionalChatPayload(command: ChatCommandName | FileCommandName, args: string[]): Input {
   const payload = basePayload(command);
   if (args[0]) payload.chatId = args[0];
   return payload;
 }
 
-function firstArgAsChatPayload(command: string, args: string[]): Input {
+function firstArgAsChatPayload(command: ChatCommandName, args: string[]): Input {
   return { command, chatId: args[0] };
 }
 
-function pathPayload(command: string, args: string[]): Input {
+function pathPayload(command: FileCommandName | ChatCommandName, args: string[]): Input {
   return { command, path: args.join(" ") || "." };
 }
 
-function stepPayload(command: string, args: string[]): Input {
+function stepPayload(command: "step", args: string[]): Input {
   return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, message: args.slice(1).join(" ") };
 }
 
-function stepReferencePayload(command: string, args: string[]): Input {
+function stepReferencePayload(command: StepCommandName, args: string[]): Input {
   return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, step: args[1] };
 }
 
-function enqueuePayload(command: string, args: string[]): Input {
+function enqueuePayload(command: "enqueue", args: string[]): Input {
   const payload: Input = { command, chatId: args[0] ?? DEFAULT_CHAT_ID, kind: args[1] ?? "agent:Tick" };
   if (args[2]) payload.payload = parseJson(args[2], { raw: args[2] });
   return payload;
 }
 
-function submitPayload(command: string, args: string[]): Input {
+function submitPayload(command: "submit", args: string[]): Input {
   return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, requestId: args[1], values: parseJson(args[2], {}) };
 }
 
-function newChatPayload(command: string, args: string[]): Input {
+function newChatPayload(command: "chat-new", args: string[]): Input {
   const payload = basePayload(command);
   const optionArgs = [...args];
   if (optionArgs[0] && !optionArgs[0].startsWith("--")) payload.chatId = optionArgs.shift();
@@ -156,41 +166,41 @@ function newChatPayload(command: string, args: string[]): Input {
   return payload;
 }
 
-function forkChatPayload(command: string, args: string[]): Input {
+function forkChatPayload(command: "chat-fork", args: string[]): Input {
   const payload: Input = { command, chatId: args[0], step: args[1] };
   if (args[2]) payload.forkChatId = args[2];
   return payload;
 }
 
-function graphPayload(command: string, args: string[]): Input {
+function graphPayload(command: MemoryCommandName, args: string[]): Input {
   return { command, graph: args[0] };
 }
 
-function renameChatPayload(command: string, args: string[]): Input {
+function renameChatPayload(command: "chat-rename", args: string[]): Input {
   return { command, chatId: args[0], title: args.slice(1).join(" ") };
 }
 
-function archiveChatPayload(command: string, args: string[]): Input {
+function archiveChatPayload(command: "chat-archive", args: string[]): Input {
   return { command, chatId: args[0], archived: !isFalseArg(args[1]) };
 }
 
-function chatSettingsPayload(command: string, args: string[]): Input {
+function chatSettingsPayload(command: "chat-settings", args: string[]): Input {
   return { command, chatIds: args };
 }
 
-function modelSettingPayload(command: string, args: string[]): Input {
+function modelSettingPayload(command: "chat-model-set", args: string[]): Input {
   return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, model: args[1] ?? null };
 }
 
-function effortSettingPayload(command: string, args: string[]): Input {
+function effortSettingPayload(command: "chat-effort-set", args: string[]): Input {
   return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, effort: args[1] ?? null };
 }
 
-function jsonObjectPayload(command: string, args: string[]): Input {
+function jsonObjectPayload(command: "llm-auth-save", args: string[]): Input {
   return { command, ...parseJson(args.join(" "), {}) as object };
 }
 
-function triplesPayload(command: string, args: string[]): Input {
+function triplesPayload(command: "triples", args: string[]): Input {
   const parsed = parseProjectArg(args);
   const payload: Input = {
     command,
@@ -204,7 +214,7 @@ function triplesPayload(command: string, args: string[]): Input {
   return payload;
 }
 
-function tripleMutationPayload(command: string, args: string[]): Input {
+function tripleMutationPayload(command: MemoryCommandName, args: string[]): Input {
   const parsed = parseProjectArg(args);
   const payload = basePayload(command);
   if (parsed.project !== undefined) payload.project = parsed.project;
@@ -223,41 +233,41 @@ function tripleMutationPayload(command: string, args: string[]): Input {
   return payload;
 }
 
-function mcpServerPayload(command: string, args: string[]): Input {
+function mcpServerPayload(command: McpCommandName, args: string[]): Input {
   return { command, serverId: args[0], id: args[0] };
 }
 
-function mcpOAuthCompletePayload(command: string, args: string[]): Input {
+function mcpOAuthCompletePayload(command: "mcp-oauth-complete", args: string[]): Input {
   return { command, state: args[0], code: args[1] };
 }
 
-function mcpCallPayload(command: string, args: string[]): Input {
+function mcpCallPayload(command: "mcp-call", args: string[]): Input {
   return { command, serverId: args[0], name: args[1], arguments: parseJson(args.slice(2).join(" "), {}) };
 }
 
-function uiIdPayload(command: string, args: string[]): Input {
+function uiIdPayload(command: UiCommandName, args: string[]): Input {
   return { command, uiId: args[0] };
 }
 
-function uiOpenPayload(command: string, args: string[]): Input {
+function uiOpenPayload(command: "ui-open", args: string[]): Input {
   const payload: Input = { command, chatId: args[0] ?? DEFAULT_CHAT_ID, uiId: args[1] };
   if (args[2]) payload.instanceId = args[2];
   return payload;
 }
 
-function instancePayload(command: string, args: string[]): Input {
+function instancePayload(command: UiCommandName, args: string[]): Input {
   return { command, instanceId: args[0] };
 }
 
-function uiStatePayload(command: string, args: string[]): Input {
+function uiStatePayload(command: "ui-state-set", args: string[]): Input {
   return { command, instanceId: args[0], state: parseJson(args[1], {}) };
 }
 
-function uiCallPayload(command: string, args: string[]): Input {
+function uiCallPayload(command: "ui-call", args: string[]): Input {
   return { command, uiId: args[0], name: args[1], input: parseJson(args.slice(2).join(" "), {}) };
 }
 
-function vocabDefinePayload(command: string, args: string[]): Input {
+function vocabDefinePayload(command: "vocab-define", args: string[]): Input {
   return { command, name: args[0], description: args.slice(1).join(" ") };
 }
 

@@ -3,6 +3,10 @@ import { chatRefs } from "../lib";
 import { Term } from "../types";
 import type { Input } from "./_shared";
 
+type UserInputStepLookup =
+  | { ok: true; value: ReturnType<typeof chatRefs> }
+  | { ok: false; error: { message: string } };
+
 async function removeDeletedAt(store: string, graph: string, stepId: string, txn: any) {
   const existing = await moo.facts.match({ store, ...{
     graph,
@@ -13,7 +17,7 @@ async function removeDeletedAt(store: string, graph: string, stepId: string, txn
   for (const [g, s, p, o] of existing) txn.remove({ graph: g, subject: s, predicate: p, object: new Term(o) });
 }
 
-async function requireUserInputStep(chatId: string, stepId: string) {
+async function requireUserInputStep(chatId: string, stepId: string): Promise<UserInputStepLookup> {
   const c = chatRefs(chatId);
   const rows = await moo.facts.matchAll({ patterns: [
       [stepId, "rdf:type", "agent:Step"],

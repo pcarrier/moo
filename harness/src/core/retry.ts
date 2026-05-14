@@ -1,4 +1,4 @@
-import { Effect, Schedule, type ScheduleDecision } from "./effect";
+import { Effect, Schedule, type Schedule as RetrySchedule, type ScheduleDecision } from "./effect";
 
 export type RetryDecision = {
   retry: boolean;
@@ -67,11 +67,12 @@ export async function withLlmRetry<T extends RetryableLlmResult>(
   return Effect.gen(function* () {
     let attempt = 0;
     const op = Effect.tryPromise(() => operation(++attempt), "llm operation failed");
+    const schedule: RetrySchedule<T> = Schedule.whileInput<T, unknown>(({ attempt: scheduleAttempt, value }) =>
+      fromRetryDecision(llmRetryDecision(value ?? {}, scheduleAttempt, policy)),
+    );
     return yield* op.retryWhile(
       (result) => !result.ok && llmRetryDecision(result, attempt, policy).retry,
-      Schedule.whileInput(({ attempt: scheduleAttempt, value }) =>
-        fromRetryDecision(llmRetryDecision(value as RetryableLlmResult, scheduleAttempt, policy)),
-      ) as any,
+      schedule,
     );
   }).runPromise();
 }

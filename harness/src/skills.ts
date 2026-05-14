@@ -57,9 +57,14 @@ function normalizeUrl(value: unknown): string | undefined {
   return url || undefined;
 }
 
-function storedUrl(value: any): string | undefined {
-  return normalizeUrl(value?.url)
-    ?? (value?.source && typeof value.source === "object" && !Array.isArray(value.source) ? normalizeUrl(value.source.url) : undefined);
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function storedUrl(value: unknown): string | undefined {
+  const record = objectRecord(value);
+  const source = objectRecord(record?.source);
+  return normalizeUrl(record?.url) ?? normalizeUrl(source?.url);
 }
 
 function inputUrl(input: SkillSaveInput): string {
@@ -72,8 +77,9 @@ function normalizeFrontmatter(value: unknown): SkillFrontmatter {
   for (const [key, raw] of Object.entries(value)) {
     const k = key.trim();
     if (!k) continue;
-    if (raw == null || typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") out[k] = raw as any;
-    else if (Array.isArray(raw)) out[k] = raw.map((item) => item == null || typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? item as any : String(item));
+    if (raw == null) out[k] = null;
+    else if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") out[k] = raw;
+    else if (Array.isArray(raw)) out[k] = raw.map((item) => item == null ? null : typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? item : String(item));
     else out[k] = String(raw);
   }
   return out;
@@ -144,8 +150,8 @@ function normalizeMeta(value: any): SkillMeta | null {
 
 function parseIndex(): SkillIndex {
   const raw = decodeJsonPointer<any>(host.getRef(INDEX_REF));
-  const rows = Array.isArray(raw?.skills) ? raw.skills : [];
-  const skills = rows.map(normalizeMeta).filter((row): row is SkillMeta => !!row).sort(sortByName);
+  const rows: unknown[] = Array.isArray(raw?.skills) ? raw.skills : [];
+  const skills = rows.map((row: unknown) => normalizeMeta(row)).filter((row): row is SkillMeta => !!row).sort(sortByName);
   return { version: VERSION, skills, updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : undefined };
 }
 

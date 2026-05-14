@@ -70,12 +70,12 @@ function CollapsedDiffSection(props: {
   const [localShown, setLocalShown] = createSignal(0);
   const total = () => props.section.total;
   const usesExternalExpansion = () => Boolean(props.expansion && props.expansionKey);
-  const shown = () => Math.min(
-    total(),
+  const storedShown = () => (
     usesExternalExpansion()
       ? props.expansion!.shown(props.expansionKey!)
-      : localShown(),
+      : localShown()
   );
+  const shown = () => storedShown() > 0 ? total() : 0;
   const setShown = (next: number) => {
     const clamped = Math.min(total(), Math.max(0, next));
     if (usesExternalExpansion()) props.expansion!.setShown(props.expansionKey!, clamped);
@@ -86,20 +86,24 @@ function CollapsedDiffSection(props: {
       ? props.section.lines.slice(Math.max(0, total() - shown()))
       : props.section.lines.slice(0, shown())
   ));
-  const remaining = createMemo(() => Math.max(0, total() - shown()));
-  const expand = (count: number) => setShown(shown() + count);
-  const expandAll = () => expand(remaining());
+  const hasShown = createMemo(() => shown() > 0);
+  const contextLabel = () => hasShown() ? "expanded" : `${total()} hidden`;
+  const expandAll = () => setShown(total());
+  const collapseAll = () => setShown(0);
   const location = () => props.section.location ? " " + props.section.location : "";
   const controls = () => (
-    <Show when={remaining() > 0}>
+    <Show when={total() > 0}>
       <div class="diff-collapsed-controls">
         <span class="diff-collapsed-label">
-          {remaining()}/{total()} hidden
+          {contextLabel()}
         </span>
-        <span class="diff-collapsed-actions" aria-label="Expand hidden diff context">
-          <button type="button" onClick={() => expand(10)}>+{Math.min(10, remaining())}</button>
-          <button type="button" onClick={() => expand(100)}>+{Math.min(100, remaining())}</button>
-          <button type="button" onClick={expandAll}>+all</button>
+        <span class="diff-collapsed-actions" aria-label="Expand or collapse hidden diff context">
+          <Show when={!hasShown()}>
+            <button type="button" onClick={expandAll}>expand</button>
+          </Show>
+          <Show when={hasShown()}>
+            <button type="button" onClick={collapseAll}>collapse</button>
+          </Show>
         </span>
       </div>
     </Show>

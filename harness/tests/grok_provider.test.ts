@@ -4,7 +4,7 @@ import { DEEPSEEK_THINK_MAX_SYSTEM_PROMPT, buildStreamingLLMRequest, inferProvid
 import { llmAuthGetCommand, llmAuthSaveCommand } from "../src/commands/llm_auth";
 import { applyDefaultChatSettings, chatModelInfo, modelOptionsFor, modelSupportsAttachments, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
-import { modelLongContextUsageKey, modelMetadataFor } from "../src/llm_models";
+import { modelLongContextUsageKey, modelMetadataFor, modelMatches } from "../src/llm_models";
 import { stepCommand } from "../src/commands/step";
 
 const refs = new Map<string, string>();
@@ -143,6 +143,27 @@ describe("OpenAI-compatible provider support", () => {
     expect(modelMetadataFor("xai", "grok-4-fast")?.rateLimits).toMatchObject({ requestsPerMinute: 600, tokensPerMinute: 4_000_000 });
   });
 
+  test("uses GPT-5.5 API and Codex context windows for dated model variants", () => {
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-2026-01" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5", authMode: "oauth" })).toBe(400_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-2026-01", authMode: "oauth" })).toBe(400_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-pro" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-pro-2026-01" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-pro", authMode: "oauth" })).toBe(1_000_000);
+  });
+
+  test("tracks GPT-5.5 availability tiers", async () => {
+    const base = modelMetadataFor("openai", "gpt-5.5");
+    const pro = modelMetadataFor("openai", "gpt-5.5-pro");
+    expect(base?.availability).toBe("Plus, Pro, Business, Enterprise, API, and Codex");
+    expect(pro?.availability).toBe("ChatGPT Pro, Business, Enterprise, Edu, and API");
+    expect(base && modelMatches(base, "gpt-5.5-pro")).toBe(false);
+    const options = await modelOptionsFor("openai", "gpt-5.5");
+    expect(options.find((option) => option.id === "openai:gpt-5.5")?.availability).toBe(base?.availability);
+    expect(options.find((option) => option.id === "openai:gpt-5.5-pro")?.availability).toBe(pro?.availability);
+  });
+
   test("uses DeepSeek-specific context windows and request options", async () => {
     expect(modelContextBudget({ name: "deepseek", model: "deepseek-v4-flash" })).toBe(1_000_000);
     const provider = await resolveProvider("deepseek-v4-pro", "max", "deepseek");
@@ -210,6 +231,16 @@ describe("OpenAI-compatible provider support", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({ source: "unsupported_attachments", provider: "deepseek", model: "deepseek-v4-flash" });
     expect(JSON.stringify(result.error)).toContain("does not support image attachments");
+  });
+
+  test("tracks GPT-5.5 pricing", async () => {
+    const pricing = await loadPricing();
+    expect(priceFor("gpt-5.5", pricing)).toEqual({ input: 5, cachedInput: 0.5, output: 30 });
+    expect(priceFor("gpt-5.5-2026-01", pricing)).toEqual({ input: 5, cachedInput: 0.5, output: 30 });
+    expect(priceFor("gpt-5.5-pro", pricing)).toEqual({ input: 30, cachedInput: 3, output: 180 });
+    expect(priceFor("gpt-5.5-pro-2026-01", pricing)).toEqual({ input: 30, cachedInput: 3, output: 180 });
+    expect(estimateCostUsd({ models: { "gpt-5.5": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(35.5);
+    expect(estimateCostUsd({ models: { "gpt-5.5-pro": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(213);
   });
 
   test("tracks Grok pricing and capabilities", async () => {

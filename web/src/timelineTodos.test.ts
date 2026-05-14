@@ -101,6 +101,7 @@ describe("timeline TODO UI", () => {
     expect(timeline).toContain('function TodoDiffBody');
     expect(timeline).toContain('<TodoMarkdownInline className="todo-diff-text" content={todoLabel(item())} />');
     expect(timeline.indexOf('<TodoMarkdownInline className="todo-diff-text" content={todoLabel(item())} />')).toBeLessThan(timeline.indexOf('<TodoMetaBubbles item={item()} />'));
+    expect(todoDiffRegion).toContain('<Show when={change.kind !== "removed"}>');
     expect(timeline).toContain('<TodoMarkdownInline className="todo-diff-previous-text" content={`was: ${todoLabel(previous()!)}`} />');
     expect(timeline).not.toContain('No TODO changes');
     expect(timeline).not.toContain('todo-diff-fallback');

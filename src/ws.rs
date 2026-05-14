@@ -119,12 +119,17 @@ pub fn handle(
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            broadcast::set_filter(
+                            let replay = broadcast::set_filter(
                                 sub_id,
                                 Filter {
                                     chat_id: Some(chat_id.to_string()),
                                 },
                             );
+                            for msg in replay {
+                                if writer_tx.send(msg).is_err() {
+                                    break;
+                                }
+                            }
                             continue;
                         }
                         if let Some(payload) = parsed.get("run") {
@@ -135,7 +140,7 @@ pub fn handle(
                                 .to_string();
                             let payload = payload.clone();
                             let command = command_from_payload(&payload);
-                            let run_inline = no_host_builtin_command(command);
+                            let run_inline = inline_builtin_command(command);
                             let writer_tx = writer_tx.clone();
                             let pool = pool.clone();
                             let bundle = bundle.clone();
@@ -201,9 +206,10 @@ fn run_command(
 ) {
     let command = command_from_payload(&payload);
 
-    // Observability snapshots are process-local and do not need the per-request
-    // host/db context. Return them before host initialization so polling the V8
-    // panel does not contend with normal command setup.
+    // Some observability builtins do not need per-request host/db setup.
+    // v8-stats is process-local; trace-frontend writes through the trace
+    // subsystem directly. Return them before host initialization so UI
+    // observability calls do not contend with normal command setup.
     if no_host_builtin_command(command)
         && let Some(result) = builtin_command_result(command, &db, &payload)
     {
@@ -594,6 +600,14 @@ fn trace_config_get(db: &str) -> Value {
 
 fn no_host_builtin_command(command: &str) -> bool {
     matches!(command, "v8-stats" | "trace-frontend")
+}
+
+fn inline_builtin_command(command: &str) -> bool {
+    // Only pure process-local reads should run on the WebSocket reader thread.
+    // Commands like trace-frontend avoid host initialization, but still touch
+    // trace storage and may block on external backends; if they run inline they
+    // can stop the reader from dispatching later UI load RPCs on the same socket.
+    matches!(command, "v8-stats")
 }
 
 fn settings_command(command: &str) -> bool {
@@ -1864,5 +1878,12 @@ mod tests {
         assert!(settings_command("llm-auth-oauth-logout"));
         assert!(!settings_command("v8-stats"));
         assert!(!db_only_command("v8-settings-get"));
+    }
+
+    #[test]
+    fn only_pure_process_builtins_run_on_ws_reader_thread() {
+        assert!(no_host_builtin_command("trace-frontend"));
+        assert!(!inline_builtin_command("trace-frontend"));
+        assert!(inline_builtin_command("v8-stats"));
     }
 }

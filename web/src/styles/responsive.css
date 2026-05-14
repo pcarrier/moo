@@ -252,9 +252,9 @@
   .shell-cmd,
   .shell-out,
   .shell-tail,
-  .runjs-code,
-  .runjs-args,
-  .runjs-out,
+  .runts-code,
+  .runts-args,
+  .runts-out,
   .file-diff-body,
   .tool-out,
   .markdown pre,
@@ -461,16 +461,16 @@
   }
 }
 
-/* Keep collapsed runJS Markdown summaries to a single clipped line even if
+/* Keep collapsed runTS Markdown summaries to a single clipped line even if
    later Markdown rules or inline elements would otherwise wrap. */
-details.runjs-step:not([open]) > summary,
-details.runjs-step:not([open]) .runjs-desc-inline,
-details.runjs-step:not([open]) .runjs-desc-text.runjs-markdown,
-details.runjs-step:not([open]) .runjs-desc-text.runjs-markdown * {
+details.runts-step:not([open]) > summary,
+details.runts-step:not([open]) .runts-desc-inline,
+details.runts-step:not([open]) .runts-desc-text.runts-markdown,
+details.runts-step:not([open]) .runts-desc-text.runts-markdown * {
   white-space: nowrap;
 }
 
-details.runjs-step:not([open]) .runjs-desc-text.runjs-markdown {
+details.runts-step:not([open]) .runts-desc-text.runts-markdown {
   overflow: hidden;
   text-overflow: ellipsis;
 }

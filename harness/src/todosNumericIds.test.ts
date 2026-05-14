@@ -24,7 +24,7 @@ describe("agent TODO diffs", () => {
     expect(todos).not.toContain('afterText');
   });
 
-  test("batches multiple TODO mutations in one RunJS step into one diff", () => {
+  test("batches multiple TODO mutations in one RunTS step into one diff", () => {
     expect(todos).toContain("export async function withTodoDiffBatch");
     expect(todos).toContain("await queueTodoDiff(chatId, previous, next);");
     expect(todos).toContain("await recordTodoDiff(chatId, batch.before, batch.after);");

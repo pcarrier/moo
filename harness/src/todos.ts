@@ -201,11 +201,14 @@ function nextTodoIdAfter(items: Array<{ id?: unknown }>): number {
   return max + 1;
 }
 
+type StoredTodoItem = { readonly id?: unknown; readonly text?: unknown; readonly createdAt?: unknown; readonly updatedAt?: unknown; readonly status?: unknown; readonly note?: unknown };
+
 function normalizeState(value: unknown): AgentTodoState {
   const at = nowIso();
-  const raw = value && typeof value === "object" ? value as any : {};
+  const raw = value && typeof value === "object" ? value as { readonly items?: unknown; readonly updatedAt?: unknown; readonly nextId?: unknown } : {};
   const items = Array.isArray(raw.items) ? raw.items : [];
-  const firstAvailableId = Math.max(FIRST_TODO_ID, nextTodoIdAfter(items));
+  const objectItems = items.filter((item): item is StoredTodoItem => !!item && typeof item === "object");
+  const firstAvailableId = Math.max(FIRST_TODO_ID, nextTodoIdAfter(objectItems));
   const seen = new Set<string>();
   const out: AgentTodo[] = [];
   const normalized: AgentTodoState = {
@@ -214,8 +217,7 @@ function normalizeState(value: unknown): AgentTodoState {
     nextId: Math.max(normalizeNextTodoId(raw.nextId) ?? firstAvailableId, firstAvailableId),
     items: out,
   };
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
+  for (const item of objectItems) {
     const id = normalizeTodoId(item.id) ?? nextTodoId(normalized, seen);
     if (seen.has(id)) continue;
     let text: string;

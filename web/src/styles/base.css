@@ -24,7 +24,7 @@
   --bubble-user: color-mix(in srgb, dodgerblue 18%, transparent);
   --bubble-reply: color-mix(in srgb, mediumseagreen 18%, transparent);
   --bubble-shell: color-mix(in srgb, orange 16%, transparent);
-  --bubble-runjs: color-mix(in srgb, gold 16%, transparent);
+  --bubble-runts: color-mix(in srgb, gold 16%, transparent);
   --bubble-file-diff: color-mix(in srgb, deepskyblue 14%, transparent);
   --bubble-todo-diff: color-mix(in srgb, orchid 16%, transparent);
   --bubble-log: color-mix(in srgb, slategray 12%, transparent);
@@ -163,8 +163,8 @@ pre,
 .shell-cmd,
 .shell-out,
 .shell-tail,
-.runjs-code,
-.runjs-out,
+.runts-code,
+.runts-out,
 .file-diff-body,
 .diff-line,
 .diff-collapsed,
@@ -181,8 +181,8 @@ pre,
 
 pre,
 .markdown pre,
-.runjs-code,
-.runjs-out,
+.runts-code,
+.runts-out,
 .tool-out,
 .repo-file-content,
 .trace-event-json.markdown pre code {

@@ -1,4 +1,5 @@
 import { moo } from "../moo";
+import * as host from "../host_ops";
 import { chatRefs } from "../lib";
 import {
   compactionThresholdForBudget,
@@ -144,14 +145,12 @@ function diffPayloadSummary(
 
 async function loadObjectsByHash(hashes: Iterable<string>, into = new Map<string, { kind: string; value: any } | null>()) {
   const queue = [...new Set(hashes)].filter((hash) => !into.has(hash));
-  let next = 0;
-  const workerCount = Math.min(16, queue.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (next < queue.length) {
-      const hash = queue[next++]!;
-      into.set(hash, await moo.objects.getJSON({ hash }));
-    }
-  }));
+  if (queue.length === 0) return into;
+  const objects = host.getObjects(queue);
+  for (const hash of queue) {
+    const row = objects[hash];
+    into.set(hash, row ? { kind: row.kind, value: JSON.parse(row.content) } : null);
+  }
   return into;
 }
 
@@ -235,8 +234,10 @@ async function loadInputRows(c: ReturnType<typeof chatRefs>, responseRows: Array
   return rows.concat(extra);
 }
 
-async function loadTrailItems(_c: ReturnType<typeof chatRefs>, rows: any[], limit = 0) {
-  const selectedRows = newestByAt(rows, limit, (row) => factTimestamp((row as any)["?at"]));
+type TrailEntryRow = Record<string, unknown> & { "?at"?: unknown };
+
+async function loadTrailItems(_c: ReturnType<typeof chatRefs>, rows: TrailEntryRow[], limit = 0) {
+  const selectedRows = newestByAt(rows, limit, (row) => factTimestamp(row["?at"]));
   return selectedRows.map(trailRowToTimelineItem);
 }
 
@@ -317,6 +318,7 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
         label: value.label ?? null,
         task: value.task ?? null,
         childChatId: value.childChatId ?? null,
+        parentRunTsStepId: value.parentRunTsStepId ?? null,
         parentRunJsStepId: value.parentRunJsStepId ?? null,
         result: result?.value ?? null,
       };
@@ -331,7 +333,7 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
 async function tokenPressure(chatId: string) {
   const modelInfo = await chatModelInfo(chatId);
   const pressure = await readLastTokenPressure(chatId);
-  const budget = await contextBudget({ name: modelInfo.provider, model: modelInfo.effectiveModel });
+  const budget = await contextBudget({ name: modelInfo.provider, model: modelInfo.effectiveModel, authMode: modelInfo.authMode ?? undefined });
   const threshold = await compactionThresholdForBudget(budget);
   const used = pressure.used;
   return {
@@ -363,7 +365,7 @@ async function chatOverview(chatId: string) {
     moo.facts.count({ store: c.facts }),
     loadStepCount(c),
     loadStepCount(c, "agent:UserInput"),
-    loadStepCount(c, "agent:RunJS"),
+    loadStepCount(c, "agent:RunTS"),
     loadTypeCount(c, "ui:InputRequest"),
     loadTypeCount(c, "ui:InputResponse"),
     loadTypeCount(c, "agent:Log"),
@@ -471,7 +473,7 @@ async function loadTimelineSnapshot(
     loadStepRows(c, boundedScanLimit),
     loadStepCount(c),
     loadStepCount(c, "agent:UserInput"),
-    loadStepCount(c, "agent:RunJS"),
+    loadStepCount(c, "agent:RunTS"),
     loadTypeCount(c, "ui:InputRequest"),
     loadTypeCount(c, "ui:InputResponse"),
     loadTypeCount(c, "agent:Log"),
@@ -486,7 +488,7 @@ async function loadTimelineSnapshot(
   ]);
   const inputs = await loadInputRows(c, inputResponses, boundedScanLimit);
   const trailStepRows = newestByAt(
-    [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows],
+    [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows] as Array<Record<string, string>>,
     Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
     (row) => factTimestamp(row["?at"]),
   );
@@ -498,22 +500,14 @@ async function loadTimelineSnapshot(
   // already have a real step payload.
   const compactionLayers = await readCompactionChain(chatId);
   const compactionStepPayloadHashes = new Set<string>();
-  await Promise.all(
-    compactionSteps
-      .filter((row) => row["?kind"] === "agent:Compaction")
-      .map(async (row) => {
-        const stepId = row["?step"];
-        if (!stepId) return;
-        const payload = await moo.facts.match({ store: c.facts, ...{
-          graph: c.graph,
-          subject: stepId,
-          predicate: "agent:payload",
-          limit: 1,
-        } });
-        const hash = payload[0]?.[3];
-        if (hash) compactionStepPayloadHashes.add(hash);
-      }),
-  );
+  const compactionStepIds = (compactionSteps as Array<Record<string, string>>)
+    .filter((row) => row["?kind"] === "agent:Compaction")
+    .map((row) => row["?step"])
+    .filter((stepId): stepId is string => Boolean(stepId));
+  for (const row of host.matchFactsBySubjects(c.facts, c.graph, compactionStepIds, ["agent:payload"])) {
+    const hash = row[3];
+    if (hash) compactionStepPayloadHashes.add(hash);
+  }
   const syntheticCompactions = compactionLayers
     .filter((layer) => !compactionStepPayloadHashes.has(layer.hash))
     .map((layer) => ({
@@ -603,54 +597,46 @@ async function loadTimelineSnapshot(
       ].sort(compareTimelineItems)
     : undefined;
 
-  // Fetch per-step metadata with one scan per predicate, then filter to the
-  // visible window. Hundreds of subject-specific host calls are much slower
-  // than a few predicate scans once a chat has accumulated many steps.
-  const [payloadRows, resultRows, modelRows, effortRows, deletedAtRows] = await Promise.all([
-    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:payload" }),
-    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:result" }),
-    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:model" }),
-    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:effort" }),
-    moo.facts.match({ store: c.facts, graph: c.graph, predicate: "agent:deletedAt" }),
+  const stepMetadataRows = host.matchFactsBySubjects(c.facts, c.graph, [...visibleStepIds], [
+    "agent:payload",
+    "agent:result",
+    "agent:model",
+    "agent:effort",
+    "agent:deletedAt",
   ]);
   const payloadHashByStep = new Map<string, string>();
   const resultHashByStep = new Map<string, string>();
   const modelByStep = new Map<string, string>();
   const effortByStep = new Map<string, string>();
   const deletedAtByStep = new Map<string, string>();
-  const keepVisibleStepFact = (row: string[]) => visibleStepIds.has(row[1]);
-  for (const row of payloadRows) {
-    if (keepVisibleStepFact(row)) payloadHashByStep.set(row[1], row[3]);
-  }
-  for (const row of resultRows) {
-    if (keepVisibleStepFact(row)) resultHashByStep.set(row[1], row[3]);
-  }
-  for (const row of modelRows) {
-    if (keepVisibleStepFact(row)) modelByStep.set(row[1], row[3]);
-  }
-  for (const row of effortRows) {
-    if (keepVisibleStepFact(row)) effortByStep.set(row[1], row[3]);
-  }
-  for (const row of deletedAtRows) {
-    if (keepVisibleStepFact(row)) deletedAtByStep.set(row[1], row[3]);
+  for (const row of stepMetadataRows) {
+    const stepId = row[1];
+    const predicate = row[2];
+    const object = row[3];
+    if (!visibleStepIds.has(stepId)) continue;
+    if (predicate === "agent:payload") payloadHashByStep.set(stepId, object);
+    else if (predicate === "agent:result") resultHashByStep.set(stepId, object);
+    else if (predicate === "agent:model") modelByStep.set(stepId, object);
+    else if (predicate === "agent:effort") effortByStep.set(stepId, object);
+    else if (predicate === "agent:deletedAt") deletedAtByStep.set(stepId, object);
   }
 
   // Dedupe object hashes — same payload referenced twice (rare) costs one
-  // lookup. Keep object reads bounded so large visible RunJS histories do not
+  // lookup. Keep object reads bounded so large visible RunTS histories do not
   // create hundreds of host calls in one burst.
-  const runJsVisibleStepIds = new Set<string>(
+  const runTsVisibleStepIds = new Set<string>(
     visibleSteps
-      .filter((row) => row["?kind"] === "agent:RunJS")
+      .filter((row) => row["?kind"] === "agent:RunTS" || row["?kind"] === "agent:RunJS")
       .map((row) => row["?step"]!)
       .filter(Boolean),
   );
   const wantedHashes = new Set<string>();
   for (const h of payloadHashByStep.values()) wantedHashes.add(h);
   for (const [stepId, h] of resultHashByStep) {
-    // RunJS results are often the largest visible objects and are hidden in a
+    // RunTS results are often the largest visible objects and are hidden in a
     // collapsed row. Return their hashes and hydrate only when the user opens
-    // the row; keep non-RunJS results eager for existing renderers.
-    if (!runJsVisibleStepIds.has(stepId)) wantedHashes.add(h);
+    // the row; keep non-RunTS results eager for existing renderers.
+    if (!runTsVisibleStepIds.has(stepId)) wantedHashes.add(h);
   }
   const objectByHash = await loadObjectsByHash(wantedHashes);
 
@@ -683,12 +669,13 @@ async function loadTimelineSnapshot(
         label: payload.value.label ?? null,
         task: payload.value.task ?? null,
         childChatId: payload.value.childChatId ?? null,
+        parentRunTsStepId: payload.value.parentRunTsStepId ?? null,
         parentRunJsStepId: payload.value.parentRunJsStepId ?? null,
         result: result?.value ?? null,
       };
     }
-    if (s["?kind"] === "agent:RunJS" && payload?.value) {
-      item.runjs = {
+    if ((s["?kind"] === "agent:RunTS" || s["?kind"] === "agent:RunJS") && payload?.value) {
+      item.runts = {
         label: payload.value.label ?? null,
         description: payload.value.description ?? null,
         ...(Object.prototype.hasOwnProperty.call(payload.value, "args") ? { args: payload.value.args } : {}),
@@ -699,7 +686,7 @@ async function loadTimelineSnapshot(
       };
       const resultHash = resultHashByStep.get(stepId);
       if (resultHash && !result) {
-        item.lazyRunjsResult = true;
+        item.lazyRuntsResult = true;
         item.resultHash = resultHash;
       }
     }
@@ -934,11 +921,12 @@ const DEFAULT_MODEL_PRICING: Record<string, ModelPrice> = defaultModelPricing();
 
 export function validPrice(v: unknown): v is ModelPrice {
   const r = v as Partial<ModelPrice> | null;
-  return !!r &&
-    Number.isFinite(r.input) && r.input >= 0 &&
-    Number.isFinite(r.cachedInput) && r.cachedInput >= 0 &&
-    Number.isFinite(r.output) && r.output >= 0 &&
-    (r.cacheWriteInput == null || (Number.isFinite(r.cacheWriteInput) && r.cacheWriteInput >= 0));
+  if (!r) return false;
+  const { input, cachedInput, output, cacheWriteInput } = r;
+  return typeof input === "number" && Number.isFinite(input) && input >= 0 &&
+    typeof cachedInput === "number" && Number.isFinite(cachedInput) && cachedInput >= 0 &&
+    typeof output === "number" && Number.isFinite(output) && output >= 0 &&
+    (cacheWriteInput == null || (typeof cacheWriteInput === "number" && Number.isFinite(cacheWriteInput) && cacheWriteInput >= 0));
 }
 
 export async function loadPricing(): Promise<Record<string, ModelPrice>> {

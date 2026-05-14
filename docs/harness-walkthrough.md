@@ -169,7 +169,7 @@ flowchart TD
   LLM --> Driver
   Driver --> StepNext
 
-  StepNext -->|tool-js request| ToolWorker[run-js-tool worker]
+  StepNext -->|tool-ts request| ToolWorker[run-ts-tool worker]
   ToolWorker --> Driver
   Driver --> StepNext
 
@@ -218,7 +218,7 @@ flowchart TD
   Classify -->|step/resume| ChatLock[Acquire per-chat lock]
   ChatLock --> HarnessWorker[Run harness command]
 
-  Classify -->|run-js-tool| ToolLane[Async tool worker]
+  Classify -->|run-ts-tool| ToolLane[Async tool worker]
   ToolLane --> FreshCtx[Fresh V8 context]
 
   Classify -->|ui-call| UiLane[UI/app worker]
@@ -253,7 +253,7 @@ stateDiagram-v2
   StepNext --> LLM: harness requests model call
   LLM --> StepNext: llmResult
 
-  StepNext --> Tool: harness requests tool-js
+  StepNext --> Tool: harness requests tool-ts
   Tool --> StepNext: toolResult
 
   StepNext --> WaitInput: wait-input
@@ -277,7 +277,7 @@ while (true) {
     continue;
   }
 
-  if (next.kind === "tool-js") {
+  if (next.kind === "tool-ts") {
     const toolResult = await runJsTool(next.tool);
     state = { ...state, toolResult };
     continue;
@@ -308,18 +308,18 @@ sequenceDiagram
   Driver->>Harness: step-next with llmResult
 ```
 
-Tool calls follow the same mediator pattern. The harness emits a `tool-js` action; Rust schedules `run-js-tool`; the tool result is fed back into `step-next`.
+Tool calls follow the same mediator pattern. The harness emits a `tool-ts` action; Rust schedules `run-ts-tool`; the tool result is fed back into `step-next`.
 
 ```mermaid
 sequenceDiagram
   participant Driver as Rust driver
   participant Harness as step-next
   participant Pool as worker pool
-  participant Tool as run-js-tool
+  participant Tool as run-ts-tool
 
   Driver->>Harness: step-next with llmResult
-  Harness-->>Driver: tool-js request
-  Driver->>Pool: schedule run-js-tool
+  Harness-->>Driver: tool-ts request
+  Driver->>Pool: schedule run-ts-tool
   Pool->>Tool: execute JS async IIFE
   Tool-->>Pool: toolResult
   Pool-->>Driver: toolResult
@@ -375,8 +375,8 @@ sequenceDiagram
       Driver->>LLM: stream completion
       LLM-->>Driver: llmResult
     else tool needed
-      Harness-->>Driver: tool-js request
-      Driver->>Tool: run-js-tool
+      Harness-->>Driver: tool-ts request
+      Driver->>Tool: run-ts-tool
       Tool-->>Driver: toolResult
     else needs user
       Harness-->>Driver: wait-input
@@ -399,7 +399,7 @@ Key files:
 - [`src/ops/llm.rs`](../src/ops/llm.rs): provider calls, streaming, and final LLM results.
 - [`harness/src/index.ts`](../harness/src/index.ts): exposes `moo` and `main`.
 - [`harness/src/commands.ts`](../harness/src/commands.ts): command router and tracing wrapper.
-- [`harness/src/commands/step.ts`](../harness/src/commands/step.ts): step/resume entrypoints plus `run-js-tool` command handling.
+- [`harness/src/commands/step.ts`](../harness/src/commands/step.ts): step/resume entrypoints plus `run-ts-tool` command handling.
 - [`harness/src/driver/step.ts`](../harness/src/driver/step.ts): harness-side reducer/planner for the next driver action.
 - [`harness/src/agent.ts`](../harness/src/agent.ts): prompt assembly, model request construction, tool definitions, compaction, and usage accounting.
 - [`harness/src/moo.ts`](../harness/src/moo.ts): agent-facing facade over native capabilities.

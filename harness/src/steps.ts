@@ -13,7 +13,7 @@ export type AppendedStep = {
 
 export function stepClass(kind: string): StepClass {
   if (kind === "agent:UserInput" || kind === "agent:Reply" || kind === "agent:Final") return "agent:Message";
-  if (kind === "agent:ShellCommand" || kind === "agent:RunJS" || kind === "agent:Subagent" || kind === "agent:ToolCall") return "agent:ToolInvocation";
+  if (kind === "agent:ShellCommand" || kind === "agent:RunTS" || kind === "agent:Subagent" || kind === "agent:ToolCall") return "agent:ToolInvocation";
   if (kind === "agent:Error") return "agent:ErrorEvent";
   return "agent:LifecycleMarker";
 }

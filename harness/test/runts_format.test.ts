@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { serializeToolValue } from "../src/agent";
 
-describe("runJS result formatting", () => {
+describe("runTS result formatting", () => {
   test("uses indented multiline HJSON for code-like strings", () => {
     const code = [
       "function greet(name) {",
@@ -13,9 +13,9 @@ describe("runJS result formatting", () => {
       "}",
     ].join("\n");
 
-    const text = serializeToolValue({ snippets: { javascript: code } });
+    const text = serializeToolValue({ snippets: { typescript: code } });
 
-    expect(text).toContain("javascript: '''");
+    expect(text).toContain("typescript: '''");
     expect(text).toContain("    function greet(name) {");
     expect(text).toContain("        if (!name) {");
     expect(text).toContain("          return \"hello\";");

@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
@@ -36,6 +36,16 @@ struct RunningChat {
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningChat>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+fn running_lock() -> MutexGuard<'static, HashMap<String, RunningChat>> {
+    match RUNNING.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("running chat registry mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
 
 pub fn dispatch_drive(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
     dispatch_state(pool, bundle, state);
@@ -255,7 +265,7 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
         return;
     }
     let cid = chat_id.clone();
-    if let Some(prev) = RUNNING.lock().unwrap().remove(&cid) {
+    if let Some(prev) = running_lock().remove(&cid) {
         finish_running(prev);
     }
 
@@ -292,7 +302,7 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
                 "error": e,
             }));
         }
-        let mut running = RUNNING.lock().unwrap();
+        let mut running = running_lock();
         if running
             .get(&chat_id)
             .map(|entry| entry.run_id == run_id)
@@ -301,7 +311,7 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
             running.remove(&chat_id);
         }
     });
-    RUNNING.lock().unwrap().insert(
+    running_lock().insert(
         cid,
         RunningChat {
             handle,
@@ -422,7 +432,7 @@ pub fn apply_driver_action(action: &Value, pool: &Arc<Pool>, bundle: &Arc<String
 }
 
 pub fn interrupt(chat_id: &str) -> bool {
-    let Some(running) = RUNNING.lock().unwrap().remove(chat_id) else {
+    let Some(running) = running_lock().remove(chat_id) else {
         return false;
     };
     finish_running(running);
@@ -430,13 +440,11 @@ pub fn interrupt(chat_id: &str) -> bool {
 }
 
 pub fn running_ids() -> Vec<String> {
-    RUNNING.lock().unwrap().keys().cloned().collect()
+    running_lock().keys().cloned().collect()
 }
 
 pub fn running_started_at() -> HashMap<String, u64> {
-    RUNNING
-        .lock()
-        .unwrap()
+    running_lock()
         .iter()
         .map(|(chat_id, running)| (chat_id.clone(), running.started_at))
         .collect()
@@ -634,7 +642,7 @@ async fn drive_loop(
                     }),
                 );
             }
-            Some("tool-js") => {
+            Some("tool-ts") => {
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
                 let tool_span = ChatTraceSpan::new(
                     chat_trace_open(
@@ -642,17 +650,17 @@ async fn drive_loop(
                         chat_id,
                         Some(run_id),
                         "tool",
-                        "harness.runjs_tool",
+                        "harness.runts_tool",
                         json!({
                             "chatId": chat_id,
                             "toolCall": value.get("toolCall").cloned().unwrap_or(Value::Null),
                             "request": value.clone(),
                         }),
                     ),
-                    "harness.runjs_tool",
+                    "harness.runts_tool",
                 );
                 let tool_result =
-                    run_js_tool_async(pool, bundle, &value, tool_span.id(), tool_cancel.clone())
+                    run_ts_tool_async(pool, bundle, &value, tool_span.id(), tool_cancel.clone())
                         .await;
                 let tool_ok = tool_result
                     .get("status")
@@ -705,7 +713,7 @@ async fn drive_loop(
     }
 }
 
-async fn run_js_tool_async(
+async fn run_ts_tool_async(
     pool: &Arc<Pool>,
     bundle: &Arc<String>,
     value: &Value,
@@ -724,7 +732,7 @@ async fn run_js_tool_async(
         .unwrap_or("")
         .to_string();
     let input = json!({
-        "command": "run-js-tool",
+        "command": "run-ts-tool",
         "chatId": chat_id,
         "state": value.get("state").cloned().unwrap_or(Value::Null),
         "toolCall": tool_call,
@@ -749,7 +757,7 @@ async fn run_js_tool_async(
             Some(v) => v,
             None => json!({
                 "toolCallId": tool_call_id,
-                "content": "error: runJS returned an invalid harness response",
+                "content": "error: runTS returned an invalid harness response",
                 "status": "failed",
             }),
         },
@@ -980,14 +988,14 @@ async fn drive_limited(
                     "llmDurationNs": duration_ns,
                 });
             }
-            Some("tool-js") => {
+            Some("tool-ts") => {
                 steps = steps.saturating_add(1);
                 if steps > max_steps {
                     return Err(format!("subagent exceeded maxSteps={max_steps}"));
                 }
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
                 let tool_result =
-                    run_js_tool_async(pool, bundle, &value, None, cancelled.clone()).await;
+                    run_ts_tool_async(pool, bundle, &value, None, cancelled.clone()).await;
                 next_input = json!({
                     "command": "step-next",
                     "state": state,
@@ -1084,5 +1092,16 @@ fn publish_event_payload_at(payload: &Value, at: u64) {
     }
     if let Ok(s) = serde_json::to_string(&payload) {
         broadcast::publish(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn running_registry_lock_recovers_from_poison() {
+        let source = include_str!("driver.rs");
+        assert!(source.contains("fn running_lock"));
+        assert!(!source.contains(concat!("RUNNING", ".lock().unwrap()")));
+        assert!(!source.contains(concat!("RUNNING", ".lock().expect")));
     }
 }

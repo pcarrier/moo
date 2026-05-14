@@ -14,9 +14,10 @@ export type Toast = {
 };
 
 export function wsErrorMessage(err: unknown): string {
-  return err && typeof err === "object" && "message" in (err as any)
-    ? String((err as any).message)
-    : String(err);
+  if (!err || typeof err !== "object") return String(err);
+  if (!("message" in err)) return String(err);
+  const { message } = err as { readonly message?: unknown };
+  return String(message);
 }
 
 function wsErrorDetails(err: unknown): string | undefined {

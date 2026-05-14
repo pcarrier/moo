@@ -4,6 +4,7 @@ declare global {
   function __op_sha256_base64url(input: string): string;
   function __op_object_put(kind: string, content: string): string;
   function __op_object_get(hash: string): { kind: string; content: string; bytesBase64?: string; size?: number } | null;
+  function __op_objects_get(hashesJson: string): string;
   function __op_ref_set(name: string, target: string): void;
   function __op_ref_get(name: string): string | null;
   function __op_ref_cas(name: string, expected: string | null, next: string): boolean;
@@ -33,6 +34,7 @@ declare global {
     object: string | null,
     limit: number | null,
   ): string[][];
+  function __op_facts_match_subjects(store: string, graph: string | null, subjectsJson: string, predicatesJson: string): string[][];
   function __op_facts_match_all(
     store: string,
     patternsJson: string,
@@ -103,7 +105,7 @@ declare global {
     headersJson: string,
     body: string | null,
     timeoutMs: number,
-  ): { status: number; headers?: string; body: string };
+  ): { status: number; headers?: string; body: string; bodyTruncated?: boolean };
   function __op_http_stream_open(
     method: string,
     url: string,
@@ -119,17 +121,17 @@ declare global {
   function __op_chat_running_ids(): string;
   function __op_chat_running_started_at(): string;
   function __op_agent_run(requestJson: string): Promise<string>;
-  function __op_trace_ensure_root(optsJson: string): void;
-  function __op_trace_ensure_span(optsJson: string): void;
+  function __op_trace_ensure_root(optsJson: string): string;
+  function __op_trace_ensure_span(optsJson: string): string;
   function __op_trace_start_root(stepId: string | null, dataJson: string): string;
   function __op_trace_enter(optsJson: string): string;
-  function __op_trace_current(): string | null;
+  function __op_trace_current(): string;
   function __op_trace_get(optsJson: string): string | null;
   function __op_trace_events(optsJson: string): string;
   function __op_trace_recent(limit: number): string;
   function __op_trace_enabled(): boolean;
-  function __op_trace_insert(optsJson: string): string | null;
-  function __op_trace_finish(id: string, status?: string | null, dataJson?: string | null): boolean;
+  function __op_trace_insert(optsJson: string): string;
+  function __op_trace_finish(id: string, status?: string | null, dataJson?: string | null): string;
   function __op_trace_set_parent(id: string | null): string | null;
   function __op_trace_leave(): void;
 

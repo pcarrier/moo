@@ -38,4 +38,18 @@ describe("sidebar diff wrapping", () => {
   white-space: pre-wrap;
   overflow-wrap: normal;`);
   });
+
+  test("offers expand-or-collapse controls for hidden diff context", () => {
+    expect(diffView).toContain('const shown = () => storedShown() > 0 ? total() : 0;');
+    expect(diffView).toContain('const contextLabel = () => hasShown() ? "expanded" : `${total()} hidden`;');
+    expect(diffView).toContain('const expandAll = () => setShown(total());');
+    expect(diffView).toContain('const collapseAll = () => setShown(0);');
+    expect(diffView).toContain('aria-label="Expand or collapse hidden diff context"');
+    expect(diffView).toContain('<button type="button" onClick={expandAll}>expand</button>');
+    expect(diffView).toContain('<button type="button" onClick={collapseAll}>collapse</button>');
+    expect(diffView).not.toContain('>{remaining()}/{total()} hidden');
+    expect(diffView).not.toContain('>+all</button>');
+    expect(diffView).not.toContain('onClick={() => expand(10)}');
+    expect(diffView).not.toContain('onClick={() => expand(100)}');
+  });
 });

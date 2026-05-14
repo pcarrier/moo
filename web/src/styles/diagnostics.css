@@ -8,17 +8,17 @@
   min-width: 0;
   max-width: 100%;
 }
-.subagent-step .runjs-label {
+.subagent-step .runts-label {
   color: color-mix(in srgb, currentColor 92%, var(--accent, #7c5cff));
 }
 .subagent-body {
   min-inline-size: 0;
   max-inline-size: 100%;
 }
-.subagent-task.runjs-markdown {
+.subagent-task.runts-markdown {
   overflow-wrap: anywhere;
 }
-.subagent-task.runjs-markdown pre {
+.subagent-task.runts-markdown pre {
   min-inline-size: 0;
   max-inline-size: 100%;
 }

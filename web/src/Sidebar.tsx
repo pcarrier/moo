@@ -21,6 +21,7 @@ import {
 } from "./markdown";
 import {
   DEFAULT_HIGHLIGHT_MAX_BYTES,
+  escapeHtml,
   highlightAuto,
   highlightByPath,
   highlightHjsonValue,
@@ -37,14 +38,10 @@ import {
   type GitBranchItem,
   type GitBranchesValue,
   type JjRevisionItem,
-  type StepItem,
   type StoreObject,
   type TimelineItem,
   type Sha256Hash,
-  type TrailItem,
   type MemoryDiffItem,
-  type TodoDiffItem,
-  type TodoDiffChange,
 } from "./api";
 import {
   ChangeStatsBadge,
@@ -55,6 +52,12 @@ import {
   entryDiffCount,
   entryDiffTitle,
 } from "./sidebar/badges";
+import {
+  buildTrailItems,
+  trailSourceItems,
+  type AgentTrailItem,
+  type AgentTrailSource,
+} from "./sidebar/trail";
 import {
   diffStats,
   hasFileDiffBeforeSnapshot,
@@ -572,7 +575,7 @@ function hasBeforeSnapshot(item: FileDiffItem): boolean {
   );
 }
 
-function hasAfterSnapshot(item: FileDiffItem): boolean {
+export function hasAfterSnapshot(item: FileDiffItem): boolean {
   return (
     Object.prototype.hasOwnProperty.call(item, "after") &&
     (typeof item.after === "string" || item.after === null)
@@ -1477,10 +1480,12 @@ function RepoFileDiffPreview(props: {
   const diffPath = () => props.diff.path || relativePreviewPath();
   const displayPath = () =>
     displayFilePath(previewPath(), props.assetRootPath ?? null);
-  const recordedAfterContent = () =>
-    typeof props.diff.after === "string" ? props.diff.after : null;
   const latestContent = () =>
     props.file.kind === "file" ? props.file.content || "" : "";
+  const diffTargetContent = () => {
+    if (hasAfterSnapshot(props.diff)) return props.diff.after ?? null;
+    return latestContent();
+  };
   const [localMode, setLocalMode] = createSignal<DiffContentMode>("diff");
   const mode = () => props.viewState?.mode ?? localMode();
   const setMode = (nextMode: DiffContentMode) => {
@@ -1512,8 +1517,8 @@ function RepoFileDiffPreview(props: {
       path={diffPath()}
       sourcePath={previewPath()}
       diff={props.diff.diff}
-      snapshot={recordedAfterContent() ?? latestContent()}
-      sourceContent={latestContent()}
+      snapshot={diffTargetContent()}
+      sourceContent={diffTargetContent()}
       mode={mode}
       setMode={setMode}
       assetRootPath={props.assetRootPath}
@@ -1562,10 +1567,13 @@ function FileDiffPanel(props: {
 }) {
   const sourcePath = () => props.sourcePath || props.path;
   const previewKind = () => previewKindForPath(sourcePath());
-  const sourceContent = () => props.sourceContent ?? props.snapshot ?? "";
-  const hasSnapshot = () =>
-    typeof props.sourceContent === "string" ||
-    typeof props.snapshot === "string";
+  const targetContent = () => {
+    if (typeof props.snapshot === "string") return props.snapshot;
+    if (props.snapshot === null) return null;
+    return typeof props.sourceContent === "string" ? props.sourceContent : null;
+  };
+  const sourceContent = () => targetContent() ?? "";
+  const hasSnapshot = () => typeof targetContent() === "string";
   const hasPreview = () => Boolean(previewKind() && hasSnapshot());
   const renderedSource = createMemo(() =>
     highlightByPath(sourceContent(), sourcePath()),
@@ -2001,7 +2009,7 @@ export function RightSidebar(props: { bag: Bag }) {
   const activeTab = () => props.bag.activeRightSidebarTab();
   const detailPanelMode = () => props.bag.view() === "traces";
   const openFileDiffs = createMemo(() =>
-    mergedFileDiffs(trailSourceItems(props.bag)),
+    mergedFileDiffs(trailSourceItemsForBag(props.bag)),
   );
   const [tabsScrollable, setTabsScrollable] = createSignal(false);
   const installTabsOverflow = (tabs: HTMLDivElement) => {
@@ -2210,7 +2218,7 @@ export function RightSidebar(props: { bag: Bag }) {
                   onOpenStore={(hash) =>
                     void props.bag.openStorePreviewInSidebar(hash)
                   }
-                  expansion={props.bag.expansionStore()}
+                  expansion={props.bag.sidebarDiffExpansionStore()}
                   syntaxHighlightMaxBytes={
                     props.bag.settingsCache()?.ui?.syntaxHighlightMaxBytes
                   }
@@ -2328,7 +2336,7 @@ function BrowserTab(props: {
   let readSeq = 0;
 
   const browserDiffs = createMemo(() =>
-    mergedFileDiffs(trailSourceItems(props.bag)),
+    mergedFileDiffs(trailSourceItemsForBag(props.bag)),
   );
   const timelineDiffStats = createMemo(() => {
     const stats: BrowserDiffStatsMap = new Map();
@@ -2478,7 +2486,7 @@ function BrowserTab(props: {
       };
     });
     const root = rootPath();
-    const revision = fileSizeRevisionForPath(path, trailSourceItems(props.bag));
+    const revision = fileSizeRevisionForPath(path, trailSourceItemsForBag(props.bag));
     void api("fs-read", { path, basePath: root, includeDiff: true }).then((r) => {
       if (seq !== readSeq) return;
       if (!r.ok) {
@@ -2571,7 +2579,7 @@ function BrowserTab(props: {
             onOpenStore={(hash) =>
               void props.bag.openStorePreviewInSidebar(hash)
             }
-            expansion={props.bag.expansionStore()}
+            expansion={props.bag.sidebarDiffExpansionStore()}
             diffStats={timelineDiffStats()}
             syntaxHighlightMaxBytes={
               props.bag.settingsCache()?.ui?.syntaxHighlightMaxBytes
@@ -2587,7 +2595,7 @@ function BrowserTab(props: {
             file={file()}
             diff={diff()}
             assetRootPath={rootPath()}
-            expansion={props.bag.expansionStore()}
+            expansion={props.bag.sidebarDiffExpansionStore()}
             onOpenFile={openPath}
             onOpenStore={(hash) =>
               void props.bag.openStorePreviewInSidebar(hash)
@@ -2881,24 +2889,18 @@ function traceTabTitle(
   );
 }
 
-type AgentTrailItem = {
-  id: string;
-  at: number;
-  title: string;
-  timelineKey?: string;
-  detail?: string;
-  kind: string;
-  tone?: "title" | "summary" | "todo" | "subagent";
-  todoStatus?: "todo" | "doing" | "done" | "blocked" | "dropped";
-  path?: string;
-  targetChatId?: string;
-  stats?: { added: number; removed: number };
-  titleMarkdown?: boolean;
-  detailMarkdown?: boolean;
-};
+function agentTrailSourceForBag(bag: Bag): AgentTrailSource {
+  return { trail: bag.trail(), timeline: bag.timeline() };
+}
+
+function trailSourceItemsForBag(bag: Bag): TimelineItem[] {
+  return trailSourceItems(agentTrailSourceForBag(bag));
+}
 
 function AgentTrailSection(props: { bag: Bag }) {
-  const items = createMemo(() => buildTrailItems(props.bag));
+  const items = createMemo(() =>
+    buildTrailItems(agentTrailSourceForBag(props.bag)),
+  );
   return (
     <section class="agent-trail-panel" aria-label="trail for this chat">
       <Show
@@ -3031,160 +3033,6 @@ function AgentTrailInline(props: {
   ) : (
     <span class={props.class}>{props.content}</span>
   );
-}
-
-function trailSourceItems(bag: Bag): TimelineItem[] {
-  const byKey = new Map<string, TimelineItem>();
-  // `trail` can lag behind websocket-pushed timeline updates. Seed it first,
-  // then let live timeline rows replace stale rows with the same key so TODO
-  // trail entries refresh immediately.
-  for (const item of bag.trail()) byKey.set(trailSourceKey(item), item);
-  for (const item of bag.timeline()) byKey.set(trailSourceKey(item), item);
-  return [...byKey.values()];
-}
-
-function buildTrailItems(bag: Bag): AgentTrailItem[] {
-  return trailSourceItems(bag)
-    .flatMap((item) => {
-      if (item.type === "trail") return trailTimelineItem(item);
-      if (item.type === "todo-diff") return todoTrailItems(item);
-      if (item.type === "step" && item.kind === "agent:Subagent")
-        return subagentTimelineItem(item);
-      return null;
-    })
-    .filter((item): item is AgentTrailItem => item !== null)
-    .sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
-}
-
-function trailSourceKey(item: TimelineItem): string {
-  if (item.type === "step") return `step:${item.step}`;
-  if (item.type === "input") return `input:${item.requestId}`;
-  if (item.type === "input-response")
-    return `input-response:${item.responseId}`;
-  if (item.type === "log") return `log:${item.id}`;
-  if (item.type === "trail") return `trail:${item.id}`;
-  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
-  return `file-diff:${item.id}`;
-}
-
-function trailTimelineItem(item: TrailItem): AgentTrailItem | null {
-  if (item.kind === "agent:TitleUpdate") {
-    const nextTitle = String(item.title || "").trim();
-    return {
-      id: item.id,
-      at: item.at,
-      title: nextTitle || "Untitled",
-      timelineKey: `trail:${item.id}`,
-      kind: item.kind,
-      tone: "title",
-    };
-  }
-  if (item.kind === "agent:Summary") {
-    const title = String(item.title || "").trim() || "Agent summary";
-    const detail = String(item.body || item.summary || "").trim();
-    if (!detail && !title) return null;
-    return {
-      id: item.id,
-      at: item.at,
-      title,
-      timelineKey: `trail:${item.id}`,
-      detail,
-      kind: item.kind,
-      tone: "summary",
-      titleMarkdown: true,
-      detailMarkdown: true,
-    };
-  }
-  return null;
-}
-
-function subagentTimelineItem(item: StepItem): AgentTrailItem | null {
-  const info = item.subagent || {};
-  const label = String(info.label || "Subagent").trim() || "Subagent";
-  const task = String(info.task || "").trim();
-  const status = String(info.result?.status || item.status || "").replace(
-    /^agent:/,
-    "",
-  );
-  const childChatId = String(
-    info.childChatId || info.result?.childChatId || "",
-  ).trim();
-  const duration =
-    typeof info.result?.durationNs === "number"
-      ? ` · ${formatTrailDuration(info.result.durationNs / 1_000_000)}`
-      : "";
-  const error = String(info.result?.error || "").trim();
-  const detail = [
-    status ? `${status}${duration}` : "",
-    error ? `error: ${error}` : "",
-    task,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return {
-    id: item.step,
-    at: item.at,
-    title: label,
-    timelineKey: `step:${item.step}`,
-    targetChatId: childChatId || undefined,
-    detail,
-    kind: item.kind,
-    tone: "subagent",
-  };
-}
-
-function formatTrailDuration(ms: number): string {
-  const seconds = Math.max(0, ms / 1000);
-  if (seconds < 10) return `${seconds.toFixed(1)}s`;
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remaining = Math.round(seconds % 60);
-  return `${minutes}m ${remaining}s`;
-}
-
-function todoChangeTextForTrail(change: TodoDiffChange): string {
-  const item = todoFromChange(change);
-  if (item.status === "dropped") return "X";
-  if (item.status === "blocked") return "!";
-  if (item.status === "done") return "-";
-  if (change.kind === "added") return "+";
-  return "~";
-}
-
-function todoFromChange(change: TodoDiffChange) {
-  return change.kind === "removed" ? change.before : change.after;
-}
-
-function previousTodoFromChange(change: TodoDiffChange) {
-  return change.kind === "updated" ? change.before : undefined;
-}
-
-function todoTrailItems(item: TodoDiffItem): AgentTrailItem[] {
-  const changes = Array.isArray(item.changes) ? item.changes : [];
-  return changes.map((change, index) => {
-    const todo = todoFromChange(change);
-    const previous = previousTodoFromChange(change);
-    const action = todoChangeTextForTrail(change);
-    const todoText = `${todo.id}. ${todo.text}`;
-    const note = todo.note ? String(todo.note).trim() : "";
-    const previousText =
-      previous && previous.text !== todo.text
-        ? `was: ${previous.id}. ${previous.text}`
-        : "";
-    const detail = [note, previousText].filter(Boolean).join("\n");
-    return {
-      id: changes.length === 1 ? item.id : `${item.id}:${index}`,
-      at: item.at,
-      title: `${action} ${todoText}`,
-      timelineKey: `todo-diff:${item.id}`,
-      kind: "todo-diff",
-      tone: "todo",
-      detail,
-      titleMarkdown: true,
-      detailMarkdown: true,
-      todoStatus: todo.status,
-    };
-  });
 }
 
 function renderTrailMarkdownInline(content: string): string {
@@ -3338,10 +3186,11 @@ function FactsDiffList(props: { bag: Bag; diffs: MemoryGraphDiffSummary[] }) {
 }
 
 function DiffListSection(props: { bag: Bag }) {
-  const [expanded, setExpanded] = createSignal(false);
-  const diffs = createMemo(() => mergedFileDiffs(trailSourceItems(props.bag)));
+  const expanded = () => props.bag.rightSidebarDiffListExpanded();
+  const setExpanded = props.bag.setRightSidebarDiffListExpanded;
+  const diffs = createMemo(() => mergedFileDiffs(trailSourceItemsForBag(props.bag)));
   const factDiffs = createMemo(() =>
-    mergedMemoryDiffs(trailSourceItems(props.bag)),
+    mergedMemoryDiffs(trailSourceItemsForBag(props.bag)),
   );
   const hasDiffs = () => diffs().length > 0 || factDiffs().length > 0;
   const fileCountLabel = () =>
@@ -3356,9 +3205,6 @@ function DiffListSection(props: { bag: Bag }) {
     if (factDiffs().length > 0) parts.push(memoryCountLabel());
     return parts.join(" · ");
   };
-  createEffect(() => {
-    if (diffs().length === 0 && expanded()) setExpanded(false);
-  });
   return (
     <section
       class="right-diff-list trail-total-diff"
@@ -3381,7 +3227,7 @@ function DiffListSection(props: { bag: Bag }) {
                 active: expanded(),
               }}
               aria-pressed={expanded()}
-              onClick={() => setExpanded((value) => !value)}
+              onClick={() => setExpanded(!expanded())}
             >
               {expanded() ? "List view" : "Expanded view"}
             </button>
@@ -3657,7 +3503,7 @@ function ExpandedFileDiffCard(props: {
   const displayPath = () => collapseHome(displayItem().path);
   const recordedAfterContent = () => displayItem().after;
   const sizeRevision = () =>
-    fileSizeRevisionForPath(displayItem().path, trailSourceItems(props.bag));
+    fileSizeRevisionForPath(displayItem().path, trailSourceItemsForBag(props.bag));
   const [loadedSource, setLoadedSource] = createSignal<{
     path: string;
     basePath: string | null;
@@ -3679,12 +3525,14 @@ function ExpandedFileDiffCard(props: {
     return source.content;
   };
   const wantsFilesystemSource = () =>
-    mode() !== "diff" && Boolean(props.bag.currentChatWorktreePath());
+    mode() !== "diff" &&
+    recordedAfterContent() === undefined &&
+    Boolean(props.bag.currentChatWorktreePath());
   const sourceContent = () => {
-    const loaded = loadedSourceContent();
-    if (typeof loaded === "string") return loaded;
     const after = recordedAfterContent();
-    return typeof after === "string" ? after : null;
+    if (typeof after === "string") return after;
+    if (after === null) return null;
+    return loadedSourceContent();
   };
   const contentSize = () => contentSizeBytes(sourceContent());
   const [loadedSizeBytes, setLoadedSizeBytes] = createSignal<number | null>(
@@ -3819,7 +3667,7 @@ function ExpandedFileDiffCard(props: {
       assetRootPath={props.bag.currentChatWorktreePath()}
       onOpenFile={(nextPath) => void props.bag.openFileInSidebar(nextPath)}
       onOpenStore={(hash) => void props.bag.openStorePreviewInSidebar(hash)}
-      expansion={props.bag.expansionStore()}
+      expansion={props.bag.sidebarDiffExpansionStore()}
       expansionKeyPrefix={`total:${diffJumpKey(props.item)}`}
       sizeBytes={loadedSizeBytes()}
       stats={diffStatsForDisplay(displayItem())}
@@ -3899,7 +3747,7 @@ function DiffDetailTab(props: {
   const rawItem = createMemo(() => {
     if (props.tab.scope === "history") {
       return (
-        mergedFileDiffs(trailSourceItems(props.bag)).find((candidate) =>
+        mergedFileDiffs(trailSourceItemsForBag(props.bag)).find((candidate) =>
           sameDiffPath(candidate.path, props.tab.path),
         ) ?? props.tab.item
       );
@@ -3960,7 +3808,7 @@ function DiffDetailTab(props: {
   };
   const recordedAfterContent = () => item()?.after;
   const sizeRevision = () =>
-    fileSizeRevisionForPath(path(), trailSourceItems(props.bag));
+    fileSizeRevisionForPath(path(), trailSourceItemsForBag(props.bag));
   const [loadedSizeBytes, setLoadedSizeBytes] = createSignal<number | null>(
     cachedFileSizeBytes(path(), props.bag.currentChatWorktreePath()),
   );
@@ -3987,18 +3835,13 @@ function DiffDetailTab(props: {
   };
   const wantsFilesystemSource = () =>
     Boolean(item()) &&
-    (recordedAfterContent() === undefined ||
-      (props.tab.scope === "history" &&
-        Boolean(props.bag.currentChatWorktreePath())));
+    recordedAfterContent() === undefined &&
+    Boolean(props.bag.currentChatWorktreePath());
   const sourceContent = () => {
-    const loaded = loadedSourceContent();
-    if (props.tab.scope === "history" && typeof loaded === "string") {
-      return loaded;
-    }
     const after = recordedAfterContent();
     if (typeof after === "string") return after;
-    if (after === undefined) return loaded;
-    return null;
+    if (after === null) return null;
+    return loadedSourceContent();
   };
   let sizeRequest = 0;
   const openFileSizeBytes = () => {
@@ -4119,7 +3962,7 @@ function DiffDetailTab(props: {
           path={path()}
           sourcePath={path()}
           diff={diff().diff ?? ""}
-          snapshot={typeof diff().after === "string" ? diff().after : null}
+          snapshot={diff().after}
           sourceContent={sourceContent()}
           scopeLabel={scopeLabel()}
           mode={mode}
@@ -4127,6 +3970,8 @@ function DiffDetailTab(props: {
           assetRootPath={props.bag.currentChatWorktreePath()}
           onOpenFile={(nextPath) => void props.bag.openFileInSidebar(nextPath)}
           onOpenStore={(hash) => void props.bag.openStorePreviewInSidebar(hash)}
+          expansion={props.bag.sidebarDiffExpansionStore()}
+          expansionKeyPrefix={`diff-tab:${props.tab.id}`}
           sizeBytes={sourceSizeBytes()}
           stats={diff().stats}
           loading={hydrating() || sourceLoading()}
@@ -4398,10 +4243,34 @@ function RenderedFilePreview(props: {
           title={`HTML preview of ${collapseHome(props.path)}`}
           allow="fullscreen; clipboard-read; clipboard-write; web-share; autoplay; encrypted-media; picture-in-picture"
           src={htmlPreviewSrc() || "about:blank"}
+          srcdoc={htmlPreviewSrcDoc(props.content, htmlPreviewSrc())}
         />
       </div>
     </Show>
   );
+}
+
+export function htmlPreviewSrcDoc(content: string, baseHref: string | null): string {
+  if (!baseHref || /<base\b[^>]*\bhref\s*=/i.test(content)) return content;
+  const base = `<base href="${escapeHtmlAttribute(baseHref)}">`;
+  const headOpen = /<head(?:\s[^>]*)?>/i;
+  if (headOpen.test(content)) {
+    return content.replace(headOpen, (tag) => tag + base);
+  }
+  const htmlOpen = /<html(?:\s[^>]*)?>/i;
+  if (htmlOpen.test(content)) {
+    return content.replace(htmlOpen, (tag) => tag + `<head>${base}</head>`);
+  }
+  const doctype = content.match(/^\s*<!doctype[^>]*>/i);
+  if (doctype) {
+    const index = doctype[0].length;
+    return content.slice(0, index) + `<head>${base}</head>` + content.slice(index);
+  }
+  return `<head>${base}</head>` + content;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function resolveHtmlAssetHref(

@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "moo"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "base64",
  "brotli",
@@ -1106,6 +1106,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "glob",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",

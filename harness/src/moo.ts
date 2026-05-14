@@ -1,5 +1,5 @@
 import * as host from "./host_ops";
-import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult } from "./types";
+import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
 import { ApplyPatchError, applyUnifiedDiff } from "./core/applyPatch";
@@ -55,7 +55,7 @@ const log: Moo["log"] = ({ args }) => {
 
 let activeChatId: string | null = null;
 let activeServerBaseUrl: string | null = null;
-let activeRunJSContext: { chatId: string; runJsStepId: string; depth: number; outstanding: Set<string>; traceId?: string | null } | null = null;
+let activeRunTSContext: { chatId: string; runTsStepId: string; depth: number; outstanding: Set<string>; traceId?: string | null } | null = null;
 
 function normalizeServerBaseUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -85,26 +85,26 @@ export async function withMooChatContext<T>(chatId: string, fn: () => Promise<T>
   }
 }
 
-export async function withMooRunJSContext<T>(
+export async function withMooRunTSContext<T>(
   chatId: string,
-  runJsStepId: string,
+  runTsStepId: string,
   depth: number,
   fn: () => Promise<T>,
 ): Promise<T> {
   const previousChat = activeChatId;
-  const previousRunJS = activeRunJSContext;
+  const previousRunTS = activeRunTSContext;
   activeChatId = chatId;
-  activeRunJSContext = { chatId, runJsStepId, depth, outstanding: new Set(), traceId: null };
+  activeRunTSContext = { chatId, runTsStepId, depth, outstanding: new Set(), traceId: null };
   try {
     return await withTodoDiffBatch(chatId, fn);
   } finally {
-    const ctx = activeRunJSContext;
-    activeRunJSContext = previousRunJS;
+    const ctx = activeRunTSContext;
+    activeRunTSContext = previousRunTS;
     activeChatId = previousChat;
     if (ctx) {
       for (const childChatId of ctx.outstanding) {
         try {
-          await markOutstandingSubagentCancelled(ctx.chatId, childChatId, "runJS finished before awaiting this subagent");
+          await markOutstandingSubagentCancelled(ctx.chatId, childChatId, "runTS finished before awaiting this subagent");
         } catch {
           // best effort only
         }
@@ -279,7 +279,7 @@ function traceAttachmentPlan(parentId: string | null, data: Record<string, unkno
   };
 }
 
-export async function startRunJSTraceRoot(parentId: string | null, data: Record<string, unknown> = {}) {
+export async function startRunTSTraceRoot(parentId: string | null, data: Record<string, unknown> = {}) {
   const current = await host.currentTrace();
   const cur = current ? JSON.parse(current) : null;
   const ambientParentId = typeof cur?.id === "string" && cur.id && cur.id !== parentId ? cur.id : null;
@@ -289,12 +289,12 @@ export async function startRunJSTraceRoot(parentId: string | null, data: Record<
   const raw = await host.enterTrace(JSON.stringify({ id: plan.activeId, rootId: plan.rootId }));
   const entered = raw ? JSON.parse(raw) : null;
   if (!entered) return null;
-  if (activeRunJSContext && (entered.id || entered.traceId || entered.rootId)) activeRunJSContext.traceId = entered.id || entered.traceId || entered.rootId;
+  if (activeRunTSContext && (entered.id || entered.traceId || entered.rootId)) activeRunTSContext.traceId = entered.id || entered.traceId || entered.rootId;
   return entered;
 }
-export const startTraceRoot = startRunJSTraceRoot;
+export const startTraceRoot = startRunTSTraceRoot;
 
-export async function finishRunJSTraceRoot(info: TraceRootInfo) {
+export async function finishRunTSTraceRoot(info: TraceRootInfo) {
   let shouldLeave = false;
   try {
     const current = await host.currentTrace();
@@ -321,7 +321,7 @@ export async function finishRunJSTraceRoot(info: TraceRootInfo) {
     }
   }
 }
-export const finishTraceRoot = finishRunJSTraceRoot;
+export const finishTraceRoot = finishRunTSTraceRoot;
 
 function parseTraceRow(raw: string | null): TraceRow | null {
   return raw ? JSON.parse(raw) as TraceRow : null;
@@ -352,7 +352,7 @@ type TraceRecentRow = TraceRow & {
   chat?: { id: string; title: string | null };
   events?: TraceRow[];
   errorSummary?: string;
-  category?: "runjs_compile" | "patch_mismatch" | "missing_file" | "missing_tool" | "proc_nonzero" | "undefined_variable" | "no_change" | "timeout" | "api_error" | "unknown";
+  category?: "runts_compile" | "patch_mismatch" | "missing_file" | "missing_tool" | "proc_nonzero" | "undefined_variable" | "no_change" | "timeout" | "api_error" | "unknown";
 };
 
 type TraceErrorInfoLocal = NonNullable<Awaited<ReturnType<Moo["traces"]["summary"]>>>["errors"][number];
@@ -394,7 +394,7 @@ function traceErrorOfRow(row: TraceRow): string | null {
 
 function traceCategory(message: string | null, row?: TraceRow): TraceRecentRow["category"] {
   const text = [message ?? "", row?.name ?? "", row?.status ?? ""].join("\n");
-  if (/v8\.compile|Unexpected identifier|missing \) after argument list|SyntaxError/i.test(text)) return "runjs_compile";
+  if (/v8\.compile|Unexpected identifier|missing \) after argument list|SyntaxError/i.test(text)) return "runts_compile";
   if (/patch hunk did not match|hunk.*failed|No valid patches|malformed patch/i.test(text)) return "patch_mismatch";
   if (/command not found|No such file or directory.*python|python3:|which: no/i.test(text)) return "missing_tool";
   if (/No such file or directory|not found|missing file/i.test(text)) return "missing_file";
@@ -523,6 +523,21 @@ function buildTraceSummary(root: TraceRow | null, events: TraceRow[], includeEve
   return summary as TraceSummary;
 }
 
+async function failedTraces(args: TraceFailedArgs & { includeEvents: true }): Promise<TraceSummary[]>;
+async function failedTraces(args?: TraceFailedArgs): Promise<TraceSearchRow[]>;
+async function failedTraces(args: TraceFailedArgs = {}): Promise<TraceSearchRow[] | TraceSummary[]> {
+  const limit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 20)));
+  const rows = await traces.recent({ limit: args.chatId ? 1000 : limit, includeChat: args.includeChat, chatId: args.chatId });
+  const failedRows = rows.filter((row) => row.status && row.status !== "ok" && row.status !== "running").slice(0, limit);
+  if (!args.includeEvents) return failedRows;
+  const out: TraceSummary[] = [];
+  for (const row of failedRows) {
+    const summary = await traces.summary({ traceId: row.traceId, includeEvents: true });
+    if (summary) out.push(summary);
+  }
+  return out;
+}
+
 const traces: Moo["traces"] = {
   async current(_args = {}) {
     const raw = await host.currentTrace();
@@ -580,20 +595,13 @@ const traces: Moo["traces"] = {
       return message ? { message, category: traceCategory(message, row)!, row } : null;
     }).filter(Boolean) as TraceErrorInfoLocal[];
   },
-  async failed(args = {}) {
-    const limit = Math.max(1, Math.min(1000, Math.floor(args.limit ?? 20)));
-    const rows = await traces.recent({ limit: args.chatId ? 1000 : limit, includeChat: args.includeChat, chatId: args.chatId });
-    const failedRows = rows.filter((row) => row.status && row.status !== "ok" && row.status !== "running").slice(0, limit);
-    if (!args.includeEvents) return failedRows;
-    const out: TraceSummary[] = [];
-    for (const row of failedRows) out.push(await traces.summary({ traceId: row.traceId, includeEvents: true }));
-    return out as any;
-  },
+  failed: failedTraces,
   async summary(args = {}) {
     const root = await traces.get(args);
     if (!root) return null;
     const events = await traces.events({ traceId: root.traceId });
-    const summary = buildTraceSummary(root, events, args.includeEvents === true) as any;
+    const summary = buildTraceSummary(root, events, args.includeEvents === true);
+    if (!summary) return null;
     const c = await chatForTraceStep(root.stepId);
     if (c) summary.chat = c;
     return summary;
@@ -603,7 +611,10 @@ const traces: Moo["traces"] = {
     const failures = await traces.failed({ limit, chatId: args.chatId, includeEvents: true }) as unknown as TraceSummary[];
     const recent = await traces.recent({ limit: args.chatId ? 1000 : limit, chatId: args.chatId });
     const summaries: TraceSummary[] = [];
-    for (const row of recent.slice(0, limit)) summaries.push(await traces.summary({ traceId: row.traceId }));
+    for (const row of recent.slice(0, limit)) {
+      const summary = await traces.summary({ traceId: row.traceId });
+      if (summary) summaries.push(summary);
+    }
     const slowRecent = summaries
       .filter((summary) => summary.durationNs != null)
       .sort((a, b) => (b.durationNs ?? 0) - (a.durationNs ?? 0))
@@ -611,8 +622,8 @@ const traces: Moo["traces"] = {
     const slowestSpans = slowRecent.flatMap((summary: any) => (summary.slowestSpans ?? []).map((span: any) => ({ traceId: summary.traceId, ...span }))).sort((a: any, b: any) => (b.durationNs ?? 0) - (a.durationNs ?? 0)).slice(0, limit);
     const sideEffects = summaries.flatMap((summary: any) => (summary.sideEffects ?? []).map((row: TraceRow) => ({ traceId: summary.traceId, row }))).slice(0, limit * 5);
     const failuresByCategory = new Map<string, number>();
-    for (const failure of failures as any[]) {
-      const category = failure.error?.category ?? failure.category ?? "unknown";
+    for (const failure of failures) {
+      const category = failure.error?.category ?? "unknown";
       failuresByCategory.set(category, (failuresByCategory.get(category) ?? 0) + 1);
     }
     return {
@@ -621,13 +632,13 @@ const traces: Moo["traces"] = {
       slowestSpans,
       sideEffects,
       failureGroups: Array.from(failuresByCategory.entries()).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
-    } as any;
+    };
   },
   async mark({ message, data = {} }) {
     const id = await host.insertTrace(JSON.stringify({ kind: "mark", name: "user.mark", status: "ok", data: traceJsonValue({ ...data, message }) }));
     return id === "null" ? null : id;
   },
-  async span({ name, data = {}, fn }) {
+  async span<T>({ name, data = {}, fn }: { name: string; data?: import("./types").TraceSpanOptions; fn: () => T | Promise<T> }): Promise<Awaited<T>> {
     if (typeof fn !== "function") throw new Error("moo.traces.span requires a callback");
     const rawSpanId = await host.insertTrace(JSON.stringify({ kind: "span", name, status: "running", data: traceJsonValue(data ?? {}) }));
     const spanId = rawSpanId === "null" ? null : rawSpanId;
@@ -635,7 +646,7 @@ const traces: Moo["traces"] = {
     try {
       const value = await fn();
       if (spanId) await host.finishTrace(spanId, "ok", traceDataJson({}));
-      return value as any;
+      return value as Awaited<T>;
     } catch (e: any) {
       if (spanId) await host.finishTrace(spanId, "error", traceErrorJson(name, e));
       throw e;
@@ -780,7 +791,7 @@ async function recordMemoryDiff(
 const TIMELINE_OBJECT_KINDS = new Set([
   "agent:FileDiff",
   "agent:MemoryDiff",
-  "agent:RunJS",
+  "agent:RunTS",
   "agent:ToolResult",
   "agent:Subagent",
   "agent:SubagentSpec",
@@ -947,9 +958,20 @@ function parseBindingTerm(value: string): BindingTerm {
   return { value: raw };
 }
 
-function formatBindings(rows: Bindings[], format?: string): Bindings[] | TermBindings[] {
-  if (format !== "term") return rows;
+function termBindings(rows: Bindings[]): TermBindings[] {
   return rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, parseBindingTerm(v)])) as TermBindings);
+}
+
+function formatBindings<F extends SparqlSelectFormat>(rows: Bindings[], format?: F): F extends "term" ? TermBindings[] : Bindings[] {
+  return (format === "term" ? termBindings(rows) : rows) as F extends "term" ? TermBindings[] : Bindings[];
+}
+
+function sparqlQueryResult<F extends SparqlSelectFormat>(decoded: SparqlDecodedResult, format?: F): SparqlQueryResult<F> {
+  return (decoded.type === "select" ? formatBindings(decoded.result, format) : decoded.result) as SparqlQueryResult<F>;
+}
+
+function factMatchResult<F extends FactMatchFormat>(rows: Quad[], format?: F): F extends "object" ? QuadObject[] : Quad[] {
+  return (format === "object" ? quadObjects(rows) : rows) as F extends "object" ? QuadObject[] : Quad[];
 }
 
 function quadObjects(rows: Quad[]): QuadObject[] {
@@ -986,30 +1008,29 @@ async function nativeSparqlQuery(
 }
 
 const sparql: Moo["sparql"] = {
-  async query(args) {
-    const { query, graph = null, limit = null, format = "string" } = args || ({} as any);
-    const store = factStore(args as any, "sparql.query");
+  async query<F extends SparqlSelectFormat = "string">(args: { store: string; query: string; graph?: string | null; limit?: number; format?: F }): Promise<SparqlQueryResult<F>> {
+    const { query, graph = null, limit = null, format } = args;
+    const store = factStore(args, "sparql.query");
     const decoded = await nativeSparqlQuery("query", query, store, graph, limit ?? null);
-    if (decoded.type === "select") return formatBindings(decoded.result as Bindings[], format) as any;
-    return decoded.result as any;
+    return sparqlQueryResult(decoded, format);
   },
-  async select(args) {
-    const { query, graph = null, limit = null, format = "string" } = args as any;
-    const store = factStore(args as any, "sparql.select");
+  async select<F extends SparqlSelectFormat = "string">(args: { store: string; query: string; graph?: string | null; limit?: number; format?: F }): Promise<F extends "term" ? TermBindings[] : Bindings[]> {
+    const { query, graph = null, limit = null, format } = args;
+    const store = factStore(args, "sparql.select");
     const decoded = await nativeSparqlQuery("select", query, store, graph, limit ?? null);
     if (decoded.type !== "select") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not select");
-    return formatBindings(decoded.result as Bindings[], format) as any;
+    return formatBindings(decoded.result, format);
   },
   async ask(args) {
-    const { query, graph = null, limit = null } = args as any;
-    const store = factStore(args as any, "sparql.ask");
+    const { query, graph = null, limit = null } = args;
+    const store = factStore(args, "sparql.ask");
     const decoded = await nativeSparqlQuery("ask", query, store, graph, limit ?? null);
     if (decoded.type !== "ask") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not ask");
     return decoded.result;
   },
   async construct(args) {
-    const { query, graph = null, limit = null } = args as any;
-    const store = factStore(args as any, "sparql.construct");
+    const { query, graph = null, limit = null } = args;
+    const store = factStore(args, "sparql.construct");
     const decoded = await nativeSparqlQuery("construct", query, store, graph, limit ?? null);
     if (decoded.type !== "construct") throw new MooApiError("bad_sparql", "SPARQL query returned " + decoded.type + ", not construct");
     return decoded.result;
@@ -1066,12 +1087,12 @@ const facts: Moo["facts"] = {
     invalidateChatFactsSummary(store);
     return factReceipt(store, 0, 1);
   },
-  async match(args) {
-    const { graph = null, subject = null, predicate = null, object = null, limit = undefined, format = "tuple" } = args;
+  async match<F extends FactMatchFormat = "tuple">(args: FactPattern<F>): Promise<F extends "object" ? QuadObject[] : Quad[]> {
+    const { graph = null, subject = null, predicate = null, object = null, limit = undefined, format } = args;
     const store = factStore(args, "facts.match");
     const encodedObject = object == null ? null : encodeObject(object);
     const rows = host.matchFacts(store, graph, subject, predicate, encodedObject, limit ?? null) as Quad[];
-    return (format === "object" ? quadObjects(rows) : rows) as any;
+    return factMatchResult(rows, format);
   },
   async history(args) {
     const { graph = null, subject = null, predicate = null, object = null, limit = undefined } = args;
@@ -1393,7 +1414,7 @@ const fs: Moo["fs"] = {
   async stat(args = {}) {
     const path = args.path ?? ".";
     const resolved = await resolveActivePath(path);
-    return await traceObserved("moo.fs.stat", { path, resolved }, () => host.statFile(resolved), (value) => ({ exists: value != null, kind: (value as any)?.kind ?? null, size: (value as any)?.size ?? null, mtime: (value as any)?.mtime ?? null }));
+    return await traceObserved("moo.fs.stat", { path, resolved }, () => host.statFile(resolved), (value) => ({ exists: value != null, kind: value?.kind ?? null, size: value?.size ?? null, mtime: value?.mtime ?? null }));
   },
   async canonical({ path }) {
     const resolved = await resolveActivePath(path);
@@ -1548,8 +1569,17 @@ const http: Moo["http"] = {
       timeoutMs: opts.timeoutMs ?? 60_000,
     }, () => {
       const response = host.fetchHttp(method, opts.url, JSON.stringify(headers), body, opts.timeoutMs ?? 60_000);
-      return { status: response.status, body: response.body, headers: parseResponseHeaders(response.headers) };
-    });
+      return {
+        status: response.status,
+        body: response.body,
+        headers: parseResponseHeaders(response.headers),
+        bodyTruncated: response.bodyTruncated === true,
+      };
+    }, (response) => ({
+      status: response.status,
+      bodyChars: response.body.length,
+      bodyTruncated: response.bodyTruncated,
+    }));
   },
   async stream(opts) {
     const method = opts.method || "GET";
@@ -1789,7 +1819,9 @@ async function getJsonMaybe(url: string, timeoutMs = 10_000): Promise<any | null
   }
 }
 
-async function discoverMcpOAuth(server: McpServerConfig): Promise<Required<Pick<NonNullable<McpServerConfig["oauth"]>, "authorizationUrl" | "tokenUrl">> & NonNullable<McpServerConfig["oauth"]> & { registrationUrl?: string }> {
+type DiscoveredMcpOAuth = NonNullable<McpServerConfig["oauth"]> & { authorizationUrl: string; tokenUrl: string; registrationUrl?: string };
+
+async function discoverMcpOAuth(server: McpServerConfig): Promise<DiscoveredMcpOAuth> {
   let oauth = { ...(server.oauth || {}) };
   if ((!oauth.authorizationUrl || !oauth.tokenUrl) && oauth.resourceMetadataUrl) {
     const meta = await getJsonMaybe(oauth.resourceMetadataUrl, server.timeoutMs);
@@ -1825,7 +1857,7 @@ async function discoverMcpOAuth(server: McpServerConfig): Promise<Required<Pick<
   if (!oauth.authorizationUrl || !oauth.tokenUrl) {
     throw new Error(`MCP server ${server.id} needs oauth.authorizationUrl and oauth.tokenUrl (or discoverable metadata)`);
   }
-  return oauth as any;
+  return { ...oauth, authorizationUrl: oauth.authorizationUrl, tokenUrl: oauth.tokenUrl };
 }
 
 async function loadMcpOAuthToken(serverId: string): Promise<McpOAuthToken | null> {
@@ -1909,7 +1941,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.2.11" },
+    clientInfo: { name: "moo", version: "0.3.0" },
   };
 }
 
@@ -2167,7 +2199,7 @@ const mcpCore = {
     }
     let token = await loadMcpOAuthToken(server.id);
     if (token) token = await refreshMcpOAuthToken(server, token);
-    const headers = {
+    const headers: Record<string, string> = {
       Accept: "application/json, text/event-stream",
       ...(server.headers || {}),
       ...(token?.access_token ? { Authorization: `Bearer ${token.access_token}` } : {}),
@@ -2714,7 +2746,7 @@ const chat: Moo["chat"] = {
       compaction: c.compaction,
       usage: c.usage,
       model: c.model,
-      provider: (c as any).provider ?? `chat/${chatId}/provider`,
+      provider: c.provider,
       effort: c.effort,
       graph: c.graph,
       chatIri: c.graph,
@@ -2727,8 +2759,8 @@ const chat: Moo["chat"] = {
       usageRef: c.usage,
       modelRef: c.model,
       effortRef: c.effort,
-      startBranch: (c as any).startBranch ?? `chat/${chatId}/start-branch`,
-      startBranchRef: (c as any).startBranch ?? `chat/${chatId}/start-branch`,
+      startBranch: c.startBranch,
+      startBranchRef: c.startBranch,
     };
   },
   async scratch({ chatId }) {
@@ -2892,11 +2924,7 @@ const chat: Moo["chat"] = {
       await pointers.set({ name: `chat/${cid}/start-branch`, target: String(opts.branch).trim() });
     }
     await chat.touch({ chatId: cid });
-    // Do not materialize the per-chat scratch/worktree during creation.
-    // Creating a git worktree can be slow in large repositories, and the UI
-    // only needs the chat metadata to navigate to an empty chat. The worktree
-    // is still created lazily by chat.scratch() before any repo operation or
-    // agent run that actually needs it.
+    await chat.scratch({ chatId: cid });
     return cid;
   },
   async remove({ chatId }) {
@@ -2973,7 +3001,7 @@ const chat: Moo["chat"] = {
 };
 
 const MAX_SUBAGENT_DEPTH = 1;
-const MAX_OUTSTANDING_SUBAGENTS_PER_RUNJS = 4;
+const MAX_OUTSTANDING_SUBAGENTS_PER_RUNTS = 4;
 const DEFAULT_SUBAGENT_STEPS = 20;
 const DEFAULT_SUBAGENT_TIMEOUT_MS = 10 * 60_000;
 const MAX_SUBAGENT_TIMEOUT_MS = 30 * 60_000;
@@ -3055,11 +3083,11 @@ async function markOutstandingSubagentCancelled(parentChatId: string, childChatI
 }
 
 async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
-  const ctx = activeRunJSContext;
-  if (!ctx) throw new Error("moo.agent.run is only available inside runJS");
+  const ctx = activeRunTSContext;
+  if (!ctx) throw new Error("moo.agent.run is only available inside runTS");
   if (ctx.depth >= MAX_SUBAGENT_DEPTH) throw new Error("subagent depth limit reached");
-  if (ctx.outstanding.size >= MAX_OUTSTANDING_SUBAGENTS_PER_RUNJS) {
-    throw new Error(`too many outstanding subagents; max is ${MAX_OUTSTANDING_SUBAGENTS_PER_RUNJS}`);
+  if (ctx.outstanding.size >= MAX_OUTSTANDING_SUBAGENTS_PER_RUNTS) {
+    throw new Error(`too many outstanding subagents; max is ${MAX_OUTSTANDING_SUBAGENTS_PER_RUNTS}`);
   }
 
   const parentChatId = ctx.chatId;
@@ -3069,7 +3097,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   await pointers.set({ name: `chat/${childChatId}/hidden`, target: "true" });
   await pointers.set({ name: `chat/${childChatId}/parent`, target: parentChatId });
   await pointers.set({ name: `chat/${childChatId}/subagent-depth`, target: String(ctx.depth + 1) });
-  await pointers.set({ name: `chat/${childChatId}/subagent-parent-runjs`, target: ctx.runJsStepId });
+  await pointers.set({ name: `chat/${childChatId}/subagent-parent-runts`, target: ctx.runTsStepId });
   await applyDefaultChatSettings(childChatId);
   if (spec.model) await pointers.set({ name: chatRefs(childChatId).model, target: spec.model });
   if (spec.effort) await pointers.set({ name: chatRefs(childChatId).effort, target: spec.effort });
@@ -3083,7 +3111,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
     context: spec.context ?? null,
     expectedOutput: spec.expectedOutput ?? null,
     childChatId,
-    parentRunJsStepId: ctx.runJsStepId,
+    parentRunTsStepId: ctx.runTsStepId,
   } });
   const appended = await appendStep(parentChatId, {
     kind: "agent:Subagent",
@@ -3091,7 +3119,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
     payloadHash,
     extras: [
       ["agent:childChat", childChatId],
-      ["agent:parentRunJS", ctx.runJsStepId],
+      ["agent:parentRunTS", ctx.runTsStepId],
     ],
   });
   await pointers.set({ name: `chat/${childChatId}/parent-step`, target: appended.stepId });
@@ -3106,7 +3134,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   return {
     requestId: await id.new({ prefix: "subagent" }),
     parentChatId,
-    parentRunJsStepId: ctx.runJsStepId,
+    parentRunTsStepId: ctx.runTsStepId,
     parentSubagentStepId: appended.stepId,
     childChatId,
     spec,
@@ -3120,7 +3148,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
 
 async function finishSubagentRun(childChatId: string, result: SubagentResult) {
   result = normalizeSubagentResult(result as LegacySubagentResult);
-  const ctx = activeRunJSContext;
+  const ctx = activeRunTSContext;
   const parentChatId = ctx?.chatId || (await pointers.get({ name: `chat/${childChatId}/parent` }));
   const stepId = await pointers.get({ name: `chat/${childChatId}/parent-step` });
   if (ctx) ctx.outstanding.delete(childChatId);
@@ -3133,7 +3161,7 @@ async function finishSubagentRun(childChatId: string, result: SubagentResult) {
 
 async function failSubagentRun(childChatId: string | null, err: unknown) {
   if (!childChatId) return;
-  const message = (err as any)?.message || String(err);
+  const message = err && typeof err === "object" && "message" in err ? String((err as { readonly message?: unknown }).message || String(err)) : String(err);
   const result: SubagentResult = {
     status: "failed",
     childChatId,
@@ -3509,14 +3537,15 @@ const rawMoo: Moo = {
 const TRACE_SKIP_ROOTS = new Set(["traces"]);
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return !!value && (typeof value === "object" || typeof value === "function") && typeof (value as any).then === "function";
+  return !!value && (typeof value === "object" || typeof value === "function") && typeof (value as { readonly then?: unknown }).then === "function";
 }
 
 type TraceJsonContext = "input" | "output" | "error" | "event";
 type TraceRedactOpts = { context?: TraceJsonContext };
 
 function ctorName(value: unknown): string | null {
-  const name = (value as any)?.constructor?.name;
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return null;
+  const name = (value as { readonly constructor?: { readonly name?: unknown } }).constructor?.name;
   return typeof name === "string" && name.length > 0 ? name : null;
 }
 
@@ -3557,16 +3586,18 @@ function bytesToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-function errorTraceValue(error: any, seen: WeakSet<object>): Record<string, unknown> {
+function errorTraceValue(error: Error, seen: WeakSet<object>): Record<string, unknown> {
   const out: Record<string, unknown> = {
     type: "error",
-    name: typeof error?.name === "string" ? error.name : ctorName(error) ?? "Error",
-    message: typeof error?.message === "string" ? error.message : String(error),
+    name: typeof error.name === "string" ? error.name : ctorName(error) ?? "Error",
+    message: typeof error.message === "string" ? error.message : String(error),
   };
-  if (typeof error?.stack === "string") out.stack = error.stack;
-  for (const key of Reflect.ownKeys(error ?? {})) {
+  if (typeof error.stack === "string") out.stack = error.stack;
+  for (const key of Reflect.ownKeys(error)) {
     if (key === "name" || key === "message" || key === "stack") continue;
-    out[String(key)] = traceJsonInner((error as any)[key as any], seen);
+    const desc = Object.getOwnPropertyDescriptor(error, key);
+    if (!desc || !("value" in desc)) continue;
+    out[String(key)] = traceJsonInner(desc.value, seen);
   }
   return out;
 }
@@ -3583,7 +3614,7 @@ function traceJsonInner(value: unknown, seen: WeakSet<object>): unknown {
     if (value instanceof Date) return value.toISOString();
     if (value instanceof Error) return errorTraceValue(value, seen);
     if (value instanceof ArrayBuffer) return { type: "ArrayBuffer", encoding: "base64", data: bytesToBase64(new Uint8Array(value)) };
-    if (ArrayBuffer.isView(value as any)) {
+    if (ArrayBuffer.isView(value)) {
       const view = value as ArrayBufferView;
       return {
         type: ctorName(value) ?? "ArrayBufferView",
@@ -3630,9 +3661,10 @@ function traceArgsObject(args: unknown[]): Record<string, unknown> {
 function rowCount(value: unknown): number | null {
   if (Array.isArray(value)) return value.length;
   if (value && typeof value === "object") {
-    const result = (value as any).result;
+    const record = value as { readonly result?: unknown; readonly rows?: unknown };
+    const result = record.result;
     if (Array.isArray(result)) return result.length;
-    const rows = (value as any).rows;
+    const rows = record.rows;
     if (Array.isArray(rows)) return rows.length;
   }
   return null;
@@ -3665,13 +3697,18 @@ function traceNativeOp<T>(name: string, opArgs: unknown[], fn: () => T): T {
     throw e;
   }
 }
+type TraceNativeGlobal = typeof globalThis & Record<string, unknown>;
+type TraceNativeFunction = ((this: unknown, ...args: unknown[]) => unknown) & { readonly [key: symbol]: unknown };
+
 function installNativeOpTracing(): void {
-  const g = globalThis as any;
+  const g = globalThis as TraceNativeGlobal;
   for (const op of host.TRACED_NATIVE_OPS) {
     const original = g[op.globalName];
-    if (typeof original !== "function" || original[TRACE_NATIVE_WRAPPED]) continue;
+    if (typeof original !== "function") continue;
+    const originalFn = original as TraceNativeFunction;
+    if (originalFn[TRACE_NATIVE_WRAPPED]) continue;
     const wrapped = function(this: unknown, ...opArgs: unknown[]) {
-      return traceNativeOp(op.traceName, opArgs, () => original.apply(this, opArgs));
+      return traceNativeOp(op.traceName, opArgs, () => originalFn.apply(this, opArgs));
     };
     Object.defineProperty(wrapped, TRACE_NATIVE_WRAPPED, { value: true });
     Object.defineProperty(wrapped, TRACE_NATIVE_ORIGINAL, { value: original });

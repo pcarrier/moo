@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -35,6 +35,16 @@ static NEXT_TRACE_STATE_VERSION: AtomicU64 = AtomicU64::new(1);
 static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQueue::start);
 static TRACE_IN_FLIGHT_ROWS: LazyLock<Mutex<HashMap<String, TraceInFlightRow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("{name} mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ClickHouseTraceClient {
@@ -674,7 +684,24 @@ impl TraceWriteQueue {
 }
 
 fn report_trace_write_error(message: String, rows: usize) {
-    broadcast::publish(serde_json::json!({ "kind": "trace-write-error", "message": message, "rows": rows, "at": now_ms() }).to_string());
+    broadcast::publish(
+        serde_json::json!({ "kind": "trace-write-error", "message": message, "rows": rows, "at": now_ms() })
+            .to_string(),
+    );
+}
+
+fn report_trace_init_error(message: String, config: &settings::TraceConfig) {
+    broadcast::publish(
+        serde_json::json!({
+            "kind": "trace-init-error",
+            "message": message,
+            "backend": "clickhouse",
+            "endpoint": config.clickhouse_url,
+            "database": config.clickhouse_database,
+            "at": now_ms(),
+        })
+        .to_string(),
+    );
 }
 
 fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
@@ -1082,6 +1109,32 @@ mod tests {
         assert!(sql.contains("WHERE parent_id = 'trace:parent' ORDER BY seq ASC LIMIT 25"));
         assert!(!sql.contains("isNull(parent_id)"));
     }
+
+    #[test]
+    fn trace_initialization_failures_are_published_structurally() {
+        let source = include_str!("host.rs");
+        assert!(source.contains("fn report_trace_init_error"));
+        assert!(source.contains(r#""kind": "trace-init-error""#));
+        assert!(source.contains(r#""backend": "clickhouse""#));
+        assert!(source.contains(r#""endpoint": config.clickhouse_url"#));
+        assert!(source.contains("report_trace_init_error(message, &config);"));
+    }
+
+    #[test]
+    fn global_db_and_trace_locks_recover_from_poison() {
+        let source = include_str!("host.rs");
+        for forbidden in [
+            concat!("DB", ".lock().expect"),
+            concat!("DB_INIT_LOCK", ".lock().map_err"),
+            concat!("TRACE_BACKEND", ".lock().expect"),
+            concat!("TRACE_INITIALIZING", ".lock().expect"),
+            concat!("TRACE_IN_FLIGHT_ROWS", ".lock().expect"),
+            concat!("lock", "().unwrap()"),
+        ] {
+            assert!(!source.contains(forbidden), "host global lock still panics on poison: {forbidden}");
+        }
+        assert!(source.contains("fn lock_recover"));
+    }
 }
 
 fn ch_value<'a>(row: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -1212,14 +1265,11 @@ fn hydrate_trace_rows_ch(
 }
 
 fn current_trace_client() -> Option<ClickHouseTraceClient> {
-    TRACE_BACKEND
-        .lock()
-        .ok()
-        .and_then(|backend| backend.clone())
+    lock_recover(&TRACE_BACKEND, "trace backend").clone()
 }
 
 pub fn with_db<R>(f: impl FnOnce(&mut Connection) -> R) -> R {
-    let mut guard = DB.lock().expect("db mutex poisoned");
+    let mut guard = lock_recover(&DB, "db");
     let conn = guard
         .as_mut()
         .expect("db not initialized — call host::install() first");
@@ -1282,9 +1332,17 @@ create table if not exists settings (
 "#;
 
 pub fn install_db(db_path: &str) -> Result<(), String> {
-    let mut guard = DB.lock().expect("db mutex poisoned");
-    if guard.is_none() {
-        *guard = Some(open_db(db_path)?);
+    let installed = {
+        let mut guard = lock_recover(&DB, "db");
+        if guard.is_none() {
+            *guard = Some(open_db(db_path)?);
+            true
+        } else {
+            false
+        }
+    };
+    if installed {
+        crate::ops::facts::clear_chat_fact_summaries_cache();
     }
     Ok(())
 }
@@ -1299,10 +1357,8 @@ pub fn install(db_path: &str) -> Result<(), String> {
 fn install_trace_config_async(config: settings::TraceConfig) {
     let config = settings::normalize_trace_config(config);
     if !config.enabled {
-        *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = None;
-        *TRACE_INITIALIZING
-            .lock()
-            .expect("trace initializing mutex poisoned") = None;
+        *lock_recover(&TRACE_BACKEND, "trace backend") = None;
+        *lock_recover(&TRACE_INITIALIZING, "trace initializing") = None;
         return;
     }
 
@@ -1315,9 +1371,7 @@ fn install_trace_config_async(config: settings::TraceConfig) {
     }
 
     {
-        let mut initializing = TRACE_INITIALIZING
-            .lock()
-            .expect("trace initializing mutex poisoned");
+        let mut initializing = lock_recover(&TRACE_INITIALIZING, "trace initializing");
         if initializing
             .as_ref()
             .map(|pending| pending == &config)
@@ -1330,11 +1384,11 @@ fn install_trace_config_async(config: settings::TraceConfig) {
 
     thread::spawn(move || {
         if let Err(err) = apply_trace_config(&config) {
-            eprintln!("ClickHouse tracing disabled: failed to initialize trace tables: {err}");
+            let message = format!("failed to initialize trace tables: {err}");
+            eprintln!("ClickHouse tracing disabled: {message}");
+            report_trace_init_error(message, &config);
         }
-        let mut initializing = TRACE_INITIALIZING
-            .lock()
-            .expect("trace initializing mutex poisoned");
+        let mut initializing = lock_recover(&TRACE_INITIALIZING, "trace initializing");
         if initializing
             .as_ref()
             .map(|pending| pending == &config)
@@ -1356,15 +1410,13 @@ pub fn test_trace_config(config: &settings::TraceConfig) -> Result<(), String> {
 pub fn apply_trace_config(config: &settings::TraceConfig) -> Result<(), String> {
     let config = settings::normalize_trace_config(config.clone());
     if !config.enabled {
-        *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = None;
-        *TRACE_INITIALIZING
-            .lock()
-            .expect("trace initializing mutex poisoned") = None;
+        *lock_recover(&TRACE_BACKEND, "trace backend") = None;
+        *lock_recover(&TRACE_INITIALIZING, "trace initializing") = None;
         return Ok(());
     }
     let client = ClickHouseTraceClient::new(config);
     client.ensure_tables()?;
-    *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = Some(client);
+    *lock_recover(&TRACE_BACKEND, "trace backend") = Some(client);
     Ok(())
 }
 
@@ -1425,13 +1477,14 @@ pub static TEST_DB_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 pub fn install_fresh(db_path: &str) -> Result<(), String> {
-    *DB.lock().expect("db mutex poisoned") = Some(open_db(db_path)?);
-    if let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() {
-        rows.clear();
+    {
+        *lock_recover(&DB, "db") = Some(open_db(db_path)?);
     }
+    crate::ops::facts::clear_chat_fact_summaries_cache();
+    lock_recover(&TRACE_IN_FLIGHT_ROWS, "trace in-flight rows").clear();
     NEXT_TRACE_SEQ.store(1, Ordering::Relaxed);
     NEXT_TRACE_STATE_VERSION.store(1, Ordering::Relaxed);
-    *TRACE_BACKEND.lock().expect("trace backend mutex poisoned") = None;
+    *lock_recover(&TRACE_BACKEND, "trace backend") = None;
     Ok(())
 }
 
@@ -1446,7 +1499,7 @@ pub fn open_settings_db(path: &str) -> Result<Connection, String> {
 }
 
 fn open_db_with_schema(path: &str, schema_sql: &str) -> Result<Connection, String> {
-    let _init_guard = DB_INIT_LOCK.lock().map_err(|e| e.to_string())?;
+    let _init_guard = lock_recover(&DB_INIT_LOCK, "db init");
     if let Some(parent) = PathBuf::from(path).parent()
         && !parent.as_os_str().is_empty()
     {

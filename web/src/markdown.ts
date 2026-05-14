@@ -3,23 +3,8 @@ import { displayCodeLanguage, highlightHjson, highlightMarkdownCode, maybeFormat
 
 // Shared marked setup. Keep these options in sync with the timeline/store
 // preview rendering instead of choosing per-call settings.
-const renderer = new Renderer();
-
-renderer.code = renderCodeBlock;
-
-const userRenderer = new Renderer();
-userRenderer.code = renderCodeBlock;
-userRenderer.html = ({ text }) => escapeHtml(text);
-userRenderer.link = function ({ href, title, tokens }) {
-  const safeHref = safeLinkHref(href);
-  const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
-  return '<a href="' + escapeHtmlAttribute(safeHref) + '"' + titleAttribute + '>' + this.parser.parseInline(tokens) + '</a>';
-};
-userRenderer.image = ({ href, title, text }) => {
-  const safeHref = safeLinkHref(href);
-  const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
-  return '<img src="' + escapeHtmlAttribute(safeHref) + '" alt="' + escapeHtmlAttribute(text) + '"' + titleAttribute + '>';
-};
+const renderer = createSafeRenderer();
+const userRenderer = createSafeRenderer();
 
 const marked = new Marked({ gfm: true, breaks: false, renderer });
 const markedWithBreaks = new Marked({ gfm: true, breaks: true, renderer });
@@ -46,6 +31,23 @@ function cachedRender(cache: Map<string, string>, content: string, render: () =>
   cache.set(content, html);
   if (cache.size > MARKDOWN_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
   return html;
+}
+
+function createSafeRenderer(): Renderer {
+  const next = new Renderer();
+  next.code = renderCodeBlock;
+  next.html = ({ text }) => escapeHtml(text);
+  next.link = function ({ href, title, tokens }) {
+    const safeHref = safeLinkHref(href);
+    const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
+    return '<a href="' + escapeHtmlAttribute(safeHref) + '"' + titleAttribute + '>' + this.parser.parseInline(tokens) + '</a>';
+  };
+  next.image = ({ href, title, text }) => {
+    const safeHref = safeLinkHref(href);
+    const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
+    return '<img src="' + escapeHtmlAttribute(safeHref) + '" alt="' + escapeHtmlAttribute(text) + '"' + titleAttribute + '>';
+  };
+  return next;
 }
 
 function renderCodeBlock({ text, lang, escaped }: { text: string; lang?: string; escaped?: boolean }): string {
@@ -78,15 +80,37 @@ export function renderMarkdownWithBreaks(content: string): string {
 export function renderToolDescriptionMarkdown(content: string): string {
   return cachedRender(markdownToolDescriptionCache, content, () => {
     const normalized = normalizeExampleBlocks(content);
-    return markedWithBreaks.parse(normalized) as string;
+    return restoreExampleBlocks(markedWithBreaks.parse(normalized.markdown) as string, normalized.examples);
   });
 }
 
-function normalizeExampleBlocks(content: string): string {
-  return content.replace(/<example(?:\s[^>]*)?>([\s\S]*?)<\/example>/gi, (_match, body: string) => {
+type TrustedExampleBlock = {
+  marker: string;
+  html: string;
+};
+
+const EXAMPLE_MARKER_PREFIX = "\uE000MOO_MCP_EXAMPLE_";
+const EXAMPLE_MARKER_SUFFIX = "\uE001";
+
+function normalizeExampleBlocks(content: string): { markdown: string; examples: TrustedExampleBlock[] } {
+  const examples: TrustedExampleBlock[] = [];
+  const markdown = content.replace(/<example(?:\s[^>]*)?>([\s\S]*?)<\/example>/gi, (_match, body: string) => {
     const code = normalizeExampleCode(trimExampleBlock(String(body)));
-    return "\n\n" + renderExampleBlock(code) + "\n\n";
+    const marker = EXAMPLE_MARKER_PREFIX + examples.length + EXAMPLE_MARKER_SUFFIX;
+    examples.push({ marker, html: renderExampleBlock(code) });
+    return "\n\n" + marker + "\n\n";
   });
+  return { markdown, examples };
+}
+
+function restoreExampleBlocks(html: string, examples: TrustedExampleBlock[]): string {
+  let out = html;
+  for (const example of examples) {
+    const markerParagraph = '<p>' + escapeHtml(example.marker) + '</p>';
+    out = out.split(markerParagraph + "\n").join(example.html + "\n");
+    out = out.split(markerParagraph).join(example.html);
+  }
+  return out;
 }
 
 function renderExampleBlock(code: string): string {

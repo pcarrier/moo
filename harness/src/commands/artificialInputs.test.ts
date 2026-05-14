@@ -16,6 +16,6 @@ describe("artificial subagent inputs", () => {
   });
 
   test("excludes artificial user inputs from chat autocomplete", () => {
-    expect(chatsSource).toContain('if (payload?.value?.artificial === true) return null;');
+    expect(chatsSource).toContain("if (payload.artificial === true) return [];");
   });
 });

@@ -35,7 +35,6 @@ type ChatAutocompleteIndex = {
 };
 
 const CHAT_AUTOCOMPLETE_CHAT_CONCURRENCY = 8;
-const CHAT_AUTOCOMPLETE_PAYLOAD_CONCURRENCY = 24;
 const CHAT_AUTOCOMPLETE_BACKGROUND_CHAT_LIMIT = 160;
 const CHAT_AUTOCOMPLETE_META_TTL_MS = 30000;
 const CHAT_AUTOCOMPLETE_QUERY_CACHE_LIMIT = 200;
@@ -97,8 +96,8 @@ function chatAutocompleteMetasSignature(metas: ChatAutocompleteChatMeta[]): stri
 async function loadChatAutocompleteMetas(): Promise<{ metas: ChatAutocompleteChatMeta[]; signature: string }> {
   const metas = ((await moo.chat.list()) as Array<{ chatId?: string; title?: string | null; totalFacts?: unknown; lastAt?: unknown }>)
     .map(chatAutocompleteMeta)
-    .filter(Boolean)
-    .sort((a, b) => b.lastAt - a.lastAt) as ChatAutocompleteChatMeta[];
+    .filter((meta): meta is ChatAutocompleteChatMeta => meta !== null)
+    .sort((a, b) => b.lastAt - a.lastAt);
   return { metas, signature: chatAutocompleteMetasSignature(metas) };
 }
 
@@ -159,22 +158,24 @@ async function buildChatAutocompleteIndex(meta: ChatAutocompleteChatMeta): Promi
       ["?step", "agent:payload", "?payload"],
     ], ...{ store: c.facts, graph: c.graph } });
 
-  const entries = (
-    await mapWithConcurrency(rows, CHAT_AUTOCOMPLETE_PAYLOAD_CONCURRENCY, async (row) => {
-      const payloadHash = row["?payload"];
-      if (!payloadHash) return null;
-      const payload = await moo.objects.getJSON<{ message?: string; artificial?: boolean }>({ hash: payloadHash });
-      if (payload?.value?.artificial === true) return null;
-      const text = normalizeAutocompleteText(payload?.value?.message);
-      if (!text) return null;
-      return {
-        step: row["?step"]!,
-        at: Number(row["?at"]) || 0,
-        text,
-        lowerText: text.toLowerCase(),
-      } satisfies ChatAutocompleteIndexEntry;
-    })
-  ).filter(Boolean) as ChatAutocompleteIndexEntry[];
+  const payloadHashes = rows.map((row) => row["?payload"]).filter((hash): hash is string => Boolean(hash));
+  const objects = host.getObjects(payloadHashes);
+  const entries = rows.flatMap((row): ChatAutocompleteIndexEntry[] => {
+    const payloadHash = row["?payload"];
+    if (!payloadHash) return [];
+    const object = objects[payloadHash];
+    if (!object) return [];
+    const payload = JSON.parse(object.content) as { message?: string; artificial?: boolean };
+    if (payload.artificial === true) return [];
+    const text = normalizeAutocompleteText(payload.message);
+    if (!text) return [];
+    return [{
+      step: row["?step"]!,
+      at: Number(row["?at"]) || 0,
+      text,
+      lowerText: text.toLowerCase(),
+    }];
+  });
 
   const index = { chatId: meta.chatId, chatTitle: meta.title, factsCount: meta.factsCount, entries };
   chatAutocompleteIndexCache.set(meta.chatId, index);
@@ -306,7 +307,8 @@ export async function chatsListCommand() {
   }
   const enriched = [];
   for (const c of chats) {
-    if ((c as any).hidden && !(c as any).showHidden) continue;
+    const showHidden = "showHidden" in c && Boolean(c.showHidden);
+    if (c.hidden && !showHidden) continue;
     // Keep the sidebar list O(chats) over chat summaries only. Loading the
     // selected-model ref + env-derived model list for every chat made initial
     // navigation and chat switches wait on unrelated metadata; the selected
@@ -1067,7 +1069,7 @@ function addFsSearchCandidate(
 const FS_SEARCH_CANDIDATE_CACHE_TTL_MS = 30_000;
 const fsSearchCandidateCache = new Map<
   string,
-  { at: number; promise: Promise<Map<string, { relativePath: string; kind: string }> | null> }
+  { at: number; promise: Promise<Map<string, { relativePath: string; kind: string }>> }
 >();
 
 async function gitFsSearchCandidates(base: string): Promise<Map<string, { relativePath: string; kind: string }> | null> {
@@ -1122,7 +1124,7 @@ async function fallbackFsSearchCandidates(base: string): Promise<Map<string, { r
   return candidates;
 }
 
-async function cachedFsSearchCandidates(base: string): Promise<Map<string, { relativePath: string; kind: string }> | null> {
+async function cachedFsSearchCandidates(base: string): Promise<Map<string, { relativePath: string; kind: string }>> {
   const now = Date.now();
   const cached = fsSearchCandidateCache.get(base);
   if (cached && now - cached.at < FS_SEARCH_CANDIDATE_CACHE_TTL_MS) return cached.promise;
@@ -1271,7 +1273,7 @@ export async function chatNewCommand(input: Input) {
   }
   let recent: string[] = [];
   if (path) recent = await rememberChatPath(path, true);
-  return { ok: true, value: { chatId: cid, path, branch, worktreePath: null, recent } };
+  return { ok: true, value: { chatId: cid, path, branch, worktreePath: await moo.chat.scratch({ chatId: cid }), recent } };
 }
 
 

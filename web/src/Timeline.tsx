@@ -74,11 +74,11 @@ import { shouldApplyComposerAutocompleteKey } from "./timeline/composerKeys";
 import {
   displayDiffStats,
   formatByteCount,
-  formatRunJSArgs,
-  normalizeRunJS,
-  parseRunJS,
+  formatRunTSArgs,
+  normalizeRunTS,
+  parseRunTS,
   shortHash,
-  type ParsedRunJS,
+  type ParsedRunTS,
 } from "./timeline/format";
 import {
   compactErrorDetail,
@@ -118,6 +118,7 @@ import type {
   LogItem,
   StepItem,
   TimelineItem,
+  Sha256Hash,
   UiApp,
 } from "./api";
 
@@ -134,6 +135,13 @@ const COPY_FEEDBACK_MS = 1600;
 const OLDER_HISTORY_SCROLL_THRESHOLD_EM = 8;
 const LAYOUT_SCROLL_STICKY_GRACE_MS = 600;
 const USER_SCROLL_INTENT_GRACE_MS = 900;
+
+const cssEscape = (value: string): string => {
+  const css = window.CSS as (typeof CSS & { readonly escape?: (input: string) => string }) | undefined;
+  return typeof css?.escape === "function" ? css.escape(value) : value.replace(/["\\]/g, (c) => "\\" + c);
+};
+
+const sha256Hash = (hash: string): Sha256Hash => hash as Sha256Hash;
 
 async function writeClipboardText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -217,14 +225,14 @@ function HeaderAppList(props: {
   );
 }
 
-type RunJSBlockLightbox = {
+type RunTSBlockLightbox = {
   label: string;
   content: string;
   language?: string;
   meta?: string;
 };
 
-const RUNJS_BLOCK_PREVIEW_LINES = 10;
+const RUNTS_BLOCK_PREVIEW_LINES = 10;
 
 export function Timeline(props: {
   bag: Bag;
@@ -234,35 +242,35 @@ export function Timeline(props: {
   const { bag, onToggleSidebar } = props;
   const [lightboxImage, setLightboxImage] =
     createSignal<ImageAttachment | null>(null);
-  const [runJSBlockLightbox, setRunJSBlockLightbox] =
-    createSignal<RunJSBlockLightbox | null>(null);
-  const [runJSBlockCopied, setRunJSBlockCopied] = createSignal(false);
-  let runJSBlockLightboxContentEl: HTMLPreElement | undefined;
+  const [runTSBlockLightbox, setRunTSBlockLightbox] =
+    createSignal<RunTSBlockLightbox | null>(null);
+  const [runTSBlockCopied, setRunTSBlockCopied] = createSignal(false);
+  let runTSBlockLightboxContentEl: HTMLPreElement | undefined;
   const openLightbox = (attachment: ImageAttachment) =>
     setLightboxImage(attachment);
-  const openRunJSBlockLightbox = (block: RunJSBlockLightbox) => {
-    setRunJSBlockCopied(false);
-    setRunJSBlockLightbox(block);
+  const openRunTSBlockLightbox = (block: RunTSBlockLightbox) => {
+    setRunTSBlockCopied(false);
+    setRunTSBlockLightbox(block);
   };
-  const copyRunJSBlockLightbox = async () => {
-    const block = runJSBlockLightbox();
+  const copyRunTSBlockLightbox = async () => {
+    const block = runTSBlockLightbox();
     if (!block) return;
     await writeClipboardText(block.content);
-    setRunJSBlockCopied(true);
-    window.setTimeout(() => setRunJSBlockCopied(false), COPY_FEEDBACK_MS);
+    setRunTSBlockCopied(true);
+    window.setTimeout(() => setRunTSBlockCopied(false), COPY_FEEDBACK_MS);
   };
   const closeLightbox = () => {
     setLightboxImage(null);
-    setRunJSBlockLightbox(null);
+    setRunTSBlockLightbox(null);
   };
 
   createEffect(() => {
-    if (!runJSBlockLightbox()) return;
-    requestAnimationFrame(() => runJSBlockLightboxContentEl?.focus());
+    if (!runTSBlockLightbox()) return;
+    requestAnimationFrame(() => runTSBlockLightboxContentEl?.focus());
   });
 
   const handleLightboxKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || (!lightboxImage() && !runJSBlockLightbox())) return;
+    if (e.key !== "Escape" || (!lightboxImage() && !runTSBlockLightbox())) return;
     e.preventDefault();
     e.stopPropagation();
     closeLightbox();
@@ -326,11 +334,13 @@ export function Timeline(props: {
   let stuck = true;
   let scrollAnchor: { key: string; offset: number } | null = null;
   let restoreFrame: number | undefined;
+  let olderTimelineRecheckFrame: number | undefined;
   const timelineAnchorSelector = "[data-timeline-key]";
   let lastChatId: string | null | undefined;
   let lastTimelineClientHeight = 0;
   let stickyLayoutScrollUntil = 0;
   let userScrollIntentUntil = 0;
+  let scrollRestoreActive = false;
   const isAtBottom = () => {
     if (!timelineEl) return true;
     const slack = parseFloat(getComputedStyle(timelineEl).fontSize) * 3;
@@ -344,17 +354,27 @@ export function Timeline(props: {
   };
   const scrollToBottom = () => {
     if (!timelineEl) return;
+    scrollRestoreActive = true;
     timelineEl.scrollTop = timelineEl.scrollHeight;
     rememberTimelineClientHeight();
+    requestAnimationFrame(() => {
+      scrollRestoreActive = false;
+    });
   };
   const hasRecentUserScrollIntent = () =>
     Date.now() <= userScrollIntentUntil;
   const markUserScrollIntent = () => {
     userScrollIntentUntil = Date.now() + USER_SCROLL_INTENT_GRACE_MS;
   };
+  const shouldDeferAutoScrollForUserIntent = () =>
+    !stuck && hasRecentUserScrollIntent();
+  const scrollToBottomUnlessUserIntent = () => {
+    if (!shouldDeferAutoScrollForUserIntent()) scrollToBottom();
+  };
   const isLikelyLayoutScroll = () => {
     if (!timelineEl) return false;
     return (
+      scrollRestoreActive ||
       Date.now() <= stickyLayoutScrollUntil ||
       Math.abs(timelineEl.clientHeight - lastTimelineClientHeight) > 1
     );
@@ -362,10 +382,11 @@ export function Timeline(props: {
   const resetScrollForChatChange = () => {
     stuck = true;
     scrollAnchor = null;
+    userScrollIntentUntil = 0;
     stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
     queueMicrotask(() => {
-      scrollToBottom();
-      requestAnimationFrame(scrollToBottom);
+      scrollToBottomUnlessUserIntent();
+      requestAnimationFrame(scrollToBottomUnlessUserIntent);
     });
   };
   const isNearTop = () => {
@@ -376,7 +397,23 @@ export function Timeline(props: {
     return timelineEl.scrollTop <= threshold;
   };
   const maybeLoadOlderTimeline = () => {
-    if (isNearTop() && bag.hiddenTimelineItems() > 0) void bag.loadOlderTimeline();
+    if (
+      !bag.olderTimelineLoading() &&
+      isNearTop() &&
+      bag.hiddenTimelineItems() > 0
+    )
+      void bag.loadOlderTimeline();
+  };
+  const scheduleOlderTimelineRecheck = () => {
+    if (olderTimelineRecheckFrame !== undefined) return;
+    olderTimelineRecheckFrame = requestAnimationFrame(() => {
+      olderTimelineRecheckFrame = undefined;
+      if (restoreFrame !== undefined) {
+        scheduleOlderTimelineRecheck();
+        return;
+      }
+      maybeLoadOlderTimeline();
+    });
   };
   const anchorElements = () =>
     timelineEl
@@ -391,7 +428,7 @@ export function Timeline(props: {
     // turned timeline jumps into O(N^2) work on long chats.
     try {
       return timelineEl.querySelector<HTMLElement>(
-        `[data-timeline-key="${(window as any).CSS && (CSS as any).escape ? (CSS as any).escape(key) : key.replace(/["\\\\]/g, (c) => "\\\\" + c)}"]`,
+        `[data-timeline-key="${cssEscape(key)}"]`,
       );
     } catch {
       return (
@@ -435,6 +472,11 @@ export function Timeline(props: {
       stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
     scheduleScrollRestore();
   };
+  const noteStreamingContentMutation = () => {
+    if (stuck && !hasRecentUserScrollIntent())
+      stickyLayoutScrollUntil = Date.now() + LAYOUT_SCROLL_STICKY_GRACE_MS;
+    scheduleScrollRestore();
+  };
   const scheduleScrollRestore = () => {
     if (restoreFrame !== undefined) return;
     restoreFrame = requestAnimationFrame(() => {
@@ -442,6 +484,7 @@ export function Timeline(props: {
       restoreScrollAnchor();
       rememberTimelineClientHeight();
       if (!stuck) captureScrollAnchor();
+      scheduleOlderTimelineRecheck();
     });
   };
   const clearTimelineJumpHighlights = () => {
@@ -547,9 +590,7 @@ export function Timeline(props: {
     timelineEl?.addEventListener("touchstart", markUserScrollIntent, { passive: true });
     timelineEl?.addEventListener("pointerdown", markUserScrollIntent);
     timelineEl?.addEventListener("keydown", handleScrollIntentKey);
-    const mutationObserver = new MutationObserver((records) => {
-      scheduleScrollRestore();
-    });
+    const mutationObserver = new MutationObserver(noteStreamingContentMutation);
     if (timelineEl) {
       mutationObserver.observe(timelineEl, {
         childList: true,
@@ -612,6 +653,8 @@ export function Timeline(props: {
       targetObserver.disconnect();
       resizeObserver.disconnect();
       if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
+      if (olderTimelineRecheckFrame !== undefined)
+        cancelAnimationFrame(olderTimelineRecheckFrame);
     });
   });
 
@@ -640,10 +683,27 @@ export function Timeline(props: {
     bag.pending();
     if (stuck) {
       // Defer to next frame so the DOM has actually grown.
-      queueMicrotask(scrollToBottom);
+      queueMicrotask(scrollToBottomUnlessUserIntent);
     } else {
       scheduleScrollRestore();
     }
+  });
+
+  let wasOlderTimelineLoading = false;
+  let olderTimelineHiddenAtLoadStart = bag.hiddenTimelineItems();
+  createEffect(() => {
+    const loading = bag.olderTimelineLoading();
+    const hidden = bag.hiddenTimelineItems();
+    if (loading && !wasOlderTimelineLoading) {
+      olderTimelineHiddenAtLoadStart = hidden;
+    } else if (
+      wasOlderTimelineLoading &&
+      !loading &&
+      hidden < olderTimelineHiddenAtLoadStart
+    ) {
+      scheduleOlderTimelineRecheck();
+    }
+    wasOlderTimelineLoading = loading;
   });
 
   const draftReplyProxies = new Map<string, StepItem>();
@@ -865,7 +925,7 @@ export function Timeline(props: {
                         group={entry}
                         bag={bag}
                         onOpenImage={openLightbox}
-                        onOpenRunJSBlock={openRunJSBlockLightbox}
+                        onOpenRunTSBlock={openRunTSBlockLightbox}
                       />
                     ) : entry.kind === "thought" ? (
                       <ThoughtBox item={entry.item} />
@@ -874,7 +934,7 @@ export function Timeline(props: {
                         item={entry.item}
                         bag={bag}
                         onOpenImage={openLightbox}
-                        onOpenRunJSBlock={openRunJSBlockLightbox}
+                        onOpenRunTSBlock={openRunTSBlockLightbox}
                       />
                     )
                   }
@@ -937,49 +997,49 @@ export function Timeline(props: {
           )}
         </Show>
         <OngoingTodos todos={bag.todos()} />
-        <Show when={runJSBlockLightbox()}>
+        <Show when={runTSBlockLightbox()}>
           {(block) => (
             <div
-              class="runjs-lightbox-backdrop"
+              class="runts-lightbox-backdrop"
               role="dialog"
               aria-modal="true"
-              aria-labelledby="runjs-lightbox-title"
+              aria-labelledby="runts-lightbox-title"
               onClick={closeLightbox}
             >
               <div
-                class="runjs-lightbox"
+                class="runts-lightbox"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div class="runjs-lightbox-header">
-                  <div class="runjs-lightbox-title-wrap">
-                    <div id="runjs-lightbox-title" class="runjs-lightbox-title">
+                <div class="runts-lightbox-header">
+                  <div class="runts-lightbox-title-wrap">
+                    <div id="runts-lightbox-title" class="runts-lightbox-title">
                       {block().label}
                     </div>
                     <Show when={block().meta}>
-                      <div class="runjs-lightbox-meta">{block().meta}</div>
+                      <div class="runts-lightbox-meta">{block().meta}</div>
                     </Show>
                   </div>
                   <button
                     type="button"
-                    class="runjs-lightbox-copy"
-                    onClick={copyRunJSBlockLightbox}
+                    class="runts-lightbox-copy"
+                    onClick={copyRunTSBlockLightbox}
                   >
-                    {runJSBlockCopied() ? "Copied" : "Copy"}
+                    {runTSBlockCopied() ? "Copied" : "Copy"}
                   </button>
                   <button
                     type="button"
-                    class="runjs-lightbox-close"
-                    aria-label="close runJS preview"
+                    class="runts-lightbox-close"
+                    aria-label="close runTS preview"
                     onClick={closeLightbox}
                   >
                     ×
                   </button>
                 </div>
                 <pre
-                  ref={runJSBlockLightboxContentEl}
-                  class="runjs-lightbox-content"
+                  ref={runTSBlockLightboxContentEl}
+                  class="runts-lightbox-content"
                   tabIndex={0}
-                  innerHTML={highlightRunJSBlock(block().content, block().language)}
+                  innerHTML={highlightRunTSBlock(block().content, block().language)}
                 />
               </div>
             </div>
@@ -2038,7 +2098,7 @@ function DismissedBlock(props: {
   group: Extract<TimelineRenderEntry, { kind: "dismissed" }>;
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
-  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
+  onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => props.group.id;
@@ -2085,7 +2145,7 @@ function DismissedBlock(props: {
                   item={entry.item}
                   bag={props.bag}
                   onOpenImage={props.onOpenImage}
-                  onOpenRunJSBlock={props.onOpenRunJSBlock}
+                  onOpenRunTSBlock={props.onOpenRunTSBlock}
                 />
               </>
             )
@@ -2100,7 +2160,7 @@ function Item(props: {
   item: TimelineItem;
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
-  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
+  onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => timelineAnchorKey(props.item);
@@ -2130,7 +2190,7 @@ function Item(props: {
                           expansion={expansion()}
                           timelineKey={key()}
                           onOpenImage={props.onOpenImage}
-                          onOpenRunJSBlock={props.onOpenRunJSBlock}
+                          onOpenRunTSBlock={props.onOpenRunTSBlock}
                         />
                       }
                     >
@@ -2329,7 +2389,9 @@ function TodoDiffBody(props: { item: TodoDiffItem }) {
               <span class="todo-diff-main">
                 <span class="todo-diff-action">{todoChangeText(change)}</span>
                 <TodoMarkdownInline className="todo-diff-text" content={todoLabel(item())} />
-                <TodoMetaBubbles item={item()} />
+                <Show when={change.kind !== "removed"}>
+                  <TodoMetaBubbles item={item()} />
+                </Show>
               </span>
               <TodoNote item={item()} className="todo-diff-details" />
               <Show when={previous() && previous()!.text !== item().text}>
@@ -2348,6 +2410,7 @@ function TodoDiffBody(props: { item: TodoDiffItem }) {
 function displayStepKind(kind: string): string {
   if (kind === "agent:UserInput") return "User";
   if (kind === "agent:Subagent") return "Subagent";
+  if (kind === "agent:RunTS") return "RunTS";
   return kind.replace(/^agent:/, "");
 }
 
@@ -2372,9 +2435,9 @@ function stepClass(item: StepItem): string {
 }
 
 function showStandardStepMeta(item: StepItem): boolean {
-  // RunJS owns its own header (label is the headline), so suppress the
+  // RunTS owns its own header (label is the headline), so suppress the
   // generic meta line for it. Subagent has a richer custom header too.
-  return item.kind !== "agent:RunJS" && item.kind !== "agent:Subagent";
+  return item.kind !== "agent:RunTS" && item.kind !== "agent:RunJS" && item.kind !== "agent:Subagent";
 }
 
 function stepMetaLabel(item: StepItem, compacting: boolean): string {
@@ -2393,6 +2456,7 @@ function stepMetaSuffix(item: StepItem): string {
 
 function showStandardStepFooter(item: StepItem): boolean {
   return (
+    item.kind !== "agent:RunTS" &&
     item.kind !== "agent:RunJS" &&
     item.kind !== "agent:Subagent" &&
     !(item.kind === "agent:Reply" && item.status !== "agent:Done")
@@ -2445,7 +2509,7 @@ function Step(props: {
   expansion: TimelineExpansionStore;
   timelineKey: string;
   onOpenImage: (attachment: ImageAttachment) => void;
-  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
+  onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const cls = createMemo(() => stepClass(props.item));
   const showStandardMeta = () => showStandardStepMeta(props.item);
@@ -2498,12 +2562,12 @@ function Step(props: {
         <Show when={props.item.kind === "agent:ShellCommand"}>
           <ShellBody item={props.item} expansion={props.expansion} />
         </Show>
-        <Show when={props.item.kind === "agent:RunJS"}>
-          <RunJSBody
+        <Show when={(props.item.kind === "agent:RunTS" || props.item.kind === "agent:RunJS")}>
+          <RunTSBody
             item={props.item}
             bag={props.bag}
             expansion={props.expansion}
-            onOpenRunJSBlock={props.onOpenRunJSBlock}
+            onOpenRunTSBlock={props.onOpenRunTSBlock}
           />
         </Show>
         <Show when={props.item.kind === "agent:Subagent"}>
@@ -2603,29 +2667,29 @@ function SubagentBody(props: {
     typeof result()?.durationNs === "number" ? (result()?.durationNs || 0) / 1_000_000 : null;
   return (
     <details
-      class="runjs-step subagent-step"
+      class="runts-step subagent-step"
       open={open()}
       onToggle={(ev) => setOpen(ev.currentTarget.open)}
     >
       <summary>
         <Show when={props.item.status === "agent:Running"}>
-          <LoadingDots class="runjs-loading" label="running" />
+          <LoadingDots class="runts-loading" label="running" />
         </Show>
-        <RunJSMarkdown class="runjs-label" content={label()} inline />
+        <RunTSMarkdown class="runts-label" content={label()} inline />
         <Show when={task()}>
-          <span class="runjs-desc-inline">
-            <span class="runjs-desc-separator" aria-hidden="true">
+          <span class="runts-desc-inline">
+            <span class="runts-desc-separator" aria-hidden="true">
               ·
             </span>
-            <RunJSMarkdown class="runjs-desc-text" content={task()} inline />
+            <RunTSMarkdown class="runts-desc-text" content={task()} inline />
           </span>
         </Show>
       </summary>
       <Show when={open()}>
-        <div class="runjs-body subagent-body">
+        <div class="runts-body subagent-body">
           <Show when={task()}>
-            <RunJSMarkdown
-              class="runjs-desc-full subagent-task"
+            <RunTSMarkdown
+              class="runts-desc-full subagent-task"
               content={task()}
             />
           </Show>
@@ -2657,9 +2721,9 @@ function SubagentBody(props: {
             </div>
           </Show>
           <Show when={result()?.error}>
-            <RunJSBlock
+            <RunTSBlock
               label="Error"
-              klass="runjs-out runjs-error subagent-error"
+              klass="runts-out runts-error subagent-error"
               content={result()?.error || ""}
             />
           </Show>
@@ -2959,9 +3023,9 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   }
 }
 
-function runJSResultFromObject(
+function runTSResultFromObject(
   result: unknown,
-): Pick<NonNullable<StepItem["runjs"]>, "result" | "error" | "durationNs"> {
+): Pick<NonNullable<StepItem["runts"]>, "result" | "error" | "durationNs"> {
   const r =
     result && typeof result === "object"
       ? (result as Record<string, unknown>)
@@ -2973,13 +3037,13 @@ function runJSResultFromObject(
   };
 }
 
-function RunJSBody(props: {
+function RunTSBody(props: {
   item: StepItem;
   bag: Bag;
   expansion: TimelineExpansionStore;
-  onOpenRunJSBlock: (block: RunJSBlockLightbox) => void;
+  onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
-  // Prefer structured runJS data from the timeline API. parseRunJS is only
+  // Prefer structured runTS data from the timeline API. parseRunTS is only
   // retained for historical timeline entries and older exported payloads.
   //
   // Default render is a single line: "<title> · <desc>           <time>".
@@ -2987,7 +3051,7 @@ function RunJSBody(props: {
   // code and result fold rows.
   const [hydratedResultByHash, setHydratedResultByHash] = createSignal<Record<
     string,
-    Pick<NonNullable<StepItem["runjs"]>, "result" | "error" | "durationNs">
+    Pick<NonNullable<StepItem["runts"]>, "result" | "error" | "durationNs">
   >>({});
   const [hydratingHash, setHydratingHash] = createSignal<string | null>(null);
   const [hydrateErrorByHash, setHydrateErrorByHash] = createSignal<Record<string, string>>({});
@@ -3001,7 +3065,7 @@ function RunJSBody(props: {
     return hash ? hydrateErrorByHash()[hash] ?? null : null;
   };
   const ensureHydrated = async () => {
-    if (!props.item.lazyRunjsResult) return;
+    if (!(props.item.lazyRuntsResult || props.item.lazyRunjsResult)) return;
     const hash = resultHash();
     if (!hash) return;
     if (hydratedResultByHash()[hash] || hydratingHash() === hash) return;
@@ -3012,7 +3076,7 @@ function RunJSBody(props: {
     });
     try {
       const object = await withTimeout(
-        api("object-get", { hash: hash as any }),
+        api("object-get", { hash: sha256Hash(hash) }),
         30_000,
         "Timed out loading result",
       );
@@ -3030,7 +3094,7 @@ function RunJSBody(props: {
         }));
         return;
       }
-      const loaded = runJSResultFromObject(
+      const loaded = runTSResultFromObject(
         parseStoreObjectJSON(object.value.object),
       );
       setHydratedResultByHash((results) => ({ ...results, [hash]: loaded }));
@@ -3043,15 +3107,16 @@ function RunJSBody(props: {
       setHydratingHash((current) => (current === hash ? null : current));
     }
   };
-  const currentRunJS = () => {
+  const currentRunTS = () => {
     const loaded = hydratedResult();
-    if (!props.item.runjs || !loaded) return props.item.runjs;
-    return { ...props.item.runjs, ...loaded };
+    const base = props.item.runts ?? props.item.runjs;
+    if (!base || !loaded) return base;
+    return { ...base, ...loaded };
   };
   const parsed = createMemo(() =>
-    currentRunJS()
-      ? normalizeRunJS(currentRunJS()!)
-      : parseRunJS(props.item.text),
+    currentRunTS()
+      ? normalizeRunTS(currentRunTS()!)
+      : parseRunTS(props.item.text),
   );
 
   const key = () => timelineExpansionKey(props.item);
@@ -3066,26 +3131,26 @@ function RunJSBody(props: {
 
   return (
     <details
-      class="runjs-step"
+      class="runts-step"
       open={open()}
       onToggle={(ev) => setOpen(ev.currentTarget.open)}
     >
       <summary>
         <Show when={props.item.status === "agent:Running"}>
-          <LoadingDots class="runjs-loading" label="running" />
+          <LoadingDots class="runts-loading" label="running" />
         </Show>
-        <RunJSMarkdown
-          class="runjs-label"
+        <RunTSMarkdown
+          class="runts-label"
           content={parsed().label || "(unlabeled)"}
           inline
         />
         <Show when={parsed().description}>
-          <span class="runjs-desc-inline">
-            <span class="runjs-desc-separator" aria-hidden="true">
+          <span class="runts-desc-inline">
+            <span class="runts-desc-separator" aria-hidden="true">
               ·
             </span>
-            <RunJSMarkdown
-              class="runjs-desc-text"
+            <RunTSMarkdown
+              class="runts-desc-text"
               content={parsed().description}
               inline
             />
@@ -3093,74 +3158,74 @@ function RunJSBody(props: {
         </Show>
       </summary>
       <Show when={open()}>
-        <div class="runjs-body">
+        <div class="runts-body">
           <Show when={parsed().description}>
-            <RunJSMarkdown
-              class="runjs-desc-full"
+            <RunTSMarkdown
+              class="runts-desc-full"
               content={parsed().description}
             />
           </Show>
           <Show when={parsed().code}>
-            <RunJSBlock
+            <RunTSBlock
               label="Code"
-              klass="runjs-code"
+              klass="runts-code"
               content={parsed().code}
-              language="js"
-              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
-              onOpenFull={props.onOpenRunJSBlock}
+              language="ts"
+              maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunTSBlock}
             />
           </Show>
           <Show when={parsed().hasArgs}>
-            <RunJSBlock
+            <RunTSBlock
               label="Args"
-              klass="runjs-args"
+              klass="runts-args"
               content={parsed().args}
               language="hjson"
-              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
-              onOpenFull={props.onOpenRunJSBlock}
+              maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunTSBlock}
             />
           </Show>
           <Show
             when={
-props.item.lazyRunjsResult
+(props.item.lazyRuntsResult || props.item.lazyRunjsResult)
                 && !!resultHash()
                 && hydratingHash() === resultHash()
                 && !hydratedResult()
                 && !hydrateError()
             }
           >
-            <section class="runjs-block" aria-label="Loading result">
-              <div class="runjs-block-label">Result</div>
-              <div class="runjs-out runjs-loading-result">
+            <section class="runts-block" aria-label="Loading result">
+              <div class="runts-block-label">Result</div>
+              <div class="runts-out runts-loading-result">
                 <LoadingDots label="loading result" />
               </div>
             </section>
           </Show>
           <Show when={parsed().hasResult}>
-            <RunJSBlock
+            <RunTSBlock
               label="Result"
-              klass="runjs-out"
+              klass="runts-out"
               content={parsed().result}
-              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
-              onOpenFull={props.onOpenRunJSBlock}
+              maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunTSBlock}
             />
           </Show>
           <Show when={parsed().error}>
-            <RunJSBlock
+            <RunTSBlock
               label="Error"
-              klass="runjs-out runjs-error"
+              klass="runts-out runts-error"
               content={parsed().error}
-              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
-              onOpenFull={props.onOpenRunJSBlock}
+              maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunTSBlock}
             />
           </Show>
           <Show when={hydrateError()}>
-            <RunJSBlock
+            <RunTSBlock
               label="Error"
-              klass="runjs-out runjs-error"
+              klass="runts-out runts-error"
               content={hydrateError()!}
-              maxPreviewLines={RUNJS_BLOCK_PREVIEW_LINES}
-              onOpenFull={props.onOpenRunJSBlock}
+              maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
+              onOpenFull={props.onOpenRunTSBlock}
             />
           </Show>
         </div>
@@ -3174,13 +3239,13 @@ props.item.lazyRunjsResult
   );
 }
 
-function RunJSMarkdown(props: {
+function RunTSMarkdown(props: {
   class?: string;
   content: string;
   inline?: boolean;
 }) {
   const cls = () =>
-    (props.class ? props.class + " " : "") + "markdown runjs-markdown";
+    (props.class ? props.class + " " : "") + "markdown runts-markdown";
   const html = () =>
     props.inline
       ? renderMarkdownInline(props.content.replace(/\n+/g, " "))
@@ -3192,11 +3257,11 @@ function RunJSMarkdown(props: {
   );
 }
 
-function highlightRunJSBlock(content: string, language?: string): string {
+function highlightRunTSBlock(content: string, language?: string): string {
   return language ? highlightMarkdownCode(content, language) : highlightAuto(content);
 }
 
-function runJSBlockLanguageForContent(content: string, language?: string): string | undefined {
+function runTSBlockLanguageForContent(content: string, language?: string): string | undefined {
   if (language) return language;
   const trimmed = content.trim();
   if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";
@@ -3204,7 +3269,7 @@ function runJSBlockLanguageForContent(content: string, language?: string): strin
   return undefined;
 }
 
-function runJSBlockMeta(content: string, language?: string): string {
+function runTSBlockMeta(content: string, language?: string): string {
   const lineCount = content.split("\n").length;
   const parts = [`${lineCount} ${lineCount === 1 ? "line" : "lines"}`, `${content.length} chars`];
   const displayLanguage = isHjsonCodeLanguage(language) ? "hjson" : language;
@@ -3212,20 +3277,20 @@ function runJSBlockMeta(content: string, language?: string): string {
   return parts.join(" · ");
 }
 
-function RunJSBlock(props: {
+function RunTSBlock(props: {
   label: string;
   klass: string;
   content: string;
   language?: string;
   maxPreviewLines?: number;
-  onOpenFull?: (block: RunJSBlockLightbox) => void;
+  onOpenFull?: (block: RunTSBlockLightbox) => void;
 }) {
   let previewEl: HTMLDivElement | undefined;
   const [truncated, setTruncated] = createSignal(false);
-  const previewLineLimit = () => props.maxPreviewLines ?? RUNJS_BLOCK_PREVIEW_LINES;
-  const language = () => runJSBlockLanguageForContent(props.content, props.language);
-  const html = () => highlightRunJSBlock(props.content, language());
-  const meta = () => runJSBlockMeta(props.content, language());
+  const previewLineLimit = () => props.maxPreviewLines ?? RUNTS_BLOCK_PREVIEW_LINES;
+  const language = () => runTSBlockLanguageForContent(props.content, props.language);
+  const html = () => highlightRunTSBlock(props.content, language());
+  const meta = () => runTSBlockMeta(props.content, language());
   const measureOverflow = () => {
     if (!previewEl) return;
     const style = window.getComputedStyle(previewEl);
@@ -3262,11 +3327,11 @@ function RunJSBlock(props: {
     openFull();
   };
   return (
-    <section class="runjs-block" aria-label={props.label}>
-      <div class="runjs-block-heading">
-        <div class="runjs-block-title">
-          <span class="runjs-block-label">{props.label}</span>
-          <span class="runjs-block-meta">{meta()}</span>
+    <section class="runts-block" aria-label={props.label}>
+      <div class="runts-block-heading">
+        <div class="runts-block-title">
+          <span class="runts-block-label">{props.label}</span>
+          <span class="runts-block-meta">{meta()}</span>
         </div>
       </div>
       <div
@@ -3274,17 +3339,17 @@ function RunJSBlock(props: {
         role="button"
         tabIndex={0}
         classList={{
-          "runjs-block-preview": true,
+          "runts-block-preview": true,
           "is-truncated": truncated(),
         }}
-        style={{ "--runjs-preview-lines": String(previewLineLimit()) }}
+        style={{ "--runts-preview-lines": String(previewLineLimit()) }}
         onClick={openFullFromPointer}
         onKeyDown={openFullFromKeyboard}
         title={`Open full ${props.label}`}
       >
         <pre class={props.klass} innerHTML={html()} />
         <Show when={truncated()}>
-          <div class="runjs-block-fade" aria-hidden="true" />
+          <div class="runts-block-fade" aria-hidden="true" />
         </Show>
       </div>
     </section>
@@ -3612,10 +3677,16 @@ function ErrorBody(props: { item: StepItem }) {
         <strong>{head()}</strong>
       </div>
       <Show when={message()}>
-        <div class="error-body">{message()}</div>
+        <div
+          class="error-body markdown"
+          innerHTML={renderMarkdown(message())}
+        />
       </Show>
       <Show when={diagnostics()}>
-        <div class="error-body error-diagnostics">{diagnostics()}</div>
+        <div
+          class="error-body error-diagnostics markdown"
+          innerHTML={renderMarkdown(diagnostics())}
+        />
       </Show>
       <Show when={showPayload()}>
         <details class="error-payload" open>

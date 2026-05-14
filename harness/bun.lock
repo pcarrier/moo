@@ -4,7 +4,7 @@
   "workspaces": {
     "": {
       "name": "moo-harness",
-      "devDependencies": {
+      "dependencies": {
         "typescript": "^6.0.3",
       },
     },

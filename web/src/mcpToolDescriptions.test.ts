@@ -10,6 +10,7 @@ describe("MCP tool descriptions", () => {
   test("preserves description newlines while rendering markdown", () => {
     expect(view).toContain("renderToolDescriptionMarkdown");
     expect(markdown).toContain("const markedWithBreaks = new Marked({ gfm: true, breaks: true, renderer });");
+    expect(markdown).toContain("const renderer = createSafeRenderer();");
     expect(markdown).toContain("export function renderToolDescriptionMarkdown(content: string): string");
   });
 
@@ -35,6 +36,17 @@ describe("MCP tool descriptions", () => {
 });
 
 
+
+test("renders tool descriptions with safe markdown", async () => {
+  const { renderToolDescriptionMarkdown } = await import("./markdown");
+  const html = renderToolDescriptionMarkdown('Hello <script>alert(1)</script> [bad](javascript:alert(2)) ![x](//evil.test/x.png)');
+  expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  expect(html).toContain('<a href="">bad</a>');
+  expect(html).toContain('<img src="" alt="x">');
+  expect(html).not.toContain('<script>');
+  expect(html).not.toContain('javascript:');
+  expect(html).not.toContain('//evil.test');
+});
 
 test("renders XML-like example blocks as highlighted code blocks", async () => {
   const { renderToolDescriptionMarkdown } = await import("./markdown");

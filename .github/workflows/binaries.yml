@@ -63,6 +63,7 @@ jobs:
           RUSTFLAGS: -C target-feature=+crt-static
         run: |
           (cd web && bun install --frozen-lockfile)
+          bun install --cwd harness --frozen-lockfile --no-progress
           cargo build --release --locked --target "${{ matrix.target }}"
 
       - name: Package Unix binary

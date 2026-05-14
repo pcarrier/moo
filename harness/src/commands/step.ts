@@ -1,4 +1,5 @@
 import { moo } from "../moo";
+import type { StepKind } from "../types";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer } from "../lib";
 import {
   appendStep,
@@ -44,13 +45,14 @@ import {
   runCompaction,
   TOOLS,
 } from "../agent";
-import type { Input } from "./_shared";
+import type { DriverStateInput, Input, JsonValue, LlmMessageInput, LlmStreamResultInput, ProviderInput, ToolCallInput } from "./_shared";
 import { buildCompactionSummaryPromptMessages } from "../prompt";
 import {
   initialStepDriverState,
   planStepDriverEffects,
   reduceStepDriverState,
   stepNextInputEvents,
+  type StepDriverState,
 } from "../driver/step";
 import { llmAttempt, llmRetryDecisionFromSchedule } from "../core/retry";
 import { currentLlmRetryPolicy } from "./llm_auth";
@@ -65,16 +67,27 @@ import {
 } from "./models";
 
 
-type PendingMessage = { id: string; chatId: string; text: string; attachments?: Array<{ type: "image"; mimeType: string; dataUrl: string; name?: string }> };
+type PendingAttachment = { type: "image"; mimeType: string; dataUrl: string; name?: string };
+type PendingMessage = { id: string; chatId: string; text: string; attachments?: PendingAttachment[] };
+type LlmMessage = LlmMessageInput;
 const CHAT_PENDING_MESSAGES_REF = "chat/pending-messages";
 
-function sanitizePendingMessage(value: any): PendingMessage | null {
-  if (!value || typeof value !== "object") return null;
-  const chatId = String(value.chatId ?? "").trim();
-  const text = String(value.text ?? "");
-  const attachments = sanitizeAttachments(value.attachments);
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function messageArray(value: unknown): LlmMessage[] | null {
+  return Array.isArray(value) ? value : null;
+}
+
+function sanitizePendingMessage(value: unknown): PendingMessage | null {
+  const record = objectRecord(value);
+  if (!record) return null;
+  const chatId = String(record.chatId ?? "").trim();
+  const text = String(record.text ?? "");
+  const attachments = sanitizeAttachments(record.attachments);
   if (!chatId || (!text.trim() && attachments.length === 0)) return null;
-  const id = String(value.id ?? "").trim() || String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
+  const id = String(record.id ?? "").trim() || String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
   return { id, chatId, text, ...(attachments.length ? { attachments } : {}) };
 }
 
@@ -85,7 +98,7 @@ async function readPendingMessages(): Promise<PendingMessage[]> {
   return decoded.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
 }
 
-async function writePendingMessages(messages: PendingMessage[]) {
+async function writePendingMessages(messages: unknown[]) {
   const clean = messages.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
   if (clean.length === 0) await moo.pointers.delete({ name: CHAT_PENDING_MESSAGES_REF });
   else await moo.pointers.set({ name: CHAT_PENDING_MESSAGES_REF, target: encodeJsonPointer(clean) });
@@ -98,10 +111,10 @@ export async function pendingMessagesCommand(_input: Input) {
 
 export async function pendingMessagesSaveCommand(input: Input) {
   const raw = Array.isArray(input.messages) ? input.messages : [];
-  return { ok: true, value: { messages: await writePendingMessages(raw as any[]) } };
+  return { ok: true, value: { messages: await writePendingMessages(raw) } };
 }
 
-function parseProviderErrorBody(raw: unknown): any {
+function parseProviderErrorBody(raw: unknown): unknown {
   if (raw == null) return null;
   if (typeof raw !== "string") return raw;
   const trimmed = raw.trim();
@@ -109,15 +122,22 @@ function parseProviderErrorBody(raw: unknown): any {
   try { return JSON.parse(trimmed); } catch { return trimmed; }
 }
 
-function providerErrorMessage(parsed: any, status: number): string {
+function asObject(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function providerErrorMessage(parsed: unknown, status: number): string {
+  const p = asObject(parsed);
+  const err = asObject(p.error);
+  const detail = asObject(p.detail);
   const candidates = [
-    parsed?.error?.message,
-    typeof parsed?.error === "string" ? parsed.error : "",
-    parsed?.message,
-    parsed?.detail?.message,
-    typeof parsed?.detail === "string" ? parsed.detail : "",
-    parsed?.details,
-    parsed?.error_description,
+    err.message,
+    typeof p.error === "string" ? p.error : "",
+    p.message,
+    detail.message,
+    typeof p.detail === "string" ? p.detail : "",
+    p.details,
+    p.error_description,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
@@ -129,31 +149,39 @@ function providerErrorMessage(parsed: any, status: number): string {
   return "LLM request failed before an HTTP response was received";
 }
 
-function providerErrorType(parsed: any): string | null {
-  return parsed?.error?.type ?? parsed?.type ?? null;
+function providerErrorType(parsed: unknown): string | null {
+  const p = asObject(parsed);
+  const err = asObject(p.error);
+  return stringField(err.type) || stringField(p.type);
 }
 
-function providerErrorCode(parsed: any): string | null {
-  return parsed?.error?.code ?? parsed?.code ?? null;
+function providerErrorCode(parsed: unknown): string | null {
+  const p = asObject(parsed);
+  const err = asObject(p.error);
+  return stringField(err.code) || stringField(p.code);
 }
 
-function providerErrorRequestId(parsed: any, headers: unknown): string | null {
+function providerErrorRequestId(parsed: unknown, headers: unknown): string | null {
+  const p = asObject(parsed);
+  const err = asObject(p.error);
   return firstHeader(headers, "request-id", "x-request-id", "anthropic-request-id", "cf-ray")
-    || stringField(parsed?.request_id)
-    || stringField(parsed?.requestId)
-    || stringField(parsed?.error?.request_id)
-    || stringField(parsed?.error?.requestId);
+    || stringField(p.request_id)
+    || stringField(p.requestId)
+    || stringField(err.request_id)
+    || stringField(err.requestId);
 }
 
-function providerErrorRetryAfter(headers: unknown, parsed: any): string | null {
+function providerErrorRetryAfter(headers: unknown, parsed: unknown): string | null {
+  const p = asObject(parsed);
+  const err = asObject(p.error);
   return firstHeader(headers, "retry-after", "x-ratelimit-reset", "anthropic-ratelimit-requests-reset")
-    || stringField(parsed?.retry_after)
-    || stringField(parsed?.retryAfter)
-    || stringField(parsed?.error?.retry_after)
-    || stringField(parsed?.error?.retryAfter);
+    || stringField(p.retry_after)
+    || stringField(p.retryAfter)
+    || stringField(err.retry_after)
+    || stringField(err.retryAfter);
 }
 
-function providerErrorBodyForRecord(parsed: any, raw: unknown): any {
+function providerErrorBodyForRecord(parsed: unknown, raw: unknown): unknown {
   if (parsed != null) return parsed;
   if (raw == null) return "";
   return raw;
@@ -198,6 +226,36 @@ function providerFailureReason(status: number): string {
   if (status >= 200) return "provider stream returned an error";
   if (status > 0) return `provider returned HTTP ${status}`;
   return "provider request failed before an HTTP response";
+}
+
+function providerErrorMatches(parsed: unknown, pattern: RegExp): boolean {
+  const stack: unknown[] = [parsed];
+  const seen = new Set<object>();
+  while (stack.length) {
+    const value = stack.pop();
+    if (value == null) continue;
+    if (typeof value === "string") {
+      if (pattern.test(value)) return true;
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      if (pattern.test(String(value))) return true;
+      continue;
+    }
+    if (typeof value !== "object") continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push(item);
+      continue;
+    }
+    for (const item of Object.values(value)) stack.push(item);
+  }
+  return false;
+}
+
+export function isContextLengthExceededError(parsed: unknown): boolean {
+  return providerErrorMatches(parsed, /context[_ -]?length[_ -]?exceeded|exceeds?[^\n]{0,80}context window|context window[^\n]{0,80}exceeds?|maximum context|too many[^\n]{0,80}tokens/i);
 }
 
 export type MissingAuthProvider = {
@@ -324,19 +382,21 @@ export async function resumeCommand(input: Input) {
 
 export async function enqueueCommand(input: Input) {
   const chatId = input.chatId || "demo";
-  const kind = input.kind || "agent:Tick";
+  const kind = (input.kind || "agent:Tick") as StepKind;
+  const shellPayload = (value: unknown): { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } =>
+    value != null && typeof value === "object" ? value as { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } : {};
 
   let payloadHash: string | null = null;
   if (kind === "agent:ShellCommand") {
-    const p = input.payload || input;
-    if (!p.cmd) {
+    const p = shellPayload(input.payload) || shellPayload(input);
+    if (typeof p.cmd !== "string" || !p.cmd) {
       return { ok: false, error: { message: "agent:ShellCommand requires payload.cmd" } };
     }
     payloadHash = await moo.objects.putJSON({ kind, value: {
         cmd: p.cmd,
-        args: p.args || [],
-        cwd: p.cwd ?? null,
-        stdin: p.stdin ?? null,
+        args: Array.isArray(p.args) ? p.args : [],
+        cwd: typeof p.cwd === "string" ? p.cwd : null,
+        stdin: typeof p.stdin === "string" ? p.stdin : null,
       } });
   } else if (input.payload != null) {
     payloadHash = await moo.objects.putJSON({ kind: kind, value: input.payload });
@@ -372,7 +432,7 @@ export async function tickCommand(input: Input) {
   } });
   const kind = kindRows[0]?.[3];
 
-  let result: any = null;
+  let result: Awaited<ReturnType<typeof moo.proc.run>> | null = null;
   let resultHash: string | null = null;
   let status: "agent:Done" | "agent:Failed" = "agent:Done";
   let errorMessage: string | null = null;
@@ -391,9 +451,9 @@ export async function tickCommand(input: Input) {
     } else {
       throw new Error(`unsupported step kind: ${kind}`);
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     status = "agent:Failed";
-    errorMessage = err?.message ?? String(err);
+    errorMessage = err instanceof Error ? err.message : String(err);
     moo.log({ args: ["tick error:", errorMessage] });
   }
 
@@ -472,15 +532,16 @@ export async function submitCommand(input: Input) {
   };
 }
 
-export function sanitizeAttachments(value: any): Array<{ type: "image"; mimeType: string; dataUrl: string; name?: string }> {
+export function sanitizeAttachments(value: unknown): PendingAttachment[] {
   if (!Array.isArray(value)) return [];
   return value
-    .filter((a) => a && a.type === "image" && typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:image/"))
+    .map(objectRecord)
+    .filter((a): a is Record<string, unknown> => !!a && a.type === "image" && typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:image/"))
     .slice(0, 8)
     .map((a) => ({
       type: "image" as const,
       mimeType: typeof a.mimeType === "string" ? a.mimeType : "image/png",
-      dataUrl: a.dataUrl,
+      dataUrl: String(a.dataUrl),
       ...(typeof a.name === "string" ? { name: a.name } : {}),
     }));
 }
@@ -539,7 +600,7 @@ export function stepLifecycleEvents(chatId: string, compacting = false) {
   };
 }
 
-export function stepDriverAction(chatId: string, mode: "step" | "resume" | "compact", extra: Record<string, any> = {}) {
+export function stepDriverAction(chatId: string, mode: "step" | "resume" | "compact", extra: Record<string, JsonValue | undefined> = {}) {
   const lifecycleEvents = stepLifecycleEvents(chatId, mode === "compact");
   return {
     action: "drive",
@@ -550,7 +611,7 @@ export function stepDriverAction(chatId: string, mode: "step" | "resume" | "comp
 }
 
 export async function compactPreludeCommand(input: Input) {
-  const chatId = input.chatId;
+  const chatId = input.chatId || "demo";
 
   await moo.chat.unarchive({ chatId: chatId });
   const selectedModel = await getChatModel(chatId);
@@ -565,20 +626,21 @@ export async function compactPreludeCommand(input: Input) {
 
   await setChatOngoing(chatId, true);
   const result = await runCompaction(chatId, provider, { trigger: "manual" });
+  if (result === "compacted") {
+    moo.events.publish({ payload: { kind: "compaction-end", chatId } });
+    return { ok: true, value: { kind: "loop", provider, mode: "resume" } };
+  }
+
   await reply(
     chatId,
-    result === "compacted"
-      ? "compacted older turns into a summary"
-      : result === "empty"
-        ? "nothing to compact yet"
-        : "compaction failed; see the error above",
+    result === "empty" ? "nothing to compact yet" : "compaction failed; see the error above",
   );
   await setChatOngoing(chatId, false);
   return { ok: true, value: { kind: "done" } };
 }
 
 export async function stepPreludeCommand(input: Input) {
-  const chatId = input.chatId;
+  const chatId = input.chatId || "demo";
   const message = String(input.message ?? "").trim();
   const attachments = sanitizeAttachments(input.attachments);
   if (!message && attachments.length === 0) {
@@ -643,12 +705,33 @@ export async function stepResumeCommand(input: Input) {
 }
 
 
-export async function commandValue(result: any): Promise<any> {
+type CommandResultValue = StepDriverState | {
+  kind?: string;
+  state?: DriverStateInput;
+  toolCall?: ToolCallInput | null;
+  model?: string | null;
+  messages?: LlmMessage[];
+  provider?: ProviderInput;
+  retryAttempt?: number;
+  retryReason?: string;
+  retryDelayMs?: number;
+  forceCompact?: boolean;
+  [key: string]: unknown;
+};
+type RawCommandResultValue = Omit<CommandResultValue, "messages"> & { messages?: LlmMessage[] | null };
+type CommandResultEnvelope = { ok?: boolean; value?: RawCommandResultValue | null; error?: { message?: string } };
+
+export async function commandValue(result: CommandResultEnvelope): Promise<CommandResultValue> {
   if (!result || result.ok !== true) {
     const msg = result?.error?.message || "driver step command failed";
     throw new Error(msg);
   }
-  return result.value ?? null;
+  const value = result.value ?? {};
+  if (value.messages === null) {
+    const { messages: _messages, ...rest } = value;
+    return rest;
+  }
+  return value as CommandResultValue;
 }
 
 export async function stepNextCommand(input: Input) {
@@ -703,7 +786,7 @@ export async function stepNextCommand(input: Input) {
       const handled = await traceSpan("driver.continue_tools", {
         chatId,
         pendingToolCalls: Array.isArray(effect.input.toolCalls) ? effect.input.toolCalls.length : 0,
-      }, async () => commandValue(await stepContinueToolCallsCommand(effect.input as Input)));
+      }, async () => commandValue(await stepContinueToolCallsCommand(effect.input as unknown as Input)));
       state = reduceStepDriverState(state, { type: "ToolContinuationHandled", handled });
       continue;
     }
@@ -715,7 +798,7 @@ export async function stepNextCommand(input: Input) {
         attempt: effect.input.attempt ?? null,
         ok: (effect.input.llmResult as Record<string, unknown> | null)?.ok ?? null,
         status: (effect.input.llmResult as Record<string, unknown> | null)?.status ?? null,
-      }, async () => commandValue(await stepHandleLlmCommand(effect.input as Input)));
+      }, async () => commandValue(await stepHandleLlmCommand(effect.input as unknown as Input)));
       state = reduceStepDriverState(state, { type: "LlmHandled", handled });
       continue;
     }
@@ -728,10 +811,10 @@ export async function stepNextCommand(input: Input) {
         hasMessage: typeof startInput.message === "string" && startInput.message.length > 0,
         attachments: Array.isArray(startInput.attachments) ? startInput.attachments.length : 0,
       }, async () => commandValue(effect.mode === "resume"
-        ? await stepResumeCommand(effect.input as Input)
+        ? await stepResumeCommand(effect.input as unknown as Input)
         : (startInput.mode === "compact"
-          ? await compactPreludeCommand(effect.input as Input)
-          : await stepPreludeCommand(effect.input as Input))));
+          ? await compactPreludeCommand(effect.input as unknown as Input)
+          : await stepPreludeCommand(effect.input as unknown as Input))));
       state = reduceStepDriverState(state, { type: "Started", started });
       continue;
     }
@@ -742,7 +825,7 @@ export async function stepNextCommand(input: Input) {
         hasCarriedMessages: Array.isArray(effect.input.messages),
         provider: (effect.input.provider as Record<string, unknown> | null)?.name ?? null,
         model: (effect.input.provider as Record<string, unknown> | null)?.model ?? null,
-      }, async () => commandValue(await stepPrepareCommand(effect.input as Input)));
+      }, async () => commandValue(await stepPrepareCommand(effect.input as unknown as Input)));
       state = reduceStepDriverState(state, { type: "Prepared", prepared });
       continue;
     }
@@ -751,23 +834,24 @@ export async function stepNextCommand(input: Input) {
   }
 }
 export async function stepContinueToolCallsCommand(input: Input) {
+  const state = input.state != null && typeof input.state === "object" && !Array.isArray(input.state) ? input.state as DriverStateInput : {};
   const chatId = String(input.chatId ?? "").trim();
-  const messages = Array.isArray(input.state?.messages) ? input.state.messages : [];
-  const toolCalls = Array.isArray(input.toolCalls) ? input.toolCalls : [];
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  const toolCalls: ToolCallInput[] = Array.isArray(input.toolCalls) ? input.toolCalls : [];
   const usedModel = input.usedModel ?? null;
-  const requestEffort = input.requestEffort ?? input.state?.requestEffort ?? null;
+  const requestEffort = input.requestEffort ?? state.requestEffort ?? null;
   await traceMark("tool.batch.start", { chatId, count: toolCalls.length, carriedMessages: messages.length, usedModel, requestEffort });
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
     await traceMark("tool.call.queued", { chatId, index: i, ...toolCallForTrace(tc) });
-    if (tc?.function?.name === "runJS") {
-      await traceMark("tool.runjs.deferred", { chatId, index: i, remainingToolCalls: toolCalls.length - i - 1, ...toolCallForTrace(tc) });
+    if (tc?.function?.name === "runTS") {
+      await traceMark("tool.runts.deferred", { chatId, index: i, remainingToolCalls: toolCalls.length - i - 1, ...toolCallForTrace(tc) });
       return {
         ok: true,
         value: {
-          kind: "tool-js",
+          kind: "tool-ts",
           state: {
-            ...input.state,
+            ...state,
             chatId,
             messages,
             pendingToolCalls: toolCalls.slice(i + 1),
@@ -792,12 +876,13 @@ export async function stepContinueToolCallsCommand(input: Input) {
   return { ok: true, value: { kind: "iterate", messages } };
 }
 
-export async function runJsToolCommand(input: Input) {
-  const chatId = String(input.chatId ?? input.state?.chatId ?? "").trim();
-  if (!chatId) return { ok: false, error: { message: "run-js-tool requires chatId" } };
+export async function runTsToolCommand(input: Input) {
+  const state = input.state != null && typeof input.state === "object" && !Array.isArray(input.state) ? input.state as { chatId?: string; requestEffort?: string | null; usedModel?: string | null } : {};
+  const chatId = String(input.chatId ?? state.chatId ?? "").trim();
+  if (!chatId) return { ok: false, error: { message: "run-ts-tool requires chatId" } };
   try {
-    const requestEffort = input.effort ?? input.requestEffort ?? input.state?.requestEffort ?? null;
-    const exec = await runToolCall(chatId, input.toolCall, input.model ?? input.state?.usedModel ?? null, requestEffort);
+    const requestEffort = input.effort ?? input.requestEffort ?? state.requestEffort ?? null;
+    const exec = await runToolCall(chatId, input.toolCall, input.model ?? state.usedModel ?? null, requestEffort);
     return {
       ok: true,
       value: {
@@ -806,8 +891,8 @@ export async function runJsToolCommand(input: Input) {
         status: "done",
       },
     };
-  } catch (err: any) {
-    const message = err?.message || String(err);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
     return {
       ok: true,
       value: {
@@ -873,7 +958,7 @@ export async function restartOngoingCommand() {
     if (!marked) {
       // Only the durable ongoing marker means a chat is crash-recoverable.
       // Status-only Running/Queued rows can be leftovers from an interrupted
-      // tool call (for example RunJS aborted before it could write Done).
+      // tool call (for example RunTS aborted before it could write Done).
       // Treat them as stale instead of relaunching the LLM after restart.
       if (staleInflightStatus) {
         await cancelChatInFlightSteps(c.chatId, "cleared stale in-flight status during startup");
@@ -894,7 +979,7 @@ export async function restartOngoingCommand() {
 
     // Any step left Running/Queued was interrupted by the crash — its V8
     // execution is gone. Cancel before resuming so the UI doesn't keep a
-    // spinner on the orphaned runJS step.
+    // spinner on the orphaned runTS step.
     await cancelChatInFlightSteps(c.chatId, "interrupted by server restart");
     chatIds.push(c.chatId);
   }
@@ -923,9 +1008,11 @@ export function tokenPressureFromEstimates(compactionPromptTokens: number, reque
 }
 
 export async function stepPrepareCommand(input: Input) {
-  const chatId = input.chatId;
+  const chatId = input.chatId || "demo";
   const provider = input.provider;
-  await traceMark("llm.prepare.start", { chatId, provider: provider?.name ?? null, baseModel: provider?.model ?? null, carriedMessages: Array.isArray(input.messages) ? (input.messages as any[]).length : null });
+  if (!provider) return { ok: false, error: { message: "step-prepare requires provider" } };
+  const passedMessages = messageArray(input.messages);
+  await traceMark("llm.prepare.start", { chatId, provider: provider?.name ?? null, baseModel: provider?.model ?? null, carriedMessages: passedMessages?.length ?? null });
   const selectedProvider = await getChatProvider(chatId);
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
@@ -939,13 +1026,11 @@ export async function stepPrepareCommand(input: Input) {
     provider.effort = null;
   }
   await traceMark("llm.provider.selected", { chatId, provider: provider?.name ?? null, model: provider?.model ?? null, effort: provider?.effort ?? null, selectedModel: selectedModel ?? null, selectedEffort: selectedEffort ?? null, supportedEfforts: efforts });
-  const passedMessages = Array.isArray(input.messages) ? (input.messages as any[]) : null;
-
   // First iteration (no carried-over messages): build from DB and check
   // compaction. Subsequent iterations carry the in-progress message array
   // through the driver — the assistant + tool entries from the previous
   // round must persist across the LLM call.
-  let messages: any[];
+  let messages: LlmMessage[];
   let estimatedPromptTokens = 0;
   let budget = await contextBudget(provider);
   if (passedMessages == null) {
@@ -969,9 +1054,11 @@ export async function stepPrepareCommand(input: Input) {
       estimated: true,
     }) });
     await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
-    await traceMark("compaction.check", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
-    if (estimatedPromptTokens >= threshold) {
-      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+    const forceCompact = input.forceCompact === true;
+    const shouldCompact = forceCompact || estimatedPromptTokens >= threshold;
+    await traceMark("compaction.check", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, forceCompact, shouldCompact });
+    if (shouldCompact) {
+      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, forceCompact });
       const compactionMessages = await traceSpan("compaction.build_messages", { chatId }, () => buildCompactionMessages(chatId));
       moo.events.publish({ payload: { kind: "compaction-start", chatId } });
       const rawSummaryMessages = buildCompactionSummaryPromptMessages(compactionMessages);
@@ -1096,23 +1183,13 @@ export async function stepPrepareCommand(input: Input) {
 }
 
 export async function stepHandleLlmCommand(input: Input) {
-  const chatId = input.chatId;
+  const chatId = input.chatId || "demo";
   const attempt = llmAttempt(input);
   const purpose = input.purpose as "step" | "compact";
-  const llmResult = input.llmResult as {
-    status: number;
-    ok: boolean;
-    content: string;
-    toolCalls: any[];
-    errorBody: string | null;
-    headers?: Record<string, unknown> | null;
-    reasoningContent?: string | null;
-    model: string | null;
-    usage: any | null;
-  };
+  const llmResult = input.llmResult as LlmStreamResultInput;
   const draftId = String(input.draftId ?? "");
   const thoughtDurationNs = Number(input.thoughtDurationNs);
-  let messages = (Array.isArray(input.messages) ? (input.messages as any[]) : null) as any[] | null;
+  let messages = messageArray(input.messages);
 
   if (draftId) moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
   await traceMark("llm.result.received", {
@@ -1150,7 +1227,8 @@ export async function stepHandleLlmCommand(input: Input) {
   });
   if (normalizedUsage && purpose !== "compact") {
     const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" || input.requestProvider === "deepseek" ? input.requestProvider : "openai";
-    const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel } : null);
+    const requestAuthMode = input.requestAuthMode === "env" || input.requestAuthMode === "apiKey" || input.requestAuthMode === "oauth" ? input.requestAuthMode : undefined;
+    const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel, authMode: requestAuthMode } : null);
     if (tokenEvent) moo.events.publish({ payload: tokenEvent });
     await recordUsage(chatId, usedModel, normalizedUsage);
     await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: true, model: usedModel });
@@ -1261,6 +1339,31 @@ export async function stepHandleLlmCommand(input: Input) {
   if (!llmResult.ok) {
     const retry = llmRetryDecisionFromSchedule(llmResult, attempt, await currentLlmRetryPolicy());
     await traceMark("llm.retry.decision", { chatId, attempt, retry: retry.retry, reason: retry.reason, delayMs: retry.delayMs, status: llmResult.status });
+    const contextLengthParsed = parseProviderErrorBody(llmResult.errorBody);
+    if (!input.forceCompact && isContextLengthExceededError(contextLengthParsed)) {
+      const status = Number(llmResult.status) || 0;
+      await traceMark("compaction.context_length_retry", {
+        chatId,
+        attempt,
+        status,
+        estimatedPromptTokens: Number(input.estimatedPromptTokens) || null,
+        tokenBudget: Number(input.tokenBudget) || null,
+        tokenThreshold: Number(input.tokenThreshold) || null,
+        code: providerErrorCode(contextLengthParsed),
+        type: providerErrorType(contextLengthParsed),
+        requestId: providerErrorRequestId(contextLengthParsed, llmResult.headers),
+      });
+      return {
+        ok: true,
+        value: {
+          kind: "iterate",
+          messages: null,
+          retryAttempt: attempt + 1,
+          retryReason: "context-length-compaction",
+          forceCompact: true,
+        },
+      };
+    }
     if (retry.retry) {
       await traceMark("llm.retry.scheduled", { chatId, attempt, nextAttempt: attempt + 1, reason: retry.reason, delayMs: retry.delayMs });
       return {
@@ -1313,7 +1416,7 @@ export async function stepHandleLlmCommand(input: Input) {
       chatId,
       count: llmResult.toolCalls.length,
       toolCalls: llmResult.toolCalls,
-      names: llmResult.toolCalls.map((tc: any) => tc?.function?.name ?? null),
+      names: llmResult.toolCalls.map((tc) => tc.function?.name ?? null),
     });
     // Persist any preamble text or streamed reasoning the model emitted alongside
     // its tool calls so the streaming draft bubble has a real Reply step to land

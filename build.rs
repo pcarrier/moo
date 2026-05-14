@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     println!("cargo:rerun-if-changed=harness/package.json");
+    println!("cargo:rerun-if-changed=harness/bun.lock");
     println!("cargo:rerun-if-changed=harness/tsconfig.json");
     emit_rerun_if_changed(Path::new("harness/src"));
 
@@ -49,12 +50,15 @@ fn build_harness(out_dir: &Path) {
         return;
     }
 
-    let bun_out = Path::new("harness/src/default_harness.js");
+    require_harness_deps();
+
     let output = Command::new("bun")
         .current_dir("harness")
         .arg("build")
         .arg("src/index.ts")
-        .arg("--outfile=src/default_harness.js")
+        .arg("--outdir")
+        .arg(out_dir)
+        .arg("--entry-naming=default_harness.[ext]")
         .arg("--format=iife")
         .arg("--target=browser")
         .arg("--sourcemap=linked")
@@ -68,35 +72,27 @@ fn build_harness(out_dir: &Path) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    fs::copy(bun_out, &out_file).unwrap_or_else(|err| {
-        panic!(
-            "failed to copy {} -> {}: {err}",
-            bun_out.display(),
-            out_file.display()
-        )
-    });
-    let bun_map = Path::new("harness/src/default_harness.js.map");
-    if bun_map.exists() {
-        fs::copy(bun_map, out_dir.join("default_harness.js.map")).unwrap_or_else(|err| {
-            panic!(
-                "failed to copy {} -> default_harness.js.map: {err}",
-                bun_map.display()
-            )
-        });
-    }
-    let _ = fs::remove_file(bun_out);
-    let _ = fs::remove_file(bun_map);
+    assert!(
+        out_file.exists(),
+        "bun build completed but did not produce {}",
+        out_file.display()
+    );
 }
 
 fn build_ui(out_dir: &Path) {
+    let generated_dist = out_dir.join("web-dist");
     let dist: PathBuf = env::var_os("MOO_VITE_DIST").map_or_else(
         || {
-            ensure_web_deps();
+            require_web_deps();
 
             let output = Command::new("bun")
                 .current_dir("web")
                 .arg("run")
                 .arg("build")
+                .arg("--")
+                .arg("--outDir")
+                .arg(&generated_dist)
+                .arg("--emptyOutDir")
                 .output()
                 .expect("failed to run bun; install Bun to build the embedded Vite UI");
 
@@ -108,7 +104,7 @@ fn build_ui(out_dir: &Path) {
                 String::from_utf8_lossy(&output.stderr)
             );
 
-            PathBuf::from("web/dist")
+            generated_dist
         },
         PathBuf::from,
     );
@@ -157,30 +153,21 @@ fn is_release_profile() -> bool {
         .any(|pair| pair[0].as_os_str() == "release" && pair[1].as_os_str() == "build")
 }
 
-fn ensure_web_deps() {
-    if vite_bin_exists() {
-        return;
-    }
-
-    let output = Command::new("bun")
-        .current_dir("web")
-        .arg("install")
-        .arg("--frozen-lockfile")
-        .arg("--no-progress")
-        .output()
-        .expect("failed to run bun; install Bun to install embedded Vite UI dependencies");
-
+fn require_harness_deps() {
     assert!(
-        output.status.success(),
-        "failed to install embedded Vite UI dependencies with bun install: status={}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        typescript_package_exists(),
+        "missing harness dependencies: run `bun install --cwd harness --frozen-lockfile --no-progress` before Cargo builds, or set MOO_HARNESS_BUNDLE to a prebuilt harness bundle"
     );
+}
 
+fn typescript_package_exists() -> bool {
+    Path::new("harness/node_modules/typescript/package.json").exists()
+}
+
+fn require_web_deps() {
     assert!(
         vite_bin_exists(),
-        "bun install completed but no Vite launcher was found in web/node_modules/.bin"
+        "missing web dependencies: run `bun install --cwd web --frozen-lockfile --no-progress` before Cargo builds, or set MOO_VITE_DIST to a prebuilt Vite dist directory"
     );
 }
 

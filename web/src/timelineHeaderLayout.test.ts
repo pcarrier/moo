@@ -53,6 +53,18 @@ describe("timeline loading header layout", () => {
     expect(timeline).toContain("token-compact-button");
   });
 
+  test("continues top-loading older history after restored page renders", () => {
+    expect(timeline).toContain("let olderTimelineRecheckFrame: number | undefined;");
+    expect(timeline).toContain("const scheduleOlderTimelineRecheck = () => {");
+    expect(timeline).toContain("if (restoreFrame !== undefined) {");
+    expect(timeline).toContain("scheduleOlderTimelineRecheck();\n        return;");
+    expect(timeline).toContain("scheduleOlderTimelineRecheck();\n    });");
+    expect(timeline).toContain("let wasOlderTimelineLoading = false;");
+    expect(timeline).toContain(
+      "wasOlderTimelineLoading &&\n      !loading &&\n      hidden < olderTimelineHiddenAtLoadStart",
+    );
+  });
+
   test("places compact as a square icon button after the token bar", () => {
     const tokenBarIndex = timeline.indexOf('class="token-bar"');
     const compactButtonIndex = timeline.indexOf('class="token-compact-button"');

@@ -1917,7 +1917,7 @@ const SCAN_READ_ONLY_COMMANDS: &[&str] = &[
     "vocabulary",
 ];
 
-const FRESH_CONTEXT_COMMANDS: &[&str] = &["run-js-tool", "ui-call"];
+const FRESH_CONTEXT_COMMANDS: &[&str] = &["run-ts-tool", "ui-call"];
 
 // UI app handlers can be invoked from the browser while an agent turn for the
 // same chat still owns the per-chat write lock. Do not make app RPCs wait for
@@ -2120,7 +2120,7 @@ mod tests {
     #[test]
     fn payload_with_server_base_url_adds_configured_url() {
         let payload = payload_with_server_base_url(
-            r#"{"command":"run-js-tool","chatId":"c"}"#.to_string(),
+            r#"{"command":"run-ts-tool","chatId":"c"}"#.to_string(),
             Some("http://100.126.83.89:5173"),
         );
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -2145,7 +2145,7 @@ mod tests {
 
     #[test]
     fn payload_with_server_base_url_ignores_missing_config() {
-        let input = r#"{"command":"run-js-tool"}"#.to_string();
+        let input = r#"{"command":"run-ts-tool"}"#.to_string();
         assert_eq!(payload_with_server_base_url(input.clone(), None), input);
     }
 }

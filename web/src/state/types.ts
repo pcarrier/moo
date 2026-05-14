@@ -118,7 +118,9 @@ export type RightSidebarState = {
   width: string;
   collapsed: boolean;
   maximized: boolean;
+  totalDiffExpanded: boolean;
   expandedDiffViewState?: Record<string, DiffViewState>;
+  diffExpansionShown?: Record<string, number>;
 };
 
 export type CachedTimelinePage = DescribeTimelinePage & {

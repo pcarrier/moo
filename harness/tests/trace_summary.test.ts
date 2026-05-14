@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { finishRunJSTraceRoot, startRunJSTraceRoot, traceJsonValue } from "../src/moo";
+import { finishRunTSTraceRoot, startRunTSTraceRoot, traceJsonValue } from "../src/moo";
 
 describe("trace value serialization", () => {
   test("include function source instead of a placeholder", () => {
@@ -113,12 +113,12 @@ describe("trace root inference", () => {
     (globalThis as any).__op_trace_current = () => JSON.stringify({ id: "traceevt:tool", traceId: "chattrace:chat:test", rootId: "chattrace:chat:test", parentId: "traceevt:tool" });
     (globalThis as any).__op_trace_enter = (raw: string) => JSON.stringify({ traceId: JSON.parse(raw).rootId, rootId: JSON.parse(raw).rootId, id: JSON.parse(raw).id, parentId: JSON.parse(raw).id });
     try {
-      await startRunJSTraceRoot("step:test", { chatId: "chat:test", label: "Run JS", title: "Trace Chat" });
+      await startRunTSTraceRoot("step:test", { chatId: "chat:test", label: "Run TS", title: "Trace Chat" });
 
       expect(ensured).toHaveLength(1);
       expect(ensured[0]).toMatchObject({ id: "chattrace:chat:test", chatId: "chat:test", kind: "chat", name: "Trace Chat", data: { source: "chat" } });
       expect(ensuredSpans).toHaveLength(1);
-      expect(ensuredSpans[0]).toMatchObject({ id: "step:test", parentId: "traceevt:tool", chatId: "chat:test", kind: "step", name: "Run JS" });
+      expect(ensuredSpans[0]).toMatchObject({ id: "step:test", parentId: "traceevt:tool", chatId: "chat:test", kind: "step", name: "Run TS" });
     } finally {
       if (previousCurrent) (globalThis as any).__op_trace_current = previousCurrent;
       else delete (globalThis as any).__op_trace_current;
@@ -131,7 +131,7 @@ describe("trace root inference", () => {
     }
   });
 
-  test("finishes only the active step span when runJS completes", async () => {
+  test("finishes only the active step span when runTS completes", async () => {
     const previousCurrent = (globalThis as any).__op_trace_current;
     const previousGet = (globalThis as any).__op_trace_get;
     const previousFinish = (globalThis as any).__op_trace_finish;
@@ -142,7 +142,7 @@ describe("trace root inference", () => {
       const args = JSON.parse(raw || "{}");
       const id = args.id || args.traceId;
       if (id !== "step:test") return null;
-      return JSON.stringify({ id, parentId: "chattrace:chat:test", rootId: "chattrace:chat:test", rootKind: "chat", data: { label: "Run JS" } });
+      return JSON.stringify({ id, parentId: "chattrace:chat:test", rootId: "chattrace:chat:test", rootKind: "chat", data: { label: "Run TS" } });
     };
     (globalThis as any).__op_trace_finish = (id: string, status: string, dataJson: string) => {
       finished.push({ id, status, data: JSON.parse(dataJson || "{}") });
@@ -150,12 +150,12 @@ describe("trace root inference", () => {
     };
     (globalThis as any).__op_trace_leave = () => {};
     try {
-      const ok = await finishRunJSTraceRoot({ id: "step:test", resultHash: "sha256:result", status: "ok" });
+      const ok = await finishRunTSTraceRoot({ id: "step:test", resultHash: "sha256:result", status: "ok" });
 
       expect(ok).toBe(true);
       expect(finished.map((row) => row.id)).toEqual(["step:test"]);
       expect(finished.every((row) => row.status === "ok")).toBe(true);
-      expect(finished[0].data).toMatchObject({ label: "Run JS", resultHash: "sha256:result" });
+      expect(finished[0].data).toMatchObject({ label: "Run TS", resultHash: "sha256:result" });
     } finally {
       if (previousCurrent) (globalThis as any).__op_trace_current = previousCurrent;
       else delete (globalThis as any).__op_trace_current;
@@ -184,10 +184,10 @@ describe("trace root inference", () => {
     (globalThis as any).__op_trace_current = () => null;
     (globalThis as any).__op_trace_enter = (raw: string) => JSON.stringify({ traceId: JSON.parse(raw).rootId, rootId: JSON.parse(raw).rootId, id: JSON.parse(raw).id });
     try {
-      await startRunJSTraceRoot("step:test", { label: "Run JS" });
+      await startRunTSTraceRoot("step:test", { label: "Run TS" });
 
       expect(ensured).toHaveLength(1);
-      expect(ensured[0]).toMatchObject({ id: "step:test", kind: "system", name: "Run JS", data: { label: "Run JS" } });
+      expect(ensured[0]).toMatchObject({ id: "step:test", kind: "system", name: "Run TS", data: { label: "Run TS" } });
       expect(ensuredSpans).toEqual([]);
     } finally {
       if (previousEnsure) (globalThis as any).__op_trace_ensure_root = previousEnsure;

@@ -1,6 +1,7 @@
 import type { LLMProvider } from "./types";
 import { currentCompactionThresholdPercent, providerConfiguredCredential } from "./commands/llm_auth";
-import { finishRunJSTraceRoot, moo, startRunJSTraceRoot, withMooChatContext, withMooRunJSContext } from "./moo";
+import { finishRunTSTraceRoot, moo, startRunTSTraceRoot, withMooChatContext, withMooRunTSContext } from "./moo";
+import { compileRunTS } from "./runts";
 import { appendStep } from "./steps";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
 import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
@@ -15,9 +16,9 @@ export const TOOLS = [
   {
     type: "function",
     function: {
-      name: "runJS",
+      name: "runTS",
       description:
-        "Evaluate JavaScript in the harness. Body is wrapped in an async IIFE; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope; `setTimeout` and `setImmediate` are available. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
+        "Compile and run TypeScript 6 against bundled ES2025 + Moo harness type definitions. Body is wrapped in an async function; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope; `setTimeout` and `setImmediate` are available. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
       parameters: {
         type: "object",
         properties: {
@@ -33,10 +34,10 @@ export const TOOLS = [
           },
           code: {
             type: "string",
-            description: "JavaScript source to execute as the body of an async IIFE.",
+            description: "TypeScript source to type-check and execute as the body of an async function.",
           },
           args: {
-            description: "Arbitrary JSON value made available to the JavaScript body as `args`.",
+            description: "Arbitrary JSON value made available to the TypeScript body as `args`.",
           },
         },
         required: ["label", "description", "code"],
@@ -46,11 +47,15 @@ export const TOOLS = [
   },
 ];
 
-export function modelContextBudget(provider: Pick<LLMProvider, "name" | "model"> | null | undefined): number {
-  return modelContextWindow(normalizeProviderName(provider?.name), provider?.model);
+function contextInterfaceForProvider(provider: Pick<LLMProvider, "authMode"> | null | undefined): "api" | "codex" {
+  return provider?.authMode === "oauth" ? "codex" : "api";
 }
 
-export async function contextBudget(provider?: Pick<LLMProvider, "name" | "model"> | null): Promise<number> {
+export function modelContextBudget(provider: Pick<LLMProvider, "name" | "model"> & Partial<Pick<LLMProvider, "authMode">> | null | undefined): number {
+  return modelContextWindow(normalizeProviderName(provider?.name), provider?.model, contextInterfaceForProvider(provider));
+}
+
+export async function contextBudget(provider?: Pick<LLMProvider, "name" | "model"> & Partial<Pick<LLMProvider, "authMode">> | null): Promise<number> {
   return modelContextBudget(provider);
 }
 
@@ -983,7 +988,7 @@ function contextTokensFromUsage(usage: RawUsage | null | undefined): number | nu
   return Number.isFinite(used) && used > 0 ? used : null;
 }
 
-export async function tokenUsageEvent(chatId: string, usage: RawUsage | null | undefined, provider?: Pick<LLMProvider, "name" | "model"> | null) {
+export async function tokenUsageEvent(chatId: string, usage: RawUsage | null | undefined, provider?: Pick<LLMProvider, "name" | "model"> & Partial<Pick<LLMProvider, "authMode">> | null) {
   const used = contextTokensFromUsage(usage);
   if (used == null) return null;
   const estimated = usage?.estimated === true;
@@ -1628,7 +1633,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
 }
 
 const LLM_CONTEXT_STEP_KINDS = new Set([
-  "agent:RunJS",
+  "agent:RunTS",
   "agent:Subagent",
   "agent:ShellCommand",
   "agent:Error",
@@ -1742,8 +1747,9 @@ export async function loadResultJSON(
 
 // -- tool execution --------------------------------------------------------
 //
-// One tool is exposed to the LLM: runJS. The model sends JS code; the harness
-// evaluates it as the body of an async IIFE with `moo`, `chatId`, `repo`, `scratch`, and optional `args` in scope.
+// One tool is exposed to the LLM: runTS. The model sends TypeScript code; the harness
+// type-checks it against bundled TypeScript 6 + ES2025 + Moo declarations, then
+// evaluates it as the body of an async function with `moo`, `chatId`, `repo`, `scratch`, and optional `args` in scope.
 
 export function serializeToolValue(v: any): string {
   if (v === undefined) return "undefined";
@@ -1822,7 +1828,7 @@ function protectHjsonMultilineIndent(line: string): string {
   return line.replace(/^[ \t]+/, (prefix) => prefix.replace(/ /g, " ").replace(/\t/g, "  "));
 }
 
-async function toolRunJS(
+async function toolRunTS(
   chatId: string,
   toolArgs: any,
   model?: string | null,
@@ -1834,8 +1840,8 @@ async function toolRunJS(
   const hasRunArgs = Object.prototype.hasOwnProperty.call(toolArgs ?? {}, "args");
   const runArgs = hasRunArgs ? toolArgs.args : undefined;
   const started = Date.now();
-  const runJsStep = await startRunJSStep(chatId, code, label, description, runArgs, hasRunArgs, started, model, effort);
-  const trace = await startRunJSTraceRoot(runJsStep.stepId, {
+  const runTsStep = await startRunTSStep(chatId, code, label, description, runArgs, hasRunArgs, started, model, effort);
+  const trace = await startRunTSTraceRoot(runTsStep.stepId, {
     chatId,
     label: label || null,
     description: description || null,
@@ -1846,40 +1852,42 @@ async function toolRunJS(
     effort: effort || null,
   });
   if (!code.trim()) {
-    const resultHash = await finishRunJSStep(chatId, runJsStep.stepId, null, "missing code", started);
-    await finishRunJSTraceRoot({ id: trace?.id, resultHash, error: "missing code", status: "error" });
-    return { toolText: "error: runJS requires `code`" };
+    const resultHash = await finishRunTSStep(chatId, runTsStep.stepId, null, "missing code", started);
+    await finishRunTSTraceRoot({ id: trace?.id, resultHash, error: "missing code", status: "error" });
+    return { toolText: "error: runTS requires `code`" };
   }
   let result: any = undefined;
   let error: string | null = null;
-  let serialized: string | null = null;
+  let serialized = "undefined";
   try {
-    const fn = await moo.traces.span({ name: "v8.compile", data: { code }, fn: () => new Function(
+    const compiled = await moo.traces.span({ name: "ts.compile", data: { code, target: "es2025", typescript: "6" }, fn: () => compileRunTS(code) });
+    if (compiled.diagnostics.length) throw new Error("TypeScript compile failed:\n" + compiled.diagnostics.join("\n"));
+    const fn = await moo.traces.span({ name: "v8.compile", data: { code: compiled.js, source: "runTS" }, fn: () => new Function(
         "moo",
         "chatId",
         "repo",
         "scratch",
         "args",
-        `return (async () => { ${code}\n})();`,
+        compiled.js + "\nreturn __runTS__();",
       ) });
     const repo = (await moo.pointers.get({ name: `chat/${chatId}/path` })) || ".";
     const scratch = await moo.chat.scratch({ chatId: chatId });
     const depth = await subagentDepth(chatId);
-    result = await withMooRunJSContext(chatId, runJsStep.stepId, depth, () =>
-      withMooChatContext(chatId, () => moo.traces.span({ name: "runjs.user", fn: () => fn(moo, chatId, repo, scratch, runArgs) })),
+    result = await withMooRunTSContext(chatId, runTsStep.stepId, depth, () =>
+      withMooChatContext(chatId, () => moo.traces.span({ name: "runts.user", fn: () => fn(moo, chatId, repo, scratch, runArgs) })),
     );
-    serialized = await moo.traces.span({ name: "runjs.stringify", data: { resultType: typeof result }, fn: () => serializeToolValue(result) });
+    serialized = await moo.traces.span({ name: "runts.stringify", data: { resultType: typeof result }, fn: () => serializeToolValue(result) });
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
-  const resultHash = await finishRunJSStep(
+  const resultHash = await finishRunTSStep(
     chatId,
-    runJsStep.stepId,
+    runTsStep.stepId,
     error ? null : { value: serialized },
     error,
     started,
   );
-  await finishRunJSTraceRoot({ id: trace?.id, resultHash, error, status: error ? "error" : "ok" });
+  await finishRunTSTraceRoot({ id: trace?.id, resultHash, error, status: error ? "error" : "ok" });
   if (error) return { toolText: `error: ${error}` };
   return { toolText: truncate(serialized ?? "undefined", 4000) };
 }
@@ -1890,7 +1898,7 @@ async function subagentDepth(chatId: string): Promise<number> {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-async function startRunJSStep(
+async function startRunTSStep(
   chatId: string,
   code: string,
   label: string,
@@ -1901,14 +1909,14 @@ async function startRunJSStep(
   model?: string | null,
   effort?: string | null,
 ) {
-  const payloadHash = await moo.objects.putJSON({ kind: "agent:RunJS", value: {
+  const payloadHash = await moo.objects.putJSON({ kind: "agent:RunTS", value: {
       code,
       label: label || null,
       description: description || null,
       ...(hasRunArgs ? { args: runArgs } : {}),
     } });
   return await appendStep(chatId, {
-    kind: "agent:RunJS",
+    kind: "agent:RunTS",
     status: "agent:Running",
     payloadHash,
     extras: modelExtras(model, effort),
@@ -1916,7 +1924,7 @@ async function startRunJSStep(
   });
 }
 
-async function finishRunJSStep(
+async function finishRunTSStep(
   chatId: string,
   stepId: string,
   result: { value: string } | null,
@@ -1945,7 +1953,7 @@ async function finishRunJSStep(
     if (error) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: error });
   } });
   moo.events.publish({ payload: {
-    kind: "runjs-step-finished",
+    kind: "runts-step-finished",
     chatId,
     stepId,
     status,
@@ -1979,8 +1987,8 @@ export async function executeToolCall(
   } catch {
     args = {};
   }
-  if (name === "runJS") {
-    return await traceSpan("tool.runJS", {
+  if (name === "runTS") {
+    return await traceSpan("tool.runTS", {
       chatId,
       model: model ?? null,
       effort: normalizeEffort(effort) ?? null,
@@ -1988,10 +1996,10 @@ export async function executeToolCall(
       label: args?.label ?? null,
       description: args?.description ?? null,
       args,
-    }, () => toolRunJS(chatId, args, model, effort));
+    }, () => toolRunTS(chatId, args, model, effort));
   }
   const started = Date.now();
-  const unknown = await startRunJSStep(
+  const unknown = await startRunTSStep(
     chatId,
     JSON.stringify({ tool: name, args }),
     "",
@@ -2002,7 +2010,7 @@ export async function executeToolCall(
     model,
     effort,
   );
-  await finishRunJSStep(chatId, unknown.stepId, null, `unknown tool: ${name}`);
+  await finishRunTSStep(chatId, unknown.stepId, null, `unknown tool: ${name}`);
   return { toolText: `unknown tool: ${name}` };
 }
 
@@ -2071,8 +2079,8 @@ function formatErrorPayload(body: any): string {
 const COMPACTION_STEP_TEXT_LIMITS = {
   userInput: 12_000,
   reply: 12_000,
-  runJsCode: 8_000,
-  runJsResult: 8_000,
+  runTsCode: 8_000,
+  runTsResult: 8_000,
   shellOutput: 12_000,
   subagentOutput: 2_000,
   errorPayload: 6_000,
@@ -2095,12 +2103,13 @@ export function formatStepForCompaction(item: any, payload: any, result: any): s
       return truncate(payload?.value?.message ?? "", COMPACTION_STEP_TEXT_LIMITS.userInput);
     case "agent:Reply":
       return truncate(payload?.value?.text ?? "", COMPACTION_STEP_TEXT_LIMITS.reply);
+    case "agent:RunTS":
     case "agent:RunJS": {
-      const code = truncate(payload?.value?.code ?? "", COMPACTION_STEP_TEXT_LIMITS.runJsCode);
+      const code = truncate(payload?.value?.code ?? "", COMPACTION_STEP_TEXT_LIMITS.runTsCode);
       const label = payload?.value?.label ?? "";
       const description = payload?.value?.description ?? "";
       const resultText = result?.value
-        ? truncate(stringifyCompactionValue(result.value), COMPACTION_STEP_TEXT_LIMITS.runJsResult)
+        ? truncate(stringifyCompactionValue(result.value), COMPACTION_STEP_TEXT_LIMITS.runTsResult)
         : "";
       const parts: string[] = [];
       if (label) parts.push(`@@label ${label}`);
@@ -2162,6 +2171,7 @@ export function formatStep(item: any, payload: any, result: any): string {
       const trigger = payload?.value?.trigger === "automatic" ? "automatic " : payload?.value?.trigger === "manual" ? "manual " : "";
       return `${trigger}compaction\n${summary}`;
     }
+    case "agent:RunTS":
     case "agent:RunJS": {
       const code = payload?.value?.code ?? "";
       const label = payload?.value?.label ?? "";
@@ -2178,7 +2188,7 @@ export function formatStep(item: any, payload: any, result: any): string {
       }
       // Sentinel-prefixed lines keep the format robust if code or
       // description happens to start with a colon. The frontend parser in
-      // RunJSBody splits on these markers.
+      // RunTSBody splits on these markers.
       const parts: string[] = [];
       if (label) parts.push(`@@label ${label}`);
       if (description) parts.push(`@@desc ${description}`);

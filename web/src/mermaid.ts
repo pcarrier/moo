@@ -206,6 +206,9 @@ function openMermaidLightbox(diagram: HTMLElement) {
   let dragStartY = 0;
   let dragOriginX = 0;
   let dragOriginY = 0;
+  let movedDuringDrag = false;
+  let suppressNextOutsideClick = false;
+  let suppressOutsideClickTimer: number | undefined;
 
   const update = () => {
     lightboxSvg.style.inlineSize = Math.max(1, svgSize.width * scale) + "px";
@@ -244,6 +247,7 @@ function openMermaidLightbox(diagram: HTMLElement) {
   const onPointerDown = (event: PointerEvent) => {
     if (event.pointerType !== "mouse" || event.button !== 0) return;
     dragging = true;
+    movedDuringDrag = false;
     dragStartX = event.clientX;
     dragStartY = event.clientY;
     dragOriginX = viewport.scrollLeft;
@@ -254,13 +258,24 @@ function openMermaidLightbox(diagram: HTMLElement) {
   const onPointerMove = (event: PointerEvent) => {
     if (!dragging) return;
     event.preventDefault();
-    viewport.scrollLeft = dragOriginX - (event.clientX - dragStartX);
-    viewport.scrollTop = dragOriginY - (event.clientY - dragStartY);
+    const deltaX = event.clientX - dragStartX;
+    const deltaY = event.clientY - dragStartY;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) movedDuringDrag = true;
+    viewport.scrollLeft = dragOriginX - deltaX;
+    viewport.scrollTop = dragOriginY - deltaY;
   };
   const onPointerUp = (event: PointerEvent) => {
     if (!dragging) return;
     dragging = false;
     viewport.classList.remove("is-panning");
+    if (movedDuringDrag) {
+      suppressNextOutsideClick = true;
+      if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);
+      suppressOutsideClickTimer = window.setTimeout(() => {
+        suppressNextOutsideClick = false;
+        suppressOutsideClickTimer = undefined;
+      }, 0);
+    }
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   };
   const onWheel = (event: WheelEvent) => {
@@ -287,7 +302,16 @@ function openMermaidLightbox(diagram: HTMLElement) {
     }
   };
   const onOverlayClick = (event: MouseEvent) => {
-    if (event.target === overlay) close();
+    if (suppressNextOutsideClick) {
+      suppressNextOutsideClick = false;
+      if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);
+      suppressOutsideClickTimer = undefined;
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (content.contains(target) || toolbar.contains(target)) return;
+    close();
   };
 
   zoomOutButton.addEventListener("click", () => zoomBy(1 / ZOOM_STEP));
@@ -307,6 +331,7 @@ function openMermaidLightbox(diagram: HTMLElement) {
 
   activeLightboxCleanup = () => {
     window.removeEventListener("keydown", onKeyDown, true);
+    if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);
     overlay.remove();
     document.body.classList.remove("mermaid-lightbox-open");
     activeLightboxCleanup = undefined;

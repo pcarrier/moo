@@ -34,6 +34,8 @@
         "aarch64-darwin" = "sha256-fnR0DD7woOj8DiaKJYYSPpg0D+lDVmjNwSiPrvtzYq4=";
       };
 
+      harnessDepsHash = "sha256-e5ZoiYp3I/eGe/SqtipTzyueQDKrOqSgaIJbFS7u33w=";
+
       webDepsHashes = {
         "x86_64-linux" = "sha256-yw/kSgoX6ge5kydwnJfbHIfaWrU5+OFyje1zfSINvvU=";
         "aarch64-linux" = "sha256-tfaR3aK7Tnd5JKur+fefG6eO8v2UqI3MN0vW53VD1Fs=";
@@ -108,6 +110,35 @@
             outputHash = webDepsHashes.${system};
           };
 
+          # Pre-fetched bun deps for the harness bundle.
+          harnessDeps = pkgs.stdenvNoCC.mkDerivation {
+            name = "moo-harness-node-modules";
+            src = lib.cleanSourceWith {
+              src = ./harness;
+              filter = path: _type:
+                let base = baseNameOf (toString path);
+                in base == "package.json" || base == "bun.lock";
+            };
+            nativeBuildInputs = [ pkgs.bun pkgs.cacert ];
+            dontConfigure = true;
+            dontFixup = true;
+            buildPhase = ''
+              runHook preBuild
+              export HOME=$TMPDIR
+              bun install --frozen-lockfile --no-progress
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              cp -R node_modules $out/node_modules
+              runHook postInstall
+            '';
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
+            outputHash = harnessDepsHash;
+          };
+
           # IIFE harness bundle consumed by the rust embedding step.
           harnessBundle = pkgs.stdenvNoCC.mkDerivation {
             name = "moo-harness-bundle";
@@ -116,6 +147,8 @@
             dontConfigure = true;
             buildPhase = ''
               runHook preBuild
+              cp -R ${harnessDeps}/node_modules node_modules
+              chmod -R u+w node_modules
               export HOME=$TMPDIR
               bun build src/index.ts --outfile=harness.js --format=iife --target=browser
               runHook postBuild
@@ -164,7 +197,7 @@
           commonArgs = {
             inherit src;
             pname = "moo";
-            version = "0.2.11";
+            version = "0.3.0";
             strictDeps = true;
             doCheck = false;
 

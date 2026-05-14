@@ -9,7 +9,7 @@
     "typecheck": "tsc",
     "test": "bun test tests src"
   },
-  "devDependencies": {
+  "dependencies": {
     "typescript": "^6.0.3"
   }
 }

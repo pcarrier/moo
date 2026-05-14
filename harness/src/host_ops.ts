@@ -9,7 +9,7 @@ export type ProcRunResult = {
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
 };
-export type HttpFetchResult = { status: number; headers?: string; body: string };
+export type HttpFetchResult = { status: number; headers?: string; body: string; bodyTruncated?: boolean };
 export type HttpStreamOpenResult = { handle: number; status: number; headers?: string };
 export type SparqlResult =
   | { type: "select"; result: Record<string, string>[] }
@@ -22,6 +22,7 @@ export const sha256Base64Url = (input: string): string => __op_sha256_base64url(
 
 export const putObject = (kind: string, content: string): string => __op_object_put(kind, content);
 export const getObject = (hash: string): StoredObject | null => __op_object_get(hash);
+export const getObjects = (hashes: readonly string[]): Record<string, StoredObject> => JSON.parse(__op_objects_get(JSON.stringify(hashes)));
 
 export const setRef = (name: string, target: string): void => __op_ref_set(name, target);
 export const getRef = (name: string): string | null => __op_ref_get(name);
@@ -43,6 +44,8 @@ export const matchFacts = (
   object: string | null,
   limit: number | null,
 ): string[][] => __op_facts_match(store, graph, subject, predicate, object, limit);
+export const matchFactsBySubjects = (store: string, graph: string | null, subjects: readonly string[], predicates: readonly string[]): string[][] =>
+  __op_facts_match_subjects(store, graph, JSON.stringify(subjects), JSON.stringify(predicates));
 export const matchFactPatterns = (store: string, patternsJson: string, graph: string | null, limit: number | null): Record<string, string>[] =>
   __op_facts_match_all(store, patternsJson, graph, limit);
 export const factHistory = (
@@ -108,22 +111,28 @@ export const runningChatIds = (): string => __op_chat_running_ids();
 export const runningChatStartedAt = (): string => __op_chat_running_started_at();
 export const runAgent = (requestJson: string): Promise<string> => __op_agent_run(requestJson);
 
+type TraceProbeGlobal = {
+  readonly __op_trace_insert?: unknown;
+  readonly __op_trace_finish?: unknown;
+  readonly __op_trace_set_parent?: unknown;
+};
+
 export const canTraceSpans = (): boolean => {
-  const g = globalThis as any;
+  const g = globalThis as TraceProbeGlobal;
   return typeof g.__op_trace_insert === "function" && typeof g.__op_trace_finish === "function" && typeof g.__op_trace_set_parent === "function";
 };
 
-export const ensureTraceRoot = (optsJson: string): string => ((__op_trace_ensure_root as any)(optsJson));
-export const ensureTraceSpan = (optsJson: string): string => ((__op_trace_ensure_span as any)(optsJson));
-export const startTraceRoot = (stepId: string | null, dataJson: string): string => ((__op_trace_start_root as any)(stepId, dataJson));
-export const enterTrace = (optsJson: string): string => ((__op_trace_enter as any)(optsJson));
-export const currentTrace = (): string => ((__op_trace_current as any)());
-export const getTrace = (optsJson: string): string => ((__op_trace_get as any)(optsJson));
-export const traceEvents = (optsJson: string): string => ((__op_trace_events as any)(optsJson));
-export const recentTraces = (limit: number): string => ((__op_trace_recent as any)(limit));
+export const ensureTraceRoot = (optsJson: string): string => __op_trace_ensure_root(optsJson);
+export const ensureTraceSpan = (optsJson: string): string => __op_trace_ensure_span(optsJson);
+export const startTraceRoot = (stepId: string | null, dataJson: string): string => __op_trace_start_root(stepId, dataJson);
+export const enterTrace = (optsJson: string): string => __op_trace_enter(optsJson);
+export const currentTrace = (): string => __op_trace_current();
+export const getTrace = (optsJson: string): string | null => __op_trace_get(optsJson);
+export const traceEvents = (optsJson: string): string => __op_trace_events(optsJson);
+export const recentTraces = (limit: number): string => __op_trace_recent(limit);
 export const tracingEnabled = (): boolean => __op_trace_enabled();
-export const insertTrace = (optsJson: string): string => ((__op_trace_insert as any)(optsJson));
-export const finishTrace = (id: string, status?: string | null, dataJson?: string | null): string => ((__op_trace_finish as any)(id, status, dataJson));
+export const insertTrace = (optsJson: string): string => __op_trace_insert(optsJson);
+export const finishTrace = (id: string, status?: string | null, dataJson?: string | null): string => __op_trace_finish(id, status, dataJson);
 export const setTraceParent = (id: string | null): string | null => __op_trace_set_parent(id);
 export const leaveTrace = (): void => __op_trace_leave();
 
@@ -135,6 +144,7 @@ export const TRACED_NATIVE_OPS: readonly TracedNativeOp[] = [
   { globalName: "__op_sha256_base64url", traceName: "sha256Base64Url" },
   { globalName: "__op_object_put", traceName: "putObject" },
   { globalName: "__op_object_get", traceName: "getObject" },
+  { globalName: "__op_objects_get", traceName: "getObjects" },
   { globalName: "__op_ref_set", traceName: "setRef" },
   { globalName: "__op_ref_get", traceName: "getRef" },
   { globalName: "__op_ref_cas", traceName: "compareAndSetRef" },
@@ -145,6 +155,7 @@ export const TRACED_NATIVE_OPS: readonly TracedNativeOp[] = [
   { globalName: "__op_facts_remove", traceName: "removeFact" },
   { globalName: "__op_facts_present", traceName: "factsPresent" },
   { globalName: "__op_facts_match", traceName: "matchFacts" },
+  { globalName: "__op_facts_match_subjects", traceName: "matchFactsBySubjects" },
   { globalName: "__op_facts_match_all", traceName: "matchFactPatterns" },
   { globalName: "__op_facts_history", traceName: "factHistory" },
   { globalName: "__op_facts_refs", traceName: "factStores" },

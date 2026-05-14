@@ -23,9 +23,9 @@ const DEFAULT_TREE_DEPTH = 6;
 const DEFAULT_TREE_OPEN_DEPTH = 1;
 const SUBTREE_DEPTH = 4;
 const TRACE_LOAD_TIMEOUT_MS = 30_000;
-const KIND_FILTERS: TraceKindFilter[] = ["any", "frontend", "chat", "turn", "step", "llm", "tool", "runjs", "system", "user"];
+const KIND_FILTERS: TraceKindFilter[] = ["any", "frontend", "chat", "turn", "step", "llm", "tool", "runts", "system", "user"];
 const STATUS_FILTERS: TraceStatusFilter[] = ["any", "ok", "error", "running"];
-const ROOT_KINDS = new Set<TraceRow["kind"]>(["chat", "command", "frontend", "http", "system", "trace", "runjs-recovered", "missing-parent"]);
+const ROOT_KINDS = new Set<TraceRow["kind"]>(["chat", "command", "frontend", "http", "system", "trace", "runts-recovered", "runjs-recovered", "missing-parent"]);
 
 const TRACE_SELECTOR_DEFAULT_W = 224;
 const TRACE_SELECTOR_MIN_W = 168;

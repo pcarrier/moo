@@ -68,9 +68,16 @@ function commandStepId(command: string, payload: Input): string | null {
   return `command:${command}`;
 }
 
+type CommandResultLike = { readonly ok?: unknown };
+type ThenableLike = { readonly then: unknown };
+
 function commandResultOk(result: unknown): boolean {
-  if (result && typeof result === "object" && "ok" in (result as any)) return (result as any).ok !== false;
+  if (result && typeof result === "object" && "ok" in result) return (result as CommandResultLike).ok !== false;
   return true;
+}
+
+function isThenableLike(value: unknown): value is ThenableLike {
+  return !!value && (typeof value === "object" || typeof value === "function") && typeof (value as { readonly then?: unknown }).then === "function";
 }
 
 function runHandler(handler: CommandHandler, payload: Input): Effect<unknown, unknown> {
@@ -79,6 +86,6 @@ function runHandler(handler: CommandHandler, payload: Input): Effect<unknown, un
 
 function toCommandEffect(value: unknown | Promise<unknown> | Effect<unknown, unknown>): Effect<unknown, unknown> {
   if (value instanceof Effect) return value;
-  if (value && typeof (value as any).then === "function") return Effect.tryPromise(() => value as Promise<unknown>, "command failed");
+  if (isThenableLike(value)) return Effect.tryPromise(() => Promise.resolve(value), "command failed");
   return Effect.succeed(value);
 }

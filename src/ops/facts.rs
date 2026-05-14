@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, Transaction, params, params_from_iter};
+use rusqlite::{params, params_from_iter, Connection, Transaction};
 use rusty_v8 as v8;
 
 use crate::broadcast;
@@ -13,6 +14,7 @@ pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_facts_add", op_facts_add)?;
     install_fn(scope, "__op_facts_remove", op_facts_remove)?;
     install_fn(scope, "__op_facts_match", op_facts_match)?;
+    install_fn(scope, "__op_facts_match_subjects", op_facts_match_subjects)?;
     install_fn(scope, "__op_facts_match_all", op_facts_match_all)?;
     install_fn(scope, "__op_facts_present", op_facts_present)?;
     install_fn(scope, "__op_facts_history", op_facts_history)?;
@@ -81,6 +83,8 @@ fn positive_limit_arg(
 fn is_fact_var(term: &str) -> bool {
     term.starts_with('?')
 }
+
+const FACTS_MATCH_SUBJECT_CHUNK_SIZE: usize = 250;
 
 fn log_fact_change(
     tx: &Transaction<'_>,
@@ -230,7 +234,10 @@ fn op_facts_add(
     });
     match r {
         Err(e) => throw(scope, &e),
-        Ok(_) => broadcast::facts_changed(&ref_name),
+        Ok(_) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
+            broadcast::facts_changed(&ref_name);
+        }
     }
 }
 
@@ -263,8 +270,25 @@ fn op_facts_remove(
     });
     match r {
         Err(e) => throw(scope, &e),
-        Ok(_) => broadcast::facts_changed(&ref_name),
+        Ok(_) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
+            broadcast::facts_changed(&ref_name);
+        }
     }
+}
+
+fn set_quad_rows_return(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, rows: &[[String; 4]]) {
+    let arr = v8::Array::new(scope, rows.len() as i32);
+    for (i, row) in rows.iter().enumerate() {
+        let inner = v8::Array::new(scope, 4);
+        for (j, val) in row.iter().enumerate() {
+            if let Some(s) = v8::String::new(scope, val) {
+                inner.set_index(scope, j as u32, s.into());
+            }
+        }
+        arr.set_index(scope, i as u32, inner.into());
+    }
+    rv.set(arr.into());
 }
 
 fn op_facts_match(
@@ -328,19 +352,96 @@ fn op_facts_match(
     });
 
     match rows {
-        Ok(rows) => {
-            let arr = v8::Array::new(scope, rows.len() as i32);
-            for (i, row) in rows.iter().enumerate() {
-                let inner = v8::Array::new(scope, 4);
-                for (j, val) in row.iter().enumerate() {
-                    if let Some(s) = v8::String::new(scope, val) {
-                        inner.set_index(scope, j as u32, s.into());
-                    }
-                }
-                arr.set_index(scope, i as u32, inner.into());
-            }
-            rv.set(arr.into());
+        Ok(rows) => set_quad_rows_return(scope, &mut rv, &rows),
+        Err(e) => throw(scope, &e),
+    }
+}
+
+fn op_facts_match_subjects(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if args.length() < 4 {
+        throw(
+            scope,
+            "facts_match_subjects requires (ref, graph, subjectsJson, predicatesJson)",
+        );
+        return;
+    }
+    let ref_name = args.get(0).to_rust_string_lossy(scope);
+    let graph = optional_arg_str(scope, &args, 1);
+    let subjects_json = args.get(2).to_rust_string_lossy(scope);
+    let predicates_json = args.get(3).to_rust_string_lossy(scope);
+    let mut subjects: Vec<String> = match serde_json::from_str(&subjects_json) {
+        Ok(v) => v,
+        Err(e) => {
+            throw(scope, &format!("facts_match_subjects subjects: {e}"));
+            return;
         }
+    };
+    let mut predicates: Vec<String> = match serde_json::from_str(&predicates_json) {
+        Ok(v) => v,
+        Err(e) => {
+            throw(scope, &format!("facts_match_subjects predicates: {e}"));
+            return;
+        }
+    };
+    subjects.sort();
+    subjects.dedup();
+    predicates.sort();
+    predicates.dedup();
+    if subjects.is_empty() || predicates.is_empty() {
+        let rows: Vec<[String; 4]> = Vec::new();
+        set_quad_rows_return(scope, &mut rv, &rows);
+        return;
+    }
+
+    let rows: Result<Vec<[String; 4]>, String> = with_db(|conn| {
+        let mut out = Vec::new();
+        for subject_chunk in subjects.chunks(FACTS_MATCH_SUBJECT_CHUNK_SIZE) {
+            let subject_placeholders = (0..subject_chunk.len())
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            let predicate_placeholders = (0..predicates.len())
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut sql = String::from(
+                "select graph, subject, predicate, object from quads where ref_name = ?",
+            );
+            let mut vals: Vec<SqlValue> = vec![SqlValue::Text(ref_name.clone())];
+            if let Some(g) = &graph {
+                sql.push_str(" and graph = ?");
+                vals.push(SqlValue::Text(g.clone()));
+            }
+            sql.push_str(&format!(" and subject in ({subject_placeholders})"));
+            vals.extend(subject_chunk.iter().cloned().map(SqlValue::Text));
+            sql.push_str(&format!(" and predicate in ({predicate_placeholders})"));
+            vals.extend(predicates.iter().cloned().map(SqlValue::Text));
+            sql.push_str(" order by graph, subject, predicate, object");
+
+            let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+            let iter = stmt
+                .query_map(params_from_iter(vals.iter()), |r| {
+                    Ok([
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ])
+                })
+                .map_err(|e| e.to_string())?;
+            for row in iter {
+                out.push(row.map_err(|e| e.to_string())?);
+            }
+        }
+        Ok(out)
+    });
+
+    match rows {
+        Ok(rows) => set_quad_rows_return(scope, &mut rv, &rows),
         Err(e) => throw(scope, &e),
     }
 }
@@ -662,6 +763,35 @@ struct ChatFactSummary {
     status: String,
 }
 
+static CHAT_FACT_SUMMARIES_CACHE: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn chat_fact_summaries_cache_lock() -> std::sync::MutexGuard<'static, Option<String>> {
+    match CHAT_FACT_SUMMARIES_CACHE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+pub fn clear_chat_fact_summaries_cache() {
+    *chat_fact_summaries_cache_lock() = None;
+}
+
+fn invalidate_chat_fact_summaries_cache_for_ref(ref_name: &str) {
+    if chat_id_from_facts_ref(ref_name).is_some() {
+        *chat_fact_summaries_cache_lock() = None;
+    }
+}
+
+fn invalidate_chat_fact_summaries_cache_for_refs(refs: &[String]) {
+    if refs
+        .iter()
+        .any(|ref_name| chat_id_from_facts_ref(ref_name).is_some())
+    {
+        *chat_fact_summaries_cache_lock() = None;
+    }
+}
+
 fn chat_id_from_facts_ref(ref_name: &str) -> Option<String> {
     ref_name
         .strip_prefix("chat/")?
@@ -669,12 +799,8 @@ fn chat_id_from_facts_ref(ref_name: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn op_chat_fact_summaries(
-    scope: &mut v8::PinScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let summaries: Result<HashMap<String, ChatFactSummary>, String> = with_db(|conn| {
+fn load_chat_fact_summaries() -> Result<HashMap<String, ChatFactSummary>, String> {
+    with_db(|conn| {
         let mut summaries: HashMap<String, ChatFactSummary> = HashMap::new();
 
         {
@@ -875,16 +1001,36 @@ fn op_chat_fact_summaries(
         }
 
         Ok(summaries)
-    });
-    match summaries {
-        Ok(summaries) => match serde_json::to_string(&summaries) {
-            Ok(json) => {
-                if let Some(s) = v8::String::new(scope, &json) {
-                    rv.set(s.into());
+    })
+}
+
+fn op_chat_fact_summaries(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let json: Result<String, String> = {
+        let mut cache = chat_fact_summaries_cache_lock();
+        if let Some(cached) = cache.clone() {
+            Ok(cached)
+        } else {
+            match load_chat_fact_summaries()
+                .and_then(|summaries| serde_json::to_string(&summaries).map_err(|e| e.to_string()))
+            {
+                Ok(json) => {
+                    *cache = Some(json.clone());
+                    Ok(json)
                 }
+                Err(e) => Err(e),
             }
-            Err(e) => throw(scope, &e.to_string()),
-        },
+        }
+    };
+    match json {
+        Ok(json) => {
+            if let Some(s) = v8::String::new(scope, &json) {
+                rv.set(s.into());
+            }
+        }
         Err(e) => throw(scope, &e),
     }
 }
@@ -1018,7 +1164,10 @@ fn op_facts_swap(
     });
     match r {
         Err(e) => throw(scope, &e),
-        Ok(()) => broadcast::facts_changed(&ref_name),
+        Ok(()) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
+            broadcast::facts_changed(&ref_name);
+        }
     }
 }
 
@@ -1114,6 +1263,7 @@ fn op_facts_snapshot_copy(
     match r {
         Err(e) => throw(scope, &e),
         Ok(count) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&target_ref);
             broadcast::facts_changed(&target_ref);
             rv.set(v8::Number::new(scope, count as f64).into());
         }
@@ -1146,6 +1296,7 @@ fn op_facts_purge(
     });
     match r {
         Ok(count) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
             broadcast::facts_changed(&ref_name);
             rv.set(v8::Number::new(scope, count as f64).into());
         }
@@ -1190,6 +1341,7 @@ fn op_facts_purge_graph(
     });
     match r {
         Ok((count, refs)) => {
+            invalidate_chat_fact_summaries_cache_for_refs(&refs);
             for ref_name in refs {
                 broadcast::facts_changed(&ref_name);
             }
@@ -1241,6 +1393,7 @@ fn op_facts_purge_subject_prefix(
     });
     match r {
         Ok(count) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
             broadcast::facts_changed(&ref_name);
             rv.set(v8::Number::new(scope, count as f64).into());
         }
@@ -1301,6 +1454,7 @@ fn op_facts_clear(
     });
     match r {
         Ok(count) => {
+            invalidate_chat_fact_summaries_cache_for_ref(&ref_name);
             broadcast::facts_changed(&ref_name);
             rv.set(v8::Number::new(scope, count as f64).into());
         }

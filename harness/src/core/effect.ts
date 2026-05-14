@@ -1,38 +1,51 @@
-declare const setTimeout: (handler: (...args: any[]) => void, timeout?: number, ...args: any[]) => any;
-declare const clearTimeout: (handle?: any) => void;
+type TimerHandle = unknown;
+declare const setTimeout: (handler: () => void, timeout?: number) => TimerHandle;
+declare const clearTimeout: (handle?: TimerHandle) => void;
 
 // AbortController/AbortSignal: prefer host-provided globals; fall back to a tiny in-file shim.
 // Keeps effect.ts dependency-free and host-agnostic (Bun/Node/browsers/sandboxes).
-const AbortController: { new (): { readonly signal: AbortSignal; abort(reason?: unknown): void } } =
-  (globalThis as any).AbortController ??
-  (class {
-    readonly signal: AbortSignal;
-    constructor() {
-      const listeners = new Set<() => void>();
-      const sig: any = {
-        aborted: false,
-        reason: undefined,
-        addEventListener(type: string, l: () => void) {
-          if (type === "abort") listeners.add(l);
-        },
-        removeEventListener(type: string, l: () => void) {
-          if (type === "abort") listeners.delete(l);
-        },
-        _fire(reason: unknown) {
-          if (sig.aborted) return;
-          sig.aborted = true;
-          sig.reason = reason;
-          for (const l of [...listeners]) {
-            try { l(); } catch { /* swallow */ }
-          }
-          listeners.clear();
-        },
-      };
-      this.signal = sig as AbortSignal;
-      (this as any).abort = (reason?: unknown) => sig._fire(reason ?? new Error("aborted"));
+type AbortControllerLike = { readonly signal: AbortSignal; abort(reason?: unknown): void };
+type AbortControllerConstructor = { new (): AbortControllerLike };
+type MutableAbortSignal = {
+  aborted: boolean;
+  reason?: unknown;
+  addEventListener(type: "abort", listener: () => void, options?: unknown): void;
+  removeEventListener(type: "abort", listener: () => void): void;
+};
+
+const hostAbortController = (globalThis as { AbortController?: AbortControllerConstructor }).AbortController;
+
+class FallbackAbortController implements AbortControllerLike {
+  readonly signal: AbortSignal;
+  private readonly mutableSignal: MutableAbortSignal;
+  private readonly listeners = new Set<() => void>();
+
+  constructor() {
+    this.mutableSignal = {
+      aborted: false,
+      reason: undefined,
+      addEventListener: (type, listener) => {
+        if (type === "abort") this.listeners.add(listener);
+      },
+      removeEventListener: (type, listener) => {
+        if (type === "abort") this.listeners.delete(listener);
+      },
+    };
+    this.signal = this.mutableSignal;
+  }
+
+  abort(reason: unknown = new Error("aborted")): void {
+    if (this.mutableSignal.aborted) return;
+    this.mutableSignal.aborted = true;
+    this.mutableSignal.reason = reason;
+    for (const listener of [...this.listeners]) {
+      try { listener(); } catch { /* swallow */ }
     }
-    abort(_reason?: unknown): void { /* replaced in constructor */ }
-  } as any);
+    this.listeners.clear();
+  }
+}
+
+const AbortController: AbortControllerConstructor = hostAbortController ?? FallbackAbortController;
 
 interface AbortSignal {
   readonly aborted: boolean;
@@ -93,6 +106,19 @@ export class TaggedError<T extends string = string> {
 }
 
 const interruptError = (): ErrorInfo => ({ message: "interrupted", interrupted: true });
+const interruptResult = <A, E = never>(): Result<A, E | ErrorInfo> => err(interruptError());
+const errorInfoResult = <A, E = never>(error: unknown, fallback?: string): Result<A, E | ErrorInfo> => err(errorInfo(error, fallback));
+const failResult = <A, E>(error: E): Result<A, E> => ({ ok: false, error });
+const widenError = <A, E, E2>(result: Result<A, E>): Result<A, E | E2> => result;
+const asResult = <A, E>(result: Result<unknown, unknown>): Result<A, E> => result as Result<A, E>;
+const asEffect = <A, E>(effect: Effect<unknown, unknown>): Effect<A, E> => effect as Effect<A, E>;
+const isThenable = (value: unknown): value is Promise<void> => {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return false;
+  return typeof (value as { then?: unknown }).then === "function";
+};
+const hasMessage = (error: unknown): error is { readonly message: string } => {
+  return !!error && typeof error === "object" && typeof (error as { readonly message?: unknown }).message === "string";
+};
 
 export const failCause = <E>(error: E): Cause<E> => ({ _tag: "Fail", error });
 export const dieCause = (error: unknown, fallback?: string): Cause<ErrorInfo> => ({ _tag: "Die", error: errorInfo(error, fallback) });
@@ -142,11 +168,11 @@ export class Deferred<A, E = ErrorInfo> {
     this.resolvePromise = resolve;
   });
 
-  await(): Effect<A, E> {
-    return new Effect(async (_scope, signal) => {
-      if (signal.aborted) return err(interruptError()) as any;
+  await(): Effect<A, E | ErrorInfo> {
+    return new Effect<A, E | ErrorInfo>(async (_scope, signal) => {
+      if (signal.aborted) return interruptResult();
       const result = await this.promise;
-      if (signal.aborted) return err(interruptError()) as any;
+      if (signal.aborted) return interruptResult();
       return result;
     });
   }
@@ -156,7 +182,7 @@ export class Deferred<A, E = ErrorInfo> {
   }
 
   fail(error: E): boolean {
-    return this.complete(err(error as any) as Err<E>);
+    return this.complete(failResult(error));
   }
 
   complete(result: Result<A, E>): boolean {
@@ -186,7 +212,7 @@ export class Effect<A, E = ErrorInfo> {
 
   static sync<A>(fn: () => A): Effect<A> {
     return new Effect(async (_scope, signal) => {
-      if (signal.aborted) return err(interruptError()) as any;
+      if (signal.aborted) return interruptResult();
       try {
         return ok(fn());
       } catch (e) {
@@ -200,7 +226,7 @@ export class Effect<A, E = ErrorInfo> {
   }
 
   static interrupted(): Effect<never, ErrorInfo> {
-    return new Effect(async () => err(interruptError()) as any);
+    return new Effect(async () => interruptResult());
   }
 
   static unit(): Effect<void, never> {
@@ -208,12 +234,12 @@ export class Effect<A, E = ErrorInfo> {
   }
 
   static fail<E>(error: E): Effect<never, E> {
-    return new Effect<never, E>(async () => err(error) as any);
+    return new Effect<never, E>(async () => failResult(error));
   }
 
   static try<A>(fn: () => A, fallback?: string): Effect<A> {
     return new Effect(async (_scope, signal) => {
-      if (signal.aborted) return err(interruptError()) as any;
+      if (signal.aborted) return interruptResult();
       try {
         return ok(fn());
       } catch (e) {
@@ -274,11 +300,11 @@ export class Effect<A, E = ErrorInfo> {
 
   static defer<A, E>(fn: () => Effect<A, E>): Effect<A, E | ErrorInfo> {
     return new Effect<A, E | ErrorInfo>(async (scope, signal) => {
-      if (signal.aborted) return err(interruptError()) as any;
+      if (signal.aborted) return interruptResult();
       try {
-        return (await fn().thunk(scope, signal)) as any;
+        return widenError(await fn().thunk(scope, signal));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
@@ -356,7 +382,7 @@ export class Effect<A, E = ErrorInfo> {
           return err(errorInfo(e));
         }
         const result = await effect.thunk(scope, signal);
-        if (!result.ok) return result as any;
+        if (!result.ok) return widenError(result);
         out.push(result.value);
       }
       return ok(out);
@@ -373,7 +399,7 @@ export class Effect<A, E = ErrorInfo> {
       }
       const results = await Promise.all(effects.map((effect) => effect.thunk(scope, signal)));
       const failed = results.find((result) => !result.ok);
-      if (failed) return failed as any;
+      if (failed) return widenError(failed);
       return ok(results.map((result) => (result as Ok<B>).value));
     });
   }
@@ -397,13 +423,13 @@ export class Effect<A, E = ErrorInfo> {
   static acquireUseRelease<A, B, E>(acquire: Effect<A, E>, use: (a: A) => Effect<B, E>, release: (a: A) => MaybePromise<void>): Effect<B, E | ErrorInfo> {
     return new Effect<B, E | ErrorInfo>(async (scope, signal) => {
       const acquired = await acquire.thunk(scope, signal);
-      if (!acquired.ok) return acquired as any;
+      if (!acquired.ok) return widenError(acquired);
       const resource = acquired.value;
       let used: Result<B, E | ErrorInfo>;
       try {
-        used = (await use(resource).thunk(scope, signal)) as any;
+        used = widenError(await use(resource).thunk(scope, signal));
       } catch (e) {
-        used = err(errorInfo(e)) as any;
+        used = errorInfoResult(e);
       }
       try {
         await release(resource);
@@ -440,17 +466,17 @@ export class Effect<A, E = ErrorInfo> {
           effects[i].thunk(scope, children[i].controller.signal).then((result) => {
             if (settled) return;
             if (result.ok) {
-              finish(result as any, i);
+              finish(widenError(result), i);
               return;
             }
             failures += 1;
             lastError = (result as Err<E | ErrorInfo>).error;
-            if (failures === effects.length) finish(err(lastError as E | ErrorInfo) as any);
+            if (failures === effects.length) finish(failResult(lastError as E | ErrorInfo));
           }, (e) => {
             if (settled) return;
             failures += 1;
             lastError = errorInfo(e);
-            if (failures === effects.length) finish(err(lastError as E | ErrorInfo) as any);
+            if (failures === effects.length) finish(failResult(lastError as E | ErrorInfo));
           });
         }
       });
@@ -472,11 +498,11 @@ export class Effect<A, E = ErrorInfo> {
   map<B>(f: (value: A) => B): Effect<B, E | ErrorInfo> {
     return new Effect<B, E | ErrorInfo>(async (scope, signal) => {
       const result = await this.thunk(scope, signal);
-      if (!result.ok) return result as any;
+      if (!result.ok) return widenError(result);
       try {
         return ok(f(result.value));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
@@ -484,11 +510,11 @@ export class Effect<A, E = ErrorInfo> {
   flatMap<B, E2>(f: (value: A) => Effect<B, E2>): Effect<B, E | E2 | ErrorInfo> {
     return new Effect<B, E | E2 | ErrorInfo>(async (scope, signal) => {
       const result = await this.thunk(scope, signal);
-      if (!result.ok) return result as any;
+      if (!result.ok) return widenError(result);
       try {
-        return (await f(result.value).thunk(scope, signal)) as any;
+        return widenError(await f(result.value).thunk(scope, signal));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
@@ -510,8 +536,8 @@ export class Effect<A, E = ErrorInfo> {
       const result = await this.thunk(scope, signal);
       if (result.ok) return result;
       const side = await toEffect(f((result as Err<E>).error)).thunk(scope, signal);
-      if (!side.ok) return side as any;
-      return result as any;
+      if (!side.ok) return asResult(side);
+      return widenError(result);
     });
   }
 
@@ -520,15 +546,15 @@ export class Effect<A, E = ErrorInfo> {
       const result = await this.thunk(scope, signal);
       if (result.ok) return result;
       try {
-        return err(f((result as Err<E>).error) as any) as any;
+        return failResult(f((result as Err<E>).error));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
 
   orElse<B, E2>(that: () => Effect<B, E2>): Effect<A | B, E | E2 | ErrorInfo> {
-    return this.catchAll(() => that()) as any;
+    return this.catchAll(() => that());
   }
 
   timeout(ms: number, message = "operation timed out"): Effect<A, E | ErrorInfo> {
@@ -545,7 +571,7 @@ export class Effect<A, E = ErrorInfo> {
       const result = await Promise.race([this.thunk(scope, child.controller.signal), timeout]);
       if (timer != null) clearTimeout(timer);
       child.cleanup();
-      return result as any;
+      return widenError(result);
     });
   }
 
@@ -565,18 +591,18 @@ export class Effect<A, E = ErrorInfo> {
       const result = await this.thunk(scope, signal);
       if (result.ok) return result;
       try {
-        return (await f((result as Err<E>).error).thunk(scope, signal)) as any;
+        return widenError(await f((result as Err<E>).error).thunk(scope, signal));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
 
   catchTag<TT extends string, A2, E2>(tag: TT, f: (e: Extract<E, { _tag: TT }>) => Effect<A2, E2>): Effect<A | A2, Exclude<E, { _tag: TT }> | E2 | ErrorInfo> {
-    return this.catchAll(((error: E) => {
-      if (error && typeof error === "object" && (error as any)._tag === tag) return f(error as Extract<E, { _tag: TT }>);
+    return this.catchAll((error: E) => {
+      if (error && typeof error === "object" && (error as { readonly _tag?: unknown })._tag === tag) return asEffect<A2, Exclude<E, { _tag: TT }> | E2>(f(error as Extract<E, { _tag: TT }>));
       return Effect.fail(error as Exclude<E, { _tag: TT }>);
-    }) as any) as any;
+    });
   }
 
   match<B>(handlers: { readonly onFailure: (error: E) => B; readonly onSuccess: (value: A) => B }): Effect<B, ErrorInfo> {
@@ -594,10 +620,12 @@ export class Effect<A, E = ErrorInfo> {
     return new Effect<B, E2 | E3 | ErrorInfo>(async (scope, signal) => {
       const result = await this.thunk(scope, signal);
       try {
-        const next = result.ok ? handlers.onSuccess(result.value) : handlers.onFailure((result as Err<E>).error);
-        return (await next.thunk(scope, signal)) as any;
+        const next = result.ok
+          ? asEffect<B, E2 | E3>(handlers.onSuccess(result.value))
+          : asEffect<B, E2 | E3>(handlers.onFailure((result as Err<E>).error));
+        return widenError(await next.thunk(scope, signal));
       } catch (e) {
-        return err(errorInfo(e)) as any;
+        return errorInfoResult(e);
       }
     });
   }
@@ -605,12 +633,12 @@ export class Effect<A, E = ErrorInfo> {
   ensuring(finalizer: Finalizer): Effect<A, E | ErrorInfo> {
     return new Effect<A, E | ErrorInfo>(async (scope, signal) => {
       try {
-        return (await this.thunk(scope, signal)) as any;
+        return widenError(await this.thunk(scope, signal));
       } finally {
         try {
           await finalizer();
         } catch (e) {
-          return err(errorInfo(e, "finalizer failed")) as any;
+          return errorInfoResult(e, "finalizer failed");
         }
       }
     });
@@ -620,7 +648,7 @@ export class Effect<A, E = ErrorInfo> {
     return retry(this, policy);
   }
 
-  retryWhile<E2 = E>(predicate: (value: A) => boolean, schedule: Schedule<A, never>): Effect<A, E | ErrorInfo> {
+  retryWhile(predicate: (value: A) => boolean, schedule: Schedule<A, E>): Effect<A, E | ErrorInfo> {
     return new Effect<A, E | ErrorInfo>(async (scope, signal) => {
       let attempt = 1;
       for (;;) {
@@ -632,23 +660,23 @@ export class Effect<A, E = ErrorInfo> {
           try {
             shouldRetry = predicate(result.value);
           } catch (e) {
-            return err(errorInfo(e)) as any;
+            return errorInfoResult(e);
           }
-          if (!shouldRetry) return result as any;
-          const decision = (schedule as any)({ attempt, value: result.value });
-          if (!decision.continue) return result as any;
+          if (!shouldRetry) return widenError(result);
+          const decision = schedule({ attempt, value: result.value });
+          if (!decision.continue) return widenError(result);
           if (decision.delayMs > 0) {
             const slept = await Effect.sleep(decision.delayMs).runResult({ scope, signal });
-            if (!slept.ok) return slept as any;
+            if (!slept.ok) return asResult(slept);
           }
           attempt += 1;
           continue;
         }
-        const decision = (schedule as any)({ attempt, error: (result as Err<E>).error });
-        if (!decision.continue) return result as any;
+        const decision = schedule({ attempt, error: (result as Err<E>).error });
+        if (!decision.continue) return widenError(result);
         if (decision.delayMs > 0) {
           const slept = await Effect.sleep(decision.delayMs).runResult({ scope, signal });
-          if (!slept.ok) return slept as any;
+          if (!slept.ok) return asResult(slept);
         }
         attempt += 1;
       }
@@ -682,7 +710,7 @@ export class Effect<A, E = ErrorInfo> {
   runScopedPromise(scope?: Scope): Promise<A>;
   runScopedPromise(opts?: RunOptions): Promise<A>;
   runScopedPromise(arg?: Scope | RunOptions): Promise<A> {
-    return Effect.scoped(this).runPromise(arg as any);
+    return Effect.scoped(this).runPromise(arg);
   }
 
   static scoped<A, E>(effect: Effect<A, E>): Effect<A, E | ErrorInfo> {
@@ -690,13 +718,13 @@ export class Effect<A, E = ErrorInfo> {
       const scope = new Scope();
       const cleanup = linkAbort(scope, signal);
       try {
-        return (await effect.thunk(scope, scope.signal)) as any;
+        return widenError(await effect.thunk(scope, scope.signal));
       } finally {
         cleanup();
         try {
           await scope.close();
         } catch (e) {
-          return err(errorInfo(e, "scope finalizer failed")) as any;
+          return errorInfoResult(e, "scope finalizer failed");
         }
       }
     });
@@ -780,10 +808,10 @@ function retry<A, E>(effect: Effect<A, E>, schedule: Schedule<A, E>): Effect<A, 
       if (signal.aborted) return err(interruptError());
       if (result.ok) return result;
       const decision = schedule({ attempt, error: (result as Err<E>).error });
-      if (!decision.continue) return result as any;
+      if (!decision.continue) return widenError(result);
       if (decision.delayMs > 0) {
         const slept = await Effect.sleep(decision.delayMs).runResult({ scope, signal });
-        if (!slept.ok) return slept as any;
+        if (!slept.ok) return asResult(slept);
       }
       attempt += 1;
     }
@@ -792,7 +820,7 @@ function retry<A, E>(effect: Effect<A, E>, schedule: Schedule<A, E>): Effect<A, 
 
 function toEffect(value: void | Promise<void> | Effect<unknown, unknown>): Effect<unknown, ErrorInfo> {
   if (value instanceof Effect) return value as Effect<unknown, ErrorInfo>;
-  if (value && typeof (value as any).then === "function") return Effect.tryPromise(() => value as Promise<void>);
+  if (isThenable(value)) return Effect.tryPromise(() => value);
   return Effect.succeed(undefined);
 }
 
@@ -825,7 +853,7 @@ function deriveController(parent: AbortSignal): { controller: InstanceType<typeo
 }
 
 function errorMessage(error: unknown): string {
-  if (error && typeof error === "object" && typeof (error as any).message === "string") return (error as any).message;
+  if (hasMessage(error)) return error.message;
   return String(error ?? "operation failed");
 }
 

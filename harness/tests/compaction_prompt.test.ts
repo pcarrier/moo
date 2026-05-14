@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { planStepDriverEffects, reduceStepDriverState, type StepDriverState } from "../src/driver/step";
 import { DEFAULT_COMPACTION_THRESHOLD_PERCENT } from "../src/commands/llm_auth";
 import {
   buildCompactionSummaryPromptMessages,
   COMPACTION_CONTINUATION_INSTRUCTION,
   compactionContinuationSystemMessage,
 } from "../src/prompt";
-import { tokenPressureFromEstimates } from "../src/commands/step";
+import { isContextLengthExceededError, tokenPressureFromEstimates } from "../src/commands/step";
 import {
   DYNAMIC_CONTEXT_MESSAGE_ROLE,
   buildStreamingLLMRequest,
@@ -17,7 +18,17 @@ import {
   parseSseDataEvents,
   accumulateSummaryStreamEvent,
   toAnthropicMessages,
+  type RawUsage,
 } from "../src/agent";
+
+type SummaryStreamState = { content: string; model: string | null; usage: RawUsage | null; error: unknown };
+
+type ResponsesRequestBody = { instructions?: string; input?: unknown };
+
+function responsesRequestBody(body: unknown): ResponsesRequestBody {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("expected object request body");
+  return body;
+}
 
 describe("compaction prompts", () => {
   test("defaults automatic compaction near the context limit", () => {
@@ -70,6 +81,35 @@ describe("compaction prompts", () => {
     });
   });
 
+  test("detects streamed OpenAI context length errors", () => {
+    expect(isContextLengthExceededError({
+      error: {
+        code: "context_length_exceeded",
+        message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        type: "invalid_request_error",
+      },
+      type: "error",
+    })).toBe(true);
+  });
+
+  test("carries force-compaction retry state after context overflow", () => {
+    const state: StepDriverState = {
+      chatId: "c1",
+      provider: { name: "openai", model: "gpt-5.5" },
+      phase: "handleLlm",
+    };
+    const handled = reduceStepDriverState(
+      state,
+      { type: "LlmHandled", handled: { kind: "iterate", messages: null, retryAttempt: 2, retryReason: "context-length-compaction", forceCompact: true } },
+    );
+    expect(handled.forceCompact).toBe(true);
+
+    const [effect] = planStepDriverEffects(handled);
+    expect(effect?.type).toBe("Prepare");
+    if (!effect || effect.type !== "Prepare") throw new Error("expected Prepare effect");
+    expect(effect.input.forceCompact).toBe(true);
+  });
+
   test("uses a conservative compaction request budget", () => {
     expect(compactionRequestTokenLimit(1_000_000, 500_000)).toBe(160_000);
     expect(compactionRequestTokenLimit(400_000, 200_000)).toBe(80_000);
@@ -109,8 +149,8 @@ describe("compaction prompts", () => {
       { role: "user", content: "hello" },
     ]);
 
-    expect(messages.map((message: any) => message.role)).toEqual(["system", "user"]);
-    expect(messages.map((message: any) => message.content).join("\n")).not.toContain("legacy tail todos");
+    expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messages.map((message) => message.content).join("\n")).not.toContain("legacy tail todos");
   });
 
   test("Anthropic keeps post-compaction TODO reminders in the system prompt", () => {
@@ -138,9 +178,10 @@ describe("compaction prompts", () => {
     const request = buildStreamingLLMRequest(provider, messages, null);
 
     expect(request.responsesApi).toBe(true);
-    expect((request.body as any).instructions).toContain("stable system");
-    expect((request.body as any).instructions).toContain("Current TODO reminders:\n- todo 1: fix tests");
-    expect(JSON.stringify((request.body as any).input)).not.toContain("todo 1: fix tests");
+    const body = responsesRequestBody(request.body);
+    expect(body.instructions).toContain("stable system");
+    expect(body.instructions).toContain("Current TODO reminders:\n- todo 1: fix tests");
+    expect(JSON.stringify(body.input)).not.toContain("todo 1: fix tests");
   });
 
   test("uses low/no reasoning for compaction summary requests", () => {
@@ -153,7 +194,7 @@ describe("compaction prompts", () => {
 
   test("accumulates streamed compaction summaries", () => {
     const chunks = { buffer: "" };
-    const state = { content: "", model: null as string | null, usage: null as any, error: null as any };
+    const state: SummaryStreamState = { content: "", model: null, usage: null, error: null };
     const events = [
       ...parseSseDataEvents(chunks, 'data: {"model":"gpt-5.5","choices":[{"delta":{"content":"hello "}}]}\n\n'),
       ...parseSseDataEvents(chunks, 'data: {"choices":[{"delta":{"content":"world"}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n'),
@@ -169,7 +210,7 @@ describe("compaction prompts", () => {
 
   test("accumulates responses API streamed compaction summaries", () => {
     const chunks = { buffer: "" };
-    const state = { content: "", model: null as string | null, usage: null as any, error: null as any };
+    const state: SummaryStreamState = { content: "", model: null, usage: null, error: null };
     for (const event of parseSseDataEvents(chunks, 'data: {"type":"response.output_text.delta","delta":"compact "}\n\ndata: {"type":"response.output_text.delta","delta":"summary"}\n\n')) {
       accumulateSummaryStreamEvent(state, JSON.parse(event), true);
     }
