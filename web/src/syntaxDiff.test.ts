@@ -72,6 +72,14 @@ describe("highlightDiff", () => {
     expect(html).not.toContain('<span class="json-punct">{</span>');
     expect(html).not.toContain("\n");
   });
+  test("renders backspace controls visibly in diff fragments", () => {
+    const backspace = String.fromCharCode(8);
+    const html = highlightLineFragmentByPath("Join-Path $HOME '.local" + backspace + "in'", "docs/install.ps1");
+
+    expect(html).toContain(".local\\bin");
+    expect(html).not.toContain(backspace);
+  });
+
 });
 
 describe("HJSON text formatting", () => {

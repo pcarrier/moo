@@ -34,8 +34,27 @@ export function escapeHtml(s: string): string {
     if (ch === "&") out += "&amp;";
     else if (ch === "<") out += "&lt;";
     else if (ch === ">") out += "&gt;";
-    else out += ch;
+    else {
+      const visibleControl = visibleControlCharEscape(ch);
+      out += visibleControl ?? ch;
+    }
   }
+  return out;
+}
+
+function visibleControlCharEscape(ch: string): string | null {
+  if (ch === "\n" || ch === "\r" || ch === "\t") return null;
+  if (ch === "\b") return "\\b";
+  if (ch === "\f") return "\\f";
+  const code = ch.charCodeAt(0);
+  if (code === 0) return "\\0";
+  if (code < 0x20 || code === 0x7f) return "\\x" + code.toString(16).padStart(2, "0");
+  return null;
+}
+
+function showControlCharsInHighlightedHtml(html: string): string {
+  let out = "";
+  for (const ch of html) out += visibleControlCharEscape(ch) ?? ch;
   return out;
 }
 
@@ -788,7 +807,7 @@ function highlightWithPrism(text: string, language: string): string {
   const grammar = Prism.languages[language];
   if (!grammar) return escapeHtml(text);
   try {
-    return Prism.highlight(text, grammar, language);
+    return showControlCharsInHighlightedHtml(Prism.highlight(text, grammar, language));
   } catch {
     return escapeHtml(text);
   }
