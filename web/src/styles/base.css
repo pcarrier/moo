@@ -353,7 +353,10 @@ pre,
   grid-template-columns: 0 minmax(0, 1fr) var(--right-sidebar-used-w);
 }
 
-#app.right-sidebar-maximized {
+#app.right-sidebar-maximized,
+#app.collapsed.right-sidebar-maximized,
+#app.repo-file-open.right-sidebar-maximized,
+#app.collapsed.repo-file-open.right-sidebar-maximized {
   grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
