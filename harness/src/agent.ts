@@ -445,12 +445,12 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
     const effort = effortAllowed(anthropicEffortLevels(provider.model), provider.effort);
     if (!effort) return;
     if (anthropicAdaptiveEffortLevels(provider.model)) {
-      body.thinking = { type: "adaptive" };
+      body.thinking = { type: "adaptive", display: "summarized" };
       body.output_config = { ...((body.output_config as Record<string, unknown> | undefined) ?? {}), effort };
       return;
     }
     const budget = anthropicThinkingBudget(provider.model, effort);
-    if (budget) body.thinking = { type: "enabled", budget_tokens: budget };
+    if (budget) body.thinking = { type: "enabled", budget_tokens: budget, display: "summarized" };
   }
 }
 
@@ -567,6 +567,7 @@ export function toAnthropicMessages(messages: any[]): { system: string; messages
     }
     if (msg?.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
       const content: any[] = [];
+      for (const block of anthropicThinkingBlocks(msg)) content.push(block);
       const text = contentText(msg.content);
       if (text) content.push({ type: "text", text });
       for (const tc of msg.tool_calls) {
@@ -593,12 +594,34 @@ function contentText(content: any): string {
   return content == null ? "" : String(content);
 }
 
+function anthropicThinkingBlocks(msg: any): any[] {
+  if (Array.isArray(msg?.anthropic_thinking_blocks)) return msg.anthropic_thinking_blocks.map((block: any) => sanitizeAnthropicThinkingBlock(block)).filter(Boolean);
+  if (msg?.anthropic_thinking_block) {
+    const block = sanitizeAnthropicThinkingBlock(msg.anthropic_thinking_block);
+    return block ? [block] : [];
+  }
+  if (typeof msg?.reasoning_content !== "string" || !msg.reasoning_content.trim()) return [];
+  const signature = typeof msg?.anthropic_thinking_signature === "string" ? msg.anthropic_thinking_signature : "";
+  return signature ? [{ type: "thinking", thinking: msg.reasoning_content, signature }] : [];
+}
+
+function sanitizeAnthropicThinkingBlock(block: any): any | null {
+  if (!block || typeof block !== "object" || block.type !== "thinking") return null;
+  const signature = typeof block.signature === "string" ? block.signature : "";
+  if (!signature) return null;
+  return { type: "thinking", thinking: typeof block.thinking === "string" ? block.thinking : "", signature };
+}
+
 function toAnthropicContent(content: any, role: string): any {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return String(content ?? "");
   const blocks: any[] = [];
   for (const part of content) {
     if (part?.type === "text") blocks.push({ type: "text", text: String(part.text ?? "") });
+    else if (role === "assistant" && part?.type === "thinking") {
+      const block = sanitizeAnthropicThinkingBlock(part);
+      if (block) blocks.push(block);
+    }
     else if (role === "user" && part?.type === "image_url") {
       const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
       const image = dataUrlToAnthropicSource(url);

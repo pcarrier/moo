@@ -217,6 +217,33 @@ describe("LLM stream provider details", () => {
     objectSeq = 0;
   });
 
+
+  test("parses Anthropic thinking summaries and signatures", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: { provider: "anthropic", model: "claude-sonnet-4-6", draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" } },
+      events: [
+        JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "summary" } }),
+        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } }),
+        JSON.stringify({ type: "content_block_stop", index: 0 }),
+        JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }),
+      ],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.reasoningContent).toBe("summary");
+    expect((accumulated.value as any).state.anthropicThinkingBlocks).toEqual([{ type: "thinking", thinking: "summary", signature: "sig" }]);
+    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "reasoning-draft" && ev.reasoningContent === "summary")).toBe(true);
+
+    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    expect(finalized.ok).toBe(true);
+    expect((finalized.value as any).content).toBe("answer");
+    expect((finalized.value as any).reasoningContent).toBe("summary");
+    expect((finalized.value as any).anthropicThinkingBlocks).toEqual([{ type: "thinking", thinking: "summary", signature: "sig" }]);
+  });
+
   test("parses DeepSeek think tags out of streamed content", async () => {
     const accumulated = await dispatch({
       command: "llm-stream-accumulate",

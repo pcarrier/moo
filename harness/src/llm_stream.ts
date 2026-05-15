@@ -46,6 +46,7 @@ type Input = LlmStreamInitInput | LlmStreamAccumulateInput | LlmStreamFinalizeIn
 type LlmAccumulatorState = {
   content: string;
   toolCalls: LlmToolCall[];
+  anthropicThinkingBlocks: Array<{ type: "thinking"; thinking: string; signature: string }>;
   model: string | null;
   usage: unknown | null;
   error: unknown | null;
@@ -55,6 +56,8 @@ type LlmAccumulatorState = {
   lastTokenProgressUsed: number;
   anthropicToolIndex: number | null;
   anthropicToolBlockToCall: Record<string, number>;
+  anthropicThinkingBlockIndex: number | null;
+  anthropicThinkingBlockToIndex: Record<string, number>;
 };
 
 export function llmStreamInitCommand(input: LlmStreamInitInput) {
@@ -68,6 +71,7 @@ export function llmStreamInitEffect(input: LlmStreamInitInput): Effect<{ state: 
     const state: LlmAccumulatorState = {
       content: "",
       toolCalls: [],
+      anthropicThinkingBlocks: [],
       model: null,
       usage: null,
       error: null,
@@ -77,6 +81,8 @@ export function llmStreamInitEffect(input: LlmStreamInitInput): Effect<{ state: 
       lastTokenProgressUsed: estimated,
       anthropicToolIndex: null,
       anthropicToolBlockToCall: {},
+      anthropicThinkingBlockIndex: null,
+      anthropicThinkingBlockToIndex: {},
     };
     const events: StreamOutputEvent[] = [];
     const tokenEvent = streamEvents.tokenProgressEvent;
@@ -131,6 +137,7 @@ export function llmStreamFinalizeEffect(input: LlmStreamFinalizeInput): Effect<a
         errorBody: formatStreamErrorBody(state.error),
         headers: input.headers && typeof input.headers === "object" ? input.headers : null,
         reasoningContent: state.reasoningContent || null,
+        anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
         model: state.model,
         usage: state.usage,
       }
@@ -141,6 +148,7 @@ export function llmStreamFinalizeEffect(input: LlmStreamFinalizeInput): Effect<a
         toolCalls: state.toolCalls,
         errorBody: null,
         reasoningContent: state.reasoningContent || null,
+        anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
         model: state.model,
         usage: state.usage,
       };
@@ -215,6 +223,9 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
   return {
     content: isObject(raw) && typeof raw.content === "string" ? raw.content : "",
     toolCalls: isObject(raw) && Array.isArray(raw.toolCalls) ? raw.toolCalls.filter(isLlmToolCall) : [],
+    anthropicThinkingBlocks: isObject(raw) && Array.isArray(raw.anthropicThinkingBlocks)
+      ? raw.anthropicThinkingBlocks.map(normalizeAnthropicThinkingBlock).filter(Boolean) as Array<{ type: "thinking"; thinking: string; signature: string }>
+      : [],
     model: isObject(raw) && typeof raw.model === "string" && raw.model ? raw.model : null,
     usage: isObject(raw) ? raw.usage ?? null : null,
     error: isObject(raw) ? raw.error ?? null : null,
@@ -226,7 +237,18 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
     anthropicToolBlockToCall: isObject(raw) && isObject(raw.anthropicToolBlockToCall)
       ? numericRecord(raw.anthropicToolBlockToCall)
       : {},
+    anthropicThinkingBlockIndex: isObject(raw) && Number.isFinite(Number(raw.anthropicThinkingBlockIndex)) ? Number(raw.anthropicThinkingBlockIndex) : null,
+    anthropicThinkingBlockToIndex: isObject(raw) && isObject(raw.anthropicThinkingBlockToIndex)
+      ? numericRecord(raw.anthropicThinkingBlockToIndex)
+      : {},
   };
+}
+
+function normalizeAnthropicThinkingBlock(value: unknown): { type: "thinking"; thinking: string; signature: string } | null {
+  if (!isObject(value) || value.type !== "thinking") return null;
+  const signature = typeof value.signature === "string" ? value.signature : "";
+  if (!signature) return null;
+  return { type: "thinking", thinking: typeof value.thinking === "string" ? value.thinking : "", signature };
 }
 
 function accumulateLlmStreamEvent(
@@ -256,6 +278,20 @@ function accumulateLlmStreamEvent(
     if (delta.usage != null && isObject(delta.usage)) state.usage = { ...(isObject(state.usage) ? state.usage : {}), ...delta.usage };
   }
   const contentBlock = isObject(parsed.content_block) ? parsed.content_block : {};
+  if (type === "content_block_start" && contentBlock.type === "thinking") {
+    const block = {
+      type: "thinking" as const,
+      thinking: typeof contentBlock.thinking === "string" ? contentBlock.thinking : "",
+      signature: typeof contentBlock.signature === "string" ? contentBlock.signature : "",
+    };
+    state.anthropicThinkingBlocks.push(block);
+    const thinkingIndex = state.anthropicThinkingBlocks.length - 1;
+    state.anthropicThinkingBlockIndex = thinkingIndex;
+    if (Number.isFinite(Number(parsed?.index))) {
+      state.anthropicThinkingBlockToIndex[String(Number(parsed.index))] = thinkingIndex;
+    }
+    if (block.thinking) appendLlmReasoningDelta(state, block.thinking, streamEvents, events);
+  }
   if (type === "content_block_start" && contentBlock.type === "tool_use") {
     const block = contentBlock;
     state.toolCalls.push({
@@ -274,8 +310,17 @@ function accumulateLlmStreamEvent(
     if (typeof delta.text === "string" && delta.text) {
       appendLlmContentDelta(state, delta.text, streamEvents, events);
     }
+    const blockIndex = Number.isFinite(Number(parsed?.index)) ? String(Number(parsed.index)) : null;
+    const thinkingIndex = blockIndex == null ? state.anthropicThinkingBlockIndex : state.anthropicThinkingBlockToIndex[blockIndex];
+    const thinkingBlock = thinkingIndex == null ? null : state.anthropicThinkingBlocks[thinkingIndex];
+    if (typeof delta.thinking === "string" && delta.thinking) {
+      if (thinkingBlock) thinkingBlock.thinking += delta.thinking;
+      appendLlmReasoningDelta(state, delta.thinking, streamEvents, events);
+    }
+    if (typeof delta.signature === "string" && thinkingBlock) {
+      thinkingBlock.signature += delta.signature;
+    }
     if (typeof delta.partial_json === "string") {
-      const blockIndex = Number.isFinite(Number(parsed?.index)) ? String(Number(parsed.index)) : null;
       const i = blockIndex == null ? state.anthropicToolIndex : state.anthropicToolBlockToCall[blockIndex];
       const slot = i == null ? null : state.toolCalls[i];
       if (slot) slot.function.arguments = String(slot.function.arguments || "") + delta.partial_json;
@@ -283,7 +328,9 @@ function accumulateLlmStreamEvent(
   }
   if (type === "content_block_stop") {
     if (Number.isFinite(Number(parsed?.index))) delete state.anthropicToolBlockToCall[String(Number(parsed.index))];
+    if (Number.isFinite(Number(parsed?.index))) delete state.anthropicThinkingBlockToIndex[String(Number(parsed.index))];
     state.anthropicToolIndex = null;
+    state.anthropicThinkingBlockIndex = null;
   }
   if (typeof parsed?.delta === "string" && type.includes("text.delta") && parsed.delta) {
     appendLlmContentDelta(state, parsed.delta, streamEvents, events);

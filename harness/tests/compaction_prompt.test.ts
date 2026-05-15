@@ -18,6 +18,7 @@ import {
   parseSseDataEvents,
   accumulateSummaryStreamEvent,
   toAnthropicMessages,
+  TOOLS,
   type RawUsage,
 } from "../src/agent";
 
@@ -151,6 +152,32 @@ describe("compaction prompts", () => {
 
     expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
     expect(messages.map((message) => message.content).join("\n")).not.toContain("legacy tail todos");
+  });
+
+
+  test("Anthropic requests summarized thinking and round-trips signed thinking blocks", () => {
+    const request = buildStreamingLLMRequest({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "key",
+      model: "claude-sonnet-4-6",
+      effort: "high",
+    } as any, [
+      { role: "user", content: "Use a tool" },
+      {
+        role: "assistant",
+        content: "",
+        anthropic_thinking_blocks: [{ type: "thinking", thinking: "summary", signature: "sig" }],
+        tool_calls: [{ id: "toolu_1", function: { name: "runTS", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "toolu_1", content: "ok" },
+    ], TOOLS);
+
+    expect(request.body).toMatchObject({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "high" },
+    });
+    expect((request.body as any).messages[1].content[0]).toEqual({ type: "thinking", thinking: "summary", signature: "sig" });
   });
 
   test("Anthropic keeps post-compaction TODO reminders in the system prompt", () => {
