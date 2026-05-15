@@ -51,6 +51,7 @@ type LlmAccumulatorState = {
   usage: unknown | null;
   error: unknown | null;
   reasoningContent: string;
+  stopReason: string | null;
   deepseekThinkOpen: boolean;
   deepseekTagBuffer: string;
   lastTokenProgressUsed: number;
@@ -76,6 +77,7 @@ export function llmStreamInitEffect(input: LlmStreamInitInput): Effect<{ state: 
       usage: null,
       error: null,
       reasoningContent: "",
+      stopReason: null,
       deepseekThinkOpen: false,
       deepseekTagBuffer: "",
       lastTokenProgressUsed: estimated,
@@ -137,6 +139,7 @@ export function llmStreamFinalizeEffect(input: LlmStreamFinalizeInput): Effect<a
         errorBody: formatStreamErrorBody(state.error),
         headers: input.headers && typeof input.headers === "object" ? input.headers : null,
         reasoningContent: state.reasoningContent || null,
+        stopReason: state.stopReason,
         anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
         model: state.model,
         usage: state.usage,
@@ -148,6 +151,7 @@ export function llmStreamFinalizeEffect(input: LlmStreamFinalizeInput): Effect<a
         toolCalls: state.toolCalls,
         errorBody: null,
         reasoningContent: state.reasoningContent || null,
+        stopReason: state.stopReason,
         anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
         model: state.model,
         usage: state.usage,
@@ -174,6 +178,7 @@ export function llmStreamErrorEffect(input: LlmStreamErrorInput): Effect<any> {
       errorBody,
       headers: input.headers && typeof input.headers === "object" ? input.headers : null,
       reasoningContent: state.reasoningContent || null,
+      stopReason: state.stopReason,
       model: state.model,
       usage: state.usage,
     };
@@ -230,6 +235,7 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
     usage: isObject(raw) ? raw.usage ?? null : null,
     error: isObject(raw) ? raw.error ?? null : null,
     reasoningContent: isObject(raw) && typeof raw.reasoningContent === "string" ? raw.reasoningContent : "",
+    stopReason: isObject(raw) && typeof raw.stopReason === "string" && raw.stopReason ? raw.stopReason : null,
     deepseekThinkOpen: isObject(raw) && raw.deepseekThinkOpen === true,
     deepseekTagBuffer: isObject(raw) && typeof raw.deepseekTagBuffer === "string" ? raw.deepseekTagBuffer : "",
     lastTokenProgressUsed: Number(isObject(raw) ? raw.lastTokenProgressUsed ?? 0 : 0) || 0,
@@ -271,11 +277,17 @@ function accumulateLlmStreamEvent(
     const msg = isObject(parsed.message) ? parsed.message : {};
     if (typeof msg.model === "string" && msg.model) state.model = msg.model;
     if (msg.usage != null) state.usage = msg.usage;
+    if (typeof msg.stop_reason === "string" && msg.stop_reason) state.stopReason = msg.stop_reason;
   }
   if (type === "message_delta") {
     if (parsed?.usage != null) state.usage = { ...(state.usage || {}), ...parsed.usage };
     const delta = isObject(parsed.delta) ? parsed.delta : {};
     if (delta.usage != null && isObject(delta.usage)) state.usage = { ...(isObject(state.usage) ? state.usage : {}), ...delta.usage };
+    if (typeof delta.stop_reason === "string" && delta.stop_reason) state.stopReason = delta.stop_reason;
+  }
+  if (type === "message_stop" && !state.stopReason) {
+    const msg = isObject(parsed.message) ? parsed.message : {};
+    if (typeof msg?.stop_reason === "string" && msg.stop_reason) state.stopReason = msg.stop_reason;
   }
   const contentBlock = isObject(parsed.content_block) ? parsed.content_block : {};
   if (type === "content_block_start" && contentBlock.type === "thinking") {
@@ -349,6 +361,7 @@ function accumulateLlmStreamEvent(
 
   const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
   const firstChoice = isObject(choices[0]) ? choices[0] : {};
+  if (typeof firstChoice.finish_reason === "string" && firstChoice.finish_reason) state.stopReason = firstChoice.finish_reason;
   const delta = isObject(firstChoice.delta) ? firstChoice.delta : null;
   if (!delta) return;
   if (typeof delta.content === "string" && delta.content) {

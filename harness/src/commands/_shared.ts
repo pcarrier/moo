@@ -148,6 +148,7 @@ export type LlmStreamResultInput = {
   errorBody: string | null;
   headers?: Record<string, JsonValue | string[] | undefined> | null;
   reasoningContent?: string | null;
+  stopReason?: string | null;
   anthropicThinkingBlocks?: Array<{ type: "thinking"; thinking: string; signature: string }>;
   model: string | null;
   usage: JsonValue | null;

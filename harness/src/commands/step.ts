@@ -1453,15 +1453,71 @@ export async function stepHandleLlmCommand(input: Input) {
   }
 
   const text = (llmResult.content || "").trim();
-  await traceMark("llm.final_reply", { chatId, chars: text.length, usedModel, thoughtDurationNs: Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null });
+  const stopReason = typeof llmResult.stopReason === "string" ? llmResult.stopReason : null;
+  const reasoningContent = llmResult.reasoningContent ?? "";
+  const thinkingBlocks = Array.isArray(llmResult.anthropicThinkingBlocks) ? llmResult.anthropicThinkingBlocks : [];
+  await traceMark("llm.final_reply", { chatId, chars: text.length, usedModel, stopReason, hasReasoningContent: !!reasoningContent.trim(), thinkingBlocks: thinkingBlocks.length, thoughtDurationNs: Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null });
+
+  // Anthropic's interleaved-thinking turns can pause mid-turn (`pause_turn`).
+  // The protocol requires us to feed the assistant message - including the
+  // signed thinking blocks - back and continue. Treating that as a terminal
+  // empty reply is what produced the old "(no response)" placeholder.
+  if (stopReason === "pause_turn") {
+    await traceMark("llm.pause_turn", { chatId, chars: text.length, thinkingBlocks: thinkingBlocks.length, usedModel });
+    if (text || reasoningContent.trim()) {
+      await reply(
+        chatId,
+        text,
+        usedModel,
+        input.requestEffort,
+        Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null,
+        draftId,
+        reasoningContent || null,
+      );
+    }
+    const assistantMessage: { role: string; content: unknown; reasoning_content?: string; anthropic_thinking_blocks?: unknown[] } = {
+      role: "assistant",
+      content: llmResult.content || null,
+    };
+    if (reasoningContent) assistantMessage.reasoning_content = reasoningContent;
+    if (thinkingBlocks.length) assistantMessage.anthropic_thinking_blocks = thinkingBlocks;
+    messages.push(assistantMessage);
+    return { ok: true, value: { kind: "iterate", messages } };
+  }
+
+  if (!text) {
+    // The model produced no visible text and no tool calls. Don't fabricate a
+    // `(no response)` Reply step - record a real error so the UI shows what
+    // happened and the agent loop stops cleanly.
+    await traceMark("llm.empty_completion", { chatId, stopReason, hasReasoningContent: !!reasoningContent.trim(), thinkingBlocks: thinkingBlocks.length, usedModel });
+    await recordErrorStep(
+      chatId,
+      "empty_completion",
+      {
+        source: "empty_completion",
+        stopReason,
+        hasReasoningContent: !!reasoningContent.trim(),
+        thinkingBlocks: thinkingBlocks.length,
+        message: stopReason === "max_tokens"
+          ? "Model response was truncated before any text was emitted (stop_reason=max_tokens)."
+          : "Model returned no text content" + (stopReason ? ` (stop_reason=${stopReason})` : "") + ".",
+      },
+      usedModel,
+      input.requestEffort,
+    );
+    await setChatOngoing(chatId, false);
+    await traceMark("llm.empty_completion.done", { chatId, stopReason, usedModel });
+    return { ok: true, value: { kind: "done" } };
+  }
+
   await reply(
     chatId,
-    text || "(no response)",
+    text,
     usedModel,
     input.requestEffort,
     Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null,
     draftId,
-    llmResult.reasoningContent ?? null,
+    reasoningContent || null,
   );
   const postReplyMessages = await traceSpan("compaction.post_reply_estimate", { chatId }, () => buildLLMMessages(chatId));
   const postReplyPressureTokens = await traceSpan("compaction.post_reply_pressure", { chatId, messages: postReplyMessages.length }, () => estimateCompactionPromptTokens(chatId, postReplyMessages));
