@@ -155,6 +155,23 @@ describe("compaction prompts", () => {
   });
 
 
+
+  test("Anthropic Opus 4.7 enables summarized adaptive thinking by default", () => {
+    const request = buildStreamingLLMRequest({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "key",
+      model: "claude-opus-4-7",
+      effort: null,
+    } as any, [{ role: "user", content: "Think deeply" }], null);
+
+    expect(request.requestEffort).toBe("high");
+    expect(request.body).toMatchObject({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "high" },
+    });
+  });
+
   test("Anthropic requests summarized thinking and round-trips signed thinking blocks", () => {
     const request = buildStreamingLLMRequest({
       name: "anthropic",

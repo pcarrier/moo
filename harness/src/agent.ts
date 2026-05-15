@@ -344,6 +344,9 @@ function deepseekRequestEffort(provider: Pick<LLMProvider, "model" | "effort">):
 
 function requestEffortForProvider(provider: LLMProvider): EffortLevel | null {
   if (provider.name === "deepseek") return deepseekRequestEffort(provider);
+  if (provider.name === "anthropic" && anthropicAdaptiveEffortLevels(provider.model)) {
+    return effortAllowed(anthropicEffortLevels(provider.model), provider.effort) ?? "high";
+  }
   return effortAllowed(effortLevelsForProvider(provider), provider.effort);
 }
 
@@ -433,6 +436,19 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
     body.reasoning_effort = effort;
     return;
   }
+  if (provider.name === "anthropic" && supportsAnthropicThinking(provider.model)) {
+    const adaptive = anthropicAdaptiveEffortLevels(provider.model);
+    const effort = effortAllowed(anthropicEffortLevels(provider.model), provider.effort) ?? (adaptive ? "high" : null);
+    if (!effort) return;
+    if (adaptive) {
+      body.thinking = { type: "adaptive", display: "summarized" };
+      body.output_config = { ...((body.output_config as Record<string, unknown> | undefined) ?? {}), effort };
+      return;
+    }
+    const budget = anthropicThinkingBudget(provider.model, effort);
+    if (budget) body.thinking = { type: "enabled", budget_tokens: budget, display: "summarized" };
+    return;
+  }
   if (!provider.effort) return;
   if (provider.name === "openai") {
     const effort = effortAllowed(openaiEffortLevels(provider.model), provider.effort);
@@ -440,17 +456,6 @@ function applyEffort(provider: LLMProvider, body: Record<string, unknown>, respo
     if (responsesApi) body.reasoning = { effort };
     else body.reasoning_effort = effort;
     return;
-  }
-  if (provider.name === "anthropic" && supportsAnthropicThinking(provider.model)) {
-    const effort = effortAllowed(anthropicEffortLevels(provider.model), provider.effort);
-    if (!effort) return;
-    if (anthropicAdaptiveEffortLevels(provider.model)) {
-      body.thinking = { type: "adaptive", display: "summarized" };
-      body.output_config = { ...((body.output_config as Record<string, unknown> | undefined) ?? {}), effort };
-      return;
-    }
-    const budget = anthropicThinkingBudget(provider.model, effort);
-    if (budget) body.thinking = { type: "enabled", budget_tokens: budget, display: "summarized" };
   }
 }
 
