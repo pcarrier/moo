@@ -237,12 +237,9 @@ describe("filesystem API", () => {
   test("exposes split patch and delete helpers", async () => {
     expect("patch" in moo.fs).toBe(true);
     expect("delete" in moo.fs).toBe(true);
-    expect("applyPatch" in moo.fs).toBe(false);
-
     const workspace = await moo.workspace.current({ root: "/repo" });
     expect("patch" in workspace.fs).toBe(true);
     expect("delete" in workspace.fs).toBe(true);
-    expect("applyPatch" in workspace.fs).toBe(false);
   });
 
   test("patches and deletes within scoped workspace", async () => {
@@ -265,11 +262,11 @@ describe("filesystem API", () => {
     addFile("/repo/example.txt", "alpha\n");
 
     await expect(workspace.fs.patch({ path: "../example.txt", diff: "" })).rejects.toThrow(
-      "apply_patch paths must stay within the workspace root.",
+      "patch paths must stay within the workspace root.",
     );
 
     await expect(workspace.fs.patch({ path: "example.txt", diff: "@@ -1 +1 @@\n-beta\n+gamma\n" })).rejects.toThrow(
-      "Could not apply the patch to 'example.txt'",
+      "Could not patch 'example.txt'",
     );
     expect(files.get("/repo/example.txt")).toBe("alpha\n");
   });
@@ -283,7 +280,7 @@ describe("filesystem API", () => {
     await expect(withMooChatContext("active", () => moo.fs.patch({
       path: "example.txt",
       diff: "@@ -1 +1 @@\n-beta\n+gamma\n",
-    }))).rejects.toThrow("Could not apply the patch to 'example.txt'");
+    }))).rejects.toThrow("Could not patch 'example.txt'");
     expect(files.get("/home/test/moo/active/example.txt")).toBe("alpha\n");
   });
 });

@@ -2,7 +2,7 @@ import * as host from "./host_ops";
 import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
-import { ApplyPatchError, applyUnifiedDiff } from "./core/applyPatch";
+import { PatchError, patchText } from "./core/patch";
 import { encodeObject, stringBytes, term, validate } from "./core/terms";
 import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
@@ -1289,10 +1289,10 @@ function normalizeAbsolutePosixPath(candidate: string): string {
   return parts.length === 0 ? "/" : "/" + parts.join("/");
 }
 
-function resolveApplyPatchPaths(rawPath: string, workingDirectory: string | null): [string, string] {
+function resolvePatchPaths(rawPath: string, workingDirectory: string | null): [string, string] {
   const candidate = String(rawPath ?? "").trim();
-  if (!candidate) throw new ApplyPatchError("apply_patch paths must not be empty.");
-  if (candidate.includes("\\")) throw new ApplyPatchError("apply_patch paths must use forward slashes.");
+  if (!candidate) throw new PatchError("patch paths must not be empty.");
+  if (candidate.includes("\\")) throw new PatchError("patch paths must use forward slashes.");
   if (candidate.startsWith("/")) {
     const normalized = normalizeAbsolutePosixPath(candidate);
     return [normalized, normalized];
@@ -1300,10 +1300,10 @@ function resolveApplyPatchPaths(rawPath: string, workingDirectory: string | null
   const parts: string[] = [];
   for (const part of candidate.split("/")) {
     if (part === "" || part === ".") continue;
-    if (part === "..") throw new ApplyPatchError("apply_patch paths must stay within the workspace root.");
+    if (part === "..") throw new PatchError("patch paths must stay within the workspace root.");
     parts.push(part);
   }
-  if (parts.length === 0) throw new ApplyPatchError("apply_patch paths must point to a file inside the workspace root.");
+  if (parts.length === 0) throw new PatchError("patch paths must point to a file inside the workspace root.");
   const display = parts.join("/");
   return [display, workingDirectory ? joinPath(workingDirectory, display) : display];
 }
@@ -1313,40 +1313,40 @@ function patchResult(status: string, output: string): PatchResult {
 }
 
 async function executePatch(path: string, diff: string | null | undefined, workingDirectory: string | null): Promise<PatchResult> {
-  const [display, absolute] = resolveApplyPatchPaths(path, workingDirectory);
+  const [display, absolute] = resolvePatchPaths(path, workingDirectory);
 
   const stat = await fs.stat({ path: absolute });
   if (stat === null) {
-    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: File not found");
+    throw new PatchError("Could not read '" + display + "' before patching: File not found");
   }
   if (stat.kind === "dir") {
-    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: " + absolute + " is a directory");
+    throw new PatchError("Could not read '" + display + "' before patching: " + absolute + " is a directory");
   }
   let original: string;
   try {
     original = await fs.read({ path: absolute });
   } catch (e) {
-    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: " + (e as Error).message);
+    throw new PatchError("Could not read '" + display + "' before patching: " + (e as Error).message);
   }
   let content: string;
   try {
-    content = applyUnifiedDiff(original, diff ?? "");
+    content = patchText(original, diff ?? "");
   } catch (e) {
-    throw new ApplyPatchError("Could not apply the patch to '" + display + "': " + (e as Error).message);
+    throw new PatchError("Could not patch '" + display + "': " + (e as Error).message);
   }
   try {
     await fs.write({ path: absolute, content: content });
   } catch (e) {
-    throw new ApplyPatchError("Could not write '" + display + "': " + (e as Error).message);
+    throw new PatchError("Could not write '" + display + "': " + (e as Error).message);
   }
-  return patchResult("completed", "Applied patch to update '" + display + "'.");
+  return patchResult("completed", "Patched '" + display + "'.");
 }
 
 async function executeDelete(path: string, workingDirectory: string | null): Promise<PatchResult> {
   let display: string;
   let absolute: string;
   try {
-    [display, absolute] = resolveApplyPatchPaths(path, workingDirectory);
+    [display, absolute] = resolvePatchPaths(path, workingDirectory);
   } catch (e) {
     return patchResult("failed", (e as Error).message);
   }

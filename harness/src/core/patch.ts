@@ -1,4 +1,4 @@
-// Pure apply_patch diff engine, ported from @/src/indent/js_modules/cli/src/rpc/tools/apply-patch.ts.
+// Pure patch diff engine for unified and context diffs.
 // Host filesystem operations are wired by harness/src/moo.ts.
 
 // Shared port of Python's str.splitlines().
@@ -67,7 +67,7 @@ const EMPTY_CONTEXT_HUNK = "@@";
 const END_OF_FILE_MARKER = "*** End of File";
 const NO_NEWLINE_MARKER = "\\ No newline at end of file";
 
-export class ApplyPatchError extends Error {}
+export class PatchError extends Error {}
 
 interface DiffLine {
   prefix: " " | "+" | "-";
@@ -102,7 +102,7 @@ function startsWithAny(line: string, prefixes: readonly string[]): boolean {
   return prefixes.some((p) => line.startsWith(p));
 }
 
-export function applyUnifiedDiff(originalText: string, diff: string): string {
+export function patchText(originalText: string, diff: string): string {
   if (!diff.trim()) {
     return originalText;
   }
@@ -140,7 +140,7 @@ function detectDiffFormat(lines: string[]): "unified" | "context" | null {
     if (isContextHunkHeader(line)) {
       return "context";
     }
-    throw new ApplyPatchError(`Unsupported apply_patch diff line: ${line}`);
+    throw new PatchError(`Unsupported patch diff line: ${line}`);
   }
   return null;
 }
@@ -164,7 +164,7 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
     }
     const m = HUNK_HEADER_RE.exec(line);
     if (!m) {
-      throw new ApplyPatchError(`Unsupported apply_patch diff line: ${line}`);
+      throw new PatchError(`Unsupported patch diff line: ${line}`);
     }
     const oldStart = parseInt(m.groups!.old_start!, 10);
     const newStart = parseInt(m.groups!.new_start!, 10);
@@ -180,8 +180,8 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
       }
       if (next === NO_NEWLINE_MARKER) {
         if (!hunkLines.length) {
-          throw new ApplyPatchError(
-            "apply_patch diff used a no-newline marker before any hunk line.",
+          throw new PatchError(
+            "patch diff used a no-newline marker before any hunk line.",
           );
         }
         hunkLines[hunkLines.length - 1]!.hasNewline = false;
@@ -197,7 +197,7 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
         i++;
         continue;
       }
-      throw new ApplyPatchError(`Unsupported apply_patch hunk line: ${next}`);
+      throw new PatchError(`Unsupported patch hunk line: ${next}`);
     }
     const consumedOld = hunkLines.filter((l) => l.prefix !== "+").length;
     const producedNew = hunkLines.filter((l) => l.prefix !== "-").length;
@@ -235,7 +235,7 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
     } else if (line.startsWith(CONTEXT_HUNK_PREFIX)) {
       changeContext = line.slice(CONTEXT_HUNK_PREFIX.length);
     } else {
-      throw new ApplyPatchError(`Unsupported apply_patch diff line: ${line}`);
+      throw new PatchError(`Unsupported patch diff line: ${line}`);
     }
     i++;
     const hunkLines: DiffLine[] = [];
@@ -250,8 +250,8 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
       }
       if (next === END_OF_FILE_MARKER) {
         if (!hunkLines.length) {
-          throw new ApplyPatchError(
-            "apply_patch diff used an end-of-file marker before any hunk line.",
+          throw new PatchError(
+            "patch diff used an end-of-file marker before any hunk line.",
           );
         }
         isEndOfFile = true;
@@ -260,8 +260,8 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
       }
       if (next === NO_NEWLINE_MARKER) {
         if (!hunkLines.length) {
-          throw new ApplyPatchError(
-            "apply_patch diff used a no-newline marker before any hunk line.",
+          throw new PatchError(
+            "patch diff used a no-newline marker before any hunk line.",
           );
         }
         hunkLines[hunkLines.length - 1]!.hasNewline = false;
@@ -282,11 +282,11 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
         i++;
         continue;
       }
-      throw new ApplyPatchError(`Unsupported apply_patch hunk line: ${next}`);
+      throw new PatchError(`Unsupported patch hunk line: ${next}`);
     }
     if (!hunkLines.length) {
-      throw new ApplyPatchError(
-        "apply_patch context hunk did not contain any lines.",
+      throw new PatchError(
+        "patch context hunk did not contain any lines.",
       );
     }
     hunks.push({ changeContext, lines: hunkLines, isEndOfFile });
@@ -437,16 +437,16 @@ function assertLineMatches(actual: FileLine, expected: string): void {
   if (sameLine(actual.text, expected)) {
     return;
   }
-  throw new ApplyPatchError(
-    `apply_patch diff did not match the current file contents.\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual.text)}`,
+  throw new PatchError(
+    `patch diff did not match the current file contents.\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual.text)}`,
   );
 }
 
 function getSourceLine(lines: FileLine[], i: number): FileLine {
   const v = lines[i];
   if (!v) {
-    throw new ApplyPatchError(
-      "apply_patch expected more source lines than were available.",
+    throw new PatchError(
+      "patch expected more source lines than were available.",
     );
   }
   return v;
@@ -601,17 +601,17 @@ function applyUnifiedHunks(originalText: string, hunks: UnifiedHunk[]): string {
     }
     if (!applied) {
       if (expected < src) {
-        throw new ApplyPatchError(
-          "apply_patch hunks overlap or are out of order.",
+        throw new PatchError(
+          "patch hunks overlap or are out of order.",
         );
       }
       if (expected > original.length) {
-        throw new ApplyPatchError(
-          "apply_patch hunk starts past the end of the file.",
+        throw new PatchError(
+          "patch hunk starts past the end of the file.",
         );
       }
-      throw new ApplyPatchError(
-        "apply_patch diff did not match the current file contents.\nExpected lines:\n" +
+      throw new PatchError(
+        "patch diff did not match the current file contents.\nExpected lines:\n" +
           pattern.join("\n"),
       );
     }
@@ -671,8 +671,8 @@ function buildContextReplacement(
     }
   }
   if (mi !== matched.length) {
-    throw new ApplyPatchError(
-      "apply_patch context hunk did not consume the expected source lines.",
+    throw new PatchError(
+      "patch context hunk did not consume the expected source lines.",
     );
   }
   return out;
@@ -685,8 +685,8 @@ function applyContextHunks(originalText: string, hunks: ContextHunk[]): string {
     if (h.changeContext !== null) {
       const ci = seekSequence(out, [h.changeContext], search, false);
       if (ci === null) {
-        throw new ApplyPatchError(
-          `apply_patch could not find context line: ${JSON.stringify(h.changeContext)}`,
+        throw new PatchError(
+          `patch could not find context line: ${JSON.stringify(h.changeContext)}`,
         );
       }
       search = ci + 1;
@@ -695,12 +695,12 @@ function applyContextHunks(originalText: string, hunks: ContextHunk[]): string {
     const mi = seekSequence(out, pattern, search, h.isEndOfFile);
     if (mi === null) {
       if (!pattern.length) {
-        throw new ApplyPatchError(
-          "apply_patch context hunk could not determine where to insert new lines.",
+        throw new PatchError(
+          "patch context hunk could not determine where to insert new lines.",
         );
       }
-      throw new ApplyPatchError(
-        "apply_patch diff did not match the current file contents.\nExpected lines:\n" +
+      throw new PatchError(
+        "patch diff did not match the current file contents.\nExpected lines:\n" +
           pattern.join("\n"),
       );
     }
