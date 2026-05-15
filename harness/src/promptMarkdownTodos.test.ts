@@ -18,8 +18,9 @@ describe("filesystem editing prompt", () => {
     expect(prompt).toContain("1-based inclusive ranges; sorted/collapsed overlaps");
     expect(prompt).toContain("patch({path:string,diff:string})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("delete({path:string})→Promise<{status:string,output?:string|null}>");
-    expect(prompt).toContain("failures return status=\'failed\' plus output");
-    expect(prompt).toContain("check result.status/output and stop on failed");
+    expect(prompt).toContain("applies unified/context patch to existing file and throws on failure");
+    expect(prompt).toContain("delete failures return status=\'failed\' plus output");
+    expect(prompt).toContain("patch failures throw, so retry only after inspecting context");
     expect(prompt).toContain("prefer moo.fs.patch for patch operations on existing files");
   });
 });

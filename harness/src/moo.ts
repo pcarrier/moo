@@ -1313,37 +1313,31 @@ function patchResult(status: string, output: string): PatchResult {
 }
 
 async function executePatch(path: string, diff: string | null | undefined, workingDirectory: string | null): Promise<PatchResult> {
-  let display: string;
-  let absolute: string;
-  try {
-    [display, absolute] = resolveApplyPatchPaths(path, workingDirectory);
-  } catch (e) {
-    return patchResult("failed", (e as Error).message);
-  }
+  const [display, absolute] = resolveApplyPatchPaths(path, workingDirectory);
 
   const stat = await fs.stat({ path: absolute });
   if (stat === null) {
-    return patchResult("failed", "Could not read '" + display + "' before applying the patch: File not found");
+    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: File not found");
   }
   if (stat.kind === "dir") {
-    return patchResult("failed", "Could not read '" + display + "' before applying the patch: " + absolute + " is a directory");
+    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: " + absolute + " is a directory");
   }
   let original: string;
   try {
     original = await fs.read({ path: absolute });
   } catch (e) {
-    return patchResult("failed", "Could not read '" + display + "' before applying the patch: " + (e as Error).message);
+    throw new ApplyPatchError("Could not read '" + display + "' before applying the patch: " + (e as Error).message);
   }
   let content: string;
   try {
     content = applyUnifiedDiff(original, diff ?? "");
   } catch (e) {
-    return patchResult("failed", "Could not apply the patch to '" + display + "': " + (e as Error).message);
+    throw new ApplyPatchError("Could not apply the patch to '" + display + "': " + (e as Error).message);
   }
   try {
     await fs.write({ path: absolute, content: content });
   } catch (e) {
-    return patchResult("failed", "Could not write '" + display + "': " + (e as Error).message);
+    throw new ApplyPatchError("Could not write '" + display + "': " + (e as Error).message);
   }
   return patchResult("completed", "Applied patch to update '" + display + "'.");
 }

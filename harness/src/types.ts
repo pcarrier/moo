@@ -528,6 +528,7 @@ export type ValidateApi = {
 
 
 export type PatchResult = {
+  // Successful patch/delete operations return status="completed". Patch failures throw.
   status: string;
   output?: string | null;
 };

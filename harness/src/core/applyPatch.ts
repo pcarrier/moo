@@ -166,8 +166,6 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
     if (!m) {
       throw new ApplyPatchError(`Unsupported apply_patch diff line: ${line}`);
     }
-    const oldCount = parseInt(m.groups!.old_count ?? "1", 10);
-    const newCount = parseInt(m.groups!.new_count ?? "1", 10);
     const oldStart = parseInt(m.groups!.old_start!, 10);
     const newStart = parseInt(m.groups!.new_start!, 10);
     i++;
@@ -203,17 +201,17 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
     }
     const consumedOld = hunkLines.filter((l) => l.prefix !== "+").length;
     const producedNew = hunkLines.filter((l) => l.prefix !== "-").length;
-    if (consumedOld !== oldCount) {
-      throw new ApplyPatchError(
-        "apply_patch old-line count did not match the diff body.",
-      );
-    }
-    if (producedNew !== newCount) {
-      throw new ApplyPatchError(
-        "apply_patch new-line count did not match the diff body.",
-      );
-    }
-    hunks.push({ oldStart, oldCount, newStart, newCount, lines: hunkLines });
+    // LLM-produced diffs commonly undercount or overcount context lines in
+    // hunk headers. The body is the part we can verify against the source, so
+    // trust it for application while keeping the header starts as placement
+    // hints.
+    hunks.push({
+      oldStart,
+      oldCount: consumedOld,
+      newStart,
+      newCount: producedNew,
+      lines: hunkLines,
+    });
   }
   return hunks;
 }
@@ -416,6 +414,25 @@ function sameLine(a: string, b: string): boolean {
   return normalise(a) === normalise(b);
 }
 
+const lineNormalizers: Array<(s: string) => string> = [
+  (s) => s,
+  (s) => s.replace(/\s+$/, ""),
+  (s) => s.trim(),
+  normalise,
+];
+
+function sequenceMatches(
+  lines: FileLine[],
+  pattern: string[],
+  index: number,
+  normalizer: (s: string) => string,
+): boolean {
+  for (let j = 0; j < pattern.length; j++) {
+    if (normalizer(lines[index + j]!.text) !== normalizer(pattern[j]!)) return false;
+  }
+  return true;
+}
+
 function assertLineMatches(actual: FileLine, expected: string): void {
   if (sameLine(actual.text, expected)) {
     return;
@@ -442,51 +459,165 @@ function resolveHunkSourceIndex(h: UnifiedHunk): number {
   return Math.max(h.oldStart - 1, 0);
 }
 
+function seekSequenceNear(
+  lines: FileLine[],
+  pattern: string[],
+  start: number,
+  preferred: number,
+): number | null {
+  if (!pattern.length) return Math.max(start, preferred);
+  if (pattern.length > lines.length) return null;
+  const lower = Math.max(0, start);
+  const upper = lines.length - pattern.length;
+  if (lower > upper) return null;
+  const center = Math.max(lower, Math.min(preferred, upper));
+  const maxDistance = Math.max(center - lower, upper - center);
+  for (const n of lineNormalizers) {
+    for (let distance = 0; distance <= maxDistance; distance++) {
+      const before = center - distance;
+      if (before >= lower && sequenceMatches(lines, pattern, before, n)) {
+        return before;
+      }
+      const after = center + distance;
+      if (
+        distance !== 0 &&
+        after <= upper &&
+        sequenceMatches(lines, pattern, after, n)
+      ) {
+        return after;
+      }
+    }
+  }
+  return null;
+}
+
+interface UnifiedHunkApplication {
+  index: number;
+  consumed: number;
+  replacement: FileLine[];
+}
+
+function laterSourceLineMatches(
+  hunkLines: DiffLine[],
+  start: number,
+  actual: FileLine,
+): boolean {
+  for (let i = start; i < hunkLines.length; i++) {
+    const dl = hunkLines[i]!;
+    if (dl.prefix === "+") continue;
+    return sameLine(actual.text, dl.text);
+  }
+  return false;
+}
+
+function tryBuildUnifiedReplacement(
+  original: FileLine[],
+  hunk: UnifiedHunk,
+  index: number,
+  fuzzy: boolean,
+): UnifiedHunkApplication | null {
+  if (index < 0 || index > original.length) return null;
+  const replacement: FileLine[] = [];
+  let src = index;
+  let matchedSourceLines = 0;
+  const sourceLineCount = hunk.lines.filter((l) => l.prefix !== "+").length;
+
+  for (let i = 0; i < hunk.lines.length; i++) {
+    const dl = hunk.lines[i]!;
+    if (dl.prefix === "+") {
+      replacement.push({ text: dl.text, hasNewline: dl.hasNewline });
+      continue;
+    }
+
+    const actual = original[src];
+    if (!actual) return null;
+    if (sameLine(actual.text, dl.text)) {
+      matchedSourceLines++;
+      if (dl.prefix === " ") replacement.push(actual);
+      src++;
+      continue;
+    }
+
+    // If an LLM included a context line from a nearby/stale version, allow it
+    // to be omitted when the next source line in the hunk matches the current
+    // file. Removals still have to match exactly enough to consume a line.
+    if (
+      fuzzy &&
+      dl.prefix === " " &&
+      matchedSourceLines > 0 &&
+      laterSourceLineMatches(hunk.lines, i + 1, actual)
+    ) {
+      continue;
+    }
+    return null;
+  }
+
+  if (sourceLineCount > 0 && matchedSourceLines === 0) return null;
+  return { index, consumed: src - index, replacement };
+}
+
+function findFuzzyUnifiedApplication(
+  original: FileLine[],
+  hunk: UnifiedHunk,
+  start: number,
+  preferred: number,
+): UnifiedHunkApplication | null {
+  const sourceLineCount = hunk.lines.filter((l) => l.prefix !== "+").length;
+  if (!sourceLineCount) {
+    const index = Math.max(start, Math.min(preferred, original.length));
+    return tryBuildUnifiedReplacement(original, hunk, index, false);
+  }
+  const lower = Math.max(0, start);
+  const upper = original.length - 1;
+  if (lower > upper) return null;
+  const center = Math.max(lower, Math.min(preferred, upper));
+  const maxDistance = Math.max(center - lower, upper - center);
+  for (let distance = 0; distance <= maxDistance; distance++) {
+    const before = center - distance;
+    if (before >= lower) {
+      const applied = tryBuildUnifiedReplacement(original, hunk, before, true);
+      if (applied) return applied;
+    }
+    const after = center + distance;
+    if (distance !== 0 && after <= upper) {
+      const applied = tryBuildUnifiedReplacement(original, hunk, after, true);
+      if (applied) return applied;
+    }
+  }
+  return null;
+}
+
 function applyUnifiedHunks(originalText: string, hunks: UnifiedHunk[]): string {
   const original = splitFileLines(originalText);
   const out: FileLine[] = [];
   let src = 0;
   for (const hunk of hunks) {
     const expected = resolveHunkSourceIndex(hunk);
-    if (expected < src) {
-      throw new ApplyPatchError(
-        "apply_patch hunks overlap or are out of order.",
-      );
+    const pattern = hunk.lines.filter((l) => l.prefix !== "+").map((l) => l.text);
+    const found = pattern.length ? seekSequenceNear(original, pattern, src, expected) : Math.max(src, expected);
+    let applied = found === null ? null : tryBuildUnifiedReplacement(original, hunk, found, false);
+    if (!applied) {
+      applied = findFuzzyUnifiedApplication(original, hunk, src, expected);
     }
-    if (expected > original.length) {
-      throw new ApplyPatchError(
-        "apply_patch hunk starts past the end of the file.",
-      );
-    }
-    out.push(...original.slice(src, expected));
-    src = expected;
-    const hunkSrc = src;
-    for (const dl of hunk.lines) {
-      if (dl.prefix === " ") {
-        const a = getSourceLine(original, src);
-        assertLineMatches(a, dl.text);
-        out.push(a);
-        src++;
-      } else if (dl.prefix === "-") {
-        const a = getSourceLine(original, src);
-        assertLineMatches(a, dl.text);
-        src++;
-      } else {
-        out.push({ text: dl.text, hasNewline: dl.hasNewline });
+    if (!applied) {
+      if (expected < src) {
+        throw new ApplyPatchError(
+          "apply_patch hunks overlap or are out of order.",
+        );
       }
-    }
-    const consumed = src - hunkSrc;
-    const produced = hunk.lines.filter((l) => l.prefix !== "-").length;
-    if (consumed !== hunk.oldCount) {
+      if (expected > original.length) {
+        throw new ApplyPatchError(
+          "apply_patch hunk starts past the end of the file.",
+        );
+      }
       throw new ApplyPatchError(
-        "apply_patch old-line count did not match the diff header.",
+        "apply_patch diff did not match the current file contents.\nExpected lines:\n" +
+          pattern.join("\n"),
       );
     }
-    if (produced !== hunk.newCount) {
-      throw new ApplyPatchError(
-        "apply_patch new-line count did not match the diff header.",
-      );
-    }
+    out.push(...original.slice(src, applied.index));
+    out.push(...applied.replacement);
+    src = applied.index + applied.consumed;
   }
   out.push(...original.slice(src));
   return renderFileLines(out);
@@ -509,22 +640,9 @@ function seekSequence(
       ? lines.length - pattern.length
       : start;
   const lastIdx = lines.length - pattern.length;
-  const normalizers: Array<(s: string) => string> = [
-    (s) => s,
-    (s) => s.replace(/\s+$/, ""),
-    (s) => s.trim(),
-    normalise,
-  ];
-  for (const n of normalizers) {
+  for (const n of lineNormalizers) {
     for (let i = searchStart; i <= lastIdx; i++) {
-      let ok = true;
-      for (let j = 0; j < pattern.length; j++) {
-        if (n(lines[i + j]!.text) !== n(pattern[j]!)) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
+      if (sequenceMatches(lines, pattern, i, n)) {
         return i;
       }
     }

@@ -28,4 +28,19 @@ describe("applyUnifiedDiff", () => {
     const diff = "@@ -1,3 +1,3 @@\n a\n-b\n\n+B\n c\n";
     expect(() => applyUnifiedDiff("a\nb\nc\n", diff)).toThrow();
   });
+
+  test("applies unified hunks whose header counts do not match the body", () => {
+    const diff = "@@ -1,1 +1,2 @@\n a\n b\n+B\n c\n";
+    expect(applyUnifiedDiff("a\nb\nc\n", diff)).toBe("a\nb\nB\nc\n");
+  });
+
+  test("relocates unified hunks by source body when header line numbers are stale", () => {
+    const diff = "@@ -1,2 +1,2 @@\n c\n-d\n+D\n";
+    expect(applyUnifiedDiff("a\nb\nc\nd\ne\n", diff)).toBe("a\nb\nc\nD\ne\n");
+  });
+
+  test("skips stale context-only lines in unified hunks", () => {
+    const diff = "@@ -1,4 +1,5 @@\n a\n stale\n b\n+added\n c\n";
+    expect(applyUnifiedDiff("a\nb\nc\n", diff)).toBe("a\nb\nadded\nc\n");
+  });
 });

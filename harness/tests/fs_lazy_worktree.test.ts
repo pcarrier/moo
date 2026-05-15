@@ -260,18 +260,30 @@ describe("filesystem API", () => {
     expect(files.has("/repo/src/example.txt")).toBe(false);
   });
 
-  test("returns patch failures for invalid paths and mismatched hunks", async () => {
+  test("throws patch failures for invalid paths and mismatched hunks", async () => {
     const workspace = await moo.workspace.current({ root: "/repo" });
     addFile("/repo/example.txt", "alpha\n");
 
-    await expect(workspace.fs.patch({ path: "../example.txt", diff: "" })).resolves.toMatchObject({
-      status: "failed",
-      output: "apply_patch paths must stay within the workspace root.",
-    });
+    await expect(workspace.fs.patch({ path: "../example.txt", diff: "" })).rejects.toThrow(
+      "apply_patch paths must stay within the workspace root.",
+    );
 
-    await expect(workspace.fs.patch({ path: "example.txt", diff: "@@ -1 +1 @@\n-beta\n+gamma\n" })).resolves.toMatchObject({
-      status: "failed",
-    });
+    await expect(workspace.fs.patch({ path: "example.txt", diff: "@@ -1 +1 @@\n-beta\n+gamma\n" })).rejects.toThrow(
+      "Could not apply the patch to 'example.txt'",
+    );
     expect(files.get("/repo/example.txt")).toBe("alpha\n");
+  });
+
+  test("throws active scratch patch failures as tool errors", async () => {
+    refs.set("chat/active/created-at", "1");
+    refs.set("chat/active/path", "/repo");
+    addDir("/home/test/moo/active", []);
+    addFile("/home/test/moo/active/example.txt", "alpha\n");
+
+    await expect(withMooChatContext("active", () => moo.fs.patch({
+      path: "example.txt",
+      diff: "@@ -1 +1 @@\n-beta\n+gamma\n",
+    }))).rejects.toThrow("Could not apply the patch to 'example.txt'");
+    expect(files.get("/home/test/moo/active/example.txt")).toBe("alpha\n");
   });
 });
