@@ -51,7 +51,7 @@ export function startMermaidRenderer(root: ParentNode = document): () => void {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ["data-mermaid-source"],
+    attributeFilter: ["data-mermaid-source", "data-mermaid-pending-source"],
   });
 
   const eventTarget = rootEventTarget(root);
@@ -89,75 +89,167 @@ async function renderPendingMermaidDiagrams(root: ParentNode) {
 function preserveRenderedMermaidDiagrams(mutation: MutationRecord) {
   if (!mutation.removedNodes.length || !mutation.addedNodes.length) return;
 
-  const reusable = new Map<string, HTMLElement[]>();
+  const reusable: HTMLElement[] = [];
   for (const node of mutation.removedNodes) {
     for (const element of renderedMermaidElements(node)) {
-      const source = element.dataset.mermaidSource;
-      if (!source) continue;
-      let elements = reusable.get(source);
-      if (!elements) {
-        elements = [];
-        reusable.set(source, elements);
-      }
-      elements.push(element);
+      if (element.dataset.mermaidSource) reusable.push(element);
     }
   }
-  if (!reusable.size) return;
+  if (!reusable.length) return;
 
   for (const node of mutation.addedNodes) {
-    for (const element of pendingMermaidElements(node)) {
+    for (const element of unrenderedMermaidElements(node)) {
       const source = element.dataset.mermaidSource;
       if (!source) continue;
-      const replacement = reusable.get(source)?.shift();
-      if (!replacement) continue;
-      element.replaceWith(replacement);
+
+      const exact = takeExactMermaidReplacement(reusable, source);
+      if (exact) {
+        restoreMermaidPlaceholderState(exact, element);
+        element.replaceWith(exact);
+        continue;
+      }
+
+      const previous = takePreviousMermaidReplacement(reusable, source);
+      if (!previous) continue;
+      queueMermaidSourceUpdate(previous, element);
+      element.replaceWith(previous);
     }
+  }
+}
+
+function takeExactMermaidReplacement(reusable: HTMLElement[], source: string): HTMLElement | null {
+  return takeMermaidReplacement(reusable, reusable.findIndex((element) => element.dataset.mermaidSource === source));
+}
+
+function takePreviousMermaidReplacement(reusable: HTMLElement[], source: string): HTMLElement | null {
+  let bestIndex = -1;
+  let bestLength = -1;
+  for (let i = 0; i < reusable.length; i++) {
+    const candidate = reusable[i]!;
+    if (candidate.dataset.mermaidError) continue;
+    const previousSource = candidate.dataset.mermaidSource || "";
+    if (!isPreviousMermaidSource(previousSource, source)) continue;
+    if (previousSource.length > bestLength) {
+      bestIndex = i;
+      bestLength = previousSource.length;
+    }
+  }
+  return takeMermaidReplacement(reusable, bestIndex);
+}
+
+function takeMermaidReplacement(reusable: HTMLElement[], index: number): HTMLElement | null {
+  if (index < 0) return null;
+  const [replacement] = reusable.splice(index, 1);
+  return replacement ?? null;
+}
+
+function restoreMermaidPlaceholderState(replacement: HTMLElement, placeholder: HTMLElement) {
+  delete replacement.dataset.mermaidPendingSource;
+  delete replacement.dataset.mermaidPendingPartial;
+  delete replacement.dataset.mermaidPendingError;
+  syncPartialMermaidState(replacement, placeholder.dataset.mermaidPartial === "true");
+}
+
+function queueMermaidSourceUpdate(replacement: HTMLElement, placeholder: HTMLElement) {
+  replacement.dataset.mermaidPendingSource = placeholder.dataset.mermaidSource || "";
+  delete replacement.dataset.mermaidPendingError;
+  if (placeholder.dataset.mermaidPartial === "true") {
+    replacement.dataset.mermaidPendingPartial = "true";
+  } else {
+    delete replacement.dataset.mermaidPendingPartial;
   }
 }
 
 function renderedMermaidElements(root: ParentNode | Node): HTMLElement[] {
-  if (root instanceof HTMLElement && root.matches(".mermaid[data-mermaid-source][data-mermaid-rendered]")) {
-    return [root];
-  }
-  if (root instanceof Element || root instanceof Document || root instanceof DocumentFragment) {
-    return Array.from(root.querySelectorAll<HTMLElement>(".mermaid[data-mermaid-source][data-mermaid-rendered]"));
-  }
-  return [];
+  return mermaidElements(root, ".mermaid[data-mermaid-source][data-mermaid-rendered]");
 }
 
 function pendingMermaidElements(root: ParentNode | Node): HTMLElement[] {
-  if (root instanceof HTMLElement && root.matches(".mermaid[data-mermaid-source]:not([data-mermaid-rendered]):not([data-mermaid-rendering])")) {
-    return [root];
-  }
+  return mermaidElements(root, [
+    ".mermaid[data-mermaid-source]:not([data-mermaid-rendered]):not([data-mermaid-rendering])",
+    ".mermaid[data-mermaid-rendered][data-mermaid-pending-source]:not([data-mermaid-rendering])",
+  ].join(","));
+}
+
+function unrenderedMermaidElements(root: ParentNode | Node): HTMLElement[] {
+  return mermaidElements(root, ".mermaid[data-mermaid-source]:not([data-mermaid-rendered]):not([data-mermaid-rendering])");
+}
+
+function mermaidElements(root: ParentNode | Node, selector: string): HTMLElement[] {
+  if (root instanceof HTMLElement && root.matches(selector)) return [root];
   if (root instanceof Element || root instanceof Document || root instanceof DocumentFragment) {
-    return Array.from(root.querySelectorAll<HTMLElement>(".mermaid[data-mermaid-source]:not([data-mermaid-rendered]):not([data-mermaid-rendering])"));
+    return Array.from(root.querySelectorAll<HTMLElement>(selector));
   }
   return [];
 }
 
 async function renderMermaidDiagram(element: HTMLElement) {
-  const source = element.dataset.mermaidSource || "";
+  const pendingSource = element.dataset.mermaidPendingSource;
+  const source = pendingSource ?? element.dataset.mermaidSource ?? "";
   if (!source.trim()) return;
+  const partial = pendingSource === undefined
+    ? element.dataset.mermaidPartial === "true"
+    : element.dataset.mermaidPendingPartial === "true";
   const id = "moo-mermaid-" + (++nextDiagramId);
   element.dataset.mermaidRendering = "true";
   try {
+    if (partial) await mermaid.parse(source, { suppressErrors: false });
     const { svg, bindFunctions } = await mermaid.render(id, source);
     element.innerHTML = svg;
     bindFunctions?.(element);
+    element.dataset.mermaidSource = source;
     element.dataset.mermaidRendered = "true";
+    delete element.dataset.mermaidError;
+    delete element.dataset.mermaidPendingSource;
+    delete element.dataset.mermaidPendingPartial;
+    delete element.dataset.mermaidPendingError;
+    syncPartialMermaidState(element, partial);
     element.classList.add("mermaid-zoomable");
     element.tabIndex = 0;
     element.setAttribute("role", "button");
     element.setAttribute("aria-label", "Open Mermaid diagram in zoomable lightbox");
     element.title = "Open diagram";
   } catch (error) {
-    element.textContent = source;
-    element.dataset.mermaidError = errorMessage(error);
-    element.dataset.mermaidRendered = "true";
-    element.setAttribute("role", "img");
-    element.setAttribute("aria-label", "Mermaid diagram failed to render");
+    if (partial) {
+      deferPartialMermaidUpdate(element, source, error);
+      return;
+    }
+    renderMermaidError(element, source, error);
   } finally {
     delete element.dataset.mermaidRendering;
+  }
+}
+
+function deferPartialMermaidUpdate(element: HTMLElement, source: string, error: unknown) {
+  element.dataset.mermaidPendingError = errorMessage(error);
+  if (!element.dataset.mermaidRendered) element.textContent = source;
+}
+
+function renderMermaidError(element: HTMLElement, source: string, error: unknown) {
+  element.textContent = source;
+  element.dataset.mermaidSource = source;
+  element.dataset.mermaidError = errorMessage(error);
+  element.dataset.mermaidRendered = "true";
+  delete element.dataset.mermaidPendingSource;
+  delete element.dataset.mermaidPendingPartial;
+  delete element.dataset.mermaidPendingError;
+  syncPartialMermaidState(element, false);
+  element.classList.remove("mermaid-zoomable");
+  element.removeAttribute("tabindex");
+  element.removeAttribute("title");
+  element.setAttribute("role", "img");
+  element.setAttribute("aria-label", "Mermaid diagram failed to render");
+}
+
+function isPreviousMermaidSource(previous: string, next: string): boolean {
+  return previous.length > 0 && previous.length < next.length && next.startsWith(previous);
+}
+
+function syncPartialMermaidState(element: HTMLElement, partial: boolean) {
+  if (partial) {
+    element.dataset.mermaidPartial = "true";
+  } else {
+    delete element.dataset.mermaidPartial;
   }
 }
 

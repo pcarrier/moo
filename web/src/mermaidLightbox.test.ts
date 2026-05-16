@@ -41,3 +41,14 @@ describe("mermaid lightbox gestures", () => {
     expect(mermaid).toContain("if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);");
   });
 });
+
+
+describe("mermaid streaming updates", () => {
+  test("keeps rendered diagrams while partial updates are pending", () => {
+    expect(mermaid).toContain('data-mermaid-pending-source');
+    expect(mermaid).toContain('if (partial) await mermaid.parse(source, { suppressErrors: false });');
+    expect(mermaid).toContain('deferPartialMermaidUpdate(element, source, error);');
+    expect(mermaid).toContain('queueMermaidSourceUpdate(previous, element);');
+    expect(mermaid).toContain('delete element.dataset.mermaidPendingSource;');
+  });
+});

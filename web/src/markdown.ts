@@ -50,18 +50,42 @@ function createSafeRenderer(): Renderer {
   return next;
 }
 
-function renderCodeBlock({ text, lang, escaped }: { text: string; lang?: string; escaped?: boolean }): string {
+function renderCodeBlock({ text, lang, escaped, raw }: { text: string; lang?: string; escaped?: boolean; raw?: string }): string {
   const rawLanguage = typeof lang === "string" ? lang.trim() : "";
   const language = rawLanguage.split(/\s+/)[0] || "";
   const displayLanguage = displayCodeLanguage(language);
   const className = displayLanguage ? ' class="language-' + escapeHtmlAttribute(displayLanguage) + '"' : "";
   const code = escaped ? unescapeMarkedCode(text) : text;
   if (displayLanguage === "mermaid") {
+    const partialAttribute = isUnclosedFencedCodeBlock(raw) ? ' data-mermaid-partial="true"' : "";
     return '<div class="mermaid" data-mermaid-source="' +
       escapeHtmlAttribute(code) +
-      '">' + escapeHtml(code) + '</div>\n';
+      '"' + partialAttribute + '>' + escapeHtml(code) + '</div>\n';
   }
   return '<pre><code' + className + '>' + highlightMarkdownCode(code, language) + '</code></pre>\n';
+}
+
+function isUnclosedFencedCodeBlock(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const normalized = raw.replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+  const opening = /^( {0,3})(`{3,}|~{3,})/.exec(lines[0] ?? "");
+  if (!opening) return false;
+
+  const fence = opening[2]!;
+  const marker = fence[0]!;
+  const minLength = fence.length;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    const indent = line.match(/^ */)?.[0].length ?? 0;
+    if (indent > 3) continue;
+    const rest = line.slice(indent);
+    let markerLength = 0;
+    while (rest[markerLength] === marker) markerLength++;
+    if (markerLength < minLength) continue;
+    if (/^[ \t]*$/.test(rest.slice(markerLength))) return false;
+  }
+  return true;
 }
 
 

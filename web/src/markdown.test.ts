@@ -46,6 +46,14 @@ describe("renderUserMessage", () => {
       .toBe("<div class=\"mermaid\" data-mermaid-source=\"graph TD\n  A--&gt;B\">graph TD\n  A--&gt;B</div>\n");
   });
 
+
+  test("marks unclosed mermaid fences as partial while streaming", () => {
+    expect(renderMarkdown("```mermaid\ngraph TD\n  A-->B"))
+      .toBe("<div class=\"mermaid\" data-mermaid-source=\"graph TD\n  A--&gt;B\" data-mermaid-partial=\"true\">graph TD\n  A--&gt;B</div>\n");
+    expect(renderMarkdown("```mermaid\ngraph TD\n  A-->B\n```"))
+      .not.toContain("data-mermaid-partial");
+  });
+
   test("escapes mermaid diagram source until the client renderer runs", () => {
     expect(renderMarkdown("```mermaid\ngraph TD\n  A[<script>]-->B\n```"))
       .toBe(
