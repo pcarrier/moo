@@ -1,7 +1,15 @@
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'pcarrier/moo'
-$BinDir = if ($env:BIN_DIR) { $env:BIN_DIR } else { Join-Path (Join-Path $HOME '.local') 'bin' }
+$BinDir = if ($env:BIN_DIR) {
+  $env:BIN_DIR
+}
+elseif ($env:MOO_PREFIX) {
+  Join-Path $env:MOO_PREFIX 'bin'
+}
+else {
+  Join-Path (Join-Path $HOME '.local') 'bin'
+}
 $TmpDir = $null
 try {
   $Arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {

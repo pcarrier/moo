@@ -10,6 +10,7 @@ mod runtime;
 mod server;
 mod settings;
 mod snapshots;
+mod upgrade;
 mod util;
 mod ws;
 
@@ -63,6 +64,8 @@ enum Cmd {
     Freeze,
     /// Disable tracing in the database. Works even if the server won't start.
     DisableTracing,
+    /// Re-run the canonical installer at this binary's install location.
+    Upgrade,
     /// Physically purge facts whose subject starts with a prefix.
     FactsPurgePrefix {
         store: String,
@@ -118,6 +121,10 @@ fn default_db_path() -> Result<String, String> {
 }
 
 fn real_main(cli: Cli) -> Result<(), String> {
+    if let Cmd::Upgrade = &cli.command {
+        upgrade::run();
+    }
+
     let db_path = cli.db.clone().map(Ok).unwrap_or_else(default_db_path)?;
     if let Cmd::Serve {
         port,

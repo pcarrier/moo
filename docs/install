@@ -2,7 +2,13 @@
 set -eu
 
 repo="pcarrier/moo"
-bin_dir="${BIN_DIR:-$HOME/.local/bin}"
+if [ -n "${BIN_DIR:-}" ]; then
+  bin_dir="$BIN_DIR"
+elif [ -n "${MOO_PREFIX:-}" ]; then
+  bin_dir="$MOO_PREFIX/bin"
+else
+  bin_dir="$HOME/.local/bin"
+fi
 
 uname_s="$(uname -s)"
 uname_m="$(uname -m)"
