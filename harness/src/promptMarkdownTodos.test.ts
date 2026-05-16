@@ -14,7 +14,7 @@ describe("TODO prompt", () => {
 
 describe("filesystem editing prompt", () => {
   test("documents readLines and patch guidance", () => {
-    expect(prompt).toContain("readLines({path:string,ranges:[number,number][],opts?:{numbered?:boolean}})");
+    expect(prompt).toContain("readLines({path:string,ranges:[number,number][],numbered?:boolean})");
     expect(prompt).toContain("1-based inclusive ranges; sorted/collapsed overlaps");
     expect(prompt).toContain("patch({path:string,diff:string})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("delete({path:string})→Promise<{status:string,output?:string|null}>");

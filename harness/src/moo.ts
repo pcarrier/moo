@@ -1246,7 +1246,7 @@ function normalizeLineRanges(ranges: [number, number][]): NormalizedLineRange[] 
   return normalized;
 }
 
-function formatReadLines(text: string, ranges: [number, number][], opts: { numbered?: boolean } = {}): string[] {
+function formatReadLines(text: string, ranges: [number, number][], numbered = false): string[] {
   const normalizedRanges = normalizeLineRanges(ranges);
   if (!normalizedRanges.length) return [];
   const lines = splitReadableLines(text);
@@ -1263,7 +1263,7 @@ function formatReadLines(text: string, ranges: [number, number][], opts: { numbe
     if (previousLineNo + 1 < from) out.push("…");
     for (let lineNo = Math.max(from, previousLineNo + 1); lineNo <= to; lineNo++) {
       const line = lines[lineNo - 1] ?? "";
-      out.push(opts.numbered ? String(lineNo).padStart(width) + ": " + line : line);
+      out.push(numbered ? String(lineNo).padStart(width) + ": " + line : line);
       wroteLine = true;
     }
     previousLineNo = Math.max(previousLineNo, to);
@@ -1376,9 +1376,9 @@ const fs: Moo["fs"] = {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.read", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
-  async readLines({ path, ranges, opts = {} }) {
+  async readLines({ path, ranges, numbered = false }) {
     const content = await fs.read({ path });
-    return await traceObserved("moo.fs.readLines", { path, ranges, numbered: !!opts.numbered }, () => formatReadLines(content, ranges, opts), (value) => ({ lines: value.length }));
+    return await traceObserved("moo.fs.readLines", { path, ranges, numbered: !!numbered }, () => formatReadLines(content, ranges, !!numbered), (value) => ({ lines: value.length }));
   },
   async write({ path, content }) {
     const resolved = await resolveActivePath(path);
@@ -1498,7 +1498,7 @@ const workspace: Moo["workspace"] = {
       root,
       fs: {
         read: ({ path }) => fs.read({ path: resolveWorkspacePath(root, path) }),
-        readLines: ({ path, ranges, opts }) => fs.readLines({ path: resolveWorkspacePath(root, path), ranges, opts }),
+        readLines: ({ path, ranges, numbered }) => fs.readLines({ path: resolveWorkspacePath(root, path), ranges, numbered }),
         write: ({ path, content }) => fs.write({ path: resolveWorkspacePath(root, path), content }),
         list: (args = {}) => fs.list({ path: resolveWorkspacePath(root, args.path ?? ".") }),
         glob: ({ pattern }) => fs.glob({ pattern: resolveWorkspacePath(root, pattern) }),
