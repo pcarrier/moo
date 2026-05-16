@@ -275,11 +275,15 @@ export function isTerminalStepStatus(status: string | undefined): boolean {
   );
 }
 
+export function isRunningTimelineItem(item: TimelineItem): boolean {
+  return item.type === "step" && !isTerminalStepStatus(item.status);
+}
+
 export function isRunningToolTimelineItem(item: TimelineItem): boolean {
   return (
     item.type === "step" &&
     item.kind === "agent:ToolCall" &&
-    !isTerminalStepStatus(item.status)
+    isRunningTimelineItem(item)
   );
 }
 

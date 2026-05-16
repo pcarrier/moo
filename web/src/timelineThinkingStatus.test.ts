@@ -9,11 +9,11 @@ const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 const css = readStylesheetForTest();
 
 describe("timeline thinking status", () => {
-  test("hides standalone Thinking row during running tool calls", () => {
-    expect(timeline).toContain("const hasRunningToolRow = createMemo(() =>");
-    expect(timeline).toContain("visibleTimeline().some(isRunningToolTimelineItem)");
+  test("hides standalone Thinking row during running timeline rows", () => {
+    expect(timeline).toContain("const hasRunningTimelineRow = createMemo(() =>");
+    expect(timeline).toContain("visibleTimeline().some(isRunningTimelineItem)");
     expect(timeline).toContain("const showStandaloneThinking = () =>");
-    expect(timeline).toContain("!hasRunningToolRow()");
+    expect(timeline).toContain("!hasRunningTimelineRow()");
     expect(timeline).toContain("when={showStandaloneThinking()}");
   });
 
@@ -82,9 +82,11 @@ describe("timeline thinking status", () => {
     );
     expect(timeline).toContain('if (item.text.trim()) return "Streaming…";');
     expect(timeline).toContain('if (item.reasoningContent?.trim()) return "Streaming…";');
-    expect(timeline).toContain(
-      "stepMetaLabel(props.item, props.bag.compacting())",
-    );
+    expect(timeline).toContain(`stepMetaLabel(
+              props.item,
+              props.bag.compacting(),
+              props.bag.thinking() || props.bag.compacting(),
+            )`);
     expect(timeline).toContain("return activeReplyStatusLabel(item, compacting);");
   });
 
@@ -126,6 +128,23 @@ describe("timeline thinking status", () => {
   align-self: stretch;`);
   });
 
+  test("settles stale reply thinking UI after the active run ends", () => {
+    expect(timeline).toContain("function stepMetaLabel(");
+    expect(timeline).toContain("active: boolean,");
+    expect(timeline).toContain('item.kind === "agent:Reply" && active && !isTerminalStepStatus(item.status)');
+    expect(timeline).toContain('(props.streaming ?? true) &&');
+    expect(timeline).toContain(
+      'props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)',
+    );
+    expect(timeline).toContain('<ThoughtBox item={entry.item} streaming={false} />');
+    expect(state).toContain("function clearActiveChatRuntime(id: string)");
+    expect(state).toContain("clearActiveChatRuntime(id);");
+    expect(state).toContain("function settleRunningTimelineRows(id: string)");
+    expect(state).toContain('item.status !== "agent:Running"');
+    expect(state).toContain('return { ...item, status: "agent:Done" } as TimelineItem;');
+    expect(state).toContain("settleRunningTimelineRows(ev.chatId);");
+  });
+
   test("renders streamed model thinking as separate thought boxes", () => {
     const utils = readFileSync(new URL("./timeline/utils.ts", import.meta.url), "utf8");
 
@@ -134,14 +153,14 @@ describe("timeline thinking status", () => {
     expect(utils).toContain('previousThought?.kind === "thought"');
     expect(utils).toContain("if (hasReplyReasoning(item)) keys.push(timelineThoughtKey(item));");
     expect(timeline).toContain('entry.kind === "thought" ? (');
-    expect(timeline).toContain('<ThoughtBox item={entry.item} />');
+    expect(timeline).toContain('<ThoughtBox item={entry.item} streaming={bag.thinking()} />');
     expect(timeline).toContain('class="step reply-thinking"');
     expect(timeline).toContain('data-timeline-key={props.timelineKey}');
     expect(timeline).toContain("const html = () => renderMarkdown(text());");
     expect(timeline).toContain('class="body markdown reply-thinking-body"');
     expect(timeline).toContain('label="streaming thinking"');
     expect(timeline).toContain("const thoughtStreaming = () =>");
-    expect(timeline).toContain('props.item.reasoningStreaming ?? props.item.status !== "agent:Done"');
+    expect(timeline).toContain('props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)');
     expect(timeline).toContain('props.item.kind !== "agent:Reply" ||');
     expect(timeline).toContain("draft.reasoningContent");
     expect(timeline).toContain("bag.draftReply()?.reasoningContent");

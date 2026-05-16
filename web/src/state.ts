@@ -258,6 +258,36 @@ export function createState() {
   const [chatModel, setChatModel] = createSignal<ChatModelInfo | null>(null);
   const [modelMru, setModelMru] = createSignal<string[]>(readModelMru());
   const [tokens, setTokens] = createSignal<TokenProgressValue | null>(null);
+  const tokensByChat = new Map<string, TokenProgressValue>();
+
+  function currentTokensForChat(id: string): TokenProgressValue | null {
+    return tokensByChat.get(id) ?? null;
+  }
+
+  function applyTokensForChat(
+    id: string,
+    next: TokenProgressValue,
+    opts: { active?: boolean; reset?: boolean } = {},
+  ) {
+    const merged = mergeTokenProgress(
+      currentTokensForChat(id),
+      next,
+      opts.active === true,
+      { reset: opts.reset === true },
+    );
+    tokensByChat.set(id, merged);
+    if (chatId() === id) setTokens(merged);
+  }
+
+  function showTokensForChat(id: string | null) {
+    setTokens(id ? currentTokensForChat(id) : null);
+  }
+
+  function forgetTokensForChat(id: string) {
+    tokensByChat.delete(id);
+    if (chatId() === id) showTokensForChat(id);
+  }
+
   const [todos, setTodos] = createSignal<AgentTodo[]>([]);
   const todosByChat = new Map<string, AgentTodo[]>();
 
@@ -683,6 +713,7 @@ export function createState() {
       if (matchingReplyLanded || terminalNonReplyLanded) {
         endedDraftReplyIds.delete(currentDraft.draftId);
         setDraftReply(null);
+        clearActiveChatRuntime(id);
       }
     }
 
@@ -695,13 +726,9 @@ export function createState() {
     setTotalTurns(value.totalTurns);
     setTotalSteps(value.totalSteps);
     setTotalCodeCalls(value.totalCodeCalls ?? totalCodeCalls());
-    setTokens((cur) =>
-      mergeTokenProgress(
-        cur,
-        value.tokens,
-        id === chatId() && activeChats().has(id),
-      ),
-    );
+    applyTokensForChat(id, value.tokens, {
+      active: id === chatId() && activeChats().has(id),
+    });
     applyTodosForChat(id, Array.isArray(value.todos) ? value.todos : []);
     setLoadedChatId(id);
   }
@@ -917,6 +944,15 @@ export function createState() {
     if (chatId() === id) showTodosForChat(id);
   }
 
+  function forgetRightSidebarForChat(id: string) {
+    setRightSidebarByChat((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, id)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
   function invalidateChatCache(
     id: string,
     parts: { describe?: boolean; model?: boolean; ui?: boolean },
@@ -1007,6 +1043,13 @@ export function createState() {
     const id = chatId();
     return id ? (activeChatStartedAt().get(id) ?? null) : null;
   };
+  function clearActiveChatRuntime(id: string) {
+    deleteFromSet(setActiveChats, activeChats, id);
+    deleteFromSet(setCompactingChats, compactingChats, id);
+    deleteChatStartedAt(id);
+    deleteFromSet(setDispatchingChats, dispatchingChats, id);
+    deleteFromSet(setInterruptingChats, interruptingChats, id);
+  }
   function setChatStartedAt(id: string, at: unknown) {
     const ms = Number(at);
     const startedAt = Number.isFinite(ms) && ms > 0 ? ms : Date.now();
@@ -2555,8 +2598,7 @@ export function createState() {
   }
 
   function showNewChat() {
-    setOpenUiId(null);
-    setOpenUiInstanceId(null);
+    resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
     setView("new");
     setFocusedSubject(null);
     setFocusedGraph(null);
@@ -2671,11 +2713,10 @@ export function createState() {
   const popstateHandler = () => {
     const loc = parseLocation();
     if (loc.view === "new") {
+      resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
       setView("new");
       setFocusedSubject(null);
       setFocusedGraph(null);
-      setOpenUiId(null);
-      setOpenUiInstanceId(null);
     } else if (loc.view === "facts") {
       setView("facts");
       setFocusedSubject(loc.subject);
@@ -2737,22 +2778,7 @@ export function createState() {
       if (target && target !== chatId()) {
         void selectChat(target, true);
       } else if (!target) {
-        setChatId(null);
-        showTodosForChat(null);
-        setDraftReply(null);
-        setTimeline([]);
-        setTrail([]);
-        setTimelineLimit(INITIAL_TIMELINE_LIMIT);
-        setHiddenTimelineItems(0);
-        setTotalCodeCalls(0);
-        setLoadedChatId(null);
-        setTotalFacts(0);
-        setTotalTurns(0);
-        setTotalSteps(0);
-        setTokens(null);
-        setChatModel(null);
-        setChatUiApps([]);
-        setUiInstances([]);
+        resetSelectedChatViewState({ clearChatId: true, clearWip: true });
         replaceUrl();
       } else {
         const cached = target ? chatCache.get(target)?.ui : null;
@@ -3027,6 +3053,24 @@ export function createState() {
 
   function compactTimelineRows(items: TimelineItem[]): TimelineItem[] {
     return compactTimelineRowsWithOptions(items, timelineRowCompactionOptions());
+  }
+
+  function settleRunningTimelineRows(id: string) {
+    if (chatId() !== id) return;
+    setTimeline((items) => {
+      let changed = false;
+      const next = items.map((item) => {
+        if (
+          item.type !== "step" ||
+          item.status !== "agent:Running" ||
+          item.kind === "agent:UserInput"
+        )
+          return item;
+        changed = true;
+        return { ...item, status: "agent:Done" } as TimelineItem;
+      });
+      return changed ? compactTimelineRows(next) : items;
+    });
   }
 
   function mergeTimelineUpdateRows(
@@ -3375,6 +3419,7 @@ export function createState() {
     setOpenUiId(resolved.uiId);
     if (resolved.chatId && resolved.chatId !== chatId()) {
       setChatId(resolved.chatId);
+      showTokensForChat(resolved.chatId);
       showTodosForChat(resolved.chatId);
       setDraftReply(null);
       forgetServerTimelineWatermark(resolved.chatId);
@@ -3399,7 +3444,7 @@ export function createState() {
         (restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0,
       );
       setTotalCodeCalls(restored ? totalCodeCalls() : 0);
-      if (!restored) setTokens(null);
+      if (!restored) showTokensForChat(resolved.chatId);
       if (!chatCache.get(resolved.chatId)?.model) setChatModel(null);
       if (!chatCache.get(resolved.chatId)?.ui) {
         setChatUiApps([]);
@@ -3424,6 +3469,7 @@ export function createState() {
     opts?: { hydrate?: boolean },
   ) {
     setChatId(id);
+    showTokensForChat(id);
     showTodosForChat(id);
     setDraftReply(null);
     forgetServerTimelineWatermark(id);
@@ -3461,7 +3507,7 @@ export function createState() {
       (restored ? totalSteps() : undefined) ?? summary?.totalSteps ?? 0,
     );
     setTotalCodeCalls(restored ? totalCodeCalls() : 0);
-    if (!restored) setTokens(null);
+    if (!restored) showTokensForChat(id);
     if (!chatCache.get(id)?.model) setChatModel(null);
     if (!chatCache.get(id)?.ui) {
       setChatUiApps([]);
@@ -3585,6 +3631,10 @@ export function createState() {
     // path normalization, or branch checks. Pick the ID client-side, render the
     // empty chat immediately, then ask the backend to create that exact chat.
     const requestedChatId = optimisticChatId();
+    forgetChatCache(requestedChatId);
+    forgetTokensForChat(requestedChatId);
+    forgetTodosForChat(requestedChatId);
+    forgetRightSidebarForChat(requestedChatId);
     const now = Date.now();
     const summary: ChatSummary = {
       chatId: requestedChatId,
@@ -3630,8 +3680,7 @@ export function createState() {
           const fallback = chats().find((c) => c.chatId !== requestedChatId);
           if (fallback) void selectChat(fallback.chatId);
           else {
-            setChatId(null);
-            showTodosForChat(null);
+            resetSelectedChatViewState({ clearChatId: true, clearWip: true });
           }
         }
         return false;
@@ -3656,8 +3705,24 @@ export function createState() {
 
     if (opts?.select === false) {
       setChatId(requestedChatId);
+      showTokensForChat(requestedChatId);
       showTodosForChat(requestedChatId);
       setDraftReply(null);
+      setTimeline([]);
+      setTrail([]);
+      setTimelineLimit(INITIAL_TIMELINE_LIMIT);
+      setHiddenTimelineItems(0);
+      setCompactions(null);
+      setCompactionsLoading(false);
+      setTimelineRefreshing(false);
+      setTotalFacts(0);
+      setTotalTurns(0);
+      setTotalSteps(0);
+      setTotalCodeCalls(0);
+      setLoadedChatId(requestedChatId);
+      setChatModel(null);
+      setChatUiApps([]);
+      setUiInstances([]);
       loadWipText(requestedChatId);
     } else {
       await selectChat(requestedChatId, false, { hydrate: false });
@@ -3683,7 +3748,9 @@ export function createState() {
     // waiting for the backend, which pre-interrupts any running driver.
     setChats(nextChats);
     forgetChatCache(id);
+    forgetTokensForChat(id);
     forgetTodosForChat(id);
+    forgetRightSidebarForChat(id);
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setCompactingChats, compactingChats, id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
@@ -3695,29 +3762,9 @@ export function createState() {
       if (nextChats.length > 0) {
         void selectChat(nextChats[0]!.chatId);
       } else {
-        setChatId(null);
-        showTodosForChat(null);
-        setDraftReply(null);
-        setOpenUiId(null);
-        setOpenUiInstanceId(null);
+        resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
         setView("chat");
         setFocusedSubject(null);
-        setTimeline([]);
-        setTrail([]);
-        setTimelineLimit(INITIAL_TIMELINE_LIMIT);
-        setHiddenTimelineItems(0);
-        setCompactions(null);
-        setCompactionsLoading(false);
-        setTotalFacts(0);
-        setTotalTurns(0);
-        setTotalSteps(0);
-        setTotalCodeCalls(0);
-        setTokens(null);
-        setLoadedChatId(null);
-        setChatModel(null);
-        setChatUiApps([]);
-        setUiInstances([]);
-        setWipText("");
         replaceUrl();
       }
     }
@@ -3946,6 +3993,38 @@ export function createState() {
   const wipKey = (id: string) => `moo.wip.${id}`;
   function loadWipText(id: string) {
     setWipText(localStorage.getItem(wipKey(id)) ?? "");
+  }
+
+  function resetSelectedChatViewState(opts: {
+    clearChatId?: boolean;
+    clearUi?: boolean;
+    clearWip?: boolean;
+  } = {}) {
+    if (opts.clearChatId) setChatId(null);
+    showTokensForChat(null);
+    showTodosForChat(null);
+    setDraftReply(null);
+    setTimeline([]);
+    setTrail([]);
+    setTimelineLimit(INITIAL_TIMELINE_LIMIT);
+    setHiddenTimelineItems(0);
+    setOlderTimelineLoading(false);
+    setCompactions(null);
+    setCompactionsLoading(false);
+    setTimelineRefreshing(false);
+    setTotalFacts(0);
+    setTotalTurns(0);
+    setTotalSteps(0);
+    setTotalCodeCalls(0);
+    setLoadedChatId(null);
+    setChatModel(null);
+    setChatUiApps([]);
+    setUiInstances([]);
+    if (opts.clearUi) {
+      setOpenUiId(null);
+      setOpenUiInstanceId(null);
+    }
+    if (opts.clearWip) setWipText("");
   }
   createEffect(() => {
     const id = chatId();
@@ -4971,40 +5050,34 @@ export function createState() {
     }
 
     if (ev.kind === "tokens") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid) {
-        const used = Number(ev.used);
-        if (Number.isFinite(used)) {
-          setTokens((cur) => {
-            const budget = Number.isFinite(Number(ev.budget))
-              ? Number(ev.budget)
-              : Number(cur?.budget ?? 0);
-            const threshold = Number.isFinite(Number(ev.threshold))
-              ? Number(ev.threshold)
-              : Number(cur?.threshold ?? 0);
-            const explicitFraction = Number(ev.fraction);
-            const next: TokenProgressValue = {
-              used,
-              budget,
-              threshold,
-              fraction: Number.isFinite(explicitFraction)
-                ? explicitFraction
-                : budget > 0
-                  ? used / budget
-                  : 0,
-            };
-            const source =
-              typeof ev.source === "string" ? ev.source : cur?.source;
-            if (source) next.source = source;
-            if (typeof ev.estimated === "boolean")
-              next.estimated = ev.estimated;
-            else if (typeof cur?.estimated === "boolean")
-              next.estimated = cur.estimated;
-            return mergeTokenProgress(cur, next, activeChats().has(cid), {
-              reset: ev.reset === true,
-            });
-          });
-        }
+      const used = Number(ev.used);
+      if (Number.isFinite(used)) {
+        const cur = currentTokensForChat(ev.chatId);
+        const budget = Number.isFinite(Number(ev.budget))
+          ? Number(ev.budget)
+          : Number(cur?.budget ?? 0);
+        const threshold = Number.isFinite(Number(ev.threshold))
+          ? Number(ev.threshold)
+          : Number(cur?.threshold ?? 0);
+        const explicitFraction = Number(ev.fraction);
+        const next: TokenProgressValue = {
+          used,
+          budget,
+          threshold,
+          fraction: Number.isFinite(explicitFraction)
+            ? explicitFraction
+            : budget > 0
+              ? used / budget
+              : 0,
+        };
+        const source = typeof ev.source === "string" ? ev.source : cur?.source;
+        if (source) next.source = source;
+        if (typeof ev.estimated === "boolean") next.estimated = ev.estimated;
+        else if (typeof cur?.estimated === "boolean") next.estimated = cur.estimated;
+        applyTokensForChat(ev.chatId, next, {
+          active: activeChats().has(ev.chatId),
+          reset: ev.reset === true,
+        });
       }
       return;
     }
@@ -5123,11 +5196,8 @@ export function createState() {
       return;
     }
     if (ev.kind === "step-end") {
-      deleteFromSet(setActiveChats, activeChats, ev.chatId);
-      deleteFromSet(setCompactingChats, compactingChats, ev.chatId);
-      deleteChatStartedAt(ev.chatId);
-      deleteFromSet(setDispatchingChats, dispatchingChats, ev.chatId);
-      deleteFromSet(setInterruptingChats, interruptingChats, ev.chatId);
+      clearActiveChatRuntime(ev.chatId);
+      settleRunningTimelineRows(ev.chatId);
       updateChatSummary(ev.chatId, {
         status: "agent:Done",
         runningStartedAt: null,
@@ -5470,10 +5540,11 @@ export function createState() {
         loc.view === "settings"
       ) {
         const hydrateFirstChat = () => {
-          if (chatId()) return;
+          if (loc.view === "new" || chatId()) return;
           const list = chats();
           if (list.length === 0) return;
           setChatId(list[0]!.chatId);
+          showTokensForChat(list[0]!.chatId);
           showTodosForChat(list[0]!.chatId);
           loadWipText(list[0]!.chatId);
         };
@@ -5490,7 +5561,10 @@ export function createState() {
           if (pending().length > 0) drain();
           return;
         }
-        if (loc.view === "new") setView("new");
+        if (loc.view === "new") {
+          resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
+          setView("new");
+        }
         else if (loc.view === "apps") setView("apps");
         else if (loc.view === "mcp") setView("mcp");
         else if (loc.view === "skills") {

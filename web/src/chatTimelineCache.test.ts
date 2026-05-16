@@ -81,4 +81,35 @@ describe("chat timeline LRU cache", () => {
     );
   });
 
+  test("scopes live token progress per chat", () => {
+    expect(stateSource).toContain("const tokensByChat = new Map<string, TokenProgressValue>();");
+    expect(stateSource).toContain("function showTokensForChat(id: string | null)");
+    expect(stateSource).toContain("function forgetTokensForChat(id: string)");
+    expect(stateSource).toContain("applyTokensForChat(id, value.tokens, {");
+
+    const tokenEventStart = stateSource.indexOf('if (ev.kind === "tokens")');
+    expect(tokenEventStart).toBeGreaterThanOrEqual(0);
+    const tokenEventEnd = stateSource.indexOf('if (ev.kind === "reasoning-draft")', tokenEventStart);
+    const tokenEventBlock = stateSource.slice(tokenEventStart, tokenEventEnd);
+    expect(tokenEventBlock).toContain("const cur = currentTokensForChat(ev.chatId);");
+    expect(tokenEventBlock).toContain("applyTokensForChat(ev.chatId, next, {");
+    expect(tokenEventBlock).toContain("active: activeChats().has(ev.chatId)");
+    expect(tokenEventBlock).not.toContain("setTokens((cur)");
+  });
+
+  test("new chats start with empty token and sidebar state", () => {
+    const createStart = stateSource.indexOf("async function createChat(");
+    expect(createStart).toBeGreaterThanOrEqual(0);
+    const createEnd = stateSource.indexOf("async function removeChat", createStart);
+    const createBlock = stateSource.slice(createStart, createEnd);
+    expect(createBlock).toContain("forgetChatCache(requestedChatId);");
+    expect(createBlock).toContain("forgetTokensForChat(requestedChatId);");
+    expect(createBlock).toContain("forgetTodosForChat(requestedChatId);");
+    expect(createBlock).toContain("forgetRightSidebarForChat(requestedChatId);");
+    expect(createBlock).toContain("showTokensForChat(requestedChatId);");
+    expect(createBlock).toContain("showTodosForChat(requestedChatId);");
+    expect(createBlock).toContain("setChatUiApps([]);");
+    expect(createBlock).toContain("setUiInstances([]);");
+  });
+
 });

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { readStylesheetForTest } from "./styleTestUtils.test.ts";
 
 const css = readStylesheetForTest();
+const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 
 function cssBlockAfter(selector: string) {
   const start = css.indexOf(selector);
@@ -25,5 +27,13 @@ describe("right sidebar layout", () => {
     expect(
       cssBlockAfter("#app.collapsed.repo-file-open.right-sidebar-maximized"),
     ).toContain("grid-template-columns: 0 0 minmax(0, 1fr);");
+  });
+
+  test("does not carry chat sidebar tabs into new chats", () => {
+    expect(state).toContain("function forgetRightSidebarForChat(id: string)");
+    expect(state).toContain("forgetRightSidebarForChat(requestedChatId);");
+    expect(state).toContain("function resetSelectedChatViewState(opts:");
+    expect(state).toContain("setOpenUiId(null);");
+    expect(state).toContain("setOpenUiInstanceId(null);");
   });
 });

@@ -156,7 +156,7 @@ describe("timeline TODO UI", () => {
     expect(selectStart).toBeGreaterThanOrEqual(0);
     const selectEnd = state.indexOf("function olderTimelineLoadCount", selectStart);
     const selectBlock = state.slice(selectStart, selectEnd);
-    expect(selectBlock).toContain("setChatId(id);\n    showTodosForChat(id);");
+    expect(selectBlock).toContain("setChatId(id);\n    showTokensForChat(id);\n    showTodosForChat(id);");
 
     const todoDiffStart = state.indexOf('if (ev.kind === "todo-diff")');
     expect(todoDiffStart).toBeGreaterThanOrEqual(0);
@@ -171,5 +171,16 @@ describe("timeline TODO UI", () => {
     expect(todoDiffBlock).toContain("if (!Array.isArray(ev.changes) || ev.changes.length === 0) return;");
     expect(todoDiffBlock).toContain("if (!Array.isArray(ev.changes) || ev.changes.length === 0) return;");
     expect(todoDiffBlock).not.toContain("setTodos(ev.todos)");
+  });
+
+  test("clears selected-chat TODOs on the new-chat route", () => {
+    expect(state).toContain("function resetSelectedChatViewState(opts:");
+    expect(state).toContain("showTodosForChat(null);");
+    expect(state).toContain('resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });');
+    const startupStart = state.indexOf("const hydrateFirstChat = () =>");
+    expect(startupStart).toBeGreaterThanOrEqual(0);
+    const startupEnd = state.indexOf("void chatsLoad", startupStart);
+    const startupBlock = state.slice(startupStart, startupEnd);
+    expect(startupBlock).toContain('if (loc.view === "new" || chatId()) return;');
   });
 });

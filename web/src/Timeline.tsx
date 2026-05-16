@@ -40,7 +40,7 @@ import {
   formatThoughtDuration,
   insertTimelineItemChronologically,
   isCancelledTimelineItem,
-  isRunningToolTimelineItem,
+  isRunningTimelineItem,
   isTerminalStepStatus,
   latestTerminalReplySettlesActiveTurn,
   replyDraftKey,
@@ -804,8 +804,8 @@ export function Timeline(props: {
       renderEntryCache,
     ),
   );
-  const hasRunningToolRow = createMemo(() =>
-    visibleTimeline().some(isRunningToolTimelineItem),
+  const hasRunningTimelineRow = createMemo(() =>
+    visibleTimeline().some(isRunningTimelineItem),
   );
   const activeTurnReplySettled = createMemo(() =>
     latestTerminalReplySettlesActiveTurn(
@@ -822,7 +822,7 @@ export function Timeline(props: {
     (bag.thinking() || bag.compacting()) &&
     !activeTurnReplySettled() &&
     !hasStreamingReply() &&
-    !hasRunningToolRow();
+    !hasRunningTimelineRow();
   const currentChat = () => bag.currentChatSummary();
   const emptyTitle = () =>
     (
@@ -941,7 +941,7 @@ export function Timeline(props: {
                         onOpenRunTSBlock={openRunTSBlockLightbox}
                       />
                     ) : entry.kind === "thought" ? (
-                      <ThoughtBox item={entry.item} />
+                      <ThoughtBox item={entry.item} streaming={bag.thinking()} />
                     ) : (
                       <Item
                         item={entry.item}
@@ -2153,7 +2153,7 @@ function DismissedBlock(props: {
               </>
             ) : (
               <>
-                <ThoughtBox item={entry.item} />
+                <ThoughtBox item={entry.item} streaming={false} />
                 <Item
                   item={entry.item}
                   bag={props.bag}
@@ -2453,8 +2453,12 @@ function showStandardStepMeta(item: StepItem): boolean {
   return item.kind !== "agent:RunTS" && item.kind !== "agent:RunJS" && item.kind !== "agent:Subagent";
 }
 
-function stepMetaLabel(item: StepItem, compacting: boolean): string {
-  if (item.kind === "agent:Reply" && !isTerminalStepStatus(item.status)) {
+function stepMetaLabel(
+  item: StepItem,
+  compacting: boolean,
+  active: boolean,
+): string {
+  if (item.kind === "agent:Reply" && active && !isTerminalStepStatus(item.status)) {
     return activeReplyStatusLabel(item, compacting);
   }
   return displayStepKind(item.kind);
@@ -2506,9 +2510,10 @@ function ReasoningBlock(props: {
   );
 }
 
-function ThoughtBox(props: { item: StepItem }) {
+function ThoughtBox(props: { item: StepItem; streaming?: boolean }) {
   const thoughtStreaming = () =>
-    props.item.reasoningStreaming ?? props.item.status !== "agent:Done";
+    (props.streaming ?? true) &&
+    (props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status));
   return (
     <ReasoningBlock
       content={props.item.reasoningContent ?? ""}
@@ -2537,7 +2542,11 @@ function Step(props: {
       <div class={cls()} data-timeline-key={props.timelineKey}>
         <Show when={showStandardMeta()}>
           <div class="meta">
-            {stepMetaLabel(props.item, props.bag.compacting())}
+            {stepMetaLabel(
+              props.item,
+              props.bag.compacting(),
+              props.bag.thinking() || props.bag.compacting(),
+            )}
             {stepMetaSuffix(props.item)}
           </div>
         </Show>
