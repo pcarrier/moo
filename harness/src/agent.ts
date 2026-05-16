@@ -4,7 +4,7 @@ import { finishRunTSTraceRoot, moo, startRunTSTraceRoot, withMooChatContext, wit
 import { compileRunTS } from "./runts";
 import { appendStep } from "./steps";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer, parseArgv, truncate, maybeQuote } from "./lib";
-import { buildCompactionSummaryPromptMessages, buildSystemPrompt, compactionContinuationSystemMessage } from "./prompt";
+import { buildCompactionSummaryPromptMessages, buildSystemPrompt, COMPACTION_CONTINUATION_USER_PROMPT, compactionContinuationSystemMessage } from "./prompt";
 import { formatTodosForPrompt } from "./todos";
 import { modelContextWindow, inferProviderForModelId, modelLongContextUsageKey, modelSupportsVision, normalizeProvider as normalizeProviderName, type ProviderName } from "./llm_models";
 export { compactionRequestTokenLimit, estimateTokens, fitCompactionSummaryMessages } from "./core/tokens";
@@ -1649,14 +1649,22 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
 
   entries.sort((a, b) => a.at - b.at);
 
+  const compactionSummary = compaction.summary && !summaryMayContainDeletedUserInput ? compaction.summary : null;
+  const hasPostCompactionConversation = entries.some((entry) => entry.role !== "system");
   const messages: any[] = [{ role: "system", content: await buildSystemPrompt(chatId) }];
-  if (compaction.summary && !summaryMayContainDeletedUserInput) {
+  if (compactionSummary) {
     messages.push({
       role: "system",
-      content: compactionContinuationSystemMessage(compaction.summary, await formatTodosForPrompt(chatId)),
+      content: compactionContinuationSystemMessage(compactionSummary, await formatTodosForPrompt(chatId)),
     });
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });
+  // Automatic compaction can leave only system messages in the next request;
+  // add an explicit user turn so providers do not fall back to generic "Continue."
+  // prompts that tend to produce acknowledgement-only replies.
+  if (compactionSummary && !hasPostCompactionConversation) {
+    messages.push({ role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT });
+  }
   return messages;
 }
 

@@ -12,6 +12,9 @@ export const COMPACTION_SUMMARY_REQUEST_PROMPT =
 export const COMPACTION_CONTINUATION_INSTRUCTION =
   "Resume after compaction. Summary = prior state. First reply: act. Execute `Next action:` or infer next concrete step. Do not wait, acknowledge, or say ready. If done, report result. Do not mention compaction unless asked.";
 
+export const COMPACTION_CONTINUATION_USER_PROMPT =
+  "Act on the `Next action:` from the summary now. Use tools if useful. If all work is already complete, report the result. Do not acknowledge or wait.";
+
 export function compactionContinuationSystemMessage(summary: string, currentTodos?: string | null): string {
   const parts = [
     COMPACTION_CONTINUATION_INSTRUCTION,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildLLMMessages } from "../src/agent";
 import { chatRefs } from "../src/lib";
+import { COMPACTION_CONTINUATION_USER_PROMPT } from "../src/prompt";
 
 type Quad = [string, string, string, string];
 
@@ -110,6 +111,20 @@ function putJSON(kind: string, value: unknown): string {
 }
 
 describe("LLM prompt context", () => {
+  test("adds an explicit user continuation immediately after compaction", async () => {
+    installHostOps();
+    const chatId = "prompt-context-compaction-continuation";
+    const c = chatRefs(chatId);
+    const summary = "User asked to fix tests. Next action: run the failing test.";
+    const compactionHash = putJSON("agent:Compaction", { summary, throughAt: 1000, at: 1000 });
+    refs.set(c.compaction, "json:" + JSON.stringify({ hash: compactionHash, summary, throughAt: 1000, at: 1000 }));
+
+    const messages = await buildLLMMessages(chatId);
+
+    expect(messages.at(-1)).toEqual({ role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT });
+    expect(JSON.stringify(messages)).toContain("Next action: run the failing test.");
+  });
+
   test("includes post-compaction RunTS calls and results", async () => {
     installHostOps();
     const chatId = "prompt-context-runts";

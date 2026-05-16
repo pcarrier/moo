@@ -4,6 +4,7 @@ import { DEFAULT_COMPACTION_THRESHOLD_PERCENT } from "../src/commands/llm_auth";
 import {
   buildCompactionSummaryPromptMessages,
   COMPACTION_CONTINUATION_INSTRUCTION,
+  COMPACTION_CONTINUATION_USER_PROMPT,
   compactionContinuationSystemMessage,
 } from "../src/prompt";
 import { isContextLengthExceededError, tokenPressureFromEstimates } from "../src/commands/step";
@@ -45,6 +46,13 @@ describe("compaction prompts", () => {
     expect(message).toContain("Do not wait");
     expect(message).toContain("If done, report result");
     expect(message).toContain("Summary of earlier conversation:\nUser asked to fix tests; patch is pending.");
+  });
+
+  test("continuation user turn forces action instead of readiness", () => {
+    expect(COMPACTION_CONTINUATION_USER_PROMPT).toContain("Act on the `Next action:`");
+    expect(COMPACTION_CONTINUATION_USER_PROMPT).toContain("Use tools");
+    expect(COMPACTION_CONTINUATION_USER_PROMPT).toContain("Do not acknowledge or wait");
+    expect(COMPACTION_CONTINUATION_USER_PROMPT).not.toContain("Ready");
   });
 
   test("summary prompt asks for next action", () => {
@@ -209,6 +217,19 @@ describe("compaction prompts", () => {
     expect(anthropic.system).toContain("stable system");
     expect(anthropic.system).toContain("Current TODO reminders:\n- todo 1: fix tests");
     expect(JSON.stringify(anthropic.messages)).not.toContain("todo 1: fix tests");
+  });
+
+  test("Anthropic uses explicit post-compaction user turn instead of generic Continue", () => {
+    const messages = [
+      { role: "system", content: "stable system" },
+      { role: "system", content: compactionContinuationSystemMessage("Next action: run tests.") },
+      { role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT },
+    ];
+
+    const anthropic = toAnthropicMessages(messages);
+
+    expect(anthropic.messages.at(-1)).toEqual({ role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT });
+    expect(JSON.stringify(anthropic.messages)).not.toContain("Continue.");
   });
 
   test("OpenAI Responses keeps post-compaction TODO reminders in instructions", () => {
