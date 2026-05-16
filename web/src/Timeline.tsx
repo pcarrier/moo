@@ -42,6 +42,7 @@ import {
   isCancelledTimelineItem,
   isRunningToolTimelineItem,
   isTerminalStepStatus,
+  latestTerminalReplySettlesActiveTurn,
   replyDraftKey,
   sameDismissedTimelineEntries,
   timelineAnchorKey,
@@ -719,6 +720,7 @@ export function Timeline(props: {
         text: "",
         draftId,
         reasoningContent: "",
+        reasoningStreaming: false,
       });
       draftReplyProxies.set(draftId, item);
     }
@@ -735,10 +737,11 @@ export function Timeline(props: {
     target.thoughtDurationNs = source.thoughtDurationNs;
     target.draftId = source.draftId;
     target.reasoningContent = source.reasoningContent;
+    target.reasoningStreaming = source.reasoningStreaming;
   };
   const syncActiveDraftProxy = (
     target: StepItem,
-    draft: { draftId: string; content: string; reasoningContent?: string; at: number },
+    draft: { draftId: string; content: string; reasoningContent?: string; reasoningStreaming?: boolean; at: number },
   ) => {
     target.step = `draft:${draft.draftId}` as StepItem["step"];
     target.kind = "agent:Reply";
@@ -746,6 +749,7 @@ export function Timeline(props: {
     target.at = Number(draft.at) || Date.now();
     target.text = draft.content;
     target.reasoningContent = draft.reasoningContent;
+    target.reasoningStreaming = draft.reasoningStreaming;
     target.draftId = draft.draftId;
   };
 
@@ -803,13 +807,22 @@ export function Timeline(props: {
   const hasRunningToolRow = createMemo(() =>
     visibleTimeline().some(isRunningToolTimelineItem),
   );
+  const activeTurnReplySettled = createMemo(() =>
+    latestTerminalReplySettlesActiveTurn(
+      visibleTimeline(),
+      bag.thinkingStartedAt(),
+    ),
+  );
   const hasStreamingReply = () =>
     Boolean(
       bag.draftReply()?.chatId === bag.chatId() &&
         (bag.draftReply()?.content || bag.draftReply()?.reasoningContent),
     );
   const showStandaloneThinking = () =>
-    (bag.thinking() || bag.compacting()) && !hasStreamingReply() && !hasRunningToolRow();
+    (bag.thinking() || bag.compacting()) &&
+    !activeTurnReplySettled() &&
+    !hasStreamingReply() &&
+    !hasRunningToolRow();
   const currentChat = () => bag.currentChatSummary();
   const emptyTitle = () =>
     (
@@ -2494,10 +2507,12 @@ function ReasoningBlock(props: {
 }
 
 function ThoughtBox(props: { item: StepItem }) {
+  const thoughtStreaming = () =>
+    props.item.reasoningStreaming ?? props.item.status !== "agent:Done";
   return (
     <ReasoningBlock
       content={props.item.reasoningContent ?? ""}
-      streaming={props.item.status !== "agent:Done"}
+      streaming={thoughtStreaming()}
       timelineKey={timelineThoughtKey(props.item)}
     />
   );

@@ -283,6 +283,21 @@ export function isRunningToolTimelineItem(item: TimelineItem): boolean {
   );
 }
 
+export function latestTerminalReplySettlesActiveTurn(
+  items: TimelineItem[],
+  activeStartedAt: number | null | undefined,
+): boolean {
+  const startedAt = Number(activeStartedAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+  const latest = items[items.length - 1];
+  return (
+    latest?.type === "step" &&
+    latest.kind === "agent:Reply" &&
+    isTerminalStepStatus(latest.status) &&
+    Number(latest.at) >= startedAt
+  );
+}
+
 export function formatThinkingElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const seconds = totalSeconds % 60;

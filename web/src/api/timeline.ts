@@ -68,6 +68,8 @@ export type StepItem = {
   draftId?: string;
   // Reasoning/thinking streamed before the final reply content, when available.
   reasoningContent?: string;
+  // True while the reasoning/thinking stream itself is still receiving deltas.
+  reasoningStreaming?: boolean;
   // Present when a user message is hidden from future LLM prompts.
   deletedAt?: number | string;
 };

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import type { TimelineItem } from "./api";
 import { readStylesheetForTest } from "./styleTestUtils.test.ts";
+import { latestTerminalReplySettlesActiveTurn } from "./timeline/utils";
 
 const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
 const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
@@ -13,6 +15,31 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("const showStandaloneThinking = () =>");
     expect(timeline).toContain("!hasRunningToolRow()");
     expect(timeline).toContain("when={showStandaloneThinking()}");
+  });
+
+  test("hides standalone Thinking after the active turn reply lands", () => {
+    const reply = (at: number): TimelineItem => ({
+      type: "step",
+      step: "step1",
+      kind: "agent:Reply",
+      status: "agent:Done",
+      at,
+      text: "done",
+    });
+    const tool = (at: number): TimelineItem => ({
+      type: "step",
+      step: "step2",
+      kind: "agent:ToolCall",
+      status: "agent:Done",
+      at,
+      text: "tool done",
+    });
+
+    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 1000)).toBe(true);
+    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 3000)).toBe(false);
+    expect(latestTerminalReplySettlesActiveTurn([reply(2000), tool(2500)], 1000)).toBe(false);
+    expect(timeline).toContain("const activeTurnReplySettled = createMemo(() =>");
+    expect(timeline).toContain("!activeTurnReplySettled()");
   });
 
   test("labels manual compaction failures distinctly", () => {
@@ -113,11 +140,16 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("const html = () => renderMarkdown(text());");
     expect(timeline).toContain('class="body markdown reply-thinking-body"');
     expect(timeline).toContain('label="streaming thinking"');
+    expect(timeline).toContain("const thoughtStreaming = () =>");
+    expect(timeline).toContain('props.item.reasoningStreaming ?? props.item.status !== "agent:Done"');
     expect(timeline).toContain('props.item.kind !== "agent:Reply" ||');
     expect(timeline).toContain("draft.reasoningContent");
     expect(timeline).toContain("bag.draftReply()?.reasoningContent");
     expect(state).toContain('if (ev.kind === "reasoning-draft")');
     expect(state).toContain("reasoningContent: ev.reasoningContent");
+    expect(state).toContain("reasoningStreaming: true");
+    expect(state).toContain("reasoningStreaming: false");
+    expect(state).toContain("setDraftReply({ ...cur, reasoningStreaming: false });");
   });
 
   test("keeps reasoning-only partial replies visible until persisted reply rows land", () => {

@@ -1042,6 +1042,7 @@ export function createState() {
     draftId: string;
     content: string;
     reasoningContent?: string;
+    reasoningStreaming?: boolean;
     at: number;
   } | null>(null);
   const endedDraftReplyIds = new Map<string, number>();
@@ -5028,6 +5029,7 @@ export function createState() {
           draftId: ev.draftId,
           content: ev.content ?? previous?.content ?? "",
           reasoningContent: ev.reasoningContent ?? "",
+          reasoningStreaming: true,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -5060,6 +5062,7 @@ export function createState() {
           draftId: ev.draftId,
           content: ev.content,
           reasoningContent: ev.reasoningContent ?? previous?.reasoningContent ?? "",
+          reasoningStreaming: false,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -5071,6 +5074,7 @@ export function createState() {
     if (ev.kind === "draft-end") {
       const cur = draftReply();
       if (cur && cur.draftId === ev.draftId) {
+        setDraftReply({ ...cur, reasoningStreaming: false });
         endedDraftReplyIds.set(ev.draftId, Date.now());
         window.setTimeout(() => {
           const latest = draftReply();
