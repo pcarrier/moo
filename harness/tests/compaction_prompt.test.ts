@@ -7,7 +7,11 @@ import {
   COMPACTION_CONTINUATION_USER_PROMPT,
   compactionContinuationSystemMessage,
 } from "../src/prompt";
-import { isContextLengthExceededError, tokenPressureFromEstimates } from "../src/commands/step";
+import {
+  isContextLengthExceededError,
+  tokenPressureForCompactionCheck,
+  tokenPressureFromEstimates,
+} from "../src/commands/step";
 import {
   DYNAMIC_CONTEXT_MESSAGE_ROLE,
   buildStreamingLLMRequest,
@@ -99,6 +103,24 @@ describe("compaction prompts", () => {
       },
       type: "error",
     })).toBe(true);
+  });
+
+  test("autocompaction uses provider-reported pressure from the prior turn", () => {
+    expect(
+      tokenPressureForCompactionCheck(40_000, 45_000, {
+        used: 210_000,
+        source: "context",
+      }),
+    ).toEqual({ used: 210_000, source: "context" });
+  });
+
+  test("autocompaction keeps larger fresh estimates over prior pressure", () => {
+    expect(
+      tokenPressureForCompactionCheck(220_000, 45_000, {
+        used: 210_000,
+        source: "context",
+      }),
+    ).toEqual({ used: 220_000, source: "compaction" });
   });
 
   test("carries force-compaction retry state after context overflow", () => {

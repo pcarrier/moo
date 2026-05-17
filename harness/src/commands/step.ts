@@ -18,6 +18,7 @@ import {
   loadPayloadJSON,
   loadResultJSON,
   readCompactionChain,
+  readLastTokenPressure,
   persistCompactionLayer,
   recordCompactionFailure,
   recordErrorStep,
@@ -1406,21 +1407,45 @@ export async function restartOngoingCommand() {
   };
 }
 
+type TokenPressureSource = "context" | "compaction";
+
+type TokenPressure = {
+  used: number;
+  source: TokenPressureSource;
+};
+
+function tokenPressureCount(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
 export function tokenPressureFromEstimates(
   compactionPromptTokens: number,
   requestPromptTokens: number,
-): {
-  used: number;
-  source: "context" | "compaction";
-} {
-  const compaction = Math.max(
-    0,
-    Math.floor(Number(compactionPromptTokens) || 0),
-  );
-  const request = Math.max(0, Math.floor(Number(requestPromptTokens) || 0));
+): TokenPressure {
+  const compaction = tokenPressureCount(compactionPromptTokens);
+  const request = tokenPressureCount(requestPromptTokens);
   return {
     used: Math.max(compaction, request),
     source: request > compaction ? "context" : "compaction",
+  };
+}
+
+export function tokenPressureForCompactionCheck(
+  compactionPromptTokens: number,
+  requestPromptTokens: number,
+  previousPressure?: { used?: unknown; source?: unknown } | null,
+): TokenPressure {
+  const estimated = tokenPressureFromEstimates(
+    compactionPromptTokens,
+    requestPromptTokens,
+  );
+  const previousUsed = tokenPressureCount(previousPressure?.used);
+  if (previousUsed <= estimated.used) return estimated;
+  return {
+    used: previousUsed,
+    source:
+      previousPressure?.source === "compaction" ? "compaction" : "context",
   };
 }
 
@@ -1493,9 +1518,11 @@ export async function stepPrepareCommand(input: Input) {
       () => estimateCompactionPromptTokens(chatId, messages),
     );
     const requestPromptTokens = estimateTokens(messages, TOOLS);
-    const pressure = tokenPressureFromEstimates(
+    const previousPressure = await readLastTokenPressure(chatId);
+    const pressure = tokenPressureForCompactionCheck(
       compactionPromptTokens,
       requestPromptTokens,
+      previousPressure,
     );
     estimatedPromptTokens = pressure.used;
     const threshold = await compactionThresholdForBudget(budget);
@@ -1513,6 +1540,8 @@ export async function stepPrepareCommand(input: Input) {
       estimatedPromptTokens,
       compactionPromptTokens,
       requestPromptTokens,
+      previousPromptTokens: previousPressure.used,
+      previousPromptSource: previousPressure.source,
       tokenBudget: budget,
       tokenThreshold: threshold,
     });
@@ -1523,6 +1552,8 @@ export async function stepPrepareCommand(input: Input) {
       estimatedPromptTokens,
       compactionPromptTokens,
       requestPromptTokens,
+      previousPromptTokens: previousPressure.used,
+      previousPromptSource: previousPressure.source,
       tokenBudget: budget,
       tokenThreshold: threshold,
       forceCompact,
@@ -1534,6 +1565,8 @@ export async function stepPrepareCommand(input: Input) {
         estimatedPromptTokens,
         compactionPromptTokens,
         requestPromptTokens,
+        previousPromptTokens: previousPressure.used,
+        previousPromptSource: previousPressure.source,
         tokenBudget: budget,
         tokenThreshold: threshold,
         forceCompact,
