@@ -5,6 +5,7 @@ import {
   appendStep,
   buildLLMMessages,
   buildCompactionMessages,
+  latestUserInputAt,
   compactionThresholdForBudget,
   estimateCompactionPromptTokens,
   contextBudget,
@@ -1297,10 +1298,12 @@ export async function stepHandleLlmCommand(input: Input) {
       requestTokenLimit: Number(input.requestTokenLimit) || null,
     };
     const now = await moo.time.nowMs({});
-    await traceMark("compaction.summary.received", { chatId, chars: summary.length, attempt, usedModel });
+    const lastUserAt = await latestUserInputAt(chatId);
+    const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
+    await traceMark("compaction.summary.received", { chatId, chars: summary.length, attempt, usedModel, throughAt, lastUserAt });
     const compactionHash = await persistCompactionLayer(chatId, {
       summary,
-      throughAt: now,
+      throughAt,
       at: now,
       ...compactionTracking,
     });

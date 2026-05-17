@@ -1224,6 +1224,22 @@ async function readCompactionLayerHash(hash: string | null | undefined): Promise
   return { target: hash, hash, value: { ...obj.value, hash } };
 }
 
+export async function latestUserInputAt(chatId: string): Promise<number> {
+  const c = chatRefs(chatId);
+  const rows = await moo.facts.matchAll({
+    patterns: [
+      ["?step", "rdf:type", "agent:Step"],
+      ["?step", "agent:kind", "agent:UserInput"],
+      ["?step", "agent:createdAt", "?at"],
+    ],
+    store: c.facts,
+    graph: c.graph,
+  });
+  let last = 0;
+  for (const row of rows) { const at = Number(row["?at"]) || 0; if (at > last) last = at; }
+  return last;
+}
+
 async function readCompaction(chatId: string): Promise<{
   throughAt: number;
   summary: string | null;
@@ -1538,9 +1554,11 @@ export async function runCompaction(chatId: string, provider: LLMProvider, meta:
   await recordUsage(chatId, body?.model || requestProvider.model, normalizeUsage(body?.usage) ?? estimateRawUsage(summaryMessages, summary), { updateLastContextTokens: false });
 
   const now = await moo.time.nowMs({});
+  const lastUserAt = await latestUserInputAt(chatId);
+  const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
   const compactionHash = await persistCompactionLayer(chatId, {
     summary,
-    throughAt: now,
+    throughAt,
     at: now,
     trigger: tracking.trigger ?? "manual",
     promptTokens: tracking.promptTokens ?? null,
