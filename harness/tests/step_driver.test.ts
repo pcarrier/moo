@@ -21,4 +21,15 @@ describe("step driver compaction", () => {
     expect(source).toContain('return { ok: true, value: { kind: "loop", provider, mode: "resume" } };');
     expect(source).not.toContain("compacted older turns into a summary");
   });
+
+  test("manual compaction empty result does not persist a status reply", () => {
+    const source = readFileSync(
+      new URL("../src/commands/step.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).not.toContain("nothing to compact yet");
+    expect(source).toContain('if (result === "failed")');
+    expect(source).toContain('"compaction failed; see the error above"');
+  });
 });

@@ -903,12 +903,9 @@ export async function compactPreludeCommand(input: Input) {
     return { ok: true, value: { kind: "loop", provider, mode: "resume" } };
   }
 
-  await reply(
-    chatId,
-    result === "empty"
-      ? "nothing to compact yet"
-      : "compaction failed; see the error above",
-  );
+  if (result === "failed") {
+    await reply(chatId, "compaction failed; see the error above");
+  }
   await setChatOngoing(chatId, false);
   return { ok: true, value: { kind: "done" } };
 }
