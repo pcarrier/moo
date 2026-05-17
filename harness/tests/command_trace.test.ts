@@ -1,15 +1,33 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-type Root = { id: string; kind: string; name: string; status?: string; chatId?: string | null; data?: Record<string, unknown> };
+type Root = {
+  id: string;
+  kind: string;
+  name: string;
+  status?: string;
+  chatId?: string | null;
+  data?: Record<string, unknown>;
+};
 type Span = { id: string; parentId: string; data?: Record<string, unknown> };
-type Row = { id: string; rootId: string; rootKind: string; parentId?: string | null; data?: Record<string, unknown> | null };
+type Row = {
+  id: string;
+  rootId: string;
+  rootKind: string;
+  parentId?: string | null;
+  data?: Record<string, unknown> | null;
+};
 
 const roots = new Map<string, Root>();
 const spans = new Map<string, Span>();
 const rows = new Map<string, Row>();
 const objectPuts: Array<{ kind: string; content: string }> = [];
 const finished: Array<{ id: string; status: string; data: unknown }> = [];
-let currentTrace: { id: string; traceId: string; rootId: string; parentId: string } | null = null;
+let currentTrace: {
+  id: string;
+  traceId: string;
+  rootId: string;
+  parentId: string;
+} | null = null;
 let traceSeq = 0;
 let objectSeq = 0;
 
@@ -35,7 +53,9 @@ function installOps() {
   g.__op_http_stream_open = () => ({ handle: 1, status: 200, headers: "{}" });
   g.__op_http_stream_next = () => null;
   g.__op_http_stream_close = () => {};
-  g.__op_fs_read = () => { throw new Error("unexpected read"); };
+  g.__op_fs_read = () => {
+    throw new Error("unexpected read");
+  };
   g.__op_fs_write = () => {};
   g.__op_fs_delete = () => {};
   g.__op_fs_mkdir = () => {};
@@ -43,7 +63,13 @@ function installOps() {
   g.__op_fs_glob = () => [];
   g.__op_fs_stat = () => null;
   g.__op_fs_canonical = (path: string) => path;
-  g.__op_proc_run = () => ({ code: 0, stdout: "", stderr: "", durationNs: 0, timedOut: false });
+  g.__op_proc_run = () => ({
+    code: 0,
+    stdout: "",
+    stderr: "",
+    durationNs: 0,
+    timedOut: false,
+  });
   g.__op_facts_add = () => {};
   g.__op_facts_remove = () => {};
   g.__op_facts_present = () => [];
@@ -61,9 +87,16 @@ function installOps() {
   g.__op_sparql_query = () => ({ type: "select", result: [] });
   g.__op_chat_running_ids = () => "[]";
   g.__op_chat_running_started_at = () => "{}";
-  g.__op_agent_run = async () => JSON.stringify({ status: "ok", childChatId: "child", output: null, durationNs: 0 });
+  g.__op_agent_run = async () =>
+    JSON.stringify({
+      status: "ok",
+      childChatId: "child",
+      output: null,
+      durationNs: 0,
+    });
   g.__op_llm_stream_chat = () => "";
-  g.__op_trace_current = () => currentTrace ? JSON.stringify(currentTrace) : null;
+  g.__op_trace_current = () =>
+    currentTrace ? JSON.stringify(currentTrace) : null;
   g.__op_trace_get = (raw: string) => {
     const args = JSON.parse(raw || "{}");
     const id = args.id || args.traceId;
@@ -80,27 +113,55 @@ function installOps() {
     return "true";
   };
   g.__op_trace_set_parent = () => null;
-  g.__op_trace_leave = () => { currentTrace = null; };
+  g.__op_trace_leave = () => {
+    currentTrace = null;
+  };
   g.__op_trace_ensure_root = (optsJson: string) => {
     const root = JSON.parse(optsJson) as Root;
     roots.set(root.id, root);
-    if (!rows.has(root.id)) rows.set(root.id, { id: root.id, rootId: root.id, rootKind: root.kind, parentId: null, data: root.data ?? null });
+    if (!rows.has(root.id))
+      rows.set(root.id, {
+        id: root.id,
+        rootId: root.id,
+        rootKind: root.kind,
+        parentId: null,
+        data: root.data ?? null,
+      });
   };
   g.__op_trace_ensure_span = (optsJson: string) => {
     const span = JSON.parse(optsJson) as Span;
     spans.set(span.id, span);
     const parent = rows.get(span.parentId);
-    if (!rows.has(span.id)) rows.set(span.id, { id: span.id, rootId: parent?.rootId ?? span.parentId, rootKind: parent?.rootKind ?? "system", parentId: span.parentId, data: span.data ?? null });
+    if (!rows.has(span.id))
+      rows.set(span.id, {
+        id: span.id,
+        rootId: parent?.rootId ?? span.parentId,
+        rootKind: parent?.rootKind ?? "system",
+        parentId: span.parentId,
+        data: span.data ?? null,
+      });
   };
-  g.__op_trace_start_root = () => { throw new Error("legacy trace root API should not be used"); };
+  g.__op_trace_start_root = () => {
+    throw new Error("legacy trace root API should not be used");
+  };
   g.__op_trace_enter = (optsJson: string) => {
     const opts = JSON.parse(optsJson || "{}");
     if (!rows.has(opts.id)) {
       if (!opts.rootId || !rows.has(opts.rootId)) return null;
-      currentTrace = { id: opts.id, traceId: opts.rootId, rootId: opts.rootId, parentId: opts.id };
+      currentTrace = {
+        id: opts.id,
+        traceId: opts.rootId,
+        rootId: opts.rootId,
+        parentId: opts.id,
+      };
       return JSON.stringify(currentTrace);
     }
-    currentTrace = { id: opts.id, traceId: opts.rootId, rootId: opts.rootId, parentId: opts.id };
+    currentTrace = {
+      id: opts.id,
+      traceId: opts.rootId,
+      rootId: opts.rootId,
+      parentId: opts.id,
+    };
     return JSON.stringify(currentTrace);
   };
 }
@@ -122,11 +183,19 @@ describe("command tracing", () => {
   });
 
   test("finishes the visible command root", async () => {
-    const result = await dispatch({ command: "unknown-test-command", chatId: "chat1" } as any);
+    const result = await dispatch({
+      command: "unknown-test-command",
+      chatId: "chat1",
+    } as any);
 
-    expect(result).toEqual({ ok: false, error: { message: "unknown command: unknown-test-command" } });
+    expect(result).toEqual({
+      ok: false,
+      error: { message: "unknown command: unknown-test-command" },
+    });
     expect(roots.get("chattrace:chat1")?.kind).toBe("chat");
-    expect(finished.map((row) => row.id)).toEqual(["command:unknown-test-command:trace:1"]);
+    expect(finished.map((row) => row.id)).toEqual([
+      "command:unknown-test-command:trace:1",
+    ]);
     expect(finished.every((row) => row.status === "error")).toBe(true);
     expect(currentTrace).toBeNull();
   });
@@ -138,13 +207,24 @@ describe("command tracing", () => {
       spans.set(span.id, span);
     };
     try {
-      const result = await dispatch({ command: "llm-stream-accumulate", chatId: "chat1", state: {}, events: [] } as any);
+      const result = await dispatch({
+        command: "llm-stream-accumulate",
+        chatId: "chat1",
+        state: {},
+        events: [],
+      } as any);
 
       expect(result).toEqual({ ok: true, value: expect.any(Object) });
       expect(roots.get("chattrace:chat1")?.kind).toBe("chat");
       expect(spans.has("command:llm-stream-accumulate:trace:1")).toBe(true);
       expect(currentTrace).toBeNull();
-      expect(finished.some((row) => row.id === "command:llm-stream-accumulate:trace:1" && row.status === "ok")).toBe(true);
+      expect(
+        finished.some(
+          (row) =>
+            row.id === "command:llm-stream-accumulate:trace:1" &&
+            row.status === "ok",
+        ),
+      ).toBe(true);
       expect(finished.some((row) => row.id === "chattrace:chat1")).toBe(false);
     } finally {
       (globalThis as any).__op_trace_ensure_span = originalEnsureSpan;
@@ -153,7 +233,15 @@ describe("command tracing", () => {
 
   test("persists model reasoning content with replies", async () => {
     const reasoning = "**thinking**\n\n- item";
-    await reply("chat1", "answer", "deepseek-v4-pro", "max", 123, "draft1", reasoning);
+    await reply(
+      "chat1",
+      "answer",
+      "deepseek-v4-pro",
+      "max",
+      123,
+      "draft1",
+      reasoning,
+    );
 
     const payload = objectPuts.find((put) => put.kind === "agent:Reply");
     expect(payload).toBeDefined();
@@ -186,7 +274,13 @@ describe("command tracing", () => {
         ok: true,
         content: "",
         reasoningContent: reasoning,
-        toolCalls: [{ id: "call_1", type: "function", function: { name: "runTS", arguments: "{}" } }],
+        toolCalls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "runTS", arguments: "{}" },
+          },
+        ],
         errorBody: null,
         model: "deepseek-v4-pro",
         usage: null,
@@ -204,7 +298,6 @@ describe("command tracing", () => {
   });
 });
 
-
 describe("LLM stream provider details", () => {
   beforeEach(() => {
     roots.clear();
@@ -217,31 +310,64 @@ describe("LLM stream provider details", () => {
     objectSeq = 0;
   });
 
-
   test("parses Anthropic thinking summaries and signatures", async () => {
     const accumulated = await dispatch({
       command: "llm-stream-accumulate",
       chatId: "chat1",
       state: {},
-      streamEvents: { provider: "anthropic", model: "claude-sonnet-4-6", draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" } },
+      streamEvents: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" },
+      },
       events: [
-        JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
-        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "summary" } }),
-        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } }),
+        JSON.stringify({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "summary" },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "signature_delta", signature: "sig" },
+        }),
         JSON.stringify({ type: "content_block_stop", index: 0 }),
-        JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } }),
+        JSON.stringify({
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "answer" },
+        }),
       ],
     } as any);
     expect(accumulated.ok).toBe(true);
     expect((accumulated.value as any).state.reasoningContent).toBe("summary");
-    expect((accumulated.value as any).state.anthropicThinkingBlocks).toEqual([{ type: "thinking", thinking: "summary", signature: "sig" }]);
-    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "reasoning-draft" && ev.reasoningContent === "summary")).toBe(true);
+    expect((accumulated.value as any).state.anthropicThinkingBlocks).toEqual([
+      { type: "thinking", thinking: "summary", signature: "sig" },
+    ]);
+    expect(
+      (accumulated.value as any).events.some(
+        (ev: any) =>
+          ev.kind === "reasoning-draft" && ev.reasoningContent === "summary",
+      ),
+    ).toBe(true);
 
-    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    const finalized = await dispatch({
+      command: "llm-stream-finalize",
+      chatId: "chat1",
+      state: (accumulated.value as any).state,
+      status: 200,
+    } as any);
     expect(finalized.ok).toBe(true);
     expect((finalized.value as any).content).toBe("answer");
     expect((finalized.value as any).reasoningContent).toBe("summary");
-    expect((finalized.value as any).anthropicThinkingBlocks).toEqual([{ type: "thinking", thinking: "summary", signature: "sig" }]);
+    expect((finalized.value as any).anthropicThinkingBlocks).toEqual([
+      { type: "thinking", thinking: "summary", signature: "sig" },
+    ]);
   });
 
   test("parses DeepSeek think tags out of streamed content", async () => {
@@ -249,7 +375,11 @@ describe("LLM stream provider details", () => {
       command: "llm-stream-accumulate",
       chatId: "chat1",
       state: {},
-      streamEvents: { provider: "deepseek", model: "deepseek-v4-pro", draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" } },
+      streamEvents: {
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" },
+      },
       events: [
         JSON.stringify({ choices: [{ delta: { content: "<thi" } }] }),
         JSON.stringify({ choices: [{ delta: { content: "nk>think" } }] }),
@@ -260,13 +390,71 @@ describe("LLM stream provider details", () => {
     expect(accumulated.ok).toBe(true);
     expect((accumulated.value as any).state.content).toBe(" summary");
     expect((accumulated.value as any).state.reasoningContent).toBe("thinking");
-    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "reasoning-draft" && ev.reasoningContent === "thinking")).toBe(true);
-    expect((accumulated.value as any).events.some((ev: any) => ev.kind === "draft" && ev.content === " summary")).toBe(true);
+    expect(
+      (accumulated.value as any).events.some(
+        (ev: any) =>
+          ev.kind === "reasoning-draft" && ev.reasoningContent === "thinking",
+      ),
+    ).toBe(true);
+    expect(
+      (accumulated.value as any).events.some(
+        (ev: any) => ev.kind === "draft" && ev.content === " summary",
+      ),
+    ).toBe(true);
 
-    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    const finalized = await dispatch({
+      command: "llm-stream-finalize",
+      chatId: "chat1",
+      state: (accumulated.value as any).state,
+      status: 200,
+    } as any);
     expect(finalized.ok).toBe(true);
     expect((finalized.value as any).content).toBe(" summary");
     expect((finalized.value as any).reasoningContent).toBe("thinking");
+  });
+
+  test("emits compaction drafts without reasoning draft bubbles", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        draftEvent: {
+          kind: "compaction-draft",
+          chatId: "chat1",
+          draftId: "draft-compact",
+        },
+      },
+      events: [
+        JSON.stringify({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "private" },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "summary" },
+        }),
+      ],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.reasoningContent).toBe("private");
+    expect((accumulated.value as any).events).toContainEqual({
+      kind: "compaction-draft",
+      chatId: "chat1",
+      draftId: "draft-compact",
+      content: "summary",
+      reasoningContent: "private",
+      delta: "summary",
+    });
+    expect(
+      (accumulated.value as any).events.some(
+        (ev: any) => ev.kind === "reasoning-draft",
+      ),
+    ).toBe(false);
   });
 
   test("strips DeepSeek non-think closing marker", async () => {
@@ -291,15 +479,51 @@ describe("LLM stream provider details", () => {
       chatId: "chat1",
       state: {},
       events: [
-        JSON.stringify({ choices: [{ delta: { reasoning_content: "think ", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "runTS", arguments: "{\"code\"" } }] } }] }),
-        JSON.stringify({ choices: [{ delta: { reasoning_content: "more", tool_calls: [{ index: 0, function: { arguments: ":\"return 1\"}" } }] } }] }),
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                reasoning_content: "think ",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "runTS", arguments: '{"code"' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                reasoning_content: "more",
+                tool_calls: [
+                  { index: 0, function: { arguments: ':"return 1"}' } },
+                ],
+              },
+            },
+          ],
+        }),
       ],
     } as any);
     expect(accumulated.ok).toBe(true);
-    expect((accumulated.value as any).state.reasoningContent).toBe("think more");
-    expect((accumulated.value as any).state.toolCalls[0].function.arguments).toBe('{"code":"return 1"}');
+    expect((accumulated.value as any).state.reasoningContent).toBe(
+      "think more",
+    );
+    expect(
+      (accumulated.value as any).state.toolCalls[0].function.arguments,
+    ).toBe('{"code":"return 1"}');
 
-    const finalized = await dispatch({ command: "llm-stream-finalize", chatId: "chat1", state: (accumulated.value as any).state, status: 200 } as any);
+    const finalized = await dispatch({
+      command: "llm-stream-finalize",
+      chatId: "chat1",
+      state: (accumulated.value as any).state,
+      status: 200,
+    } as any);
     expect(finalized.ok).toBe(true);
     expect((finalized.value as any).reasoningContent).toBe("think more");
   });

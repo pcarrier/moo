@@ -38,15 +38,26 @@ type LlmStreamBaseInput = {
 };
 
 type LlmStreamInitInput = LlmStreamBaseInput;
-type LlmStreamAccumulateInput = LlmStreamBaseInput & { state?: unknown; events?: unknown[] };
+type LlmStreamAccumulateInput = LlmStreamBaseInput & {
+  state?: unknown;
+  events?: unknown[];
+};
 type LlmStreamFinalizeInput = LlmStreamBaseInput & { state?: unknown };
 type LlmStreamErrorInput = LlmStreamFinalizeInput;
-type Input = LlmStreamInitInput | LlmStreamAccumulateInput | LlmStreamFinalizeInput | LlmStreamErrorInput;
+type Input =
+  | LlmStreamInitInput
+  | LlmStreamAccumulateInput
+  | LlmStreamFinalizeInput
+  | LlmStreamErrorInput;
 
 type LlmAccumulatorState = {
   content: string;
   toolCalls: LlmToolCall[];
-  anthropicThinkingBlocks: Array<{ type: "thinking"; thinking: string; signature: string }>;
+  anthropicThinkingBlocks: Array<{
+    type: "thinking";
+    thinking: string;
+    signature: string;
+  }>;
   model: string | null;
   usage: unknown | null;
   error: unknown | null;
@@ -65,100 +76,175 @@ export function llmStreamInitCommand(input: LlmStreamInitInput) {
   return llmStreamInitEffect(input).map((value) => ok(value));
 }
 
-export function llmStreamInitEffect(input: LlmStreamInitInput): Effect<{ state: LlmAccumulatorState; events: StreamOutputEvent[] }> {
-  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.init", data: llmStreamInputSummary(input), fn: async () => {
-    const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
-    const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
-    const state: LlmAccumulatorState = {
-      content: "",
-      toolCalls: [],
-      anthropicThinkingBlocks: [],
-      model: null,
-      usage: null,
-      error: null,
-      reasoningContent: "",
-      stopReason: null,
-      deepseekThinkOpen: false,
-      deepseekTagBuffer: "",
-      lastTokenProgressUsed: estimated,
-      anthropicToolIndex: null,
-      anthropicToolBlockToCall: {},
-      anthropicThinkingBlockIndex: null,
-      anthropicThinkingBlockToIndex: {},
-    };
-    const events: StreamOutputEvent[] = [];
-    const tokenEvent = streamEvents.tokenProgressEvent;
-    if (tokenEvent && typeof tokenEvent === "object") {
-      events.push(tokenProgressPayload(tokenEvent, estimated, Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0));
-    }
-    await moo.traces.mark({ message: "llm.stream.init.result", data: { estimatedPromptTokens: estimated, events } });
-    return { state, events };
-  } }), "llm stream init failed");
+export function llmStreamInitEffect(
+  input: LlmStreamInitInput,
+): Effect<{ state: LlmAccumulatorState; events: StreamOutputEvent[] }> {
+  return Effect.tryPromise(
+    async () =>
+      moo.traces.span({
+        name: "llm.stream.init",
+        data: llmStreamInputSummary(input),
+        fn: async () => {
+          const streamEvents =
+            input.streamEvents && typeof input.streamEvents === "object"
+              ? input.streamEvents
+              : {};
+          const estimated =
+            Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
+          const state: LlmAccumulatorState = {
+            content: "",
+            toolCalls: [],
+            anthropicThinkingBlocks: [],
+            model: null,
+            usage: null,
+            error: null,
+            reasoningContent: "",
+            stopReason: null,
+            deepseekThinkOpen: false,
+            deepseekTagBuffer: "",
+            lastTokenProgressUsed: estimated,
+            anthropicToolIndex: null,
+            anthropicToolBlockToCall: {},
+            anthropicThinkingBlockIndex: null,
+            anthropicThinkingBlockToIndex: {},
+          };
+          const events: StreamOutputEvent[] = [];
+          const tokenEvent = streamEvents.tokenProgressEvent;
+          if (tokenEvent && typeof tokenEvent === "object") {
+            events.push(
+              tokenProgressPayload(
+                tokenEvent,
+                estimated,
+                Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0,
+              ),
+            );
+          }
+          await moo.traces.mark({
+            message: "llm.stream.init.result",
+            data: { estimatedPromptTokens: estimated, events },
+          });
+          return { state, events };
+        },
+      }),
+    "llm stream init failed",
+  );
 }
 
 export function llmStreamAccumulateCommand(input: LlmStreamAccumulateInput) {
   return llmStreamAccumulateEffect(input).map((value) => ok(value));
 }
 
-export function llmStreamAccumulateEffect(input: LlmStreamAccumulateInput): Effect<{ state: LlmAccumulatorState; events: StreamOutputEvent[] }> {
-  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.accumulate", data: llmStreamInputSummary(input), fn: async () => {
-    const state = normalizeLlmAccumulatorState(input.state);
-    const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
-    const events: StreamOutputEvent[] = [];
-    const rawEvents = Array.isArray(input.events) ? input.events : [];
-    let parsedCount = 0;
-    let ignoredCount = 0;
-    for (const raw of rawEvents) {
-      if (typeof raw !== "string") { ignoredCount++; continue; }
-      const parsed = parseStreamJsonEvent(raw);
-      if (parsed == null) { ignoredCount++; continue; }
-      parsedCount++;
-      await moo.traces.mark({ message: "llm.stream.event", data: { event: traceJsonValue(parsed) } });
-      accumulateLlmStreamEvent(state, parsed, streamEvents, events);
-    }
-    await moo.traces.mark({ message: "llm.stream.accumulate.result", data: { rawEvents, parsedEvents: parsedCount, ignoredEvents: ignoredCount, events, state: traceJsonValue(state) } });
-    return { state, events };
-  } }), "llm stream accumulate failed");
+export function llmStreamAccumulateEffect(
+  input: LlmStreamAccumulateInput,
+): Effect<{ state: LlmAccumulatorState; events: StreamOutputEvent[] }> {
+  return Effect.tryPromise(
+    async () =>
+      moo.traces.span({
+        name: "llm.stream.accumulate",
+        data: llmStreamInputSummary(input),
+        fn: async () => {
+          const state = normalizeLlmAccumulatorState(input.state);
+          const streamEvents =
+            input.streamEvents && typeof input.streamEvents === "object"
+              ? input.streamEvents
+              : {};
+          const events: StreamOutputEvent[] = [];
+          const rawEvents = Array.isArray(input.events) ? input.events : [];
+          let parsedCount = 0;
+          let ignoredCount = 0;
+          for (const raw of rawEvents) {
+            if (typeof raw !== "string") {
+              ignoredCount++;
+              continue;
+            }
+            const parsed = parseStreamJsonEvent(raw);
+            if (parsed == null) {
+              ignoredCount++;
+              continue;
+            }
+            parsedCount++;
+            await moo.traces.mark({
+              message: "llm.stream.event",
+              data: { event: traceJsonValue(parsed) },
+            });
+            accumulateLlmStreamEvent(state, parsed, streamEvents, events);
+          }
+          await moo.traces.mark({
+            message: "llm.stream.accumulate.result",
+            data: {
+              rawEvents,
+              parsedEvents: parsedCount,
+              ignoredEvents: ignoredCount,
+              events,
+              state: traceJsonValue(state),
+            },
+          });
+          return { state, events };
+        },
+      }),
+    "llm stream accumulate failed",
+  );
 }
 
 export function llmStreamFinalizeCommand(input: LlmStreamFinalizeInput) {
   return llmStreamFinalizeEffect(input).map((value) => ok(value));
 }
 
-export function llmStreamFinalizeEffect(input: LlmStreamFinalizeInput): Effect<any> {
-  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.finalize", data: llmStreamInputSummary(input), fn: async () => {
-    const state = normalizeLlmAccumulatorState(input.state);
-    const content = finalLlmContent(state);
-    const status = Number(input.status ?? 0) || 0;
-    const result = state.error != null
-      ? {
-        status,
-        ok: false,
-        content,
-        toolCalls: state.toolCalls,
-        errorBody: formatStreamErrorBody(state.error),
-        headers: input.headers && typeof input.headers === "object" ? input.headers : null,
-        reasoningContent: state.reasoningContent || null,
-        stopReason: state.stopReason,
-        anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
-        model: state.model,
-        usage: state.usage,
-      }
-      : {
-        status,
-        ok: true,
-        content,
-        toolCalls: state.toolCalls,
-        errorBody: null,
-        reasoningContent: state.reasoningContent || null,
-        stopReason: state.stopReason,
-        anthropicThinkingBlocks: state.anthropicThinkingBlocks.length ? state.anthropicThinkingBlocks : undefined,
-        model: state.model,
-        usage: state.usage,
-      };
-    await moo.traces.mark({ message: "llm.stream.finalize.result", data: { result: traceJsonValue(result) } });
-    return result;
-  } }), "llm stream finalize failed");
+export function llmStreamFinalizeEffect(
+  input: LlmStreamFinalizeInput,
+): Effect<any> {
+  return Effect.tryPromise(
+    async () =>
+      moo.traces.span({
+        name: "llm.stream.finalize",
+        data: llmStreamInputSummary(input),
+        fn: async () => {
+          const state = normalizeLlmAccumulatorState(input.state);
+          const content = finalLlmContent(state);
+          const status = Number(input.status ?? 0) || 0;
+          const result =
+            state.error != null
+              ? {
+                  status,
+                  ok: false,
+                  content,
+                  toolCalls: state.toolCalls,
+                  errorBody: formatStreamErrorBody(state.error),
+                  headers:
+                    input.headers && typeof input.headers === "object"
+                      ? input.headers
+                      : null,
+                  reasoningContent: state.reasoningContent || null,
+                  stopReason: state.stopReason,
+                  anthropicThinkingBlocks: state.anthropicThinkingBlocks.length
+                    ? state.anthropicThinkingBlocks
+                    : undefined,
+                  model: state.model,
+                  usage: state.usage,
+                }
+              : {
+                  status,
+                  ok: true,
+                  content,
+                  toolCalls: state.toolCalls,
+                  errorBody: null,
+                  reasoningContent: state.reasoningContent || null,
+                  stopReason: state.stopReason,
+                  anthropicThinkingBlocks: state.anthropicThinkingBlocks.length
+                    ? state.anthropicThinkingBlocks
+                    : undefined,
+                  model: state.model,
+                  usage: state.usage,
+                };
+          await moo.traces.mark({
+            message: "llm.stream.finalize.result",
+            data: { result: traceJsonValue(result) },
+          });
+          return result;
+        },
+      }),
+    "llm stream finalize failed",
+  );
 }
 
 export function llmStreamErrorCommand(input: LlmStreamErrorInput) {
@@ -166,38 +252,73 @@ export function llmStreamErrorCommand(input: LlmStreamErrorInput) {
 }
 
 export function llmStreamErrorEffect(input: LlmStreamErrorInput): Effect<any> {
-  return Effect.tryPromise(async () => moo.traces.span({ name: "llm.stream.error", data: llmStreamInputSummary(input), fn: async () => {
-    const state = normalizeLlmAccumulatorState(input.state);
-    const content = finalLlmContent(state);
-    const errorBody = formatStreamErrorBody(input.errorBody ?? input.error ?? "stream failed");
-    const result = {
-      status: Number(input.status ?? 0) || 0,
-      ok: false,
-      content,
-      toolCalls: state.toolCalls,
-      errorBody,
-      headers: input.headers && typeof input.headers === "object" ? input.headers : null,
-      reasoningContent: state.reasoningContent || null,
-      stopReason: state.stopReason,
-      model: state.model,
-      usage: state.usage,
-    };
-    await moo.traces.mark({ message: "llm.stream.error.result", data: { result: traceJsonValue(result), state: traceJsonValue(state) } });
-    return result;
-  } }), "llm stream error failed");
+  return Effect.tryPromise(
+    async () =>
+      moo.traces.span({
+        name: "llm.stream.error",
+        data: llmStreamInputSummary(input),
+        fn: async () => {
+          const state = normalizeLlmAccumulatorState(input.state);
+          const content = finalLlmContent(state);
+          const errorBody = formatStreamErrorBody(
+            input.errorBody ?? input.error ?? "stream failed",
+          );
+          const result = {
+            status: Number(input.status ?? 0) || 0,
+            ok: false,
+            content,
+            toolCalls: state.toolCalls,
+            errorBody,
+            headers:
+              input.headers && typeof input.headers === "object"
+                ? input.headers
+                : null,
+            reasoningContent: state.reasoningContent || null,
+            stopReason: state.stopReason,
+            model: state.model,
+            usage: state.usage,
+          };
+          await moo.traces.mark({
+            message: "llm.stream.error.result",
+            data: {
+              result: traceJsonValue(result),
+              state: traceJsonValue(state),
+            },
+          });
+          return result;
+        },
+      }),
+    "llm stream error failed",
+  );
 }
 
 function llmStreamInputSummary(input: Input): Record<string, unknown> {
   const rawEvents = Array.isArray(input.events) ? input.events : [];
-  const streamEvents = input.streamEvents && typeof input.streamEvents === "object" ? input.streamEvents : {};
+  const streamEvents =
+    input.streamEvents && typeof input.streamEvents === "object"
+      ? input.streamEvents
+      : {};
   return {
     provider: input.provider ?? streamEvents.provider ?? null,
-    model: input.model ?? streamEvents.model ?? (input.state != null && typeof input.state === "object" && !Array.isArray(input.state) ? (input.state as { model?: unknown }).model : null) ?? null,
+    model:
+      input.model ??
+      streamEvents.model ??
+      (input.state != null &&
+      typeof input.state === "object" &&
+      !Array.isArray(input.state)
+        ? (input.state as { model?: unknown }).model
+        : null) ??
+      null,
     status: input.status ?? null,
     events: rawEvents,
-    state: input.state ? traceJsonValue(normalizeLlmAccumulatorState(input.state)) : null,
+    state: input.state
+      ? traceJsonValue(normalizeLlmAccumulatorState(input.state))
+      : null,
     streamEvents: traceJsonValue(streamEvents),
-    headers: input.headers && typeof input.headers === "object" ? traceJsonValue(input.headers) : null,
+    headers:
+      input.headers && typeof input.headers === "object"
+        ? traceJsonValue(input.headers)
+        : null,
     error: input.error ?? input.errorBody ?? null,
   };
 }
@@ -207,12 +328,14 @@ function isObject(value: unknown): value is MutableJsonObject {
 }
 
 function isLlmToolCall(value: unknown): value is LlmToolCall {
-  return isObject(value)
-    && typeof value.id === "string"
-    && value.type === "function"
-    && isObject(value.function)
-    && typeof value.function.name === "string"
-    && typeof value.function.arguments === "string";
+  return (
+    isObject(value) &&
+    typeof value.id === "string" &&
+    value.type === "function" &&
+    isObject(value.function) &&
+    typeof value.function.name === "string" &&
+    typeof value.function.arguments === "string"
+  );
 }
 
 function numericRecord(value: MutableJsonObject): Record<string, number> {
@@ -226,35 +349,73 @@ function numericRecord(value: MutableJsonObject): Record<string, number> {
 
 function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
   return {
-    content: isObject(raw) && typeof raw.content === "string" ? raw.content : "",
-    toolCalls: isObject(raw) && Array.isArray(raw.toolCalls) ? raw.toolCalls.filter(isLlmToolCall) : [],
-    anthropicThinkingBlocks: isObject(raw) && Array.isArray(raw.anthropicThinkingBlocks)
-      ? raw.anthropicThinkingBlocks.map(normalizeAnthropicThinkingBlock).filter(Boolean) as Array<{ type: "thinking"; thinking: string; signature: string }>
-      : [],
-    model: isObject(raw) && typeof raw.model === "string" && raw.model ? raw.model : null,
-    usage: isObject(raw) ? raw.usage ?? null : null,
-    error: isObject(raw) ? raw.error ?? null : null,
-    reasoningContent: isObject(raw) && typeof raw.reasoningContent === "string" ? raw.reasoningContent : "",
-    stopReason: isObject(raw) && typeof raw.stopReason === "string" && raw.stopReason ? raw.stopReason : null,
+    content:
+      isObject(raw) && typeof raw.content === "string" ? raw.content : "",
+    toolCalls:
+      isObject(raw) && Array.isArray(raw.toolCalls)
+        ? raw.toolCalls.filter(isLlmToolCall)
+        : [],
+    anthropicThinkingBlocks:
+      isObject(raw) && Array.isArray(raw.anthropicThinkingBlocks)
+        ? (raw.anthropicThinkingBlocks
+            .map(normalizeAnthropicThinkingBlock)
+            .filter(Boolean) as Array<{
+            type: "thinking";
+            thinking: string;
+            signature: string;
+          }>)
+        : [],
+    model:
+      isObject(raw) && typeof raw.model === "string" && raw.model
+        ? raw.model
+        : null,
+    usage: isObject(raw) ? (raw.usage ?? null) : null,
+    error: isObject(raw) ? (raw.error ?? null) : null,
+    reasoningContent:
+      isObject(raw) && typeof raw.reasoningContent === "string"
+        ? raw.reasoningContent
+        : "",
+    stopReason:
+      isObject(raw) && typeof raw.stopReason === "string" && raw.stopReason
+        ? raw.stopReason
+        : null,
     deepseekThinkOpen: isObject(raw) && raw.deepseekThinkOpen === true,
-    deepseekTagBuffer: isObject(raw) && typeof raw.deepseekTagBuffer === "string" ? raw.deepseekTagBuffer : "",
-    lastTokenProgressUsed: Number(isObject(raw) ? raw.lastTokenProgressUsed ?? 0 : 0) || 0,
-    anthropicToolIndex: isObject(raw) && Number.isFinite(Number(raw.anthropicToolIndex)) ? Number(raw.anthropicToolIndex) : null,
-    anthropicToolBlockToCall: isObject(raw) && isObject(raw.anthropicToolBlockToCall)
-      ? numericRecord(raw.anthropicToolBlockToCall)
-      : {},
-    anthropicThinkingBlockIndex: isObject(raw) && Number.isFinite(Number(raw.anthropicThinkingBlockIndex)) ? Number(raw.anthropicThinkingBlockIndex) : null,
-    anthropicThinkingBlockToIndex: isObject(raw) && isObject(raw.anthropicThinkingBlockToIndex)
-      ? numericRecord(raw.anthropicThinkingBlockToIndex)
-      : {},
+    deepseekTagBuffer:
+      isObject(raw) && typeof raw.deepseekTagBuffer === "string"
+        ? raw.deepseekTagBuffer
+        : "",
+    lastTokenProgressUsed:
+      Number(isObject(raw) ? (raw.lastTokenProgressUsed ?? 0) : 0) || 0,
+    anthropicToolIndex:
+      isObject(raw) && Number.isFinite(Number(raw.anthropicToolIndex))
+        ? Number(raw.anthropicToolIndex)
+        : null,
+    anthropicToolBlockToCall:
+      isObject(raw) && isObject(raw.anthropicToolBlockToCall)
+        ? numericRecord(raw.anthropicToolBlockToCall)
+        : {},
+    anthropicThinkingBlockIndex:
+      isObject(raw) && Number.isFinite(Number(raw.anthropicThinkingBlockIndex))
+        ? Number(raw.anthropicThinkingBlockIndex)
+        : null,
+    anthropicThinkingBlockToIndex:
+      isObject(raw) && isObject(raw.anthropicThinkingBlockToIndex)
+        ? numericRecord(raw.anthropicThinkingBlockToIndex)
+        : {},
   };
 }
 
-function normalizeAnthropicThinkingBlock(value: unknown): { type: "thinking"; thinking: string; signature: string } | null {
+function normalizeAnthropicThinkingBlock(
+  value: unknown,
+): { type: "thinking"; thinking: string; signature: string } | null {
   if (!isObject(value) || value.type !== "thinking") return null;
   const signature = typeof value.signature === "string" ? value.signature : "";
   if (!signature) return null;
-  return { type: "thinking", thinking: typeof value.thinking === "string" ? value.thinking : "", signature };
+  return {
+    type: "thinking",
+    thinking: typeof value.thinking === "string" ? value.thinking : "",
+    signature,
+  };
 }
 
 function accumulateLlmStreamEvent(
@@ -265,7 +426,8 @@ function accumulateLlmStreamEvent(
 ) {
   const response = isObject(parsed.response) ? parsed.response : {};
   const topModel = typeof parsed.model === "string" ? parsed.model : "";
-  const responseModel = typeof response.model === "string" ? response.model : "";
+  const responseModel =
+    typeof response.model === "string" ? response.model : "";
   if (!state.model && topModel) state.model = topModel;
   if (!state.model && responseModel) state.model = responseModel;
   if (parsed?.usage != null) state.usage = parsed.usage;
@@ -277,32 +439,48 @@ function accumulateLlmStreamEvent(
     const msg = isObject(parsed.message) ? parsed.message : {};
     if (typeof msg.model === "string" && msg.model) state.model = msg.model;
     if (msg.usage != null) state.usage = msg.usage;
-    if (typeof msg.stop_reason === "string" && msg.stop_reason) state.stopReason = msg.stop_reason;
+    if (typeof msg.stop_reason === "string" && msg.stop_reason)
+      state.stopReason = msg.stop_reason;
   }
   if (type === "message_delta") {
-    if (parsed?.usage != null) state.usage = { ...(state.usage || {}), ...parsed.usage };
+    if (parsed?.usage != null)
+      state.usage = { ...(state.usage || {}), ...parsed.usage };
     const delta = isObject(parsed.delta) ? parsed.delta : {};
-    if (delta.usage != null && isObject(delta.usage)) state.usage = { ...(isObject(state.usage) ? state.usage : {}), ...delta.usage };
-    if (typeof delta.stop_reason === "string" && delta.stop_reason) state.stopReason = delta.stop_reason;
+    if (delta.usage != null && isObject(delta.usage))
+      state.usage = {
+        ...(isObject(state.usage) ? state.usage : {}),
+        ...delta.usage,
+      };
+    if (typeof delta.stop_reason === "string" && delta.stop_reason)
+      state.stopReason = delta.stop_reason;
   }
   if (type === "message_stop" && !state.stopReason) {
     const msg = isObject(parsed.message) ? parsed.message : {};
-    if (typeof msg?.stop_reason === "string" && msg.stop_reason) state.stopReason = msg.stop_reason;
+    if (typeof msg?.stop_reason === "string" && msg.stop_reason)
+      state.stopReason = msg.stop_reason;
   }
-  const contentBlock = isObject(parsed.content_block) ? parsed.content_block : {};
+  const contentBlock = isObject(parsed.content_block)
+    ? parsed.content_block
+    : {};
   if (type === "content_block_start" && contentBlock.type === "thinking") {
     const block = {
       type: "thinking" as const,
-      thinking: typeof contentBlock.thinking === "string" ? contentBlock.thinking : "",
-      signature: typeof contentBlock.signature === "string" ? contentBlock.signature : "",
+      thinking:
+        typeof contentBlock.thinking === "string" ? contentBlock.thinking : "",
+      signature:
+        typeof contentBlock.signature === "string"
+          ? contentBlock.signature
+          : "",
     };
     state.anthropicThinkingBlocks.push(block);
     const thinkingIndex = state.anthropicThinkingBlocks.length - 1;
     state.anthropicThinkingBlockIndex = thinkingIndex;
     if (Number.isFinite(Number(parsed?.index))) {
-      state.anthropicThinkingBlockToIndex[String(Number(parsed.index))] = thinkingIndex;
+      state.anthropicThinkingBlockToIndex[String(Number(parsed.index))] =
+        thinkingIndex;
     }
-    if (block.thinking) appendLlmReasoningDelta(state, block.thinking, streamEvents, events);
+    if (block.thinking)
+      appendLlmReasoningDelta(state, block.thinking, streamEvents, events);
   }
   if (type === "content_block_start" && contentBlock.type === "tool_use") {
     const block = contentBlock;
@@ -322,9 +500,17 @@ function accumulateLlmStreamEvent(
     if (typeof delta.text === "string" && delta.text) {
       appendLlmContentDelta(state, delta.text, streamEvents, events);
     }
-    const blockIndex = Number.isFinite(Number(parsed?.index)) ? String(Number(parsed.index)) : null;
-    const thinkingIndex = blockIndex == null ? state.anthropicThinkingBlockIndex : state.anthropicThinkingBlockToIndex[blockIndex];
-    const thinkingBlock = thinkingIndex == null ? null : state.anthropicThinkingBlocks[thinkingIndex];
+    const blockIndex = Number.isFinite(Number(parsed?.index))
+      ? String(Number(parsed.index))
+      : null;
+    const thinkingIndex =
+      blockIndex == null
+        ? state.anthropicThinkingBlockIndex
+        : state.anthropicThinkingBlockToIndex[blockIndex];
+    const thinkingBlock =
+      thinkingIndex == null
+        ? null
+        : state.anthropicThinkingBlocks[thinkingIndex];
     if (typeof delta.thinking === "string" && delta.thinking) {
       if (thinkingBlock) thinkingBlock.thinking += delta.thinking;
       appendLlmReasoningDelta(state, delta.thinking, streamEvents, events);
@@ -333,18 +519,29 @@ function accumulateLlmStreamEvent(
       thinkingBlock.signature += delta.signature;
     }
     if (typeof delta.partial_json === "string") {
-      const i = blockIndex == null ? state.anthropicToolIndex : state.anthropicToolBlockToCall[blockIndex];
+      const i =
+        blockIndex == null
+          ? state.anthropicToolIndex
+          : state.anthropicToolBlockToCall[blockIndex];
       const slot = i == null ? null : state.toolCalls[i];
-      if (slot) slot.function.arguments = String(slot.function.arguments || "") + delta.partial_json;
+      if (slot)
+        slot.function.arguments =
+          String(slot.function.arguments || "") + delta.partial_json;
     }
   }
   if (type === "content_block_stop") {
-    if (Number.isFinite(Number(parsed?.index))) delete state.anthropicToolBlockToCall[String(Number(parsed.index))];
-    if (Number.isFinite(Number(parsed?.index))) delete state.anthropicThinkingBlockToIndex[String(Number(parsed.index))];
+    if (Number.isFinite(Number(parsed?.index)))
+      delete state.anthropicToolBlockToCall[String(Number(parsed.index))];
+    if (Number.isFinite(Number(parsed?.index)))
+      delete state.anthropicThinkingBlockToIndex[String(Number(parsed.index))];
     state.anthropicToolIndex = null;
     state.anthropicThinkingBlockIndex = null;
   }
-  if (typeof parsed?.delta === "string" && type.includes("text.delta") && parsed.delta) {
+  if (
+    typeof parsed?.delta === "string" &&
+    type.includes("text.delta") &&
+    parsed.delta
+  ) {
     appendLlmContentDelta(state, parsed.delta, streamEvents, events);
   }
   const item = isObject(parsed.item) ? parsed.item : {};
@@ -361,14 +558,23 @@ function accumulateLlmStreamEvent(
 
   const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
   const firstChoice = isObject(choices[0]) ? choices[0] : {};
-  if (typeof firstChoice.finish_reason === "string" && firstChoice.finish_reason) state.stopReason = firstChoice.finish_reason;
+  if (
+    typeof firstChoice.finish_reason === "string" &&
+    firstChoice.finish_reason
+  )
+    state.stopReason = firstChoice.finish_reason;
   const delta = isObject(firstChoice.delta) ? firstChoice.delta : null;
   if (!delta) return;
   if (typeof delta.content === "string" && delta.content) {
     appendProviderContentDelta(state, delta.content, streamEvents, events);
   }
   if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-    appendLlmReasoningDelta(state, delta.reasoning_content, streamEvents, events);
+    appendLlmReasoningDelta(
+      state,
+      delta.reasoning_content,
+      streamEvents,
+      events,
+    );
   }
   if (Array.isArray(delta.tool_calls)) {
     for (const rawTc of delta.tool_calls) {
@@ -376,21 +582,33 @@ function accumulateLlmStreamEvent(
       const fn = isObject(tc.function) ? tc.function : {};
       const i = Number.isFinite(Number(tc.index)) ? Number(tc.index) : 0;
       while (state.toolCalls.length <= i) {
-        state.toolCalls.push({ id: "", type: "function", function: { name: "", arguments: "" } });
+        state.toolCalls.push({
+          id: "",
+          type: "function",
+          function: { name: "", arguments: "" },
+        });
       }
       const slot = state.toolCalls[i];
       if (typeof tc.id === "string" && tc.id) slot.id = tc.id;
       if (tc.type === "function") slot.type = tc.type;
       if (typeof fn.name === "string" && fn.name) slot.function.name = fn.name;
-      if (typeof fn.arguments === "string") slot.function.arguments = String(slot.function.arguments || "") + fn.arguments;
+      if (typeof fn.arguments === "string")
+        slot.function.arguments =
+          String(slot.function.arguments || "") + fn.arguments;
     }
   }
 }
 
-function appendProviderContentDelta(state: LlmAccumulatorState, delta: string, streamEvents: StreamEventsView, events: StreamOutputEvent[]) {
+function appendProviderContentDelta(
+  state: LlmAccumulatorState,
+  delta: string,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
   if (isDeepSeekStream(streamEvents)) {
     const parsed = splitDeepSeekThinkDelta(state, delta);
-    if (parsed.reasoning) appendLlmReasoningDelta(state, parsed.reasoning, streamEvents, events);
+    if (parsed.reasoning)
+      appendLlmReasoningDelta(state, parsed.reasoning, streamEvents, events);
     if (!parsed.content) return;
     appendLlmContentDelta(state, parsed.content, streamEvents, events);
     return;
@@ -398,24 +616,52 @@ function appendProviderContentDelta(state: LlmAccumulatorState, delta: string, s
   appendLlmContentDelta(state, delta, streamEvents, events);
 }
 
-function appendLlmReasoningDelta(state: LlmAccumulatorState, delta: string, streamEvents: StreamEventsView, events: StreamOutputEvent[]) {
+function appendLlmReasoningDelta(
+  state: LlmAccumulatorState,
+  delta: string,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
   state.reasoningContent += delta;
-  const draft = isObject(streamEvents.draftEvent) ? streamEvents.draftEvent as JsonObject : null;
-  if (draft) {
-    events.push({ ...draft, kind: "reasoning-draft", content: state.content, reasoningContent: state.reasoningContent, delta });
+  const draft = isObject(streamEvents.draftEvent)
+    ? (streamEvents.draftEvent as JsonObject)
+    : null;
+  if (draft && draft.kind !== "compaction-draft") {
+    events.push({
+      ...draft,
+      kind: "reasoning-draft",
+      content: state.content,
+      reasoningContent: state.reasoningContent,
+      delta,
+    });
   }
 }
 
-function appendLlmContentDelta(state: LlmAccumulatorState, delta: string, streamEvents: StreamEventsView, events: StreamOutputEvent[]) {
+function appendLlmContentDelta(
+  state: LlmAccumulatorState,
+  delta: string,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
   state.content += delta;
-  const draft = isObject(streamEvents.draftEvent) ? streamEvents.draftEvent as JsonObject : null;
+  const draft = isObject(streamEvents.draftEvent)
+    ? (streamEvents.draftEvent as JsonObject)
+    : null;
   if (draft) {
-    events.push({ ...draft, content: state.content, reasoningContent: state.reasoningContent || undefined, delta });
+    events.push({
+      ...draft,
+      content: state.content,
+      reasoningContent: state.reasoningContent || undefined,
+      delta,
+    });
   }
-  const tokenEvent = isObject(streamEvents.tokenProgressEvent) ? streamEvents.tokenProgressEvent as TokenProgressTemplate : null;
+  const tokenEvent = isObject(streamEvents.tokenProgressEvent)
+    ? (streamEvents.tokenProgressEvent as TokenProgressTemplate)
+    : null;
   if (tokenEvent) {
     const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
-    const budget = Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0;
+    const budget =
+      Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0;
     const used = estimated + estimateTextTokens(state.content);
     if (used >= state.lastTokenProgressUsed + 8) {
       events.push(tokenProgressPayload(tokenEvent, used, budget));
@@ -427,12 +673,14 @@ function appendLlmContentDelta(state: LlmAccumulatorState, delta: string, stream
 function finalLlmContent(state: LlmAccumulatorState): string {
   if (state.deepseekTagBuffer) {
     const parsed = splitDeepSeekThinkDelta(state, "");
-    if (parsed.reasoning) appendLlmReasoningDelta(state, parsed.reasoning, {}, []);
+    if (parsed.reasoning)
+      appendLlmReasoningDelta(state, parsed.reasoning, {}, []);
     if (parsed.content) state.content += parsed.content;
     if (state.deepseekTagBuffer) {
       const trailing = state.deepseekTagBuffer;
       state.deepseekTagBuffer = "";
-      if (state.deepseekThinkOpen) appendLlmReasoningDelta(state, trailing, {}, []);
+      if (state.deepseekThinkOpen)
+        appendLlmReasoningDelta(state, trailing, {}, []);
       else state.content += trailing;
     }
   }
@@ -440,13 +688,20 @@ function finalLlmContent(state: LlmAccumulatorState): string {
 }
 
 function isDeepSeekStream(streamEvents: StreamEventsView): boolean {
-  const provider = String(streamEvents?.provider ?? "").trim().toLowerCase();
+  const provider = String(streamEvents?.provider ?? "")
+    .trim()
+    .toLowerCase();
   if (provider === "deepseek") return true;
-  const model = String(streamEvents?.model ?? "").trim().toLowerCase();
+  const model = String(streamEvents?.model ?? "")
+    .trim()
+    .toLowerCase();
   return model.startsWith("deepseek");
 }
 
-function splitDeepSeekThinkDelta(state: LlmAccumulatorState, delta: string): { content: string; reasoning: string } {
+function splitDeepSeekThinkDelta(
+  state: LlmAccumulatorState,
+  delta: string,
+): { content: string; reasoning: string } {
   const combined = state.deepseekTagBuffer + delta;
   state.deepseekTagBuffer = "";
   let content = "";
@@ -525,7 +780,11 @@ function formatStreamErrorBody(error: unknown): string {
   }
 }
 
-function tokenProgressPayload(template: TokenProgressTemplate, used: number, budget: number): StreamOutputEvent {
+function tokenProgressPayload(
+  template: TokenProgressTemplate,
+  used: number,
+  budget: number,
+): StreamOutputEvent {
   const fraction = budget > 0 ? used / budget : 0;
   return { ...template, used, fraction };
 }

@@ -69,7 +69,8 @@ export function timelineExpansionKey(item: TimelineItem): string {
 
 export function replyDraftKey(item: TimelineItem): string | null {
   if (item.type !== "step") return null;
-  return item.kind === "agent:Reply" && item.draftId
+  return (item.kind === "agent:Reply" || item.kind === "agent:Compaction") &&
+    item.draftId
     ? `step:draft:${item.draftId}`
     : null;
 }
@@ -117,12 +118,16 @@ export function isCancelledTimelineItem(item: TimelineItem): item is StepItem {
   return item.type === "step" && item.status === "agent:Cancelled";
 }
 
-export function dismissedTimelineEntryKey(entry: DismissedTimelineEntry): string {
+export function dismissedTimelineEntryKey(
+  entry: DismissedTimelineEntry,
+): string {
   if (entry.kind === "draft") return `draft:${entry.reply.id}`;
   return timelineItemKey(entry.item);
 }
 
-export function dismissedTimelineEntryAt(entry: DismissedTimelineEntry): number {
+export function dismissedTimelineEntryAt(
+  entry: DismissedTimelineEntry,
+): number {
   return entry.kind === "draft" ? entry.reply.at : entry.item.at;
 }
 
@@ -220,7 +225,8 @@ export function timelineRenderEntries(
         const thoughtKey = timelineThoughtKey(row.item);
         const previousThought = cache?.get(thoughtKey);
         rendered.push(
-          previousThought?.kind === "thought" && previousThought.item === row.item
+          previousThought?.kind === "thought" &&
+            previousThought.item === row.item
             ? previousThought
             : { kind: "thought", item: row.item },
         );
@@ -312,4 +318,3 @@ export function formatThinkingElapsed(ms: number): string {
   }
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
-

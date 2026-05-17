@@ -4,13 +4,18 @@ import type { TimelineItem } from "./api";
 import { readStylesheetForTest } from "./styleTestUtils.test.ts";
 import { latestTerminalReplySettlesActiveTurn } from "./timeline/utils";
 
-const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+const timeline = readFileSync(
+  new URL("./Timeline.tsx", import.meta.url),
+  "utf8",
+);
 const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 const css = readStylesheetForTest();
 
 describe("timeline thinking status", () => {
   test("hides standalone Thinking row during running timeline rows", () => {
-    expect(timeline).toContain("const hasRunningTimelineRow = createMemo(() =>");
+    expect(timeline).toContain(
+      "const hasRunningTimelineRow = createMemo(() =>",
+    );
     expect(timeline).toContain("visibleTimeline().some(isRunningTimelineItem)");
     expect(timeline).toContain("const showStandaloneThinking = () =>");
     expect(timeline).toContain("!hasRunningTimelineRow()");
@@ -35,22 +40,36 @@ describe("timeline thinking status", () => {
       text: "tool done",
     });
 
-    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 1000)).toBe(true);
-    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 3000)).toBe(false);
-    expect(latestTerminalReplySettlesActiveTurn([reply(2000), tool(2500)], 1000)).toBe(false);
-    expect(timeline).toContain("const activeTurnReplySettled = createMemo(() =>");
+    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 1000)).toBe(
+      true,
+    );
+    expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 3000)).toBe(
+      false,
+    );
+    expect(
+      latestTerminalReplySettlesActiveTurn([reply(2000), tool(2500)], 1000),
+    ).toBe(false);
+    expect(timeline).toContain(
+      "const activeTurnReplySettled = createMemo(() =>",
+    );
     expect(timeline).toContain("!activeTurnReplySettled()");
   });
 
   test("labels manual compaction failures distinctly", () => {
-    expect(timeline).toContain('function compactionTrigger(detail: Record<string, any>): "manual" | "automatic" {');
-    expect(timeline).toContain('<strong>{compactionTriggerTitle(props.detail)} compaction failed</strong>');
-    expect(timeline).toContain('The model provider rejected the ${trigger} compaction request.');
-    expect(timeline).toContain('Try switching to a larger-context model, lowering reasoning effort, or reducing retained history.');
-    expect(timeline).toContain('requestPromptTokens');
-    expect(timeline).toContain('request cap');
+    expect(timeline).toContain("function compactionTrigger(");
+    expect(timeline).toContain('): "manual" | "automatic" {');
+    expect(timeline).toContain(
+      "{compactionTriggerTitle(props.detail)} compaction failed",
+    );
+    expect(timeline).toContain(
+      "The model provider rejected the ${trigger} compaction request.",
+    );
+    expect(timeline).toContain(
+      "Try switching to a larger-context model, lowering reasoning effort, or reducing retained history.",
+    );
+    expect(timeline).toContain("requestPromptTokens");
+    expect(timeline).toContain("request cap");
   });
-
 
   test("marks manual compact command step-starts as compacting", () => {
     const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
@@ -66,14 +85,32 @@ describe("timeline thinking status", () => {
     expect(registry).toContain("compact: compactCommand");
     expect(step).toContain('stepLifecycleEvents(chatId, mode === "compact")');
     expect(step).toContain('{ kind: "step-start", chatId, compacting: true }');
-    expect(state).toContain('if (ev.compacting === true)');
-    expect(state).toContain('addToSet(setCompactingChats, compactingChats, ev.chatId);');
+    expect(step).toContain('{ draftKind: "compaction-draft" }');
+    expect(state).toContain("if (ev.compacting === true)");
+    expect(state).toContain(
+      "addToSet(setCompactingChats, compactingChats, ev.chatId);",
+    );
   });
 
   test("labels active compaction as Compacting", () => {
-    expect(timeline).toContain('const activeWaitLabel = () => (bag.compacting() ? "Compacting…" : "Thinking…");');
-    expect(timeline).toContain('{activeWaitLabel()} {thinkingElapsed()}');
-    expect(timeline).toContain('label={bag.compacting() ? "compacting" : "thinking"}');
+    expect(timeline).toContain("const activeWaitLabel = () =>");
+    expect(timeline).toContain(
+      'bag.compacting() ? "Compacting…" : "Thinking…"',
+    );
+    expect(timeline).toContain("{activeWaitLabel()} {thinkingElapsed()}");
+    expect(timeline).toContain(
+      'label={bag.compacting() ? "compacting" : "thinking"}',
+    );
+  });
+
+  test("renders streamed compaction drafts", () => {
+    expect(state).toContain('if (ev.kind === "compaction-draft")');
+    expect(state).toContain('kind: "compaction"');
+    expect(timeline).toContain(
+      'target.kind = compacting ? "agent:Compaction" : "agent:Reply";',
+    );
+    expect(timeline).toContain('? "compacting older turns"');
+    expect(timeline).toContain('class="compaction-dots"');
   });
 
   test("labels streaming replies as Streaming", () => {
@@ -81,13 +118,17 @@ describe("timeline thinking status", () => {
       "function activeReplyStatusLabel(item: StepItem, compacting: boolean): string {",
     );
     expect(timeline).toContain('if (item.text.trim()) return "Streaming…";');
-    expect(timeline).toContain('if (item.reasoningContent?.trim()) return "Streaming…";');
+    expect(timeline).toContain(
+      'if (item.reasoningContent?.trim()) return "Streaming…";',
+    );
     expect(timeline).toContain(`stepMetaLabel(
               props.item,
               props.bag.compacting(),
               props.bag.thinking() || props.bag.compacting(),
             )`);
-    expect(timeline).toContain("return activeReplyStatusLabel(item, compacting);");
+    expect(timeline).toContain(
+      "return activeReplyStatusLabel(item, compacting);",
+    );
   });
 
   test("aligns thought and dismissed timeline boxes", () => {
@@ -131,36 +172,51 @@ describe("timeline thinking status", () => {
   test("settles stale reply thinking UI after the active run ends", () => {
     expect(timeline).toContain("function stepMetaLabel(");
     expect(timeline).toContain("active: boolean,");
-    expect(timeline).toContain('item.kind === "agent:Reply" && active && !isTerminalStepStatus(item.status)');
-    expect(timeline).toContain('(props.streaming ?? true) &&');
+    expect(timeline).toContain('item.kind === "agent:Reply" &&');
+    expect(timeline).toContain("!isTerminalStepStatus(item.status)");
+    expect(timeline).toContain("(props.streaming ?? true) &&");
     expect(timeline).toContain(
-      'props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)',
+      "props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)",
     );
-    expect(timeline).toContain('<ThoughtBox item={entry.item} streaming={false} />');
+    expect(timeline).toContain(
+      "<ThoughtBox item={entry.item} streaming={false} />",
+    );
     expect(state).toContain("function clearActiveChatRuntime(id: string)");
     expect(state).toContain("clearActiveChatRuntime(id);");
     expect(state).toContain("function settleRunningTimelineRows(id: string)");
     expect(state).toContain('item.status !== "agent:Running"');
-    expect(state).toContain('return { ...item, status: "agent:Done" } as TimelineItem;');
+    expect(state).toContain(
+      'return { ...item, status: "agent:Done" } as TimelineItem;',
+    );
     expect(state).toContain("settleRunningTimelineRows(ev.chatId);");
   });
 
   test("renders streamed model thinking as separate thought boxes", () => {
-    const utils = readFileSync(new URL("./timeline/utils.ts", import.meta.url), "utf8");
+    const utils = readFileSync(
+      new URL("./timeline/utils.ts", import.meta.url),
+      "utf8",
+    );
 
     expect(utils).toContain('| { kind: "thought"; item: StepItem }');
-    expect(utils).toContain("export function timelineThoughtKey(item: StepItem): string {");
+    expect(utils).toContain(
+      "export function timelineThoughtKey(item: StepItem): string {",
+    );
     expect(utils).toContain('previousThought?.kind === "thought"');
-    expect(utils).toContain("if (hasReplyReasoning(item)) keys.push(timelineThoughtKey(item));");
+    expect(utils).toContain(
+      "if (hasReplyReasoning(item)) keys.push(timelineThoughtKey(item));",
+    );
     expect(timeline).toContain('entry.kind === "thought" ? (');
-    expect(timeline).toContain('<ThoughtBox item={entry.item} streaming={bag.thinking()} />');
+    expect(timeline).toContain("<ThoughtBox");
+    expect(timeline).toContain("streaming={bag.thinking()}");
     expect(timeline).toContain('class="step reply-thinking"');
-    expect(timeline).toContain('data-timeline-key={props.timelineKey}');
+    expect(timeline).toContain("data-timeline-key={props.timelineKey}");
     expect(timeline).toContain("const html = () => renderMarkdown(text());");
     expect(timeline).toContain('class="body markdown reply-thinking-body"');
     expect(timeline).toContain('label="streaming thinking"');
     expect(timeline).toContain("const thoughtStreaming = () =>");
-    expect(timeline).toContain('props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)');
+    expect(timeline).toContain(
+      "props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)",
+    );
     expect(timeline).toContain('props.item.kind !== "agent:Reply" ||');
     expect(timeline).toContain("draft.reasoningContent");
     expect(timeline).toContain("bag.draftReply()?.reasoningContent");
@@ -168,17 +224,27 @@ describe("timeline thinking status", () => {
     expect(state).toContain("reasoningContent: ev.reasoningContent");
     expect(state).toContain("reasoningStreaming: true");
     expect(state).toContain("reasoningStreaming: false");
-    expect(state).toContain("setDraftReply({ ...cur, reasoningStreaming: false });");
+    expect(state).toContain(
+      "setDraftReply({ ...cur, reasoningStreaming: false });",
+    );
   });
 
   test("keeps reasoning-only partial replies visible until persisted reply rows land", () => {
-    expect(timeline).toContain("reply.content.trim() || reply.reasoningContent?.trim()");
+    expect(timeline).toContain(
+      "reply.content.trim() || reply.reasoningContent?.trim()",
+    );
     expect(state).toContain("const replyDraftIds = new Set(");
-    expect(state).toContain("if (replyDraftIds.has(item.draftId)) return false;");
+    expect(state).toContain(
+      "if (replyDraftIds.has(item.draftId)) return false;",
+    );
   });
 
   test("clears stale compaction when streamed replies arrive", () => {
-    expect(state).toContain("A draft event can only come from the real answer stream");
-    expect(state).toContain("deleteFromSet(setCompactingChats, compactingChats, cid);");
+    expect(state).toContain(
+      "A reply draft can only come from the real answer stream",
+    );
+    expect(state).toContain(
+      "deleteFromSet(setCompactingChats, compactingChats, cid);",
+    );
   });
 });

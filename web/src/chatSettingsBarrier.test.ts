@@ -123,7 +123,9 @@ describe("chat settings write integration", () => {
       "await waitForChatSettingsWrites(chat);",
     );
     const directStepRpc = stateSource.indexOf(
-      `const r = await api("step", { chatId: chat, message: text,`,
+      `const r = await api("step", {
+      chatId: chat,
+      message: text,`,
     );
     expect(directStepWait).toBeGreaterThanOrEqual(0);
     expect(directStepRpc).toBeGreaterThan(directStepWait);
@@ -132,7 +134,8 @@ describe("chat settings write integration", () => {
       "await waitForChatSettingsWrites(head.chatId);",
     );
     const queuedStepRpc = stateSource.indexOf(
-      `const r = await api("step", {\n          chatId: head.chatId,`,
+      `const r = await api("step", {
+          chatId: head.chatId,`,
     );
     expect(queuedStepWait).toBeGreaterThanOrEqual(0);
     expect(queuedStepRpc).toBeGreaterThan(queuedStepWait);
@@ -144,10 +147,11 @@ describe("chat settings write integration", () => {
   });
 });
 
-
 describe("chat stop queue integration", () => {
   test("keeps queued follow-ups paused until interrupt completes", () => {
-    expect(stateSource).toContain("const [interruptingChats, setInterruptingChats]");
+    expect(stateSource).toContain(
+      "const [interruptingChats, setInterruptingChats]",
+    );
     expect(stateSource).toContain("setHas(interruptingChats(), id)");
 
     const addInterrupting = stateSource.indexOf(

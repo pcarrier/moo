@@ -5,7 +5,12 @@
 // flush on connect.
 
 import { getPsk } from "./auth";
-import type { AgentTodo, MemoryFactChange, TodoDiffChange, V8Event } from "./api";
+import type {
+  AgentTodo,
+  MemoryFactChange,
+  TodoDiffChange,
+  V8Event,
+} from "./api";
 
 type DiffStats = { added: number; removed: number; lines: number };
 
@@ -21,25 +26,106 @@ type StreamDraftEvent = {
 export type Event =
   | { kind: "pointer"; pointer: string }
   | { kind: "facts"; store: string }
-  | { kind: "ui-open"; chatId: string; uiId: string; instanceId: string; stateRef?: string; stateTarget?: string | null; at?: number }
-  | { kind: "file-diff"; chatId: string; path: string; diff: string; stats?: DiffStats; before?: string | null; after?: string | null; hash?: string; stepId?: string; at: number }
-  | { kind: "todo-diff"; chatId: string; changes?: TodoDiffChange[]; hash?: string; stepId?: string; at: number; todos?: AgentTodo[] }
-  | { kind: "memory-diff"; chatId: string; store: string; graph: string; action?: "assert" | "retract"; path: string; diff: string; stats?: DiffStats; before?: string; after?: string; hash?: string; stepId?: string; at: number; count?: number; changes?: MemoryFactChange[] }
-  | { kind: "blob-add"; chatId: string; objectKind: string; hash: string; size?: number; chars?: number; encoding?: string; stepId?: string; at: number }
-  | { kind: "tokens"; chatId: string; used?: number; budget?: number; threshold?: number; fraction?: number; usage?: unknown; source?: string; estimated?: boolean; reset?: boolean }
+  | {
+      kind: "ui-open";
+      chatId: string;
+      uiId: string;
+      instanceId: string;
+      stateRef?: string;
+      stateTarget?: string | null;
+      at?: number;
+    }
+  | {
+      kind: "file-diff";
+      chatId: string;
+      path: string;
+      diff: string;
+      stats?: DiffStats;
+      before?: string | null;
+      after?: string | null;
+      hash?: string;
+      stepId?: string;
+      at: number;
+    }
+  | {
+      kind: "todo-diff";
+      chatId: string;
+      changes?: TodoDiffChange[];
+      hash?: string;
+      stepId?: string;
+      at: number;
+      todos?: AgentTodo[];
+    }
+  | {
+      kind: "memory-diff";
+      chatId: string;
+      store: string;
+      graph: string;
+      action?: "assert" | "retract";
+      path: string;
+      diff: string;
+      stats?: DiffStats;
+      before?: string;
+      after?: string;
+      hash?: string;
+      stepId?: string;
+      at: number;
+      count?: number;
+      changes?: MemoryFactChange[];
+    }
+  | {
+      kind: "blob-add";
+      chatId: string;
+      objectKind: string;
+      hash: string;
+      size?: number;
+      chars?: number;
+      encoding?: string;
+      stepId?: string;
+      at: number;
+    }
+  | {
+      kind: "tokens";
+      chatId: string;
+      used?: number;
+      budget?: number;
+      threshold?: number;
+      fraction?: number;
+      usage?: unknown;
+      source?: string;
+      estimated?: boolean;
+      reset?: boolean;
+    }
   | { kind: "compaction-start"; chatId: string; at?: number }
   | { kind: "compaction-end"; chatId: string; at?: number }
   | { kind: "step-start"; chatId: string; compacting?: boolean; at?: number }
   | { kind: "step-end"; chatId: string; at?: number }
   | ({ kind: "draft" } & StreamDraftEvent)
   | ({ kind: "reasoning-draft" } & StreamDraftEvent)
+  | ({ kind: "compaction-draft" } & StreamDraftEvent)
   | { kind: "draft-end"; chatId?: string; draftId: string; at?: number }
   | { kind: "llm-auth-required"; chatId?: string; at?: number }
-  | { kind: "runts-step-finished"; chatId: string; stepId: string; status?: string; resultHash?: string; error?: string; durationNs?: number; at?: number }
+  | {
+      kind: "runts-step-finished";
+      chatId: string;
+      stepId: string;
+      status?: string;
+      resultHash?: string;
+      error?: string;
+      durationNs?: number;
+      at?: number;
+    }
   | { kind: "driver-error"; chatId: string; error: unknown; at?: number }
   | { kind: "v8"; event: V8Event }
   | { kind: "trace-write-error"; message: string; rows?: number; at?: number }
-  | { kind: "trace-init-error"; message: string; backend?: string; endpoint?: string; database?: string; at?: number }
+  | {
+      kind: "trace-init-error";
+      message: string;
+      backend?: string;
+      endpoint?: string;
+      database?: string;
+      at?: number;
+    }
   | { kind: "ping" }
   | { kind: "online" }
   | { kind: "offline" }
@@ -67,6 +153,7 @@ const EVENT_KINDS = new Set<string>([
   "step-end",
   "draft",
   "reasoning-draft",
+  "compaction-draft",
   "draft-end",
   "llm-auth-required",
   "runts-step-finished",
@@ -88,43 +175,69 @@ function isEventKind(kind: string): kind is EventKind {
   return EVENT_KINDS.has(kind);
 }
 
-function stringField(frame: Record<string, unknown>, name: string): string | null {
+function stringField(
+  frame: Record<string, unknown>,
+  name: string,
+): string | null {
   const value = frame[name];
   return typeof value === "string" ? value : null;
 }
 
-function optionalString(frame: Record<string, unknown>, name: string): string | undefined {
+function optionalString(
+  frame: Record<string, unknown>,
+  name: string,
+): string | undefined {
   const value = frame[name];
   return typeof value === "string" ? value : undefined;
 }
 
-function optionalNumber(frame: Record<string, unknown>, name: string): number | undefined {
+function optionalNumber(
+  frame: Record<string, unknown>,
+  name: string,
+): number | undefined {
   const value = frame[name];
   return typeof value === "number" ? value : undefined;
 }
 
-function optionalBoolean(frame: Record<string, unknown>, name: string): boolean | undefined {
+function optionalBoolean(
+  frame: Record<string, unknown>,
+  name: string,
+): boolean | undefined {
   const value = frame[name];
   return typeof value === "boolean" ? value : undefined;
 }
 
-function optionalDiffStats(frame: Record<string, unknown>): DiffStats | undefined {
+function optionalDiffStats(
+  frame: Record<string, unknown>,
+): DiffStats | undefined {
   const stats = frame.stats;
   if (!isRecord(stats)) return undefined;
   const added = stats.added;
   const removed = stats.removed;
   const lines = stats.lines;
-  if (typeof added !== "number" || typeof removed !== "number" || typeof lines !== "number") return undefined;
+  if (
+    typeof added !== "number" ||
+    typeof removed !== "number" ||
+    typeof lines !== "number"
+  )
+    return undefined;
   return { added, removed, lines };
 }
 
-function optionalStringOrNull(frame: Record<string, unknown>, name: string): string | null | undefined {
+function optionalStringOrNull(
+  frame: Record<string, unknown>,
+  name: string,
+): string | null | undefined {
   const value = frame[name];
   return value === null || typeof value === "string" ? value : undefined;
 }
 
-function optionalAction(frame: Record<string, unknown>): "assert" | "retract" | undefined {
-  return frame.action === "assert" || frame.action === "retract" ? frame.action : undefined;
+function optionalAction(
+  frame: Record<string, unknown>,
+): "assert" | "retract" | undefined {
+  return frame.action === "assert" || frame.action === "retract"
+    ? frame.action
+    : undefined;
 }
 
 function arrayField<T>(
@@ -143,16 +256,28 @@ function arrayField<T>(
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function isTodoStatus(value: unknown): value is AgentTodo["status"] {
-  return value === "todo" || value === "doing" || value === "done" || value === "blocked" || value === "dropped";
+  return (
+    value === "todo" ||
+    value === "doing" ||
+    value === "done" ||
+    value === "blocked" ||
+    value === "dropped"
+  );
 }
 
 function isAgentTodo(value: unknown): value is AgentTodo {
   if (!isRecord(value)) return false;
-  return typeof value.id === "string" && typeof value.text === "string" && isTodoStatus(value.status);
+  return (
+    typeof value.id === "string" &&
+    typeof value.text === "string" &&
+    isTodoStatus(value.status)
+  );
 }
 
 function isTodoDiffChange(value: unknown): value is TodoDiffChange {
@@ -163,14 +288,23 @@ function isTodoDiffChange(value: unknown): value is TodoDiffChange {
     case "removed":
       return isAgentTodo(value.before);
     case "updated":
-      return isAgentTodo(value.before) && isAgentTodo(value.after) && (value.fields === undefined || isStringArray(value.fields));
+      return (
+        isAgentTodo(value.before) &&
+        isAgentTodo(value.after) &&
+        (value.fields === undefined || isStringArray(value.fields))
+      );
     default:
       return false;
   }
 }
 
 function isMemoryFactChange(value: unknown): value is MemoryFactChange {
-  return isRecord(value) && typeof value.subject === "string" && typeof value.predicate === "string" && typeof value.object === "string";
+  return (
+    isRecord(value) &&
+    typeof value.subject === "string" &&
+    typeof value.predicate === "string" &&
+    typeof value.object === "string"
+  );
 }
 
 function parseV8Event(value: unknown): V8Event | null {
@@ -188,7 +322,8 @@ function parseV8Event(value: unknown): V8Event | null {
     typeof workerId !== "number" ||
     typeof generation !== "number" ||
     typeof kind !== "string"
-  ) return null;
+  )
+    return null;
   return {
     at,
     worker,
@@ -196,13 +331,25 @@ function parseV8Event(value: unknown): V8Event | null {
     workerId,
     generation,
     kind,
-    reason: value.reason === null || typeof value.reason === "string" ? value.reason : undefined,
-    command: value.command === null || typeof value.command === "string" ? value.command : undefined,
-    detail: value.detail === null || typeof value.detail === "string" ? value.detail : undefined,
+    reason:
+      value.reason === null || typeof value.reason === "string"
+        ? value.reason
+        : undefined,
+    command:
+      value.command === null || typeof value.command === "string"
+        ? value.command
+        : undefined,
+    detail:
+      value.detail === null || typeof value.detail === "string"
+        ? value.detail
+        : undefined,
   };
 }
 
-function withOptionalAt<T extends Event>(event: T, frame: Record<string, unknown>): T {
+function withOptionalAt<T extends Event>(
+  event: T,
+  frame: Record<string, unknown>,
+): T {
   const at = optionalNumber(frame, "at");
   return at === undefined ? event : { ...event, at };
 }
@@ -224,14 +371,17 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
       const uiId = stringField(frame, "uiId");
       const instanceId = stringField(frame, "instanceId");
       if (!chatId || !uiId || !instanceId) return null;
-      return withOptionalAt<EventForKind<"ui-open">>({
-        kind: "ui-open",
-        chatId,
-        uiId,
-        instanceId,
-        stateRef: optionalString(frame, "stateRef"),
-        stateTarget: optionalStringOrNull(frame, "stateTarget"),
-      }, frame);
+      return withOptionalAt<EventForKind<"ui-open">>(
+        {
+          kind: "ui-open",
+          chatId,
+          uiId,
+          instanceId,
+          stateRef: optionalString(frame, "stateRef"),
+          stateTarget: optionalStringOrNull(frame, "stateTarget"),
+        },
+        frame,
+      );
     }
     case "file-diff": {
       const chatId = stringField(frame, "chatId");
@@ -273,7 +423,8 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
       const path = stringField(frame, "path");
       const diff = stringField(frame, "diff");
       const at = optionalNumber(frame, "at");
-      if (!chatId || !store || !graph || !path || diff == null || at == null) return null;
+      if (!chatId || !store || !graph || !path || diff == null || at == null)
+        return null;
       return {
         kind: "memory-diff",
         chatId,
@@ -334,46 +485,79 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
     }
     case "step-start": {
       const chatId = stringField(frame, "chatId");
-      return chatId ? withOptionalAt({ kind: "step-start", chatId, compacting: optionalBoolean(frame, "compacting") }, frame) : null;
+      return chatId
+        ? withOptionalAt(
+            {
+              kind: "step-start",
+              chatId,
+              compacting: optionalBoolean(frame, "compacting"),
+            },
+            frame,
+          )
+        : null;
     }
     case "draft":
-    case "reasoning-draft": {
+    case "reasoning-draft":
+    case "compaction-draft": {
       const chatId = stringField(frame, "chatId");
       const draftId = stringField(frame, "draftId");
       const content = stringField(frame, "content");
       if (!chatId || !draftId || content == null) return null;
-      return withOptionalAt({
-        kind: rawKind,
-        chatId,
-        draftId,
-        content,
-        reasoningContent: optionalString(frame, "reasoningContent"),
-        delta: optionalString(frame, "delta"),
-      }, frame);
+      return withOptionalAt(
+        {
+          kind: rawKind,
+          chatId,
+          draftId,
+          content,
+          reasoningContent: optionalString(frame, "reasoningContent"),
+          delta: optionalString(frame, "delta"),
+        },
+        frame,
+      );
     }
     case "draft-end": {
       const draftId = stringField(frame, "draftId");
-      return draftId ? withOptionalAt({ kind: "draft-end", chatId: optionalString(frame, "chatId"), draftId }, frame) : null;
+      return draftId
+        ? withOptionalAt(
+            {
+              kind: "draft-end",
+              chatId: optionalString(frame, "chatId"),
+              draftId,
+            },
+            frame,
+          )
+        : null;
     }
     case "llm-auth-required":
-      return withOptionalAt({ kind: "llm-auth-required", chatId: optionalString(frame, "chatId") }, frame);
+      return withOptionalAt(
+        { kind: "llm-auth-required", chatId: optionalString(frame, "chatId") },
+        frame,
+      );
     case "runts-step-finished": {
       const chatId = stringField(frame, "chatId");
       const stepId = stringField(frame, "stepId");
       if (!chatId || !stepId) return null;
-      return withOptionalAt({
-        kind: "runts-step-finished",
-        chatId,
-        stepId,
-        status: optionalString(frame, "status"),
-        resultHash: optionalString(frame, "resultHash"),
-        error: optionalString(frame, "error"),
-        durationNs: optionalNumber(frame, "durationNs"),
-      }, frame);
+      return withOptionalAt(
+        {
+          kind: "runts-step-finished",
+          chatId,
+          stepId,
+          status: optionalString(frame, "status"),
+          resultHash: optionalString(frame, "resultHash"),
+          error: optionalString(frame, "error"),
+          durationNs: optionalNumber(frame, "durationNs"),
+        },
+        frame,
+      );
     }
     case "driver-error": {
       const chatId = stringField(frame, "chatId");
-      return chatId ? withOptionalAt({ kind: "driver-error", chatId, error: frame.error }, frame) : null;
+      return chatId
+        ? withOptionalAt(
+            { kind: "driver-error", chatId, error: frame.error },
+            frame,
+          )
+        : null;
     }
     case "v8": {
       const event = parseV8Event(frame.event);
@@ -381,17 +565,31 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
     }
     case "trace-write-error": {
       const message = stringField(frame, "message");
-      return message ? withOptionalAt({ kind: "trace-write-error", message, rows: optionalNumber(frame, "rows") }, frame) : null;
+      return message
+        ? withOptionalAt(
+            {
+              kind: "trace-write-error",
+              message,
+              rows: optionalNumber(frame, "rows"),
+            },
+            frame,
+          )
+        : null;
     }
     case "trace-init-error": {
       const message = stringField(frame, "message");
-      return message ? withOptionalAt({
-        kind: "trace-init-error",
-        message,
-        backend: optionalString(frame, "backend"),
-        endpoint: optionalString(frame, "endpoint"),
-        database: optionalString(frame, "database"),
-      }, frame) : null;
+      return message
+        ? withOptionalAt(
+            {
+              kind: "trace-init-error",
+              message,
+              backend: optionalString(frame, "backend"),
+              endpoint: optionalString(frame, "endpoint"),
+              database: optionalString(frame, "database"),
+            },
+            frame,
+          )
+        : null;
     }
     case "ping":
       return { kind: "ping" };
@@ -406,10 +604,18 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
 
 export function parseWsFrame(raw: unknown): ParsedWsFrame | null {
   if (!isRecord(raw)) return null;
-  if (raw.kind === "run-result" && typeof raw.id === "string" && "result" in raw) {
+  if (
+    raw.kind === "run-result" &&
+    typeof raw.id === "string" &&
+    "result" in raw
+  ) {
     return { kind: "run-result", id: raw.id, result: raw.result };
   }
-  if (typeof raw.kind !== "string" && typeof raw.id === "string" && "result" in raw) {
+  if (
+    typeof raw.kind !== "string" &&
+    typeof raw.id === "string" &&
+    "result" in raw
+  ) {
     return { kind: "run-result", id: raw.id, result: raw.result };
   }
   return parseEventFrame(raw);
@@ -475,7 +681,10 @@ export class WSConnection {
   run<T = unknown>(payload: Record<string, unknown>): Promise<T> {
     const id = `r${this.nextId++}`;
     return new Promise<T>((resolve) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, timer: null });
+      this.pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        timer: null,
+      });
       // Start the timeout when the caller queues the RPC, not only once the
       // socket opens. Otherwise a user action made while the websocket is stuck
       // connecting can leave UI like /settings permanently in "Saving…".

@@ -32,7 +32,8 @@ describe("right sidebar layout", () => {
   test("does not carry chat sidebar tabs into new chats", () => {
     expect(state).toContain("function forgetRightSidebarForChat(id: string)");
     expect(state).toContain("forgetRightSidebarForChat(requestedChatId);");
-    expect(state).toContain("function resetSelectedChatViewState(opts:");
+    expect(state).toContain("function resetSelectedChatViewState(");
+    expect(state).toContain("opts: {");
     expect(state).toContain("setOpenUiId(null);");
     expect(state).toContain("setOpenUiInstanceId(null);");
   });

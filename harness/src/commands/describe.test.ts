@@ -33,7 +33,10 @@ describe("describe trail entries", () => {
 describe("describe incremental timeline updates", () => {
   test("selects steps updated after the client's timeline watermark", () => {
     expect(describeSource).toContain("optional { ?step agent:updatedAt ?updatedAt . }");
-    expect(describeSource).toContain('ref.at > sinceAt || (ref.type === "step" && (ref.updatedAt ?? 0) > sinceAt)');
+    expect(describeSource).toContain("ref.at > sinceAt ||");
+    expect(describeSource).toContain(
+      '(ref.type === "step" && (ref.updatedAt ?? 0) > sinceAt)',
+    );
     expect(describeSource).toContain('updatedAt: factTimestamp(s["?updatedAt"]) || undefined');
   });
 });

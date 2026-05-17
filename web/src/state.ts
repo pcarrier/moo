@@ -161,10 +161,22 @@ export function createState() {
     (chatId: ChatId) => api("chat-models", { chatId }),
     (id: string) => id,
   );
-  const uiListSingle = createSingleFlight(() => api("ui-list", {}), () => "ui-list");
-  const uiChatSingle = createSingleFlight((chatId: ChatId) => api("ui-chat", { chatId }), (id: string) => id);
-  const mcpListSingle = createSingleFlight(() => api("mcp-list", {}), () => "mcp-list");
-  const settingsSingle = createSingleFlight(() => api("llm-auth-get", {}), () => "settings");
+  const uiListSingle = createSingleFlight(
+    () => api("ui-list", {}),
+    () => "ui-list",
+  );
+  const uiChatSingle = createSingleFlight(
+    (chatId: ChatId) => api("ui-chat", { chatId }),
+    (id: string) => id,
+  );
+  const mcpListSingle = createSingleFlight(
+    () => api("mcp-list", {}),
+    () => "mcp-list",
+  );
+  const settingsSingle = createSingleFlight(
+    () => api("llm-auth-get", {}),
+    () => "settings",
+  );
   const v8SettingsSingle = createSingleFlight(
     () => api("v8-settings-get", {}),
     () => "v8-settings",
@@ -174,8 +186,18 @@ export function createState() {
     () => "trace-settings",
   );
   const skillsListSingle = createSingleFlight(
-    (opts: { enabled?: boolean; chatId?: string | null; root?: string | null } = {}) => api("skills-list", opts),
-    (opts?: { enabled?: boolean; chatId?: string | null; root?: string | null }) =>
+    (
+      opts: {
+        enabled?: boolean;
+        chatId?: string | null;
+        root?: string | null;
+      } = {},
+    ) => api("skills-list", opts),
+    (opts?: {
+      enabled?: boolean;
+      chatId?: string | null;
+      root?: string | null;
+    }) =>
       `skills:${opts?.chatId ?? ""}:${opts?.root ?? ""}:${opts?.enabled ?? ""}`,
   );
   const [startupLoading, setStartupLoading] = createSignal(true);
@@ -427,7 +449,8 @@ export function createState() {
       selectedModelId: modelId,
       effectiveModel: modelName,
       effectiveModelId: modelId,
-      supportsAttachments: option?.supportsAttachments ?? model.supportsAttachments,
+      supportsAttachments:
+        option?.supportsAttachments ?? model.supportsAttachments,
     };
   }
 
@@ -695,7 +718,9 @@ export function createState() {
       const matchingReplyLanded = mergedTimeline.some(
         (item) =>
           item.type === "step" &&
-          item.kind === "agent:Reply" &&
+          (item.kind === "agent:Reply" ||
+            item.kind === "agent:Compaction" ||
+            item.kind === "agent:Error") &&
           item.draftId === currentDraft.draftId,
       );
       const endedAt = endedDraftReplyIds.get(currentDraft.draftId);
@@ -713,7 +738,7 @@ export function createState() {
       if (matchingReplyLanded || terminalNonReplyLanded) {
         endedDraftReplyIds.delete(currentDraft.draftId);
         setDraftReply(null);
-        clearActiveChatRuntime(id);
+        if (currentDraft.kind !== "compaction") clearActiveChatRuntime(id);
       }
     }
 
@@ -744,7 +769,9 @@ export function createState() {
       totalCodeCalls:
         value.overview.totalCodeCalls ??
         mergedTimeline.filter(
-          (it) => it.type === "step" && (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
+          (it) =>
+            it.type === "step" &&
+            (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
         ).length,
     });
   }
@@ -761,7 +788,9 @@ export function createState() {
       totalCodeCalls:
         value.overview.totalCodeCalls ??
         value.timeline.items.filter(
-          (it) => it.type === "step" && (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
+          (it) =>
+            it.type === "step" &&
+            (it.kind === "agent:RunTS" || it.kind === "agent:RunJS"),
         ).length,
     });
     setHiddenTimelineItems(value.timeline.hiddenItems);
@@ -1081,6 +1110,7 @@ export function createState() {
   // - stop/interrupt, after the partial content is moved to dismissedReplies
   // - the real Reply step landing (caller can clear via setDraftReply)
   const [draftReply, setDraftReply] = createSignal<{
+    kind?: "reply" | "compaction";
     chatId: string;
     draftId: string;
     content: string;
@@ -1127,19 +1157,32 @@ export function createState() {
   function dismissCurrentDraftReply(chatId: string) {
     const cur = untrack(draftReply);
     if (!cur || cur.chatId !== chatId) return;
-    rememberDismissedReply(chatId, cur.draftId, cur.content, cur.reasoningContent ?? "");
+    rememberDismissedReply(
+      chatId,
+      cur.draftId,
+      cur.content,
+      cur.reasoningContent ?? "",
+    );
   }
 
-  function isReplyStep(item: TimelineItem): item is Extract<TimelineItem, { type: "step" }> {
-    return item.type === "step" && item.kind === "agent:Reply";
+  function isDraftBackedStep(
+    item: TimelineItem,
+  ): item is Extract<TimelineItem, { type: "step" }> {
+    return (
+      item.type === "step" &&
+      (item.kind === "agent:Reply" || item.kind === "agent:Compaction")
+    );
   }
 
   function pruneDismissedReplies(chatId: string, rows: TimelineItem[]) {
-    const replyRows = rows.filter(isReplyStep);
+    const replyRows = rows.filter(isDraftBackedStep);
     const replyDraftIds = new Set(
       replyRows
         .map((item) => item.draftId)
-        .filter((draftId): draftId is string => typeof draftId === "string" && !!draftId),
+        .filter(
+          (draftId): draftId is string =>
+            typeof draftId === "string" && !!draftId,
+        ),
     );
     const replyTexts = replyRows
       .map((item) => item.text.trim())
@@ -1174,7 +1217,12 @@ export function createState() {
     if (chatBusy(id)) return false;
     const status = currentChat()?.status;
     if (status === "agent:Failed" || status === "agent:Cancelled") return true;
-    if (status === "agent:Running" || status === "agent:Queued" || status === "ui:Pending") return false;
+    if (
+      status === "agent:Running" ||
+      status === "agent:Queued" ||
+      status === "ui:Pending"
+    )
+      return false;
     return hasRestartableConversationState(timeline());
   };
   const currentChatPath = () => currentChat()?.path ?? null;
@@ -1285,8 +1333,10 @@ export function createState() {
   }
 
   function appManifest(uiId: string): UiApp | undefined {
-    return uiApps().find((candidate) => candidate.id === uiId) ??
-      chatUiApps().find((candidate) => candidate.id === uiId);
+    return (
+      uiApps().find((candidate) => candidate.id === uiId) ??
+      chatUiApps().find((candidate) => candidate.id === uiId)
+    );
   }
 
   function appTitle(uiId: string): string {
@@ -1444,7 +1494,9 @@ export function createState() {
       expandedDiffViewState: normalizeExpandedDiffViewState(
         state?.expandedDiffViewState,
       ),
-      diffExpansionShown: normalizeDiffExpansionShown(state?.diffExpansionShown),
+      diffExpansionShown: normalizeDiffExpansionShown(
+        state?.diffExpansionShown,
+      ),
     };
   }
 
@@ -1939,7 +1991,11 @@ export function createState() {
     }
     const id = chatId();
     if (id && closing?.kind === "app" && closing.instanceId) {
-      const r = await api("ui-close", { chatId: id, uiId: closing.uiId, instanceId: closing.instanceId });
+      const r = await api("ui-close", {
+        chatId: id,
+        uiId: closing.uiId,
+        instanceId: closing.instanceId,
+      });
       if (!r.ok) reportError(`close app ${closing.uiId}`, r.error);
       else await refreshChatUis();
     }
@@ -2011,7 +2067,11 @@ export function createState() {
         },
       });
     }
-    const r = await api("fs-read", { path: requestedPath, basePath, includeDiff: true });
+    const r = await api("fs-read", {
+      path: requestedPath,
+      basePath,
+      includeDiff: true,
+    });
     if (repoFileReadSeq.get(tabId) !== seq) return;
     if (!r.ok) {
       updateFileTab(tabId, (prev) => ({
@@ -2598,7 +2658,11 @@ export function createState() {
   }
 
   function showNewChat() {
-    resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
+    resetSelectedChatViewState({
+      clearChatId: true,
+      clearUi: true,
+      clearWip: true,
+    });
     setView("new");
     setFocusedSubject(null);
     setFocusedGraph(null);
@@ -2713,7 +2777,11 @@ export function createState() {
   const popstateHandler = () => {
     const loc = parseLocation();
     if (loc.view === "new") {
-      resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
+      resetSelectedChatViewState({
+        clearChatId: true,
+        clearUi: true,
+        clearWip: true,
+      });
       setView("new");
       setFocusedSubject(null);
       setFocusedGraph(null);
@@ -2774,7 +2842,10 @@ export function createState() {
       setFocusedGraph(null);
       setOpenUiId(null);
       setOpenUiInstanceId(null);
-      const target = loc.view === "chat" ? (loc.chatId ?? chats()[0]?.chatId ?? null) : (chats()[0]?.chatId ?? null);
+      const target =
+        loc.view === "chat"
+          ? (loc.chatId ?? chats()[0]?.chatId ?? null)
+          : (chats()[0]?.chatId ?? null);
       if (target && target !== chatId()) {
         void selectChat(target, true);
       } else if (!target) {
@@ -2930,7 +3001,10 @@ export function createState() {
     );
     if (bypassSingleFlight) chatModelsSingle.forget(id);
     const r = await retryChatLoad(
-      () => (bypassSingleFlight ? api("chat-models", { chatId: id }) : chatModelsSingle(id)),
+      () =>
+        bypassSingleFlight
+          ? api("chat-models", { chatId: id })
+          : chatModelsSingle(id),
       () => chatId() === id && requestSeq === chatModelRequestSeq,
     );
     if (chatId() !== id || requestSeq !== chatModelRequestSeq) return;
@@ -3052,7 +3126,10 @@ export function createState() {
   }
 
   function compactTimelineRows(items: TimelineItem[]): TimelineItem[] {
-    return compactTimelineRowsWithOptions(items, timelineRowCompactionOptions());
+    return compactTimelineRowsWithOptions(
+      items,
+      timelineRowCompactionOptions(),
+    );
   }
 
   function settleRunningTimelineRows(id: string) {
@@ -3140,7 +3217,10 @@ export function createState() {
   }
 
   async function removePointer(name: string, recursive = false) {
-    const r = await api("pointer-rm", { name, ...(recursive ? { recursive: true } : {}) });
+    const r = await api("pointer-rm", {
+      name,
+      ...(recursive ? { recursive: true } : {}),
+    });
     if (!r.ok) {
       reportError(
         recursive ? "delete pointer hierarchy" : "delete pointer",
@@ -3232,7 +3312,11 @@ export function createState() {
     else reportError("mcp", r.error);
   }
 
-  function skillContext(): { enabled?: boolean; chatId?: string | null; root?: string | null } {
+  function skillContext(): {
+    enabled?: boolean;
+    chatId?: string | null;
+    root?: string | null;
+  } {
     const current = chatId();
     return current ? { chatId: current } : {};
   }
@@ -3762,7 +3846,11 @@ export function createState() {
       if (nextChats.length > 0) {
         void selectChat(nextChats[0]!.chatId);
       } else {
-        resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
+        resetSelectedChatViewState({
+          clearChatId: true,
+          clearUi: true,
+          clearWip: true,
+        });
         setView("chat");
         setFocusedSubject(null);
         replaceUrl();
@@ -3797,7 +3885,10 @@ export function createState() {
     await Promise.all([refreshFactsView(), refreshVocabulary()]);
   }
 
-  function hasAppRightSidebarTab(uiId: string, instanceId: string | null): boolean {
+  function hasAppRightSidebarTab(
+    uiId: string,
+    instanceId: string | null,
+  ): boolean {
     return rightSidebarTabs().some(
       (tab) =>
         tab.kind === "app" &&
@@ -3811,14 +3902,17 @@ export function createState() {
     instanceId: string | null,
     activate = true,
   ) {
-    upsertRightSidebarTab({
-      id: appTabId(uiId, instanceId),
-      kind: "app",
-      title: appTitle(uiId),
-      uiId,
-      instanceId,
-      icon: appIcon(uiId),
-    }, activate);
+    upsertRightSidebarTab(
+      {
+        id: appTabId(uiId, instanceId),
+        kind: "app",
+        title: appTitle(uiId),
+        uiId,
+        instanceId,
+        icon: appIcon(uiId),
+      },
+      activate,
+    );
     setFocusedSubject(null);
   }
 
@@ -3995,11 +4089,13 @@ export function createState() {
     setWipText(localStorage.getItem(wipKey(id)) ?? "");
   }
 
-  function resetSelectedChatViewState(opts: {
-    clearChatId?: boolean;
-    clearUi?: boolean;
-    clearWip?: boolean;
-  } = {}) {
+  function resetSelectedChatViewState(
+    opts: {
+      clearChatId?: boolean;
+      clearUi?: boolean;
+      clearWip?: boolean;
+    } = {},
+  ) {
     if (opts.clearChatId) setChatId(null);
     showTokensForChat(null);
     showTodosForChat(null);
@@ -4150,7 +4246,11 @@ export function createState() {
     appendOptimisticUserInput(chat, id, text, attachments);
     if (!(await waitForChatCreation(chat))) return;
     await waitForChatSettingsWrites(chat);
-    const r = await api("step", { chatId: chat, message: text, ...(attachments.length ? { attachments } : {}) });
+    const r = await api("step", {
+      chatId: chat,
+      message: text,
+      ...(attachments.length ? { attachments } : {}),
+    });
     if (!r.ok) reportError(`${label} ${chat}`, r.error);
   }
 
@@ -4209,7 +4309,9 @@ export function createState() {
         const r = await api("step", {
           chatId: head.chatId,
           message: head.text,
-          ...(head.attachments && head.attachments.length ? { attachments: head.attachments } : {}),
+          ...(head.attachments && head.attachments.length
+            ? { attachments: head.attachments }
+            : {}),
         });
         if (!r.ok) {
           reportError(`step ${head.chatId}`, r.error);
@@ -4330,7 +4432,9 @@ export function createState() {
     const base = (title || displayChatId(id)).trim() || id;
     const suffix = " fork";
     const maxBase = 80 - suffix.length;
-    return (base.length > maxBase ? base.slice(0, maxBase).trimEnd() : base) + suffix;
+    return (
+      (base.length > maxBase ? base.slice(0, maxBase).trimEnd() : base) + suffix
+    );
   }
 
   function seededForkTimeline(step: string): {
@@ -4352,7 +4456,9 @@ export function createState() {
       (item) => item.type === "step" && item.kind === "agent:UserInput",
     ).length;
     const runJsAfter = after.filter(
-      (item) => item.type === "step" && (item.kind === "agent:RunTS" || item.kind === "agent:RunJS"),
+      (item) =>
+        item.type === "step" &&
+        (item.kind === "agent:RunTS" || item.kind === "agent:RunJS"),
     ).length;
     return {
       items,
@@ -4378,7 +4484,9 @@ export function createState() {
       const target = page.items[page.items.length - 1];
       return !target || item.at <= target.at;
     });
-    const trailKey = trailCacheKey(Math.max(INITIAL_TIMELINE_LIMIT, trailItems.length));
+    const trailKey = trailCacheKey(
+      Math.max(INITIAL_TIMELINE_LIMIT, trailItems.length),
+    );
     const overview: DescribeOverviewValue = {
       chatId: forkChatId,
       title: summary.title,
@@ -4458,7 +4566,8 @@ export function createState() {
       costUsd: 0,
       costEstimated: true,
       unpricedModels: [],
-      selectedModel: chatModel()?.selectedModel ?? sourceSummary?.selectedModel ?? null,
+      selectedModel:
+        chatModel()?.selectedModel ?? sourceSummary?.selectedModel ?? null,
       archived: false,
       archivedAt: null,
       parentChatId: id as ChatId,
@@ -4472,7 +4581,11 @@ export function createState() {
     setChatsLoaded(true);
 
     const creation = (async () => {
-      const r = await api("chat-fork", { chatId: id as ChatId, step: step as StepId, forkChatId: requestedChatId });
+      const r = await api("chat-fork", {
+        chatId: id as ChatId,
+        step: step as StepId,
+        forkChatId: requestedChatId,
+      });
       if (!r.ok) {
         reportError("fork chat", r.error);
         setChats((current) =>
@@ -4807,7 +4920,8 @@ export function createState() {
       if (ev.chatId === chatId()) {
         refreshUisSoon();
         const uiId = typeof ev.uiId === "string" ? ev.uiId : "";
-        const instanceId = typeof ev.instanceId === "string" ? ev.instanceId : null;
+        const instanceId =
+          typeof ev.instanceId === "string" ? ev.instanceId : null;
         if (uiId && view() === "chat") {
           setOpenUiId(uiId);
           setOpenUiInstanceId(instanceId);
@@ -4829,13 +4943,14 @@ export function createState() {
       return;
     }
     if (ev.kind === "trace-init-error") {
-      const detail = typeof ev.endpoint === "string" && ev.endpoint
-        ? ev.backend === "clickhouse"
-          ? "ClickHouse " + ev.endpoint
-          : ev.endpoint
-        : typeof ev.backend === "string"
-          ? ev.backend
-          : undefined;
+      const detail =
+        typeof ev.endpoint === "string" && ev.endpoint
+          ? ev.backend === "clickhouse"
+            ? "ClickHouse " + ev.endpoint
+            : ev.endpoint
+          : typeof ev.backend === "string"
+            ? ev.backend
+            : undefined;
       notify("tracing", ev.message || "trace initialization failed", detail);
       return;
     }
@@ -5073,10 +5188,32 @@ export function createState() {
         const source = typeof ev.source === "string" ? ev.source : cur?.source;
         if (source) next.source = source;
         if (typeof ev.estimated === "boolean") next.estimated = ev.estimated;
-        else if (typeof cur?.estimated === "boolean") next.estimated = cur.estimated;
+        else if (typeof cur?.estimated === "boolean")
+          next.estimated = cur.estimated;
         applyTokensForChat(ev.chatId, next, {
           active: activeChats().has(ev.chatId),
           reset: ev.reset === true,
+        });
+      }
+      return;
+    }
+    if (ev.kind === "compaction-draft") {
+      const cid = chatId();
+      if (cid && ev.chatId === cid) {
+        addToSet(setCompactingChats, compactingChats, cid);
+        endedDraftReplyIds.delete(ev.draftId);
+        const previous = draftReply();
+        setDraftReply({
+          kind: "compaction",
+          chatId: cid,
+          draftId: ev.draftId,
+          content: ev.content,
+          reasoningContent: "",
+          reasoningStreaming: false,
+          at:
+            previous?.draftId === ev.draftId
+              ? (previous?.at ?? (Number(ev.at) || Date.now()))
+              : Number(ev.at) || Date.now(),
         });
       }
       return;
@@ -5090,7 +5227,12 @@ export function createState() {
             (item) => item.chatId === cid && item.draftId === ev.draftId,
           )
         ) {
-          rememberDismissedReply(cid, ev.draftId, ev.content ?? "", ev.reasoningContent ?? "");
+          rememberDismissedReply(
+            cid,
+            ev.draftId,
+            ev.content ?? "",
+            ev.reasoningContent ?? "",
+          );
           const cur = draftReply();
           if (cur?.draftId === ev.draftId) setDraftReply(null);
           return;
@@ -5098,6 +5240,7 @@ export function createState() {
         endedDraftReplyIds.delete(ev.draftId);
         const previous = draftReply();
         setDraftReply({
+          kind: "reply",
           chatId: cid,
           draftId: ev.draftId,
           content: ev.content ?? previous?.content ?? "",
@@ -5114,16 +5257,21 @@ export function createState() {
     if (ev.kind === "draft") {
       const cid = chatId();
       if (cid && ev.chatId === cid) {
-        // A draft event can only come from the real answer stream; compaction
-        // summary calls do not emit drafts. If compaction-end was missed, don't
-        // let the compacting status leak into the streamed reply UI.
+        // A reply draft can only come from the real answer stream; compaction
+        // summary calls emit compaction-draft instead. If compaction-end was
+        // missed, don't let the compacting status leak into the reply UI.
         deleteFromSet(setCompactingChats, compactingChats, cid);
         if (
           dismissedReplies().some(
             (item) => item.chatId === cid && item.draftId === ev.draftId,
           )
         ) {
-          rememberDismissedReply(cid, ev.draftId, ev.content, ev.reasoningContent ?? "");
+          rememberDismissedReply(
+            cid,
+            ev.draftId,
+            ev.content,
+            ev.reasoningContent ?? "",
+          );
           const cur = draftReply();
           if (cur?.draftId === ev.draftId) setDraftReply(null);
           return;
@@ -5131,10 +5279,12 @@ export function createState() {
         endedDraftReplyIds.delete(ev.draftId);
         const previous = draftReply();
         setDraftReply({
+          kind: "reply",
           chatId: cid,
           draftId: ev.draftId,
           content: ev.content,
-          reasoningContent: ev.reasoningContent ?? previous?.reasoningContent ?? "",
+          reasoningContent:
+            ev.reasoningContent ?? previous?.reasoningContent ?? "",
           reasoningStreaming: false,
           at:
             previous?.draftId === ev.draftId
@@ -5285,7 +5435,11 @@ export function createState() {
     }
     if (ev.kind === "pointer") {
       refreshPointersSoon();
-      if (typeof ref === "string" && (ref === "skills/index" || ref.startsWith("skills/"))) refreshSkillsSoon();
+      if (
+        typeof ref === "string" &&
+        (ref === "skills/index" || ref.startsWith("skills/"))
+      )
+        refreshSkillsSoon();
     }
     if (ref.startsWith("ui/") || ref.startsWith("uiinst/")) {
       refreshUisSoon();
@@ -5562,16 +5716,18 @@ export function createState() {
           return;
         }
         if (loc.view === "new") {
-          resetSelectedChatViewState({ clearChatId: true, clearUi: true, clearWip: true });
+          resetSelectedChatViewState({
+            clearChatId: true,
+            clearUi: true,
+            clearWip: true,
+          });
           setView("new");
-        }
-        else if (loc.view === "apps") setView("apps");
+        } else if (loc.view === "apps") setView("apps");
         else if (loc.view === "mcp") setView("mcp");
         else if (loc.view === "skills") {
           setView("skills");
           void refreshSkills();
-        }
-        else if (loc.view === "v8") {
+        } else if (loc.view === "v8") {
           setView("v8");
           void refreshV8Stats();
         } else if (loc.view === "traces") {
@@ -5831,13 +5987,23 @@ export function createState() {
       await refreshVocabulary();
     },
     removeTriple: async (graph: string, s: string, p: string, o: string) => {
-      const r = await api("triple-rm", { graph, subject: s, predicate: p, object: o });
+      const r = await api("triple-rm", {
+        graph,
+        subject: s,
+        predicate: p,
+        object: o,
+      });
       if (!r.ok) reportError("delete triple", r.error);
       await refreshFactsView();
       await refreshVocabulary();
     },
     restoreTriple: async (graph: string, s: string, p: string, o: string) => {
-      const r = await api("triple-restore", { graph, subject: s, predicate: p, object: o });
+      const r = await api("triple-restore", {
+        graph,
+        subject: s,
+        predicate: p,
+        object: o,
+      });
       if (!r.ok) reportError("undelete triple", r.error);
       await refreshFactsView();
       await refreshVocabulary();
@@ -5848,7 +6014,11 @@ export function createState() {
       await refreshTimeline();
     },
     cancelForm: async (requestId: string) => {
-      const r = await api("submit", { chatId: chatId()!, requestId, cancelled: true });
+      const r = await api("submit", {
+        chatId: chatId()!,
+        requestId,
+        cancelled: true,
+      });
       if (!r.ok) reportError("cancel form", r.error);
       await refreshTimeline();
     },

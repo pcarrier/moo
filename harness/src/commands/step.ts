@@ -46,7 +46,15 @@ import {
   runCompaction,
   TOOLS,
 } from "../agent";
-import type { DriverStateInput, Input, JsonValue, LlmMessageInput, LlmStreamResultInput, ProviderInput, ToolCallInput } from "./_shared";
+import type {
+  DriverStateInput,
+  Input,
+  JsonValue,
+  LlmMessageInput,
+  LlmStreamResultInput,
+  ProviderInput,
+  ToolCallInput,
+} from "./_shared";
 import { buildCompactionSummaryPromptMessages } from "../prompt";
 import {
   initialStepDriverState,
@@ -67,14 +75,25 @@ import {
   modelSupportsAttachments,
 } from "./models";
 
-
-type PendingAttachment = { type: "image"; mimeType: string; dataUrl: string; name?: string };
-type PendingMessage = { id: string; chatId: string; text: string; attachments?: PendingAttachment[] };
+type PendingAttachment = {
+  type: "image";
+  mimeType: string;
+  dataUrl: string;
+  name?: string;
+};
+type PendingMessage = {
+  id: string;
+  chatId: string;
+  text: string;
+  attachments?: PendingAttachment[];
+};
 type LlmMessage = LlmMessageInput;
 const CHAT_PENDING_MESSAGES_REF = "chat/pending-messages";
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function messageArray(value: unknown): LlmMessage[] | null {
@@ -88,7 +107,9 @@ function sanitizePendingMessage(value: unknown): PendingMessage | null {
   const text = String(record.text ?? "");
   const attachments = sanitizeAttachments(record.attachments);
   if (!chatId || (!text.trim() && attachments.length === 0)) return null;
-  const id = String(record.id ?? "").trim() || String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
+  const id =
+    String(record.id ?? "").trim() ||
+    String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
   return { id, chatId, text, ...(attachments.length ? { attachments } : {}) };
 }
 
@@ -96,13 +117,22 @@ async function readPendingMessages(): Promise<PendingMessage[]> {
   const target = await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF });
   const decoded = target ? decodeJsonPointer(target) : null;
   if (!Array.isArray(decoded)) return [];
-  return decoded.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
+  return decoded
+    .map(sanitizePendingMessage)
+    .filter((m): m is PendingMessage => !!m);
 }
 
 async function writePendingMessages(messages: unknown[]) {
-  const clean = messages.map(sanitizePendingMessage).filter((m): m is PendingMessage => !!m);
-  if (clean.length === 0) await moo.pointers.delete({ name: CHAT_PENDING_MESSAGES_REF });
-  else await moo.pointers.set({ name: CHAT_PENDING_MESSAGES_REF, target: encodeJsonPointer(clean) });
+  const clean = messages
+    .map(sanitizePendingMessage)
+    .filter((m): m is PendingMessage => !!m);
+  if (clean.length === 0)
+    await moo.pointers.delete({ name: CHAT_PENDING_MESSAGES_REF });
+  else
+    await moo.pointers.set({
+      name: CHAT_PENDING_MESSAGES_REF,
+      target: encodeJsonPointer(clean),
+    });
   return clean;
 }
 
@@ -120,11 +150,17 @@ function parseProviderErrorBody(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  try { return JSON.parse(trimmed); } catch { return trimmed; }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function providerErrorMessage(parsed: unknown, status: number): string {
@@ -141,9 +177,11 @@ function providerErrorMessage(parsed: unknown, status: number): string {
     p.error_description,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    if (typeof candidate === "string" && candidate.trim())
+      return candidate.trim();
   }
-  if (typeof parsed === "string" && parsed.trim() && parsed.trim() !== "error") return parsed.trim();
+  if (typeof parsed === "string" && parsed.trim() && parsed.trim() !== "error")
+    return parsed.trim();
   if (status >= 400) return `request failed with HTTP ${status}`;
   if (status >= 200) return "provider stream returned an error";
   if (status > 0) return `request ended with HTTP ${status}`;
@@ -162,24 +200,45 @@ function providerErrorCode(parsed: unknown): string | null {
   return stringField(err.code) || stringField(p.code);
 }
 
-function providerErrorRequestId(parsed: unknown, headers: unknown): string | null {
+function providerErrorRequestId(
+  parsed: unknown,
+  headers: unknown,
+): string | null {
   const p = asObject(parsed);
   const err = asObject(p.error);
-  return firstHeader(headers, "request-id", "x-request-id", "anthropic-request-id", "cf-ray")
-    || stringField(p.request_id)
-    || stringField(p.requestId)
-    || stringField(err.request_id)
-    || stringField(err.requestId);
+  return (
+    firstHeader(
+      headers,
+      "request-id",
+      "x-request-id",
+      "anthropic-request-id",
+      "cf-ray",
+    ) ||
+    stringField(p.request_id) ||
+    stringField(p.requestId) ||
+    stringField(err.request_id) ||
+    stringField(err.requestId)
+  );
 }
 
-function providerErrorRetryAfter(headers: unknown, parsed: unknown): string | null {
+function providerErrorRetryAfter(
+  headers: unknown,
+  parsed: unknown,
+): string | null {
   const p = asObject(parsed);
   const err = asObject(p.error);
-  return firstHeader(headers, "retry-after", "x-ratelimit-reset", "anthropic-ratelimit-requests-reset")
-    || stringField(p.retry_after)
-    || stringField(p.retryAfter)
-    || stringField(err.retry_after)
-    || stringField(err.retryAfter);
+  return (
+    firstHeader(
+      headers,
+      "retry-after",
+      "x-ratelimit-reset",
+      "anthropic-ratelimit-requests-reset",
+    ) ||
+    stringField(p.retry_after) ||
+    stringField(p.retryAfter) ||
+    stringField(err.retry_after) ||
+    stringField(err.retryAfter)
+  );
 }
 
 function providerErrorBodyForRecord(parsed: unknown, raw: unknown): unknown {
@@ -221,7 +280,6 @@ function headerValue(value: unknown): string | null {
   return stringField(value);
 }
 
-
 function providerFailureReason(status: number): string {
   if (status >= 400) return `provider returned HTTP ${status}`;
   if (status >= 200) return "provider stream returned an error";
@@ -256,7 +314,10 @@ function providerErrorMatches(parsed: unknown, pattern: RegExp): boolean {
 }
 
 export function isContextLengthExceededError(parsed: unknown): boolean {
-  return providerErrorMatches(parsed, /context[_ -]?length[_ -]?exceeded|exceeds?[^\n]{0,80}context window|context window[^\n]{0,80}exceeds?|maximum context|too many[^\n]{0,80}tokens/i);
+  return providerErrorMatches(
+    parsed,
+    /context[_ -]?length[_ -]?exceeded|exceeds?[^\n]{0,80}context window|context window[^\n]{0,80}exceeds?|maximum context|too many[^\n]{0,80}tokens/i,
+  );
 }
 
 export type MissingAuthProvider = {
@@ -267,15 +328,23 @@ export type MissingAuthProvider = {
   authMode?: string | null;
 };
 
-export function missingLlmAuthMessage(provider: Pick<MissingAuthProvider, "name" | "keyEnvHint">, action: "step" | "resume" = "step"): string {
+export function missingLlmAuthMessage(
+  provider: Pick<MissingAuthProvider, "name" | "keyEnvHint">,
+  action: "step" | "resume" = "step",
+): string {
   const prefix = action === "resume" ? "Cannot resume this chat because " : "";
   return [
     prefix + "LLM authentication is not configured for " + provider.name + ".",
-    "Open [Settings](/settings) to configure auth, or set `" + provider.keyEnvHint + "` before starting the server.",
+    "Open [Settings](/settings) to configure auth, or set `" +
+      provider.keyEnvHint +
+      "` before starting the server.",
   ].join("\n");
 }
 
-export function missingLlmAuthDetail(provider: MissingAuthProvider, action: "step" | "resume" = "step") {
+export function missingLlmAuthDetail(
+  provider: MissingAuthProvider,
+  action: "step" | "resume" = "step",
+) {
   return {
     source: "authentication",
     provider: provider.name,
@@ -286,7 +355,11 @@ export function missingLlmAuthDetail(provider: MissingAuthProvider, action: "ste
   };
 }
 
-async function recordMissingLlmAuthError(chatId: string, provider: MissingAuthProvider, action: "step" | "resume") {
+async function recordMissingLlmAuthError(
+  chatId: string,
+  provider: MissingAuthProvider,
+  action: "step" | "resume",
+) {
   await recordErrorStep(
     chatId,
     "authentication",
@@ -297,14 +370,27 @@ async function recordMissingLlmAuthError(chatId: string, provider: MissingAuthPr
   await setChatOngoing(chatId, false);
 }
 
-type AttachmentSupportProvider = Pick<MissingAuthProvider, "model" | "effort"> & { name: ProviderName };
+type AttachmentSupportProvider = Pick<
+  MissingAuthProvider,
+  "model" | "effort"
+> & { name: ProviderName };
 
-function attachmentUnsupportedMessage(provider: AttachmentSupportProvider): string {
-  const model = provider.model ? provider.name + " / " + provider.model : provider.name;
-  return model + " does not support image attachments. Switch to a vision-capable model or remove the images.";
+function attachmentUnsupportedMessage(
+  provider: AttachmentSupportProvider,
+): string {
+  const model = provider.model
+    ? provider.name + " / " + provider.model
+    : provider.name;
+  return (
+    model +
+    " does not support image attachments. Switch to a vision-capable model or remove the images."
+  );
 }
 
-function unsupportedAttachmentDetail(provider: AttachmentSupportProvider, attachmentCount: number) {
+function unsupportedAttachmentDetail(
+  provider: AttachmentSupportProvider,
+  attachmentCount: number,
+) {
   return {
     source: "unsupported_attachments",
     provider: provider.name,
@@ -315,22 +401,43 @@ function unsupportedAttachmentDetail(provider: AttachmentSupportProvider, attach
   };
 }
 
-function providerAcceptsAttachments(provider: AttachmentSupportProvider): boolean {
+function providerAcceptsAttachments(
+  provider: AttachmentSupportProvider,
+): boolean {
   return modelSupportsAttachments(provider.name, provider.model);
 }
 
-async function unsupportedAttachmentsForChat(chatId: string, attachmentCount: number) {
+async function unsupportedAttachmentsForChat(
+  chatId: string,
+  attachmentCount: number,
+) {
   if (attachmentCount === 0) return null;
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
-  const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
-  return providerAcceptsAttachments(provider) ? null : unsupportedAttachmentDetail(provider, attachmentCount);
+  const provider = await resolveProvider(
+    selectedModel,
+    selectedEffort,
+    selectedProvider,
+  );
+  return providerAcceptsAttachments(provider)
+    ? null
+    : unsupportedAttachmentDetail(provider, attachmentCount);
 }
 
-async function recordUnsupportedAttachments(chatId: string, provider: AttachmentSupportProvider, attachmentCount: number) {
+async function recordUnsupportedAttachments(
+  chatId: string,
+  provider: AttachmentSupportProvider,
+  attachmentCount: number,
+) {
   const detail = unsupportedAttachmentDetail(provider, attachmentCount);
-  await recordErrorStep(chatId, "unsupported_attachments", detail, provider.model, provider.effort);
+  await recordErrorStep(
+    chatId,
+    "unsupported_attachments",
+    detail,
+    provider.model,
+    provider.effort,
+  );
   await setChatOngoing(chatId, false);
 }
 
@@ -339,9 +446,15 @@ export async function stepCommand(input: Input) {
   const message = String(input.message || "").trim();
   const attachments = sanitizeAttachments(input.attachments);
   if (!message && attachments.length === 0) {
-    return { ok: false, error: { message: "step requires a message or attachment" } };
+    return {
+      ok: false,
+      error: { message: "step requires a message or attachment" },
+    };
   }
-  const unsupported = await unsupportedAttachmentsForChat(chatId, attachments.length);
+  const unsupported = await unsupportedAttachmentsForChat(
+    chatId,
+    attachments.length,
+  );
   if (unsupported) return { ok: false, error: unsupported };
 
   return {
@@ -384,23 +497,41 @@ export async function resumeCommand(input: Input) {
 export async function enqueueCommand(input: Input) {
   const chatId = input.chatId || "demo";
   const kind = (input.kind || "agent:Tick") as StepKind;
-  const shellPayload = (value: unknown): { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } =>
-    value != null && typeof value === "object" ? value as { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } : {};
+  const shellPayload = (
+    value: unknown,
+  ): { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } =>
+    value != null && typeof value === "object"
+      ? (value as {
+          cmd?: unknown;
+          args?: unknown;
+          cwd?: unknown;
+          stdin?: unknown;
+        })
+      : {};
 
   let payloadHash: string | null = null;
   if (kind === "agent:ShellCommand") {
     const p = shellPayload(input.payload) || shellPayload(input);
     if (typeof p.cmd !== "string" || !p.cmd) {
-      return { ok: false, error: { message: "agent:ShellCommand requires payload.cmd" } };
+      return {
+        ok: false,
+        error: { message: "agent:ShellCommand requires payload.cmd" },
+      };
     }
-    payloadHash = await moo.objects.putJSON({ kind, value: {
+    payloadHash = await moo.objects.putJSON({
+      kind,
+      value: {
         cmd: p.cmd,
         args: Array.isArray(p.args) ? p.args : [],
         cwd: typeof p.cwd === "string" ? p.cwd : null,
         stdin: typeof p.stdin === "string" ? p.stdin : null,
-      } });
+      },
+    });
   } else if (input.payload != null) {
-    payloadHash = await moo.objects.putJSON({ kind: kind, value: input.payload });
+    payloadHash = await moo.objects.putJSON({
+      kind: kind,
+      value: input.payload,
+    });
   }
 
   const { runId, stepId } = await appendStep(chatId, {
@@ -419,18 +550,29 @@ export async function tickCommand(input: Input) {
   const c = chatRefs(chatId);
   const runId = await moo.pointers.get({ name: c.run });
 
-  const claim = await moo.agent.claim({ store: c.facts, graph: c.graph, runId: runId, leaseMs: input.leaseMs ?? 60_000 });
+  const claim = await moo.agent.claim({
+    store: c.facts,
+    graph: c.graph,
+    runId: runId,
+    leaseMs: input.leaseMs ?? 60_000,
+  });
   if (!claim) {
-    return { ok: true, value: { chatId, ran: false, reason: "no queued step" } };
+    return {
+      ok: true,
+      value: { chatId, ran: false, reason: "no queued step" },
+    };
   }
 
   const { stepId, leaseId } = claim;
-  const kindRows = await moo.facts.match({ store: c.facts, ...{
-    graph: c.graph,
-    subject: stepId,
-    predicate: "agent:kind",
-    limit: 1,
-  } });
+  const kindRows = await moo.facts.match({
+    store: c.facts,
+    ...{
+      graph: c.graph,
+      subject: stepId,
+      predicate: "agent:kind",
+      limit: 1,
+    },
+  });
   const kind = kindRows[0]?.[3];
 
   let result: Awaited<ReturnType<typeof moo.proc.run>> | null = null;
@@ -444,8 +586,15 @@ export async function tickCommand(input: Input) {
       if (!payloadObj) throw new Error("ShellCommand step has no payload");
       const { cmd, args, cwd, stdin } = payloadObj.value;
       const wt = cwd ?? (await moo.chat.scratch({ chatId: chatId }));
-      result = await moo.proc.run({ cmd: cmd, args: args || [], ...{ cwd: wt, stdin } });
-      resultHash = await moo.objects.putJSON({ kind: "agent:ToolResult", value: { kind, cmd, args, cwd: wt, ...result } });
+      result = await moo.proc.run({
+        cmd: cmd,
+        args: args || [],
+        ...{ cwd: wt, stdin },
+      });
+      resultHash = await moo.objects.putJSON({
+        kind: "agent:ToolResult",
+        value: { kind, cmd, args, cwd: wt, ...result },
+      });
       if (result.code !== 0 || result.timedOut) status = "agent:Failed";
     } else if (kind === "agent:Tick") {
       // no-op
@@ -458,17 +607,56 @@ export async function tickCommand(input: Input) {
     moo.log({ args: ["tick error:", errorMessage] });
   }
 
-  await moo.facts.update({ store: c.facts, fn: (txn) => {
-    if (resultHash) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:result", object: resultHash });
-    if (result) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:exitCode", object: String(result.code) });
-    if (errorMessage) txn.add({ graph: c.graph, subject: stepId, predicate: "agent:error", object: errorMessage });
-    if (leaseId) txn.remove({ graph: c.graph, subject: stepId, predicate: "agent:lease", object: leaseId });
-  } });
-  await moo.agent.complete({ store: c.facts, graph: c.graph, stepId: stepId, status: status });
+  await moo.facts.update({
+    store: c.facts,
+    fn: (txn) => {
+      if (resultHash)
+        txn.add({
+          graph: c.graph,
+          subject: stepId,
+          predicate: "agent:result",
+          object: resultHash,
+        });
+      if (result)
+        txn.add({
+          graph: c.graph,
+          subject: stepId,
+          predicate: "agent:exitCode",
+          object: String(result.code),
+        });
+      if (errorMessage)
+        txn.add({
+          graph: c.graph,
+          subject: stepId,
+          predicate: "agent:error",
+          object: errorMessage,
+        });
+      if (leaseId)
+        txn.remove({
+          graph: c.graph,
+          subject: stepId,
+          predicate: "agent:lease",
+          object: leaseId,
+        });
+    },
+  });
+  await moo.agent.complete({
+    store: c.facts,
+    graph: c.graph,
+    stepId: stepId,
+    status: status,
+  });
 
   return {
     ok: true,
-    value: { chatId, ran: true, stepId, kind, status, exitCode: result?.code ?? null },
+    value: {
+      chatId,
+      ran: true,
+      stepId,
+      kind,
+      status,
+      exitCode: result?.code ?? null,
+    },
   };
 }
 
@@ -482,40 +670,89 @@ export async function submitCommand(input: Input) {
   }
   const c = chatRefs(chatId);
 
-  const statusRows = await moo.facts.match({ store: c.facts, ...{
-    graph: c.graph,
-    subject: requestId,
-    predicate: "ui:status",
-    limit: 1,
-  } });
+  const statusRows = await moo.facts.match({
+    store: c.facts,
+    ...{
+      graph: c.graph,
+      subject: requestId,
+      predicate: "ui:status",
+      limit: 1,
+    },
+  });
   if (!statusRows.length) {
     return { ok: false, error: { message: "request not found" } };
   }
   const currentStatus = statusRows[0]![3];
   if (currentStatus !== "ui:Pending") {
-    return { ok: false, error: { message: `request already ${currentStatus}` } };
+    return {
+      ok: false,
+      error: { message: `request already ${currentStatus}` },
+    };
   }
 
-  const kindRows = await moo.facts.match({ store: c.facts, ...{
-    graph: c.graph,
-    subject: requestId,
-    predicate: "ui:kind",
-    limit: 1,
-  } });
+  const kindRows = await moo.facts.match({
+    store: c.facts,
+    ...{
+      graph: c.graph,
+      subject: requestId,
+      predicate: "ui:kind",
+      limit: 1,
+    },
+  });
   const kind = kindRows[0]?.[3] || null;
 
   const respondedAt = await moo.time.nowMs({});
-  const respPayload = await moo.objects.putJSON({ kind: "ui:Response", value: { values, at: respondedAt, ...(cancelled ? { cancelled: true } : {}) } });
+  const respPayload = await moo.objects.putJSON({
+    kind: "ui:Response",
+    value: {
+      values,
+      at: respondedAt,
+      ...(cancelled ? { cancelled: true } : {}),
+    },
+  });
   const respId = await moo.id.new({ prefix: "uires" });
 
-  await moo.facts.update({ store: c.facts, fn: (txn) => {
-    txn.add({ graph: c.graph, subject: respId, predicate: "rdf:type", object: "ui:InputResponse" });
-    txn.add({ graph: c.graph, subject: respId, predicate: "ui:respondsTo", object: requestId });
-    txn.add({ graph: c.graph, subject: respId, predicate: "ui:payload", object: respPayload });
-    txn.add({ graph: c.graph, subject: respId, predicate: "ui:createdAt", object: respondedAt });
-    txn.remove({ graph: c.graph, subject: requestId, predicate: "ui:status", object: "ui:Pending" });
-    txn.add({ graph: c.graph, subject: requestId, predicate: "ui:status", object: cancelled ? "ui:Cancelled" : "ui:Done" });
-  } });
+  await moo.facts.update({
+    store: c.facts,
+    fn: (txn) => {
+      txn.add({
+        graph: c.graph,
+        subject: respId,
+        predicate: "rdf:type",
+        object: "ui:InputResponse",
+      });
+      txn.add({
+        graph: c.graph,
+        subject: respId,
+        predicate: "ui:respondsTo",
+        object: requestId,
+      });
+      txn.add({
+        graph: c.graph,
+        subject: respId,
+        predicate: "ui:payload",
+        object: respPayload,
+      });
+      txn.add({
+        graph: c.graph,
+        subject: respId,
+        predicate: "ui:createdAt",
+        object: respondedAt,
+      });
+      txn.remove({
+        graph: c.graph,
+        subject: requestId,
+        predicate: "ui:status",
+        object: "ui:Pending",
+      });
+      txn.add({
+        graph: c.graph,
+        subject: requestId,
+        predicate: "ui:status",
+        object: cancelled ? "ui:Cancelled" : "ui:Done",
+      });
+    },
+  });
 
   // Normal submit resumes the Rust driver; cancel only records the response.
   return {
@@ -537,7 +774,13 @@ export function sanitizeAttachments(value: unknown): PendingAttachment[] {
   if (!Array.isArray(value)) return [];
   return value
     .map(objectRecord)
-    .filter((a): a is Record<string, unknown> => !!a && a.type === "image" && typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:image/"))
+    .filter(
+      (a): a is Record<string, unknown> =>
+        !!a &&
+        a.type === "image" &&
+        typeof a.dataUrl === "string" &&
+        a.dataUrl.startsWith("data:image/"),
+    )
     .slice(0, 8)
     .map((a) => ({
       type: "image" as const,
@@ -547,28 +790,38 @@ export function sanitizeAttachments(value: unknown): PendingAttachment[] {
     }));
 }
 
-
 export function chatOngoingRef(chatId: string): string {
   return `chat/${chatId}/ongoing`;
 }
 
 export async function setChatOngoing(chatId: string, ongoing: boolean) {
-  if (ongoing) await moo.pointers.set({ name: chatOngoingRef(chatId), target: String(await moo.time.nowMs({})) });
+  if (ongoing)
+    await moo.pointers.set({
+      name: chatOngoingRef(chatId),
+      target: String(await moo.time.nowMs({})),
+    });
   else await moo.pointers.delete({ name: chatOngoingRef(chatId) });
 }
 
-export async function cancelChatInFlightSteps(chatId: string, reason = "interrupted") {
+export async function cancelChatInFlightSteps(
+  chatId: string,
+  reason = "interrupted",
+) {
   const c = chatRefs(chatId);
-  const rows = await moo.facts.matchAll({ patterns: [
+  const rows = await moo.facts.matchAll({
+    patterns: [
       ["?step", "rdf:type", "agent:Step"],
       ["?step", "agent:status", "?status"],
-    ], ...{ store: c.facts, graph: c.graph } });
+    ],
+    ...{ store: c.facts, graph: c.graph },
+  });
   const steps = new Set<string>();
   const removes: Array<[string, string, string, string]> = [];
   for (const row of rows) {
     const step = row["?step"];
     const status = row["?status"];
-    if (!step || (status !== "agent:Running" && status !== "agent:Queued")) continue;
+    if (!step || (status !== "agent:Running" && status !== "agent:Queued"))
+      continue;
     steps.add(step);
     removes.push([c.graph, step, "agent:status", status]);
   }
@@ -601,7 +854,11 @@ export function stepLifecycleEvents(chatId: string, compacting = false) {
   };
 }
 
-export function stepDriverAction(chatId: string, mode: "step" | "resume" | "compact", extra: Record<string, JsonValue | undefined> = {}) {
+export function stepDriverAction(
+  chatId: string,
+  mode: "step" | "resume" | "compact",
+  extra: Record<string, JsonValue | undefined> = {},
+) {
   const lifecycleEvents = stepLifecycleEvents(chatId, mode === "compact");
   return {
     action: "drive",
@@ -618,7 +875,11 @@ export async function compactPreludeCommand(input: Input) {
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
-  const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
+  const provider = await resolveProvider(
+    selectedModel,
+    selectedEffort,
+    selectedProvider,
+  );
   if (!provider.apiKey) {
     await reply(chatId, `cannot compact: ${provider.keyEnvHint} not set`);
     await setChatOngoing(chatId, false);
@@ -626,7 +887,17 @@ export async function compactPreludeCommand(input: Input) {
   }
 
   await setChatOngoing(chatId, true);
-  const result = await runCompaction(chatId, provider, { trigger: "manual" });
+  const draftId = await moo.id.new({ prefix: "draft" });
+  await traceMark("compaction.draft.created", {
+    chatId,
+    draftId,
+    trigger: "manual",
+  });
+  const result = await runCompaction(chatId, provider, {
+    trigger: "manual",
+    draftId,
+  });
+  moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
   if (result === "compacted") {
     moo.events.publish({ payload: { kind: "compaction-end", chatId } });
     return { ok: true, value: { kind: "loop", provider, mode: "resume" } };
@@ -634,7 +905,9 @@ export async function compactPreludeCommand(input: Input) {
 
   await reply(
     chatId,
-    result === "empty" ? "nothing to compact yet" : "compaction failed; see the error above",
+    result === "empty"
+      ? "nothing to compact yet"
+      : "compaction failed; see the error above",
   );
   await setChatOngoing(chatId, false);
   return { ok: true, value: { kind: "done" } };
@@ -645,7 +918,10 @@ export async function stepPreludeCommand(input: Input) {
   const message = String(input.message ?? "").trim();
   const attachments = sanitizeAttachments(input.attachments);
   if (!message && attachments.length === 0) {
-    return { ok: false, error: { message: "step requires a message or attachment" } };
+    return {
+      ok: false,
+      error: { message: "step requires a message or attachment" },
+    };
   }
 
   // A new user turn makes the chat active again, regardless of whether it
@@ -653,12 +929,15 @@ export async function stepPreludeCommand(input: Input) {
   await moo.chat.unarchive({ chatId: chatId });
 
   const artificial = input.artificial === true;
-  const payloadHash = await moo.objects.putJSON({ kind: "agent:UserInput", value: {
+  const payloadHash = await moo.objects.putJSON({
+    kind: "agent:UserInput",
+    value: {
       message,
       at: await moo.time.nowMs({}),
       ...(attachments.length ? { attachments } : {}),
       ...(artificial ? { artificial: true } : {}),
-    } });
+    },
+  });
   await appendStep(chatId, {
     kind: "agent:UserInput",
     status: "agent:Done",
@@ -669,7 +948,11 @@ export async function stepPreludeCommand(input: Input) {
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
-  const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
+  const provider = await resolveProvider(
+    selectedModel,
+    selectedEffort,
+    selectedProvider,
+  );
   if (attachments.length && !providerAcceptsAttachments(provider)) {
     await recordUnsupportedAttachments(chatId, provider, attachments.length);
     return { ok: true, value: { kind: "done" } };
@@ -685,7 +968,8 @@ export async function stepPreludeCommand(input: Input) {
 
 export async function stepResumeCommand(input: Input) {
   const chatId = String(input.chatId ?? "").trim();
-  if (!chatId) return { ok: false, error: { message: "step-resume requires chatId" } };
+  if (!chatId)
+    return { ok: false, error: { message: "step-resume requires chatId" } };
 
   if (await hasPendingInput(chatId)) {
     await setChatOngoing(chatId, false);
@@ -695,7 +979,11 @@ export async function stepResumeCommand(input: Input) {
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
-  const provider = await resolveProvider(selectedModel, selectedEffort, selectedProvider);
+  const provider = await resolveProvider(
+    selectedModel,
+    selectedEffort,
+    selectedProvider,
+  );
   if (!provider.apiKey) {
     await recordMissingLlmAuthError(chatId, provider, "resume");
     return { ok: true, value: { kind: "done" } };
@@ -705,24 +993,33 @@ export async function stepResumeCommand(input: Input) {
   return { ok: true, value: { kind: "loop", provider } };
 }
 
-
-type CommandResultValue = StepDriverState | {
-  kind?: string;
-  state?: DriverStateInput;
-  toolCall?: ToolCallInput | null;
-  model?: string | null;
-  messages?: LlmMessage[];
-  provider?: ProviderInput;
-  retryAttempt?: number;
-  retryReason?: string;
-  retryDelayMs?: number;
-  forceCompact?: boolean;
-  [key: string]: unknown;
+type CommandResultValue =
+  | StepDriverState
+  | {
+      kind?: string;
+      state?: DriverStateInput;
+      toolCall?: ToolCallInput | null;
+      model?: string | null;
+      messages?: LlmMessage[];
+      provider?: ProviderInput;
+      retryAttempt?: number;
+      retryReason?: string;
+      retryDelayMs?: number;
+      forceCompact?: boolean;
+      [key: string]: unknown;
+    };
+type RawCommandResultValue = Omit<CommandResultValue, "messages"> & {
+  messages?: LlmMessage[] | null;
 };
-type RawCommandResultValue = Omit<CommandResultValue, "messages"> & { messages?: LlmMessage[] | null };
-type CommandResultEnvelope = { ok?: boolean; value?: RawCommandResultValue | null; error?: { message?: string } };
+type CommandResultEnvelope = {
+  ok?: boolean;
+  value?: RawCommandResultValue | null;
+  error?: { message?: string };
+};
 
-export async function commandValue(result: CommandResultEnvelope): Promise<CommandResultValue> {
+export async function commandValue(
+  result: CommandResultEnvelope,
+): Promise<CommandResultValue> {
   if (!result || result.ok !== true) {
     const msg = result?.error?.message || "driver step command failed";
     throw new Error(msg);
@@ -738,7 +1035,8 @@ export async function commandValue(result: CommandResultEnvelope): Promise<Comma
 export async function stepNextCommand(input: Input) {
   let state = initialStepDriverState(input);
   const chatId = state.chatId;
-  if (!chatId) return { ok: false, error: { message: "step-next requires state.chatId" } };
+  if (!chatId)
+    return { ok: false, error: { message: "step-next requires state.chatId" } };
 
   for (const event of stepNextInputEvents(input, state)) {
     await traceMark("driver.event", {
@@ -746,7 +1044,9 @@ export async function stepNextCommand(input: Input) {
       type: event.type,
       beforePhase: state.phase ?? null,
       hadMessages: Array.isArray(state.messages),
-      pendingToolCalls: Array.isArray(state.pendingToolCalls) ? state.pendingToolCalls.length : 0,
+      pendingToolCalls: Array.isArray(state.pendingToolCalls)
+        ? state.pendingToolCalls.length
+        : 0,
     });
     state = reduceStepDriverState(state, event);
     await traceMark("driver.state", {
@@ -754,7 +1054,9 @@ export async function stepNextCommand(input: Input) {
       afterEvent: event.type,
       phase: state.phase ?? null,
       messages: Array.isArray(state.messages) ? state.messages.length : null,
-      pendingToolCalls: Array.isArray(state.pendingToolCalls) ? state.pendingToolCalls.length : 0,
+      pendingToolCalls: Array.isArray(state.pendingToolCalls)
+        ? state.pendingToolCalls.length
+        : 0,
       llmAttempts: (state as Record<string, unknown>).llmAttempts ?? null,
     });
   }
@@ -767,7 +1069,9 @@ export async function stepNextCommand(input: Input) {
       chatId,
       type: effect.type,
       phase: state.phase ?? null,
-      pendingToolCalls: Array.isArray(state.pendingToolCalls) ? state.pendingToolCalls.length : 0,
+      pendingToolCalls: Array.isArray(state.pendingToolCalls)
+        ? state.pendingToolCalls.length
+        : 0,
       llmAttempts: (state as Record<string, unknown>).llmAttempts ?? null,
       hasMessages: Array.isArray(state.messages),
     });
@@ -784,49 +1088,96 @@ export async function stepNextCommand(input: Input) {
     }
 
     if (effect.type === "ContinueToolCalls") {
-      const handled = await traceSpan("driver.continue_tools", {
-        chatId,
-        pendingToolCalls: Array.isArray(effect.input.toolCalls) ? effect.input.toolCalls.length : 0,
-      }, async () => commandValue(await stepContinueToolCallsCommand(effect.input as unknown as Input)));
-      state = reduceStepDriverState(state, { type: "ToolContinuationHandled", handled });
+      const handled = await traceSpan(
+        "driver.continue_tools",
+        {
+          chatId,
+          pendingToolCalls: Array.isArray(effect.input.toolCalls)
+            ? effect.input.toolCalls.length
+            : 0,
+        },
+        async () =>
+          commandValue(
+            await stepContinueToolCallsCommand(
+              effect.input as unknown as Input,
+            ),
+          ),
+      );
+      state = reduceStepDriverState(state, {
+        type: "ToolContinuationHandled",
+        handled,
+      });
       continue;
     }
 
     if (effect.type === "HandleLlm") {
-      const handled = await traceSpan("driver.handle_llm", {
-        chatId,
-        purpose: effect.input.purpose ?? null,
-        attempt: effect.input.attempt ?? null,
-        ok: (effect.input.llmResult as Record<string, unknown> | null)?.ok ?? null,
-        status: (effect.input.llmResult as Record<string, unknown> | null)?.status ?? null,
-      }, async () => commandValue(await stepHandleLlmCommand(effect.input as unknown as Input)));
+      const handled = await traceSpan(
+        "driver.handle_llm",
+        {
+          chatId,
+          purpose: effect.input.purpose ?? null,
+          attempt: effect.input.attempt ?? null,
+          ok:
+            (effect.input.llmResult as Record<string, unknown> | null)?.ok ??
+            null,
+          status:
+            (effect.input.llmResult as Record<string, unknown> | null)
+              ?.status ?? null,
+        },
+        async () =>
+          commandValue(
+            await stepHandleLlmCommand(effect.input as unknown as Input),
+          ),
+      );
       state = reduceStepDriverState(state, { type: "LlmHandled", handled });
       continue;
     }
 
     if (effect.type === "Start") {
       const startInput = effect.input;
-      const started = await traceSpan("driver.start", {
-        chatId,
-        mode: effect.mode,
-        hasMessage: typeof startInput.message === "string" && startInput.message.length > 0,
-        attachments: Array.isArray(startInput.attachments) ? startInput.attachments.length : 0,
-      }, async () => commandValue(effect.mode === "resume"
-        ? await stepResumeCommand(effect.input as unknown as Input)
-        : (startInput.mode === "compact"
-          ? await compactPreludeCommand(effect.input as unknown as Input)
-          : await stepPreludeCommand(effect.input as unknown as Input))));
+      const started = await traceSpan(
+        "driver.start",
+        {
+          chatId,
+          mode: effect.mode,
+          hasMessage:
+            typeof startInput.message === "string" &&
+            startInput.message.length > 0,
+          attachments: Array.isArray(startInput.attachments)
+            ? startInput.attachments.length
+            : 0,
+        },
+        async () =>
+          commandValue(
+            effect.mode === "resume"
+              ? await stepResumeCommand(effect.input as unknown as Input)
+              : startInput.mode === "compact"
+                ? await compactPreludeCommand(effect.input as unknown as Input)
+                : await stepPreludeCommand(effect.input as unknown as Input),
+          ),
+      );
       state = reduceStepDriverState(state, { type: "Started", started });
       continue;
     }
 
     if (effect.type === "Prepare") {
-      const prepared = await traceSpan("driver.prepare_llm", {
-        chatId,
-        hasCarriedMessages: Array.isArray(effect.input.messages),
-        provider: (effect.input.provider as Record<string, unknown> | null)?.name ?? null,
-        model: (effect.input.provider as Record<string, unknown> | null)?.model ?? null,
-      }, async () => commandValue(await stepPrepareCommand(effect.input as unknown as Input)));
+      const prepared = await traceSpan(
+        "driver.prepare_llm",
+        {
+          chatId,
+          hasCarriedMessages: Array.isArray(effect.input.messages),
+          provider:
+            (effect.input.provider as Record<string, unknown> | null)?.name ??
+            null,
+          model:
+            (effect.input.provider as Record<string, unknown> | null)?.model ??
+            null,
+        },
+        async () =>
+          commandValue(
+            await stepPrepareCommand(effect.input as unknown as Input),
+          ),
+      );
       state = reduceStepDriverState(state, { type: "Prepared", prepared });
       continue;
     }
@@ -835,18 +1186,40 @@ export async function stepNextCommand(input: Input) {
   }
 }
 export async function stepContinueToolCallsCommand(input: Input) {
-  const state = input.state != null && typeof input.state === "object" && !Array.isArray(input.state) ? input.state as DriverStateInput : {};
+  const state =
+    input.state != null &&
+    typeof input.state === "object" &&
+    !Array.isArray(input.state)
+      ? (input.state as DriverStateInput)
+      : {};
   const chatId = String(input.chatId ?? "").trim();
   const messages = Array.isArray(state.messages) ? state.messages : [];
-  const toolCalls: ToolCallInput[] = Array.isArray(input.toolCalls) ? input.toolCalls : [];
+  const toolCalls: ToolCallInput[] = Array.isArray(input.toolCalls)
+    ? input.toolCalls
+    : [];
   const usedModel = input.usedModel ?? null;
   const requestEffort = input.requestEffort ?? state.requestEffort ?? null;
-  await traceMark("tool.batch.start", { chatId, count: toolCalls.length, carriedMessages: messages.length, usedModel, requestEffort });
+  await traceMark("tool.batch.start", {
+    chatId,
+    count: toolCalls.length,
+    carriedMessages: messages.length,
+    usedModel,
+    requestEffort,
+  });
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
-    await traceMark("tool.call.queued", { chatId, index: i, ...toolCallForTrace(tc) });
+    await traceMark("tool.call.queued", {
+      chatId,
+      index: i,
+      ...toolCallForTrace(tc),
+    });
     if (tc?.function?.name === "runTS") {
-      await traceMark("tool.runts.deferred", { chatId, index: i, remainingToolCalls: toolCalls.length - i - 1, ...toolCallForTrace(tc) });
+      await traceMark("tool.runts.deferred", {
+        chatId,
+        index: i,
+        remainingToolCalls: toolCalls.length - i - 1,
+        ...toolCallForTrace(tc),
+      });
       return {
         ok: true,
         value: {
@@ -864,12 +1237,28 @@ export async function stepContinueToolCallsCommand(input: Input) {
         },
       };
     }
-    const exec = await traceSpan("tool.execute", { chatId, usedModel, requestEffort, ...toolCallForTrace(tc) }, () => executeToolCall(chatId, tc, usedModel, requestEffort));
-    await traceMark("tool.result.ready", { chatId, index: i, toolCallId: tc.id ?? null, result: exec });
-    messages.push({ role: "tool", tool_call_id: tc.id, content: exec.toolText });
+    const exec = await traceSpan(
+      "tool.execute",
+      { chatId, usedModel, requestEffort, ...toolCallForTrace(tc) },
+      () => executeToolCall(chatId, tc, usedModel, requestEffort),
+    );
+    await traceMark("tool.result.ready", {
+      chatId,
+      index: i,
+      toolCallId: tc.id ?? null,
+      result: exec,
+    });
+    messages.push({
+      role: "tool",
+      tool_call_id: tc.id,
+      content: exec.toolText,
+    });
   }
   if (await hasPendingInput(chatId)) {
-    await traceMark("tool.batch.wait_input", { chatId, messages: messages.length });
+    await traceMark("tool.batch.wait_input", {
+      chatId,
+      messages: messages.length,
+    });
     await setChatOngoing(chatId, false);
     return { ok: true, value: { kind: "wait-input" } };
   }
@@ -878,12 +1267,28 @@ export async function stepContinueToolCallsCommand(input: Input) {
 }
 
 export async function runTsToolCommand(input: Input) {
-  const state = input.state != null && typeof input.state === "object" && !Array.isArray(input.state) ? input.state as { chatId?: string; requestEffort?: string | null; usedModel?: string | null } : {};
+  const state =
+    input.state != null &&
+    typeof input.state === "object" &&
+    !Array.isArray(input.state)
+      ? (input.state as {
+          chatId?: string;
+          requestEffort?: string | null;
+          usedModel?: string | null;
+        })
+      : {};
   const chatId = String(input.chatId ?? state.chatId ?? "").trim();
-  if (!chatId) return { ok: false, error: { message: "run-ts-tool requires chatId" } };
+  if (!chatId)
+    return { ok: false, error: { message: "run-ts-tool requires chatId" } };
   try {
-    const requestEffort = input.effort ?? input.requestEffort ?? state.requestEffort ?? null;
-    const exec = await runToolCall(chatId, input.toolCall, input.model ?? state.usedModel ?? null, requestEffort);
+    const requestEffort =
+      input.effort ?? input.requestEffort ?? state.requestEffort ?? null;
+    const exec = await runToolCall(
+      chatId,
+      input.toolCall,
+      input.model ?? state.usedModel ?? null,
+      requestEffort,
+    );
     return {
       ok: true,
       value: {
@@ -905,15 +1310,18 @@ export async function runTsToolCommand(input: Input) {
   }
 }
 
-
 export async function subagentFinalCommand(input: Input) {
   const chatId = String(input.chatId ?? "").trim();
-  if (!chatId) return { ok: false, error: { message: "subagent-final requires chatId" } };
+  if (!chatId)
+    return { ok: false, error: { message: "subagent-final requires chatId" } };
   const c = chatRefs(chatId);
-  const rows = await moo.facts.matchAll({ patterns: [
+  const rows = await moo.facts.matchAll({
+    patterns: [
       ["?step", "agent:kind", "agent:Reply"],
       ["?step", "agent:createdAt", "?at"],
-    ], ...{ store: c.facts, graph: c.graph } });
+    ],
+    ...{ store: c.facts, graph: c.graph },
+  });
   const latest = rows
     .map((r) => ({ step: r["?step"]!, at: Number(r["?at"] || 0) }))
     .sort((a, b) => b.at - a.at)[0];
@@ -924,10 +1332,10 @@ export async function subagentFinalCommand(input: Input) {
   return { ok: true, value: { output, text: output } };
 }
 
-
 export async function interruptCommand(input: Input) {
   const chatId = String(input.chatId ?? "").trim();
-  if (!chatId) return { ok: false, error: { message: "interrupt requires chatId" } };
+  if (!chatId)
+    return { ok: false, error: { message: "interrupt requires chatId" } };
 
   // Interrupt is an explicit stop, not durable crash-recovery. Manual resume
   // goes through resumeCommand when the user presses Play. Clear the durable
@@ -955,14 +1363,18 @@ export async function restartOngoingCommand() {
   for (const c of chats) {
     if (c.archived) continue;
     const marked = await moo.pointers.get({ name: chatOngoingRef(c.chatId) });
-    const staleInflightStatus = c.status === "agent:Running" || c.status === "agent:Queued";
+    const staleInflightStatus =
+      c.status === "agent:Running" || c.status === "agent:Queued";
     if (!marked) {
       // Only the durable ongoing marker means a chat is crash-recoverable.
       // Status-only Running/Queued rows can be leftovers from an interrupted
       // tool call (for example RunTS aborted before it could write Done).
       // Treat them as stale instead of relaunching the LLM after restart.
       if (staleInflightStatus) {
-        await cancelChatInFlightSteps(c.chatId, "cleared stale in-flight status during startup");
+        await cancelChatInFlightSteps(
+          c.chatId,
+          "cleared stale in-flight status during startup",
+        );
         clearedStale.push(c.chatId);
       }
       continue;
@@ -972,7 +1384,7 @@ export async function restartOngoingCommand() {
     // before the driver reached its wait-input cleanup path. In that case the
     // stale ongoing marker must not relaunch the chat; the user's submit is the
     // correct resume point.
-    if (c.status === "ui:Pending" || await hasPendingInput(c.chatId)) {
+    if (c.status === "ui:Pending" || (await hasPendingInput(c.chatId))) {
       if (marked) await setChatOngoing(c.chatId, false);
       skippedPending.push(c.chatId);
       continue;
@@ -990,17 +1402,24 @@ export async function restartOngoingCommand() {
       chatIds,
       skippedPending,
       clearedStale,
-      driverActions: chatIds.map((chatId) => stepDriverAction(chatId, "resume")),
+      driverActions: chatIds.map((chatId) =>
+        stepDriverAction(chatId, "resume"),
+      ),
     },
   };
 }
 
-
-export function tokenPressureFromEstimates(compactionPromptTokens: number, requestPromptTokens: number): {
+export function tokenPressureFromEstimates(
+  compactionPromptTokens: number,
+  requestPromptTokens: number,
+): {
   used: number;
   source: "context" | "compaction";
 } {
-  const compaction = Math.max(0, Math.floor(Number(compactionPromptTokens) || 0));
+  const compaction = Math.max(
+    0,
+    Math.floor(Number(compactionPromptTokens) || 0),
+  );
   const request = Math.max(0, Math.floor(Number(requestPromptTokens) || 0));
   return {
     used: Math.max(compaction, request),
@@ -1011,9 +1430,15 @@ export function tokenPressureFromEstimates(compactionPromptTokens: number, reque
 export async function stepPrepareCommand(input: Input) {
   const chatId = input.chatId || "demo";
   const provider = input.provider;
-  if (!provider) return { ok: false, error: { message: "step-prepare requires provider" } };
+  if (!provider)
+    return { ok: false, error: { message: "step-prepare requires provider" } };
   const passedMessages = messageArray(input.messages);
-  await traceMark("llm.prepare.start", { chatId, provider: provider?.name ?? null, baseModel: provider?.model ?? null, carriedMessages: passedMessages?.length ?? null });
+  await traceMark("llm.prepare.start", {
+    chatId,
+    provider: provider?.name ?? null,
+    baseModel: provider?.model ?? null,
+    carriedMessages: passedMessages?.length ?? null,
+  });
   const selectedProvider = await getChatProvider(chatId);
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
@@ -1022,11 +1447,21 @@ export async function stepPrepareCommand(input: Input) {
   const efforts = effortLevelsForProvider(provider);
   if (efforts.length) {
     const defaultEffort = await defaultChatEffort();
-    provider.effort = effortAllowedForModel(efforts, selectedEffort) || effortAllowedForModel(efforts, defaultEffort);
+    provider.effort =
+      effortAllowedForModel(efforts, selectedEffort) ||
+      effortAllowedForModel(efforts, defaultEffort);
   } else {
     provider.effort = null;
   }
-  await traceMark("llm.provider.selected", { chatId, provider: provider?.name ?? null, model: provider?.model ?? null, effort: provider?.effort ?? null, selectedModel: selectedModel ?? null, selectedEffort: selectedEffort ?? null, supportedEfforts: efforts });
+  await traceMark("llm.provider.selected", {
+    chatId,
+    provider: provider?.name ?? null,
+    model: provider?.model ?? null,
+    effort: provider?.effort ?? null,
+    selectedModel: selectedModel ?? null,
+    selectedEffort: selectedEffort ?? null,
+    supportedEfforts: efforts,
+  });
   // First iteration (no carried-over messages): build from DB and check
   // compaction. Subsequent iterations carry the in-progress message array
   // through the driver — the assistant + tool entries from the previous
@@ -1035,39 +1470,104 @@ export async function stepPrepareCommand(input: Input) {
   let estimatedPromptTokens = 0;
   let budget = await contextBudget(provider);
   if (passedMessages == null) {
-    messages = await traceSpan("llm.build_messages", { chatId }, () => buildLLMMessages(chatId));
-    await traceMark("llm.messages.ready", { chatId, source: "chat", ...messagesForTrace(messages, TOOLS) });
-    if (messagesHaveImageAttachments(messages) && !providerAcceptsAttachments(provider)) {
-      await traceMark("llm.attachments.unsupported", { chatId, provider: provider.name, model: provider.model });
+    messages = await traceSpan("llm.build_messages", { chatId }, () =>
+      buildLLMMessages(chatId),
+    );
+    await traceMark("llm.messages.ready", {
+      chatId,
+      source: "chat",
+      ...messagesForTrace(messages, TOOLS),
+    });
+    if (
+      messagesHaveImageAttachments(messages) &&
+      !providerAcceptsAttachments(provider)
+    ) {
+      await traceMark("llm.attachments.unsupported", {
+        chatId,
+        provider: provider.name,
+        model: provider.model,
+      });
       await recordUnsupportedAttachments(chatId, provider, 1);
       return { ok: true, value: { kind: "done" } };
     }
-    const compactionPromptTokens = await traceSpan("compaction.estimate", { chatId, messages: messages.length }, () => estimateCompactionPromptTokens(chatId, messages));
+    const compactionPromptTokens = await traceSpan(
+      "compaction.estimate",
+      { chatId, messages: messages.length },
+      () => estimateCompactionPromptTokens(chatId, messages),
+    );
     const requestPromptTokens = estimateTokens(messages, TOOLS);
-    const pressure = tokenPressureFromEstimates(compactionPromptTokens, requestPromptTokens);
+    const pressure = tokenPressureFromEstimates(
+      compactionPromptTokens,
+      requestPromptTokens,
+    );
     estimatedPromptTokens = pressure.used;
     const threshold = await compactionThresholdForBudget(budget);
     await recordLastCompactionPromptTokens(chatId, estimatedPromptTokens);
-    moo.events.publish({ payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
-      budget,
-      threshold,
-      source: pressure.source,
-      estimated: true,
-    }) });
-    await traceMark("compaction.pressure.recorded", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+    moo.events.publish({
+      payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
+        budget,
+        threshold,
+        source: pressure.source,
+        estimated: true,
+      }),
+    });
+    await traceMark("compaction.pressure.recorded", {
+      chatId,
+      estimatedPromptTokens,
+      compactionPromptTokens,
+      requestPromptTokens,
+      tokenBudget: budget,
+      tokenThreshold: threshold,
+    });
     const forceCompact = input.forceCompact === true;
     const shouldCompact = forceCompact || estimatedPromptTokens >= threshold;
-    await traceMark("compaction.check", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, forceCompact, shouldCompact });
+    await traceMark("compaction.check", {
+      chatId,
+      estimatedPromptTokens,
+      compactionPromptTokens,
+      requestPromptTokens,
+      tokenBudget: budget,
+      tokenThreshold: threshold,
+      forceCompact,
+      shouldCompact,
+    });
     if (shouldCompact) {
-      await traceMark("compaction.triggered", { chatId, estimatedPromptTokens, compactionPromptTokens, requestPromptTokens, tokenBudget: budget, tokenThreshold: threshold, forceCompact });
-      const compactionMessages = await traceSpan("compaction.build_messages", { chatId }, () => buildCompactionMessages(chatId));
+      await traceMark("compaction.triggered", {
+        chatId,
+        estimatedPromptTokens,
+        compactionPromptTokens,
+        requestPromptTokens,
+        tokenBudget: budget,
+        tokenThreshold: threshold,
+        forceCompact,
+      });
+      const compactionMessages = await traceSpan(
+        "compaction.build_messages",
+        { chatId },
+        () => buildCompactionMessages(chatId),
+      );
       moo.events.publish({ payload: { kind: "compaction-start", chatId } });
-      const rawSummaryMessages = buildCompactionSummaryPromptMessages(compactionMessages);
+      const rawSummaryMessages =
+        buildCompactionSummaryPromptMessages(compactionMessages);
       const requestTokenLimit = compactionRequestTokenLimit(budget, threshold);
-      const summaryMessages = fitCompactionSummaryMessages(rawSummaryMessages, requestTokenLimit);
+      const summaryMessages = fitCompactionSummaryMessages(
+        rawSummaryMessages,
+        requestTokenLimit,
+      );
       const summaryRequestPromptTokens = estimateTokens(summaryMessages);
       const compactionProvider = compactionProviderForRequest(provider);
-      const request = buildStreamingLLMRequest(compactionProvider, summaryMessages, null);
+      const draftId = await moo.id.new({ prefix: "draft" });
+      await traceMark("compaction.draft.created", {
+        chatId,
+        draftId,
+        trigger: "automatic",
+        forceCompact,
+      });
+      const request = buildStreamingLLMRequest(
+        compactionProvider,
+        summaryMessages,
+        null,
+      );
       await traceMark("llm.request.prepared", {
         chatId,
         purpose: "compact",
@@ -1081,7 +1581,8 @@ export async function stepPrepareCommand(input: Input) {
         requestTokenLimit,
         tokenBudget: budget,
         tokenThreshold: threshold,
-        truncatedForRequest: summaryRequestPromptTokens < estimateTokens(rawSummaryMessages),
+        truncatedForRequest:
+          summaryRequestPromptTokens < estimateTokens(rawSummaryMessages),
         ...messagesForTrace(summaryMessages, null),
         request: llmBodyForTrace(request.body),
       });
@@ -1093,7 +1594,7 @@ export async function stepPrepareCommand(input: Input) {
           ...request,
           countThoughtDuration: false,
           headers: request.headers,
-          draftId: "",
+          draftId,
           // After compaction, the next prepare call rebuilds from DB.
           messages: null,
           estimatedPromptTokens,
@@ -1102,38 +1603,67 @@ export async function stepPrepareCommand(input: Input) {
           requestPromptTokens: summaryRequestPromptTokens,
           requestTokenLimit,
           requestProvider: compactionProvider.name,
-          streamEvents: llmStreamEventOptions(chatId, "", {
-            estimatedPromptTokens,
-            tokenBudget: budget,
-            tokenThreshold: threshold,
-            provider: compactionProvider.name,
-            model: request.requestModel,
-            effort: request.requestEffort,
-            source: "compaction",
-            estimated: true,
-          }),
+          streamEvents: llmStreamEventOptions(
+            chatId,
+            draftId,
+            {
+              estimatedPromptTokens,
+              tokenBudget: budget,
+              tokenThreshold: threshold,
+              provider: compactionProvider.name,
+              model: request.requestModel,
+              effort: request.requestEffort,
+              source: "compaction",
+              estimated: true,
+            },
+            { draftKind: "compaction-draft" },
+          ),
         },
       };
     }
   } else {
     messages = stripDynamicContextMessages(passedMessages);
-    if (messagesHaveImageAttachments(messages) && !providerAcceptsAttachments(provider)) {
-      await traceMark("llm.attachments.unsupported", { chatId, provider: provider.name, model: provider.model });
+    if (
+      messagesHaveImageAttachments(messages) &&
+      !providerAcceptsAttachments(provider)
+    ) {
+      await traceMark("llm.attachments.unsupported", {
+        chatId,
+        provider: provider.name,
+        model: provider.model,
+      });
       await recordUnsupportedAttachments(chatId, provider, 1);
       return { ok: true, value: { kind: "done" } };
     }
     estimatedPromptTokens = estimateTokens(messages, TOOLS);
-    await traceMark("llm.messages.ready", { chatId, source: "carried", ...messagesForTrace(messages, TOOLS) });
+    await traceMark("llm.messages.ready", {
+      chatId,
+      source: "carried",
+      ...messagesForTrace(messages, TOOLS),
+    });
     const threshold = await compactionThresholdForBudget(budget);
-    moo.events.publish({ payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
-      budget,
-      threshold,
-      source: "context",
-      estimated: true,
-    }) });
-    await traceMark("compaction.carried_check", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold, shouldCompact: estimatedPromptTokens >= threshold });
+    moo.events.publish({
+      payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
+        budget,
+        threshold,
+        source: "context",
+        estimated: true,
+      }),
+    });
+    await traceMark("compaction.carried_check", {
+      chatId,
+      estimatedPromptTokens,
+      tokenBudget: budget,
+      tokenThreshold: threshold,
+      shouldCompact: estimatedPromptTokens >= threshold,
+    });
     if (estimatedPromptTokens >= threshold) {
-      await traceMark("compaction.carried_triggered", { chatId, estimatedPromptTokens, tokenBudget: budget, tokenThreshold: threshold });
+      await traceMark("compaction.carried_triggered", {
+        chatId,
+        estimatedPromptTokens,
+        tokenBudget: budget,
+        tokenThreshold: threshold,
+      });
       return { ok: true, value: { kind: "iterate", messages: null } };
     }
   }
@@ -1192,7 +1722,8 @@ export async function stepHandleLlmCommand(input: Input) {
   const thoughtDurationNs = Number(input.thoughtDurationNs);
   let messages = messageArray(input.messages);
 
-  if (draftId) moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
+  if (draftId)
+    moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
   await traceMark("llm.result.received", {
     chatId,
     purpose,
@@ -1214,10 +1745,21 @@ export async function stepHandleLlmCommand(input: Input) {
     (typeof input.requestModel === "string" && input.requestModel) ||
     null;
 
-  const partialToolCallsText = Array.isArray(llmResult.toolCalls) && llmResult.toolCalls.length > 0 ? JSON.stringify(llmResult.toolCalls) : "";
+  const partialToolCallsText =
+    Array.isArray(llmResult.toolCalls) && llmResult.toolCalls.length > 0
+      ? JSON.stringify(llmResult.toolCalls)
+      : "";
   const partialOutputText = llmResult.content || partialToolCallsText;
   const hasPartialBillableOutput = Boolean(partialOutputText);
-  const normalizedUsage = normalizeUsage(llmResult.usage) ?? (llmResult.ok || hasPartialBillableOutput ? estimateRawUsage(messages, partialOutputText, Number(input.estimatedPromptTokens) || 0) : null);
+  const normalizedUsage =
+    normalizeUsage(llmResult.usage) ??
+    (llmResult.ok || hasPartialBillableOutput
+      ? estimateRawUsage(
+          messages,
+          partialOutputText,
+          Number(input.estimatedPromptTokens) || 0,
+        )
+      : null);
   await traceMark("usage.normalized", {
     chatId,
     purpose,
@@ -1227,15 +1769,44 @@ export async function stepHandleLlmCommand(input: Input) {
     usage: normalizedUsage,
   });
   if (normalizedUsage && purpose !== "compact") {
-    const requestProvider = input.requestProvider === "anthropic" || input.requestProvider === "qwen" || input.requestProvider === "xai" || input.requestProvider === "deepseek" ? input.requestProvider : "openai";
-    const requestAuthMode = input.requestAuthMode === "env" || input.requestAuthMode === "apiKey" || input.requestAuthMode === "oauth" ? input.requestAuthMode : undefined;
-    const tokenEvent = await tokenUsageEvent(chatId, normalizedUsage, usedModel ? { name: requestProvider, model: usedModel, authMode: requestAuthMode } : null);
+    const requestProvider =
+      input.requestProvider === "anthropic" ||
+      input.requestProvider === "qwen" ||
+      input.requestProvider === "xai" ||
+      input.requestProvider === "deepseek"
+        ? input.requestProvider
+        : "openai";
+    const requestAuthMode =
+      input.requestAuthMode === "env" ||
+      input.requestAuthMode === "apiKey" ||
+      input.requestAuthMode === "oauth"
+        ? input.requestAuthMode
+        : undefined;
+    const tokenEvent = await tokenUsageEvent(
+      chatId,
+      normalizedUsage,
+      usedModel
+        ? { name: requestProvider, model: usedModel, authMode: requestAuthMode }
+        : null,
+    );
     if (tokenEvent) moo.events.publish({ payload: tokenEvent });
     await recordUsage(chatId, usedModel, normalizedUsage);
-    await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: true, model: usedModel });
+    await traceMark("usage.persisted", {
+      chatId,
+      purpose,
+      updateLastContextTokens: true,
+      model: usedModel,
+    });
   } else if (normalizedUsage) {
-    await recordUsage(chatId, usedModel, normalizedUsage, { updateLastContextTokens: false });
-    await traceMark("usage.persisted", { chatId, purpose, updateLastContextTokens: false, model: usedModel });
+    await recordUsage(chatId, usedModel, normalizedUsage, {
+      updateLastContextTokens: false,
+    });
+    await traceMark("usage.persisted", {
+      chatId,
+      purpose,
+      updateLastContextTokens: false,
+      model: usedModel,
+    });
   }
 
   if (purpose === "compact") {
@@ -1248,7 +1819,16 @@ export async function stepHandleLlmCommand(input: Input) {
       const requestId = providerErrorRequestId(parsed, llmResult.headers);
       const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
       const hint = null;
-      await traceMark("compaction.failed", { chatId, reason, status, attempt, errorBody: llmResult.errorBody || null, requestId, retryAfter, hint });
+      await traceMark("compaction.failed", {
+        chatId,
+        reason,
+        status,
+        attempt,
+        errorBody: llmResult.errorBody || null,
+        requestId,
+        retryAfter,
+        hint,
+      });
       await recordCompactionFailure(chatId, reason, {
         trigger: "automatic",
         promptTokens: Number(input.estimatedPromptTokens) || null,
@@ -1267,6 +1847,7 @@ export async function stepHandleLlmCommand(input: Input) {
         provider: input.requestProvider || null,
         model: usedModel,
         effort: input.requestEffort || null,
+        draftId: draftId || null,
       });
       await setChatOngoing(chatId, false);
       moo.events.publish({ payload: { kind: "compaction-end", chatId } });
@@ -1276,15 +1857,24 @@ export async function stepHandleLlmCommand(input: Input) {
     }
     const summary = (llmResult.content || "").trim();
     if (!summary) {
-      await traceMark("compaction.failed", { chatId, reason: "empty_stream_summary", attempt });
-      await recordCompactionFailure(chatId, "provider returned an empty summary", {
-        trigger: "automatic",
-        promptTokens: Number(input.estimatedPromptTokens) || null,
-        tokenBudget: Number(input.tokenBudget) || null,
-        tokenThreshold: Number(input.tokenThreshold) || null,
-        requestPromptTokens: Number(input.requestPromptTokens) || null,
-        requestTokenLimit: Number(input.requestTokenLimit) || null,
+      await traceMark("compaction.failed", {
+        chatId,
+        reason: "empty_stream_summary",
+        attempt,
       });
+      await recordCompactionFailure(
+        chatId,
+        "provider returned an empty summary",
+        {
+          trigger: "automatic",
+          promptTokens: Number(input.estimatedPromptTokens) || null,
+          tokenBudget: Number(input.tokenBudget) || null,
+          tokenThreshold: Number(input.tokenThreshold) || null,
+          requestPromptTokens: Number(input.requestPromptTokens) || null,
+          requestTokenLimit: Number(input.requestTokenLimit) || null,
+          draftId: draftId || null,
+        },
+      );
       await setChatOngoing(chatId, false);
       moo.events.publish({ payload: { kind: "compaction-end", chatId } });
       return { ok: true, value: { kind: "done" } };
@@ -1296,11 +1886,19 @@ export async function stepHandleLlmCommand(input: Input) {
       tokenThreshold: Number(input.tokenThreshold) || null,
       requestPromptTokens: Number(input.requestPromptTokens) || null,
       requestTokenLimit: Number(input.requestTokenLimit) || null,
+      draftId: draftId || null,
     };
     const now = await moo.time.nowMs({});
     const lastUserAt = await latestUserInputAt(chatId);
     const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
-    await traceMark("compaction.summary.received", { chatId, chars: summary.length, attempt, usedModel, throughAt, lastUserAt });
+    await traceMark("compaction.summary.received", {
+      chatId,
+      chars: summary.length,
+      attempt,
+      usedModel,
+      throughAt,
+      lastUserAt,
+    });
     const compactionHash = await persistCompactionLayer(chatId, {
       summary,
       throughAt,
@@ -1314,36 +1912,86 @@ export async function stepHandleLlmCommand(input: Input) {
       extras: [
         ...stepLlmExtras(usedModel, input.requestEffort),
         ["agent:trigger", "agent:Automatic"],
-        ...(compactionTracking.promptTokens != null ? [["agent:promptTokens", String(compactionTracking.promptTokens)] as [string, string]] : []),
-        ...(compactionTracking.tokenBudget != null ? [["agent:tokenBudget", String(compactionTracking.tokenBudget)] as [string, string]] : []),
-        ...(compactionTracking.tokenThreshold != null ? [["agent:tokenThreshold", String(compactionTracking.tokenThreshold)] as [string, string]] : []),
+        ...(compactionTracking.promptTokens != null
+          ? [
+              [
+                "agent:promptTokens",
+                String(compactionTracking.promptTokens),
+              ] as [string, string],
+            ]
+          : []),
+        ...(compactionTracking.tokenBudget != null
+          ? [
+              ["agent:tokenBudget", String(compactionTracking.tokenBudget)] as [
+                string,
+                string,
+              ],
+            ]
+          : []),
+        ...(compactionTracking.tokenThreshold != null
+          ? [
+              [
+                "agent:tokenThreshold",
+                String(compactionTracking.tokenThreshold),
+              ] as [string, string],
+            ]
+          : []),
       ],
     });
     await traceMark("compaction.persisted", { chatId, compactionHash });
     const postMessages = await buildLLMMessages(chatId);
     const postContextTokens = estimateTokens(postMessages, TOOLS);
-    const postPressureTokens = await estimateCompactionPromptTokens(chatId, postMessages);
-    const budget = Number(input.tokenBudget) || await contextBudget();
-    const threshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(budget);
-    await recordLastContextTokens(chatId, postContextTokens, { compactionPromptTokens: postPressureTokens });
-    moo.events.publish({ payload: tokenPressureEvent(chatId, postPressureTokens, {
+    const postPressureTokens = await estimateCompactionPromptTokens(
+      chatId,
+      postMessages,
+    );
+    const budget = Number(input.tokenBudget) || (await contextBudget());
+    const threshold =
+      Number(input.tokenThreshold) ||
+      (await compactionThresholdForBudget(budget));
+    await recordLastContextTokens(chatId, postContextTokens, {
+      compactionPromptTokens: postPressureTokens,
+    });
+    moo.events.publish({
+      payload: tokenPressureEvent(chatId, postPressureTokens, {
+        budget,
+        threshold,
+        source: "compaction",
+        estimated: true,
+        reset: true,
+      }),
+    });
+    await traceMark("compaction.post_context", {
+      chatId,
+      postContextTokens,
+      postPressureTokens,
       budget,
       threshold,
-      source: "compaction",
-      estimated: true,
-      reset: true,
-    }) });
-    await traceMark("compaction.post_context", { chatId, postContextTokens, postPressureTokens, budget, threshold });
+    });
     moo.events.publish({ payload: { kind: "compaction-end", chatId } });
     return { ok: true, value: { kind: "iterate", messages: null } };
   }
 
   // purpose === "step"
   if (!llmResult.ok) {
-    const retry = llmRetryDecisionFromSchedule(llmResult, attempt, await currentLlmRetryPolicy());
-    await traceMark("llm.retry.decision", { chatId, attempt, retry: retry.retry, reason: retry.reason, delayMs: retry.delayMs, status: llmResult.status });
+    const retry = llmRetryDecisionFromSchedule(
+      llmResult,
+      attempt,
+      await currentLlmRetryPolicy(),
+    );
+    await traceMark("llm.retry.decision", {
+      chatId,
+      attempt,
+      retry: retry.retry,
+      reason: retry.reason,
+      delayMs: retry.delayMs,
+      status: llmResult.status,
+    });
     const contextLengthParsed = parseProviderErrorBody(llmResult.errorBody);
-    if (!input.forceCompact && isContextLengthExceededError(contextLengthParsed)) {
+    if (
+      !input.forceCompact &&
+      isContextLengthExceededError(contextLengthParsed)
+    ) {
       const status = Number(llmResult.status) || 0;
       await traceMark("compaction.context_length_retry", {
         chatId,
@@ -1354,7 +2002,10 @@ export async function stepHandleLlmCommand(input: Input) {
         tokenThreshold: Number(input.tokenThreshold) || null,
         code: providerErrorCode(contextLengthParsed),
         type: providerErrorType(contextLengthParsed),
-        requestId: providerErrorRequestId(contextLengthParsed, llmResult.headers),
+        requestId: providerErrorRequestId(
+          contextLengthParsed,
+          llmResult.headers,
+        ),
       });
       return {
         ok: true,
@@ -1368,7 +2019,13 @@ export async function stepHandleLlmCommand(input: Input) {
       };
     }
     if (retry.retry) {
-      await traceMark("llm.retry.scheduled", { chatId, attempt, nextAttempt: attempt + 1, reason: retry.reason, delayMs: retry.delayMs });
+      await traceMark("llm.retry.scheduled", {
+        chatId,
+        attempt,
+        nextAttempt: attempt + 1,
+        reason: retry.reason,
+        delayMs: retry.delayMs,
+      });
       return {
         ok: true,
         value: {
@@ -1380,7 +2037,12 @@ export async function stepHandleLlmCommand(input: Input) {
         },
       };
     }
-    await traceMark("llm.provider_error.record", { chatId, attempt, status: llmResult.status, errorBody: llmResult.errorBody || null });
+    await traceMark("llm.provider_error.record", {
+      chatId,
+      attempt,
+      status: llmResult.status,
+      errorBody: llmResult.errorBody || null,
+    });
 
     const parsed = parseProviderErrorBody(llmResult.errorBody);
     const status = Number(llmResult.status) || 0;
@@ -1408,11 +2070,21 @@ export async function stepHandleLlmCommand(input: Input) {
       input.requestEffort,
     );
     await setChatOngoing(chatId, false);
-    await traceMark("llm.provider_error.done", { chatId, attempt, status: llmResult.status, usedModel });
+    await traceMark("llm.provider_error.done", {
+      chatId,
+      attempt,
+      status: llmResult.status,
+      usedModel,
+    });
     return { ok: true, value: { kind: "done" } };
   }
 
-  if (!messages) messages = await traceSpan("llm.rebuild_messages", { chatId, reason: "missing_carried_messages" }, () => buildLLMMessages(chatId));
+  if (!messages)
+    messages = await traceSpan(
+      "llm.rebuild_messages",
+      { chatId, reason: "missing_carried_messages" },
+      () => buildLLMMessages(chatId),
+    );
 
   if (Array.isArray(llmResult.toolCalls) && llmResult.toolCalls.length > 0) {
     await traceMark("llm.tool_calls", {
@@ -1428,7 +2100,12 @@ export async function stepHandleLlmCommand(input: Input) {
     const preamble = (llmResult.content || "").trim();
     const reasoningContent = llmResult.reasoningContent ?? "";
     if (preamble || reasoningContent.trim()) {
-      await traceMark("llm.tool_preamble", { chatId, preamble, hasReasoningContent: !!reasoningContent.trim(), usedModel });
+      await traceMark("llm.tool_preamble", {
+        chatId,
+        preamble,
+        hasReasoningContent: !!reasoningContent.trim(),
+        usedModel,
+      });
       await reply(
         chatId,
         preamble,
@@ -1442,10 +2119,17 @@ export async function stepHandleLlmCommand(input: Input) {
     messages.push({
       role: "assistant",
       content: llmResult.content || null,
-      ...(llmResult.reasoningContent ? { reasoning_content: llmResult.reasoningContent } : {}),
+      ...(llmResult.reasoningContent
+        ? { reasoning_content: llmResult.reasoningContent }
+        : {}),
       tool_calls: llmResult.toolCalls,
     });
-    await traceMark("llm.assistant_tool_message", { chatId, messages: messages.length, content: llmResult.content || "", toolCalls: llmResult.toolCalls });
+    await traceMark("llm.assistant_tool_message", {
+      chatId,
+      messages: messages.length,
+      content: llmResult.content || "",
+      toolCalls: llmResult.toolCalls,
+    });
     return await stepContinueToolCallsCommand({
       chatId,
       state: { messages, thoughtDurationNs: input.thoughtDurationNs },
@@ -1456,17 +2140,35 @@ export async function stepHandleLlmCommand(input: Input) {
   }
 
   const text = (llmResult.content || "").trim();
-  const stopReason = typeof llmResult.stopReason === "string" ? llmResult.stopReason : null;
+  const stopReason =
+    typeof llmResult.stopReason === "string" ? llmResult.stopReason : null;
   const reasoningContent = llmResult.reasoningContent ?? "";
-  const thinkingBlocks = Array.isArray(llmResult.anthropicThinkingBlocks) ? llmResult.anthropicThinkingBlocks : [];
-  await traceMark("llm.final_reply", { chatId, chars: text.length, usedModel, stopReason, hasReasoningContent: !!reasoningContent.trim(), thinkingBlocks: thinkingBlocks.length, thoughtDurationNs: Number.isFinite(thoughtDurationNs) ? thoughtDurationNs : null });
+  const thinkingBlocks = Array.isArray(llmResult.anthropicThinkingBlocks)
+    ? llmResult.anthropicThinkingBlocks
+    : [];
+  await traceMark("llm.final_reply", {
+    chatId,
+    chars: text.length,
+    usedModel,
+    stopReason,
+    hasReasoningContent: !!reasoningContent.trim(),
+    thinkingBlocks: thinkingBlocks.length,
+    thoughtDurationNs: Number.isFinite(thoughtDurationNs)
+      ? thoughtDurationNs
+      : null,
+  });
 
   // Anthropic's interleaved-thinking turns can pause mid-turn (`pause_turn`).
   // The protocol requires us to feed the assistant message - including the
   // signed thinking blocks - back and continue. Treating that as a terminal
   // empty reply is what produced the old "(no response)" placeholder.
   if (stopReason === "pause_turn") {
-    await traceMark("llm.pause_turn", { chatId, chars: text.length, thinkingBlocks: thinkingBlocks.length, usedModel });
+    await traceMark("llm.pause_turn", {
+      chatId,
+      chars: text.length,
+      thinkingBlocks: thinkingBlocks.length,
+      usedModel,
+    });
     if (text || reasoningContent.trim()) {
       await reply(
         chatId,
@@ -1478,12 +2180,18 @@ export async function stepHandleLlmCommand(input: Input) {
         reasoningContent || null,
       );
     }
-    const assistantMessage: { role: string; content: unknown; reasoning_content?: string; anthropic_thinking_blocks?: unknown[] } = {
+    const assistantMessage: {
+      role: string;
+      content: unknown;
+      reasoning_content?: string;
+      anthropic_thinking_blocks?: unknown[];
+    } = {
       role: "assistant",
       content: llmResult.content || null,
     };
     if (reasoningContent) assistantMessage.reasoning_content = reasoningContent;
-    if (thinkingBlocks.length) assistantMessage.anthropic_thinking_blocks = thinkingBlocks;
+    if (thinkingBlocks.length)
+      assistantMessage.anthropic_thinking_blocks = thinkingBlocks;
     messages.push(assistantMessage);
     return { ok: true, value: { kind: "iterate", messages } };
   }
@@ -1492,7 +2200,13 @@ export async function stepHandleLlmCommand(input: Input) {
     // The model produced no visible text and no tool calls. Don't fabricate a
     // `(no response)` Reply step - record a real error so the UI shows what
     // happened and the agent loop stops cleanly.
-    await traceMark("llm.empty_completion", { chatId, stopReason, hasReasoningContent: !!reasoningContent.trim(), thinkingBlocks: thinkingBlocks.length, usedModel });
+    await traceMark("llm.empty_completion", {
+      chatId,
+      stopReason,
+      hasReasoningContent: !!reasoningContent.trim(),
+      thinkingBlocks: thinkingBlocks.length,
+      usedModel,
+    });
     await recordErrorStep(
       chatId,
       "empty_completion",
@@ -1501,15 +2215,22 @@ export async function stepHandleLlmCommand(input: Input) {
         stopReason,
         hasReasoningContent: !!reasoningContent.trim(),
         thinkingBlocks: thinkingBlocks.length,
-        message: stopReason === "max_tokens"
-          ? "Model response was truncated before any text was emitted (stop_reason=max_tokens)."
-          : "Model returned no text content" + (stopReason ? ` (stop_reason=${stopReason})` : "") + ".",
+        message:
+          stopReason === "max_tokens"
+            ? "Model response was truncated before any text was emitted (stop_reason=max_tokens)."
+            : "Model returned no text content" +
+              (stopReason ? ` (stop_reason=${stopReason})` : "") +
+              ".",
       },
       usedModel,
       input.requestEffort,
     );
     await setChatOngoing(chatId, false);
-    await traceMark("llm.empty_completion.done", { chatId, stopReason, usedModel });
+    await traceMark("llm.empty_completion.done", {
+      chatId,
+      stopReason,
+      usedModel,
+    });
     return { ok: true, value: { kind: "done" } };
   }
 
@@ -1522,24 +2243,44 @@ export async function stepHandleLlmCommand(input: Input) {
     draftId,
     reasoningContent || null,
   );
-  const postReplyMessages = await traceSpan("compaction.post_reply_estimate", { chatId }, () => buildLLMMessages(chatId));
-  const postReplyPressureTokens = await traceSpan("compaction.post_reply_pressure", { chatId, messages: postReplyMessages.length }, () => estimateCompactionPromptTokens(chatId, postReplyMessages));
+  const postReplyMessages = await traceSpan(
+    "compaction.post_reply_estimate",
+    { chatId },
+    () => buildLLMMessages(chatId),
+  );
+  const postReplyPressureTokens = await traceSpan(
+    "compaction.post_reply_pressure",
+    { chatId, messages: postReplyMessages.length },
+    () => estimateCompactionPromptTokens(chatId, postReplyMessages),
+  );
   await recordLastCompactionPromptTokens(chatId, postReplyPressureTokens);
-  const pressureBudget = Number(input.tokenBudget) || await contextBudget();
-  const pressureThreshold = Number(input.tokenThreshold) || await compactionThresholdForBudget(pressureBudget);
-  moo.events.publish({ payload: tokenPressureEvent(chatId, postReplyPressureTokens, {
+  const pressureBudget = Number(input.tokenBudget) || (await contextBudget());
+  const pressureThreshold =
+    Number(input.tokenThreshold) ||
+    (await compactionThresholdForBudget(pressureBudget));
+  moo.events.publish({
+    payload: tokenPressureEvent(chatId, postReplyPressureTokens, {
+      budget: pressureBudget,
+      threshold: pressureThreshold,
+      source: "compaction",
+      estimated: true,
+    }),
+  });
+  await traceMark("compaction.post_reply_pressure.recorded", {
+    chatId,
+    postReplyPressureTokens,
     budget: pressureBudget,
     threshold: pressureThreshold,
-    source: "compaction",
-    estimated: true,
-  }) });
-  await traceMark("compaction.post_reply_pressure.recorded", { chatId, postReplyPressureTokens, budget: pressureBudget, threshold: pressureThreshold });
+  });
   await setChatOngoing(chatId, false);
   await traceMark("llm.final_reply.done", { chatId, usedModel });
   return { ok: true, value: { kind: "done" } };
 }
 
-export function stepLlmExtras(model: string | null | undefined, effort: unknown): Array<[string, string]> {
+export function stepLlmExtras(
+  model: string | null | undefined,
+  effort: unknown,
+): Array<[string, string]> {
   const extras: Array<[string, string]> = [];
   const m = String(model ?? "").trim();
   const e = normalizeEffort(effort);
@@ -1547,4 +2288,3 @@ export function stepLlmExtras(model: string | null | undefined, effort: unknown)
   if (e) extras.push(["agent:effort", e]);
   return extras;
 }
-

@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { readStylesheetForTest } from "./styleTestUtils.test.ts";
 
 const css = readStylesheetForTest();
-const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+const timeline = readFileSync(
+  new URL("./Timeline.tsx", import.meta.url),
+  "utf8",
+);
 
 function cssRuleBody(selector: string) {
   const marker = `${selector} {`;
@@ -31,7 +34,9 @@ describe("timeline loading header layout", () => {
     expect(body).toContain("block-size: var(--top-bar-h)");
     expect(body).toContain("max-block-size: var(--top-bar-h)");
     expect(body).toContain("flex: 0 0 var(--top-bar-h)");
-    expect(body).toContain("padding: calc((var(--top-bar-h) - var(--top-bar-button-size)) / 2) 0.55rem");
+    expect(body).toContain(
+      "padding: calc((var(--top-bar-h) - var(--top-bar-button-size)) / 2) 0.55rem",
+    );
   });
 
   test("pins the loading header to the top-bar height", () => {
@@ -42,22 +47,30 @@ describe("timeline loading header layout", () => {
     expect(body).toContain("flex: 0 0 var(--top-bar-h)");
     expect(body).toContain('grid-template-areas: "nav parent title right"');
     expect(body).toContain("overflow: hidden");
-    expect(css.indexOf(".conv-header.chat-loading")).toBeGreaterThan(css.indexOf("@container conversation-main (max-width: 30rem)"));
+    expect(css.indexOf(".conv-header.chat-loading")).toBeGreaterThan(
+      css.indexOf("@container conversation-main (max-width: 30rem)"),
+    );
   });
 
   test("keeps bulky controls out until the timeline is loaded", () => {
     expect(timeline).toContain('classList={{ "chat-loading": chatLoading() }}');
     expect(timeline).toContain("<Show when={!chatLoading()}>");
     expect(timeline).toContain("<ModelPicker bag={bag} />");
-    expect(timeline).toContain("<TokenBar tokens={bag.tokens} onCompact={bag.compactChat}");
+    expect(timeline).toContain("<TokenBar");
+    expect(timeline).toContain("tokens={bag.tokens}");
+    expect(timeline).toContain("onCompact={bag.compactChat}");
     expect(timeline).toContain("token-compact-button");
   });
 
   test("continues top-loading older history after restored page renders", () => {
-    expect(timeline).toContain("let olderTimelineRecheckFrame: number | undefined;");
+    expect(timeline).toContain(
+      "let olderTimelineRecheckFrame: number | undefined;",
+    );
     expect(timeline).toContain("const scheduleOlderTimelineRecheck = () => {");
     expect(timeline).toContain("if (restoreFrame !== undefined) {");
-    expect(timeline).toContain("scheduleOlderTimelineRecheck();\n        return;");
+    expect(timeline).toContain(
+      "scheduleOlderTimelineRecheck();\n        return;",
+    );
     expect(timeline).toContain("scheduleOlderTimelineRecheck();\n    });");
     expect(timeline).toContain("let wasOlderTimelineLoading = false;");
     expect(timeline).toContain(
@@ -70,11 +83,16 @@ describe("timeline loading header layout", () => {
     const compactButtonIndex = timeline.indexOf('class="token-compact-button"');
     expect(tokenBarIndex).toBeGreaterThan(0);
     expect(compactButtonIndex).toBeGreaterThan(tokenBarIndex);
-    expect(timeline).toContain('aria-label={props.compacting() ? "Compacting older turns" : "Compact older turns"}');
+    expect(timeline).toContain("aria-label={");
+    expect(timeline).toContain(
+      'props.compacting() ? "Compacting older turns" : "Compact older turns"',
+    );
     expect(timeline).toContain('<CompactIcon class="token-compact-icon" />');
     expect(timeline).toContain('import { CompactIcon } from "./icons";');
-    expect(timeline).toContain('import { LeftSidebarToggle, RightSidebarToggle } from "./HeaderControls";');
-    expect(timeline).not.toContain('>⇥<');
+    expect(timeline).toContain(
+      'import { LeftSidebarToggle, RightSidebarToggle } from "./HeaderControls";',
+    );
+    expect(timeline).not.toContain(">⇥<");
 
     const body = cssRuleBody(".token-compact-button");
     expect(body).toContain("inline-size: var(--compact-header-button-size)");
@@ -87,7 +105,9 @@ describe("timeline loading header layout", () => {
   });
 
   test("keeps the token meter compact in narrow headers", () => {
-    const narrowStart = css.indexOf("@container conversation-main (max-width: 30rem)");
+    const narrowStart = css.indexOf(
+      "@container conversation-main (max-width: 30rem)",
+    );
     expect(narrowStart).toBeGreaterThan(0);
     const loadingStart = css.indexOf(".conv-header.chat-loading", narrowStart);
     expect(loadingStart).toBeGreaterThan(narrowStart);
@@ -108,10 +128,16 @@ describe("timeline loading header layout", () => {
   test("renders token usage against full context with a compaction marker", () => {
     expect(timeline).toContain("tokens.used / safeBudget()");
     expect(timeline).toContain("(tokens.threshold / safeBudget()) * 100");
-    expect(timeline).toContain('<span class="token-mark" style={{ left: thresholdPct() + "%" }} />');
+    expect(timeline).toContain(
+      '<span class="token-mark" style={{ left: thresholdPct() + "%" }} />',
+    );
     expect(timeline).toContain("formatTokenCount(safeTokens().budget)");
-    expect(timeline).not.toContain("const safeThreshold = () => Math.max(0, safeTokens().threshold)");
-    expect(timeline).not.toContain("safeTokens().threshold || safeTokens().budget");
+    expect(timeline).not.toContain(
+      "const safeThreshold = () => Math.max(0, safeTokens().threshold)",
+    );
+    expect(timeline).not.toContain(
+      "safeTokens().threshold || safeTokens().budget",
+    );
   });
 
   test("sizes timeline app code buttons with the app pills", () => {
@@ -172,15 +198,19 @@ describe("timeline loading header layout", () => {
   });
 });
 
-
 describe("timeline diff overflow", () => {
   test("wraps inline timeline diffs instead of showing horizontal scrollbars", () => {
     const diffBodyRule = cssRuleBody(".file-diff-body");
     expect(diffBodyRule).toContain("overflow-x: hidden;");
     expect(diffBodyRule).toContain("white-space: pre-wrap;");
 
-    const diffContentStart = css.indexOf(".file-diff-body .diff-scroll-content");
-    const diffContentRule = css.slice(diffContentStart, css.indexOf("}\n", diffContentStart));
+    const diffContentStart = css.indexOf(
+      ".file-diff-body .diff-scroll-content",
+    );
+    const diffContentRule = css.slice(
+      diffContentStart,
+      css.indexOf("}\n", diffContentStart),
+    );
     expect(diffContentRule).toContain("width: 100%;");
     expect(diffContentRule).toContain("min-width: 0;");
 
@@ -207,10 +237,11 @@ describe("timeline diff overflow", () => {
   });
 });
 
-
 describe("timeline shared header controls", () => {
   test("timeline uses the shared left sidebar toggle", () => {
-    expect(timeline).toContain("<LeftSidebarToggle onToggleSidebar={onToggleSidebar} />");
+    expect(timeline).toContain(
+      "<LeftSidebarToggle onToggleSidebar={onToggleSidebar} />",
+    );
     expect(timeline).not.toContain('title="toggle sidebar"');
   });
 });

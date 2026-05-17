@@ -15,13 +15,11 @@ import { activeTodos, getTodos } from "../todos";
 import { defaultModelPricing, type ModelPrice } from "../llm_models";
 import { chatModelInfo } from "./models";
 
-
 const DEFAULT_TIMELINE_LIMIT = 160;
 // The trail sidebar is an index, not the transcript itself. Keep initial loads
 // bounded so old payload-heavy entries do not dominate chat switching time.
 const TRAIL_INDEX_LIMIT = 400;
 const TRAIL_STEP_INDEX_LIMIT = 240;
-
 
 type TimelineRef =
   | { type: "step"; id: string; at: number; updatedAt?: number }
@@ -33,17 +31,25 @@ type TimelineRef =
 
 function timelineTypeOrder(type: string): number {
   switch (type) {
-    case "input": return 10;
-    case "input-response": return 20;
-    case "step": return 30;
-    case "log": return 40;
-    case "trail": return 50;
+    case "input":
+      return 10;
+    case "input-response":
+      return 20;
+    case "step":
+      return 30;
+    case "log":
+      return 40;
+    case "trail":
+      return 50;
     case "file-diff":
     case "blob-add":
     case "memory-diff":
-    case "todo-diff": return 60;
-    case "compaction": return 70;
-    default: return 100;
+    case "todo-diff":
+      return 60;
+    case "compaction":
+      return 70;
+    default:
+      return 100;
   }
 }
 
@@ -53,16 +59,24 @@ function finiteNumber(value: unknown): number | null {
 }
 
 function parseFactLiteral(value: string): string | null {
-  const literal = /^"((?:\\.|[^"\\])*)"(?:\^\^.+|@[a-zA-Z-]+)?$/.exec(value.trim());
+  const literal = /^"((?:\\.|[^"\\])*)"(?:\^\^.+|@[a-zA-Z-]+)?$/.exec(
+    value.trim(),
+  );
   if (!literal) return null;
   return literal[1]!.replace(/\\(["\\nrtbf])/g, (_all, ch: string) => {
     switch (ch) {
-      case "n": return "\n";
-      case "r": return "\r";
-      case "t": return "\t";
-      case "b": return "\b";
-      case "f": return "\f";
-      default: return ch;
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "\t";
+      case "b":
+        return "\b";
+      case "f":
+        return "\f";
+      default:
+        return ch;
     }
   });
 }
@@ -97,12 +111,19 @@ function firstPresent(...values: unknown[]): string | null {
 }
 
 function compareTimelineItems(a: any, b: any): number {
-  return (a.at ?? 0) - (b.at ?? 0) || timelineTypeOrder(a.type) - timelineTypeOrder(b.type);
+  return (
+    (a.at ?? 0) - (b.at ?? 0) ||
+    timelineTypeOrder(a.type) - timelineTypeOrder(b.type)
+  );
 }
 
 function newestByAt<T>(rows: T[], limit: number, at: (row: T) => number): T[] {
-  if (!Number.isFinite(limit) || limit <= 0 || rows.length <= limit) return rows;
-  return rows.slice().sort((a, b) => at(b) - at(a)).slice(0, limit);
+  if (!Number.isFinite(limit) || limit <= 0 || rows.length <= limit)
+    return rows;
+  return rows
+    .slice()
+    .sort((a, b) => at(b) - at(a))
+    .slice(0, limit);
 }
 
 function diffPayloadSummary(
@@ -115,13 +136,15 @@ function diffPayloadSummary(
   if (
     value?.type === "todo-diff" &&
     (!Array.isArray(value?.changes) || value.changes.length === 0)
-  ) return null;
+  )
+    return null;
   return {
-    type: value?.type === "todo-diff"
-      ? "todo-diff"
-      : value?.store || value?.graph || value?.changes
-        ? "memory-diff"
-        : "file-diff",
+    type:
+      value?.type === "todo-diff"
+        ? "todo-diff"
+        : value?.store || value?.graph || value?.changes
+          ? "memory-diff"
+          : "file-diff",
     id: value?.hash || stepId,
     step: stepId,
     chatId,
@@ -143,23 +166,39 @@ function diffPayloadSummary(
   };
 }
 
-async function loadObjectsByHash(hashes: Iterable<string>, into = new Map<string, { kind: string; value: any } | null>()) {
+async function loadObjectsByHash(
+  hashes: Iterable<string>,
+  into = new Map<string, { kind: string; value: any } | null>(),
+) {
   const queue = [...new Set(hashes)].filter((hash) => !into.has(hash));
   if (queue.length === 0) return into;
   const objects = host.getObjects(queue);
   for (const hash of queue) {
     const row = objects[hash];
-    into.set(hash, row ? { kind: row.kind, value: JSON.parse(row.content) } : null);
+    into.set(
+      hash,
+      row ? { kind: row.kind, value: JSON.parse(row.content) } : null,
+    );
   }
   return into;
 }
 
-async function selectRows(c: ReturnType<typeof chatRefs>, where: string, vars: string, limit = 0) {
+async function selectRows(
+  c: ReturnType<typeof chatRefs>,
+  where: string,
+  vars: string,
+  limit = 0,
+) {
   const query = `select ${vars} where { ${where} } order by desc(?at)${limit > 0 ? ` limit ${limit}` : ""}`;
-  const rows = await moo.sparql.select({ store: c.facts, graph: c.graph, query });
+  const rows = await moo.sparql.select({
+    store: c.facts,
+    graph: c.graph,
+    query,
+  });
   return rows.map((row: Record<string, string>) => {
     const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(row)) out[key.startsWith("?") ? key : `?${key}`] = value;
+    for (const [key, value] of Object.entries(row))
+      out[key.startsWith("?") ? key : `?${key}`] = value;
     return out;
   });
 }
@@ -173,7 +212,11 @@ async function loadStepRows(c: ReturnType<typeof chatRefs>, limit = 0) {
   );
 }
 
-async function loadStepRowsByKind(c: ReturnType<typeof chatRefs>, kind: string, limit = 0) {
+async function loadStepRowsByKind(
+  c: ReturnType<typeof chatRefs>,
+  kind: string,
+  limit = 0,
+) {
   const rows = await selectRows(
     c,
     `?step rdf:type agent:Step . ?step agent:kind ${kind} . ?step agent:status ?status . ?step agent:createdAt ?at . optional { ?step agent:updatedAt ?updatedAt . }`,
@@ -183,12 +226,25 @@ async function loadStepRowsByKind(c: ReturnType<typeof chatRefs>, kind: string, 
   return rows.map((row) => ({ ...row, "?kind": kind }));
 }
 
-async function loadInputResponseRows(c: ReturnType<typeof chatRefs>, limit = 0) {
-  return selectRows(c, "?resp rdf:type ui:InputResponse . ?resp ui:respondsTo ?req . ?resp ui:createdAt ?at .", "?resp ?req ?at", limit);
+async function loadInputResponseRows(
+  c: ReturnType<typeof chatRefs>,
+  limit = 0,
+) {
+  return selectRows(
+    c,
+    "?resp rdf:type ui:InputResponse . ?resp ui:respondsTo ?req . ?resp ui:createdAt ?at .",
+    "?resp ?req ?at",
+    limit,
+  );
 }
 
 async function loadLogRows(c: ReturnType<typeof chatRefs>, limit = 0) {
-  return selectRows(c, "?log rdf:type agent:Log . ?log agent:createdAt ?at . ?log agent:message ?message .", "?log ?at ?message", limit);
+  return selectRows(
+    c,
+    "?log rdf:type agent:Log . ?log agent:createdAt ?at . ?log agent:message ?message .",
+    "?log ?at ?message",
+    limit,
+  );
 }
 
 async function loadTrailEntryRows(c: ReturnType<typeof chatRefs>, limit = 0) {
@@ -202,7 +258,10 @@ async function loadTrailEntryRows(c: ReturnType<typeof chatRefs>, limit = 0) {
   );
 }
 
-async function loadStepCount(c: ReturnType<typeof chatRefs>, kind: string | null = null) {
+async function loadStepCount(
+  c: ReturnType<typeof chatRefs>,
+  kind: string | null = null,
+) {
   return moo.facts.count({
     store: c.facts,
     graph: c.graph,
@@ -212,32 +271,77 @@ async function loadStepCount(c: ReturnType<typeof chatRefs>, kind: string | null
 }
 
 async function loadTypeCount(c: ReturnType<typeof chatRefs>, type: string) {
-  return moo.facts.count({ store: c.facts, graph: c.graph, predicate: "rdf:type", object: type });
+  return moo.facts.count({
+    store: c.facts,
+    graph: c.graph,
+    predicate: "rdf:type",
+    object: type,
+  });
 }
 
-async function loadInputRows(c: ReturnType<typeof chatRefs>, responseRows: Array<Record<string, string>>, limit = 0) {
-  const rows = await selectRows(c, "?req rdf:type ui:InputRequest . ?req ui:kind ?kind . ?req ui:status ?status . ?req ui:createdAt ?at .", "?req ?kind ?status ?at", limit);
+async function loadInputRows(
+  c: ReturnType<typeof chatRefs>,
+  responseRows: Array<Record<string, string>>,
+  limit = 0,
+) {
+  const rows = await selectRows(
+    c,
+    "?req rdf:type ui:InputRequest . ?req ui:kind ?kind . ?req ui:status ?status . ?req ui:createdAt ?at .",
+    "?req ?kind ?status ?at",
+    limit,
+  );
   const visibleIds = new Set(rows.map((row) => row["?req"]).filter(Boolean));
   const missingIds = responseRows
     .map((row) => row["?req"])
     .filter((id): id is string => !!id && !visibleIds.has(id))
     .slice(0, Math.max(limit, responseRows.length));
   if (!missingIds.length) return rows;
-  const extra = await Promise.all(missingIds.map(async (reqId) => {
-    const [kind, status, at] = await Promise.all([
-      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:kind", limit: 1 }),
-      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:status", limit: 1 }),
-      moo.facts.match({ store: c.facts, graph: c.graph, subject: reqId, predicate: "ui:createdAt", limit: 1 }),
-    ]);
-    return { "?req": reqId, "?kind": kind[0]?.[3] || "ui:Form", "?status": status[0]?.[3] || "ui:Done", "?at": at[0]?.[3] || "0" };
-  }));
+  const extra = await Promise.all(
+    missingIds.map(async (reqId) => {
+      const [kind, status, at] = await Promise.all([
+        moo.facts.match({
+          store: c.facts,
+          graph: c.graph,
+          subject: reqId,
+          predicate: "ui:kind",
+          limit: 1,
+        }),
+        moo.facts.match({
+          store: c.facts,
+          graph: c.graph,
+          subject: reqId,
+          predicate: "ui:status",
+          limit: 1,
+        }),
+        moo.facts.match({
+          store: c.facts,
+          graph: c.graph,
+          subject: reqId,
+          predicate: "ui:createdAt",
+          limit: 1,
+        }),
+      ]);
+      return {
+        "?req": reqId,
+        "?kind": kind[0]?.[3] || "ui:Form",
+        "?status": status[0]?.[3] || "ui:Done",
+        "?at": at[0]?.[3] || "0",
+      };
+    }),
+  );
   return rows.concat(extra);
 }
 
 type TrailEntryRow = Record<string, unknown> & { "?at"?: unknown };
 
-async function loadTrailItems(_c: ReturnType<typeof chatRefs>, rows: TrailEntryRow[], limit = 0) {
-  const selectedRows = newestByAt(rows, limit, (row) => factTimestamp(row["?at"]));
+async function loadTrailItems(
+  _c: ReturnType<typeof chatRefs>,
+  rows: TrailEntryRow[],
+  limit = 0,
+) {
+  const selectedRows = newestByAt(rows, limit, (row) =>
+    factTimestamp(row["?at"]),
+  );
   return selectedRows.map(trailRowToTimelineItem);
 }
 
@@ -255,15 +359,21 @@ function trailRowToTimelineItem(row: any) {
   };
 }
 
-async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string, rows: any[], limit = 0) {
+async function loadTrailStepItems(
+  c: ReturnType<typeof chatRefs>,
+  chatId: string,
+  rows: any[],
+  limit = 0,
+) {
   // The main timeline can be limited to the newest N rows for responsiveness,
   // but the Trails sidebar is just a navigation index. Load only the newest
   // historical step kinds it renders instead of resolving every old subagent
   // payload/result on every chat switch. File diffs stay out of the trail; TODO
   // diffs are kept here so the trail remains a useful work-state index.
   const trailStepRows = newestByAt(
-    rows.filter((row) =>
-      (row["?kind"] === "agent:TodoDiff" || row["?kind"] === "agent:Subagent")
+    rows.filter(
+      (row) =>
+        row["?kind"] === "agent:TodoDiff" || row["?kind"] === "agent:Subagent",
     ),
     limit,
     (row) => factTimestamp(row["?at"]),
@@ -273,9 +383,25 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
       const stepId = row["?step"];
       if (!stepId) return { row, stepId, payload: [], result: [] };
       const [payload, result] = await Promise.all([
-        moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:payload", limit: 1 } }),
+        moo.facts.match({
+          store: c.facts,
+          ...{
+            graph: c.graph,
+            subject: stepId,
+            predicate: "agent:payload",
+            limit: 1,
+          },
+        }),
         row["?kind"] === "agent:Subagent"
-          ? moo.facts.match({ store: c.facts, ...{ graph: c.graph, subject: stepId, predicate: "agent:result", limit: 1 } })
+          ? moo.facts.match({
+              store: c.facts,
+              ...{
+                graph: c.graph,
+                subject: stepId,
+                predicate: "agent:result",
+                limit: 1,
+              },
+            })
           : Promise.resolve([]),
       ]);
       return { row, stepId, payload, result };
@@ -290,7 +416,8 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
     if (result) wantedHashes.add(result);
   }
   const objectByHash = await loadObjectsByHash(wantedHashes);
-  const lookupObject = (hash?: string) => hash ? objectByHash.get(hash) ?? null : null;
+  const lookupObject = (hash?: string) =>
+    hash ? (objectByHash.get(hash) ?? null) : null;
 
   const items: any[] = [];
   for (const meta of stepMetaRows) {
@@ -301,7 +428,13 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
     const result = lookupObject(meta.result[0]?.[3]);
     const at = factTimestamp(row["?at"]);
     if (row["?kind"] === "agent:TodoDiff" && payload?.value) {
-      const diffItem = diffPayloadSummary(payload.value, stepId, chatId, at, meta.payload[0]?.[3]);
+      const diffItem = diffPayloadSummary(
+        payload.value,
+        stepId,
+        chatId,
+        at,
+        meta.payload[0]?.[3],
+      );
       if (diffItem) items.push(diffItem);
       continue;
     }
@@ -323,7 +456,10 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
         result: result?.value ?? null,
       };
       item.text = formatStep(item, payload, result);
-      if (!item.text) item.text = [item.subagent.label, item.subagent.task].filter(Boolean).join("\n");
+      if (!item.text)
+        item.text = [item.subagent.label, item.subagent.task]
+          .filter(Boolean)
+          .join("\n");
       items.push(item);
     }
   }
@@ -333,7 +469,11 @@ async function loadTrailStepItems(c: ReturnType<typeof chatRefs>, chatId: string
 async function tokenPressure(chatId: string) {
   const modelInfo = await chatModelInfo(chatId);
   const pressure = await readLastTokenPressure(chatId);
-  const budget = await contextBudget({ name: modelInfo.provider, model: modelInfo.effectiveModel, authMode: modelInfo.authMode ?? undefined });
+  const budget = await contextBudget({
+    name: modelInfo.provider,
+    model: modelInfo.effectiveModel,
+    authMode: modelInfo.authMode ?? undefined,
+  });
   const threshold = await compactionThresholdForBudget(budget);
   const used = pressure.used;
   return {
@@ -348,7 +488,16 @@ async function tokenPressure(chatId: string) {
 
 async function chatOverview(chatId: string) {
   const c = chatRefs(chatId);
-  const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId, compaction] = await Promise.all([
+  const [
+    head,
+    title,
+    path,
+    createdAt,
+    lastAt,
+    hiddenRaw,
+    parentChatId,
+    compaction,
+  ] = await Promise.all([
     moo.pointers.get({ name: c.head }),
     moo.pointers.get({ name: `chat/${chatId}/title` }),
     moo.pointers.get({ name: `chat/${chatId}/path` }),
@@ -358,10 +507,22 @@ async function chatOverview(chatId: string) {
     moo.pointers.get({ name: `chat/${chatId}/parent` }),
     moo.pointers.get({ name: `chat/${chatId}/compaction` }),
   ]);
-  const home = String((await moo.env.get({ name: "HOME" })) || "").trim().replace(/\/+$/, "");
+  const home = String((await moo.env.get({ name: "HOME" })) || "")
+    .trim()
+    .replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
   const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
-  const [totalFacts, totalSteps, totalTurns, totalCodeCalls, totalInputs, totalInputResponses, totalLogs, totalTrailEntries, tokens] = await Promise.all([
+  const [
+    totalFacts,
+    totalSteps,
+    totalTurns,
+    totalCodeCalls,
+    totalInputs,
+    totalInputResponses,
+    totalLogs,
+    totalTrailEntries,
+    tokens,
+  ] = await Promise.all([
     moo.facts.count({ store: c.facts }),
     loadStepCount(c),
     loadStepCount(c, "agent:UserInput"),
@@ -388,7 +549,12 @@ async function chatOverview(chatId: string) {
     totalSteps,
     totalCodeCalls,
     tokens,
-    totalTimelineItems: totalSteps + totalInputs + totalInputResponses + totalLogs + totalTrailEntries,
+    totalTimelineItems:
+      totalSteps +
+      totalInputs +
+      totalInputResponses +
+      totalLogs +
+      totalTrailEntries,
   };
 }
 
@@ -398,13 +564,19 @@ export async function describeCommand(input: Input) {
   if (mode === "update") {
     const overview = await chatOverview(chatId);
     const knownTotalTimelineItems = Number(input.knownTotalTimelineItems);
-    const knownHeadMatches = Object.prototype.hasOwnProperty.call(input, "knownHead")
+    const knownHeadMatches = Object.prototype.hasOwnProperty.call(
+      input,
+      "knownHead",
+    )
       ? (input.knownHead ?? null) === overview.head
       : false;
     const knownTimelineMatches = Number.isFinite(knownTotalTimelineItems)
       ? knownTotalTimelineItems === overview.totalTimelineItems
       : false;
-    const knownCompactionMatches = Object.prototype.hasOwnProperty.call(input, "knownCompaction")
+    const knownCompactionMatches = Object.prototype.hasOwnProperty.call(
+      input,
+      "knownCompaction",
+    )
       ? (input.knownCompaction ?? null) === (overview.compaction ?? null)
       : false;
     if (knownHeadMatches && knownTimelineMatches && knownCompactionMatches) {
@@ -419,7 +591,15 @@ export async function describeCommand(input: Input) {
       sinceAt,
       includeTrail: false,
     });
-    return { ok: true, value: { mode, overview: snapshot.overview, changed: true, timeline: snapshot.timeline } };
+    return {
+      ok: true,
+      value: {
+        mode,
+        overview: snapshot.overview,
+        changed: true,
+        timeline: snapshot.timeline,
+      },
+    };
   }
   const value = await loadTimelineSnapshot(chatId, {
     limit: input.limit,
@@ -443,16 +623,19 @@ async function loadTimelineSnapshot(
   const c = chatRefs(chatId);
   const includeTrail = options.includeTrail;
   const sinceAt = Number(options.sinceAt ?? 0);
-  const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId] = await Promise.all([
-    moo.pointers.get({ name: c.head }),
-    moo.pointers.get({ name: `chat/${chatId}/title` }),
-    moo.pointers.get({ name: `chat/${chatId}/path` }),
-    moo.pointers.get({ name: `chat/${chatId}/created-at` }),
-    moo.pointers.get({ name: `chat/${chatId}/last-at` }),
-    moo.pointers.get({ name: `chat/${chatId}/hidden` }),
-    moo.pointers.get({ name: `chat/${chatId}/parent` }),
-  ]);
-  const home = String((await moo.env.get({ name: "HOME" })) || "").trim().replace(/\/+$/, "");
+  const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId] =
+    await Promise.all([
+      moo.pointers.get({ name: c.head }),
+      moo.pointers.get({ name: `chat/${chatId}/title` }),
+      moo.pointers.get({ name: `chat/${chatId}/path` }),
+      moo.pointers.get({ name: `chat/${chatId}/created-at` }),
+      moo.pointers.get({ name: `chat/${chatId}/last-at` }),
+      moo.pointers.get({ name: `chat/${chatId}/hidden` }),
+      moo.pointers.get({ name: `chat/${chatId}/parent` }),
+    ]);
+  const home = String((await moo.env.get({ name: "HOME" })) || "")
+    .trim()
+    .replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
   const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
   const totalFacts = await moo.facts.count({ store: c.facts });
@@ -467,9 +650,27 @@ async function loadTimelineSnapshot(
     Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.max(1, Math.floor(rawLimit))
       : 0;
-  const effectiveTimelineLimit = timelineLimit > 0 ? timelineLimit : DEFAULT_TIMELINE_LIMIT;
-  const boundedScanLimit = timelineLimit > 0 ? Math.max(effectiveTimelineLimit * 4, 512) : 0;
-  const [steps, totalSteps, totalTurns, totalCodeCalls, totalInputs, totalInputResponses, totalLogs, totalTrailEntries, compactionSteps, fileDiffTrailRows, todoDiffTrailRows, subagentTrailRows, inputResponses, logs, trailEntries] = await Promise.all([
+  const effectiveTimelineLimit =
+    timelineLimit > 0 ? timelineLimit : DEFAULT_TIMELINE_LIMIT;
+  const boundedScanLimit =
+    timelineLimit > 0 ? Math.max(effectiveTimelineLimit * 4, 512) : 0;
+  const [
+    steps,
+    totalSteps,
+    totalTurns,
+    totalCodeCalls,
+    totalInputs,
+    totalInputResponses,
+    totalLogs,
+    totalTrailEntries,
+    compactionSteps,
+    fileDiffTrailRows,
+    todoDiffTrailRows,
+    subagentTrailRows,
+    inputResponses,
+    logs,
+    trailEntries,
+  ] = await Promise.all([
     loadStepRows(c, boundedScanLimit),
     loadStepCount(c),
     loadStepCount(c, "agent:UserInput"),
@@ -479,16 +680,30 @@ async function loadTimelineSnapshot(
     loadTypeCount(c, "agent:Log"),
     loadTypeCount(c, "agent:TrailEntry"),
     loadStepRowsByKind(c, "agent:Compaction"),
-    loadStepRowsByKind(c, "agent:FileDiff", Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit)),
-    loadStepRowsByKind(c, "agent:TodoDiff", Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit)),
-    loadStepRowsByKind(c, "agent:Subagent", Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit)),
+    loadStepRowsByKind(
+      c,
+      "agent:FileDiff",
+      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+    ),
+    loadStepRowsByKind(
+      c,
+      "agent:TodoDiff",
+      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+    ),
+    loadStepRowsByKind(
+      c,
+      "agent:Subagent",
+      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+    ),
     loadInputResponseRows(c, boundedScanLimit),
     loadLogRows(c, boundedScanLimit),
     loadTrailEntryRows(c, Math.max(TRAIL_INDEX_LIMIT, boundedScanLimit)),
   ]);
   const inputs = await loadInputRows(c, inputResponses, boundedScanLimit);
   const trailStepRows = newestByAt(
-    [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows] as Array<Record<string, string>>,
+    [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows] as Array<
+      Record<string, string>
+    >,
     Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
     (row) => factTimestamp(row["?at"]),
   );
@@ -504,7 +719,12 @@ async function loadTimelineSnapshot(
     .filter((row) => row["?kind"] === "agent:Compaction")
     .map((row) => row["?step"])
     .filter((stepId): stepId is string => Boolean(stepId));
-  for (const row of host.matchFactsBySubjects(c.facts, c.graph, compactionStepIds, ["agent:payload"])) {
+  for (const row of host.matchFactsBySubjects(
+    c.facts,
+    c.graph,
+    compactionStepIds,
+    ["agent:payload"],
+  )) {
     const hash = row[3];
     if (hash) compactionStepPayloadHashes.add(hash);
   }
@@ -535,24 +755,51 @@ async function loadTimelineSnapshot(
       at: factTimestamp(row["?at"]),
       updatedAt: factTimestamp(row["?updatedAt"]),
     })),
-    ...inputs.map((row) => ({ type: "input" as const, id: row["?req"]!, at: factTimestamp(row["?at"]) })),
+    ...inputs.map((row) => ({
+      type: "input" as const,
+      id: row["?req"]!,
+      at: factTimestamp(row["?at"]),
+    })),
     ...inputResponses.map((row) => ({
       type: "input-response" as const,
       id: row["?resp"]!,
       reqId: row["?req"]!,
       at: factTimestamp(row["?at"]),
     })),
-    ...logs.map((row) => ({ type: "log" as const, id: row["?log"]!, at: factTimestamp(row["?at"]) })),
-    ...trailEntries.map((row) => ({ type: "trail" as const, id: row["?entry"]!, at: factTimestamp(row["?at"]) })),
+    ...logs.map((row) => ({
+      type: "log" as const,
+      id: row["?log"]!,
+      at: factTimestamp(row["?at"]),
+    })),
+    ...trailEntries.map((row) => ({
+      type: "trail" as const,
+      id: row["?entry"]!,
+      at: factTimestamp(row["?at"]),
+    })),
     ...syntheticCompactions,
-  ].sort((a, b) => a.at - b.at || timelineTypeOrder(a.type) - timelineTypeOrder(b.type));
-  const totalTimelineItems = totalSteps + totalInputs + totalInputResponses + totalLogs + totalTrailEntries + syntheticCompactions.length;
+  ].sort(
+    (a, b) =>
+      a.at - b.at || timelineTypeOrder(a.type) - timelineTypeOrder(b.type),
+  );
+  const totalTimelineItems =
+    totalSteps +
+    totalInputs +
+    totalInputResponses +
+    totalLogs +
+    totalTrailEntries +
+    syntheticCompactions.length;
   const visibleRefs = (() => {
-    const source = Number.isFinite(sinceAt) && sinceAt > 0
-      ? timelineRefs.filter((ref) => ref.at > sinceAt || (ref.type === "step" && (ref.updatedAt ?? 0) > sinceAt))
-      : timelineRefs;
+    const source =
+      Number.isFinite(sinceAt) && sinceAt > 0
+        ? timelineRefs.filter(
+            (ref) =>
+              ref.at > sinceAt ||
+              (ref.type === "step" && (ref.updatedAt ?? 0) > sinceAt),
+          )
+        : timelineRefs;
     if (timelineLimit <= 0 || source.length <= timelineLimit) return source;
-    if (Number.isFinite(sinceAt) && sinceAt > 0) return source.slice(-timelineLimit);
+    if (Number.isFinite(sinceAt) && sinceAt > 0)
+      return source.slice(-timelineLimit);
     if (totalTimelineItems <= timelineLimit) return source;
     // timelineRefs is already a bounded scan of recent rows, not the complete
     // history. Slice from the scanned tail so old entries (including synthetic
@@ -587,23 +834,39 @@ async function loadTimelineSnapshot(
     .map((r) => r.layer);
   const visibleSteps = steps.filter((s) => visibleStepIds.has(s["?step"]!));
   const visibleInputs = inputs.filter((r) => visibleInputIds.has(r["?req"]!));
-  const visibleResponses = inputResponses.filter((r) => visibleResponseIds.has(r["?resp"]!));
+  const visibleResponses = inputResponses.filter((r) =>
+    visibleResponseIds.has(r["?resp"]!),
+  );
   const visibleLogs = logs.filter((r) => visibleLogIds.has(r["?log"]!));
-  const visibleTrailEntries = trailEntries.filter((r) => visibleTrailIds.has(r["?entry"]!));
+  const visibleTrailEntries = trailEntries.filter((r) =>
+    visibleTrailIds.has(r["?entry"]!),
+  );
   const trailTimelineItems = includeTrail
     ? [
-        ...await loadTrailItems(c, newestByAt(trailEntries, Math.max(TRAIL_INDEX_LIMIT, effectiveTimelineLimit), (row) => factTimestamp(row["?at"]))),
-        ...await loadTrailStepItems(c, chatId, trailStepRows),
+        ...(await loadTrailItems(
+          c,
+          newestByAt(
+            trailEntries,
+            Math.max(TRAIL_INDEX_LIMIT, effectiveTimelineLimit),
+            (row) => factTimestamp(row["?at"]),
+          ),
+        )),
+        ...(await loadTrailStepItems(c, chatId, trailStepRows)),
       ].sort(compareTimelineItems)
     : undefined;
 
-  const stepMetadataRows = host.matchFactsBySubjects(c.facts, c.graph, [...visibleStepIds], [
-    "agent:payload",
-    "agent:result",
-    "agent:model",
-    "agent:effort",
-    "agent:deletedAt",
-  ]);
+  const stepMetadataRows = host.matchFactsBySubjects(
+    c.facts,
+    c.graph,
+    [...visibleStepIds],
+    [
+      "agent:payload",
+      "agent:result",
+      "agent:model",
+      "agent:effort",
+      "agent:deletedAt",
+    ],
+  );
   const payloadHashByStep = new Map<string, string>();
   const resultHashByStep = new Map<string, string>();
   const modelByStep = new Map<string, string>();
@@ -618,7 +881,8 @@ async function loadTimelineSnapshot(
     else if (predicate === "agent:result") resultHashByStep.set(stepId, object);
     else if (predicate === "agent:model") modelByStep.set(stepId, object);
     else if (predicate === "agent:effort") effortByStep.set(stepId, object);
-    else if (predicate === "agent:deletedAt") deletedAtByStep.set(stepId, object);
+    else if (predicate === "agent:deletedAt")
+      deletedAtByStep.set(stepId, object);
   }
 
   // Dedupe object hashes — same payload referenced twice (rare) costs one
@@ -626,7 +890,10 @@ async function loadTimelineSnapshot(
   // create hundreds of host calls in one burst.
   const runTsVisibleStepIds = new Set<string>(
     visibleSteps
-      .filter((row) => row["?kind"] === "agent:RunTS" || row["?kind"] === "agent:RunJS")
+      .filter(
+        (row) =>
+          row["?kind"] === "agent:RunTS" || row["?kind"] === "agent:RunJS",
+      )
       .map((row) => row["?step"]!)
       .filter(Boolean),
   );
@@ -642,11 +909,11 @@ async function loadTimelineSnapshot(
 
   const lookupPayload = (stepId: string) => {
     const h = payloadHashByStep.get(stepId);
-    return h ? objectByHash.get(h) ?? null : null;
+    return h ? (objectByHash.get(h) ?? null) : null;
   };
   const lookupResult = (stepId: string) => {
     const h = resultHashByStep.get(stepId);
-    return h ? objectByHash.get(h) ?? null : null;
+    return h ? (objectByHash.get(h) ?? null) : null;
   };
 
   const timeline: any[] = [];
@@ -674,15 +941,25 @@ async function loadTimelineSnapshot(
         result: result?.value ?? null,
       };
     }
-    if ((s["?kind"] === "agent:RunTS" || s["?kind"] === "agent:RunJS") && payload?.value) {
+    if (
+      (s["?kind"] === "agent:RunTS" || s["?kind"] === "agent:RunJS") &&
+      payload?.value
+    ) {
       item.runts = {
         label: payload.value.label ?? null,
         description: payload.value.description ?? null,
-        ...(Object.prototype.hasOwnProperty.call(payload.value, "args") ? { args: payload.value.args } : {}),
+        ...(Object.prototype.hasOwnProperty.call(payload.value, "args")
+          ? { args: payload.value.args }
+          : {}),
         code: payload.value.code ?? null,
-        result: typeof result?.value?.value === "string" ? result.value.value : null,
-        error: typeof result?.value?.error === "string" ? result.value.error : null,
-        durationNs: typeof result?.value?.durationNs === "number" ? result.value.durationNs : undefined,
+        result:
+          typeof result?.value?.value === "string" ? result.value.value : null,
+        error:
+          typeof result?.value?.error === "string" ? result.value.error : null,
+        durationNs:
+          typeof result?.value?.durationNs === "number"
+            ? result.value.durationNs
+            : undefined,
       };
       const resultHash = resultHashByStep.get(stepId);
       if (resultHash && !result) {
@@ -704,8 +981,19 @@ async function loadTimelineSnapshot(
         at: factTimestamp(s["?at"]),
       };
     }
-    if ((s["?kind"] === "agent:FileDiff" || s["?kind"] === "agent:MemoryDiff" || s["?kind"] === "agent:TodoDiff") && payload?.value)
-      return diffPayloadSummary(payload.value, stepId, chatId, factTimestamp(s["?at"]), payloadHashByStep.get(stepId));
+    if (
+      (s["?kind"] === "agent:FileDiff" ||
+        s["?kind"] === "agent:MemoryDiff" ||
+        s["?kind"] === "agent:TodoDiff") &&
+      payload?.value
+    )
+      return diffPayloadSummary(
+        payload.value,
+        stepId,
+        chatId,
+        factTimestamp(s["?at"]),
+        payloadHashByStep.get(stepId),
+      );
     item.text = formatStep(item, payload, result);
     if (s["?kind"] === "agent:Error" && payload?.value) {
       item.error = payload.value;
@@ -721,14 +1009,20 @@ async function loadTimelineSnapshot(
     if (model) item.model = model;
     const effort = effortByStep.get(stepId);
     if (effort) item.effort = effort;
+    if (
+      s["?kind"] === "agent:Reply" ||
+      s["?kind"] === "agent:Compaction" ||
+      s["?kind"] === "agent:Error"
+    ) {
+      const draftId = payload?.value?.draftId;
+      if (typeof draftId === "string" && draftId) {
+        item.draftId = draftId;
+      }
+    }
     if (s["?kind"] === "agent:Reply") {
       const thoughtDurationNs = Number(payload?.value?.thoughtDurationNs);
       if (Number.isFinite(thoughtDurationNs) && thoughtDurationNs >= 0) {
         item.thoughtDurationNs = thoughtDurationNs;
-      }
-      const draftId = payload?.value?.draftId;
-      if (typeof draftId === "string" && draftId) {
-        item.draftId = draftId;
       }
       const reasoningContent = payload?.value?.reasoningContent;
       if (typeof reasoningContent === "string" && reasoningContent.trim()) {
@@ -757,22 +1051,27 @@ async function loadTimelineSnapshot(
   ]);
   const uiPayloadHashBySubject = new Map<string, string>();
   await Promise.all(
-    [...visibleInputPayloadIds, ...visibleResponsePayloadIds].map(async (subject) => {
-      const payload = await moo.facts.match({ store: c.facts, ...{
-        graph: c.graph,
-        subject,
-        predicate: "ui:payload",
-        limit: 1,
-      } });
-      const hash = payload[0]?.[3];
-      if (hash) uiPayloadHashBySubject.set(subject, hash);
-    }),
+    [...visibleInputPayloadIds, ...visibleResponsePayloadIds].map(
+      async (subject) => {
+        const payload = await moo.facts.match({
+          store: c.facts,
+          ...{
+            graph: c.graph,
+            subject,
+            predicate: "ui:payload",
+            limit: 1,
+          },
+        });
+        const hash = payload[0]?.[3];
+        if (hash) uiPayloadHashBySubject.set(subject, hash);
+      },
+    ),
   );
   const uiHashes = new Set<string>(uiPayloadHashBySubject.values());
   await loadObjectsByHash(uiHashes, objectByHash);
   const lookupUiPayload = (subject: string) => {
     const h = uiPayloadHashBySubject.get(subject);
-    return h ? objectByHash.get(h) ?? null : null;
+    return h ? (objectByHash.get(h) ?? null) : null;
   };
   const uiResponseValue = (respId: string | undefined, fallbackAt = 0) => {
     if (!respId) return null;
@@ -795,7 +1094,6 @@ async function loadTimelineSnapshot(
   const visibleTrailItems = await loadTrailItems(c, visibleTrailEntries);
   const trailById = new Map(visibleTrailItems.map((item) => [item.id, item]));
 
-
   const renderCompaction = (layer: any) => {
     const trigger =
       layer.trigger === "automatic"
@@ -810,14 +1108,23 @@ async function loadTimelineSnapshot(
       status: "agent:Done",
       at: factTimestamp(layer.at || layer.throughAt),
       text: `${trigger}compaction\n${layer.summary || ""}`,
+      ...(typeof layer.draftId === "string" && layer.draftId
+        ? { draftId: layer.draftId }
+        : {}),
     };
   };
-  const compactionByHash = new Map(visibleCompactions.map((layer) => [layer.hash, layer]));
+  const compactionByHash = new Map(
+    visibleCompactions.map((layer) => [layer.hash, layer]),
+  );
 
   const renderInput = (r: any) => {
     const reqId = r["?req"]!;
     const spec = lookupUiPayload(reqId);
-    let response: { values: Record<string, unknown>; at: number; cancelled?: boolean } | null = null;
+    let response: {
+      values: Record<string, unknown>;
+      at: number;
+      cancelled?: boolean;
+    } | null = null;
     if (r["?status"] === "ui:Done" || r["?status"] === "ui:Cancelled") {
       response = uiResponseValue(responderByRequest.get(reqId));
     }
@@ -923,10 +1230,21 @@ export function validPrice(v: unknown): v is ModelPrice {
   const r = v as Partial<ModelPrice> | null;
   if (!r) return false;
   const { input, cachedInput, output, cacheWriteInput } = r;
-  return typeof input === "number" && Number.isFinite(input) && input >= 0 &&
-    typeof cachedInput === "number" && Number.isFinite(cachedInput) && cachedInput >= 0 &&
-    typeof output === "number" && Number.isFinite(output) && output >= 0 &&
-    (cacheWriteInput == null || (typeof cacheWriteInput === "number" && Number.isFinite(cacheWriteInput) && cacheWriteInput >= 0));
+  return (
+    typeof input === "number" &&
+    Number.isFinite(input) &&
+    input >= 0 &&
+    typeof cachedInput === "number" &&
+    Number.isFinite(cachedInput) &&
+    cachedInput >= 0 &&
+    typeof output === "number" &&
+    Number.isFinite(output) &&
+    output >= 0 &&
+    (cacheWriteInput == null ||
+      (typeof cacheWriteInput === "number" &&
+        Number.isFinite(cacheWriteInput) &&
+        cacheWriteInput >= 0))
+  );
 }
 
 export async function loadPricing(): Promise<Record<string, ModelPrice>> {
@@ -957,7 +1275,10 @@ export function priceFor(
   const lower = model.toLowerCase();
   let best: { key: string; rate: ModelPrice } | null = null;
   for (const [key, rate] of Object.entries(table)) {
-    if (lower.includes(key.toLowerCase()) && (!best || key.length > best.key.length)) {
+    if (
+      lower.includes(key.toLowerCase()) &&
+      (!best || key.length > best.key.length)
+    ) {
       best = { key, rate };
     }
   }
@@ -965,7 +1286,17 @@ export function priceFor(
 }
 
 export function estimateCostUsd(
-  usage: { models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }> } | null,
+  usage: {
+    models: Record<
+      string,
+      {
+        input: number;
+        cachedInput: number;
+        cacheWriteInput?: number;
+        output: number;
+      }
+    >;
+  } | null,
   table: Record<string, ModelPrice>,
 ): { costUsd: number; unpricedModels: string[] } {
   if (!usage) return { costUsd: 0, unpricedModels: [] };
@@ -986,4 +1317,3 @@ export function estimateCostUsd(
   }
   return { costUsd: total, unpricedModels };
 }
-

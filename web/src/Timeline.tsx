@@ -138,8 +138,12 @@ const LAYOUT_SCROLL_STICKY_GRACE_MS = 600;
 const USER_SCROLL_INTENT_GRACE_MS = 900;
 
 const cssEscape = (value: string): string => {
-  const css = window.CSS as (typeof CSS & { readonly escape?: (input: string) => string }) | undefined;
-  return typeof css?.escape === "function" ? css.escape(value) : value.replace(/["\\]/g, (c) => "\\" + c);
+  const css = window.CSS as
+    | (typeof CSS & { readonly escape?: (input: string) => string })
+    | undefined;
+  return typeof css?.escape === "function"
+    ? css.escape(value)
+    : value.replace(/["\\]/g, (c) => "\\" + c);
 };
 
 const sha256Hash = (hash: string): Sha256Hash => hash as Sha256Hash;
@@ -271,13 +275,18 @@ export function Timeline(props: {
   });
 
   const handleLightboxKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || (!lightboxImage() && !runTSBlockLightbox())) return;
+    if (e.key !== "Escape" || (!lightboxImage() && !runTSBlockLightbox()))
+      return;
     e.preventDefault();
     e.stopPropagation();
     closeLightbox();
   };
-  onMount(() => window.addEventListener("keydown", handleLightboxKeyDown, true));
-  onCleanup(() => window.removeEventListener("keydown", handleLightboxKeyDown, true));
+  onMount(() =>
+    window.addEventListener("keydown", handleLightboxKeyDown, true),
+  );
+  onCleanup(() =>
+    window.removeEventListener("keydown", handleLightboxKeyDown, true),
+  );
 
   const handleMarkdownClick = (e: MouseEvent) => {
     const anchor = anchorFromEventTarget(e.target);
@@ -326,7 +335,8 @@ export function Timeline(props: {
       ? "0:00"
       : formatThinkingElapsed(thinkingNow() - startedAt);
   });
-  const activeWaitLabel = () => (bag.compacting() ? "Compacting…" : "Thinking…");
+  const activeWaitLabel = () =>
+    bag.compacting() ? "Compacting…" : "Thinking…";
 
   // Keep the scroll position stable across timeline refreshes. If the user is
   // at the bottom, new content sticks to the bottom. If they have scrolled up,
@@ -362,8 +372,7 @@ export function Timeline(props: {
       scrollRestoreActive = false;
     });
   };
-  const hasRecentUserScrollIntent = () =>
-    Date.now() <= userScrollIntentUntil;
+  const hasRecentUserScrollIntent = () => Date.now() <= userScrollIntentUntil;
   const markUserScrollIntent = () => {
     userScrollIntentUntil = Date.now() + USER_SCROLL_INTENT_GRACE_MS;
   };
@@ -587,8 +596,12 @@ export function Timeline(props: {
       markUserScrollIntent();
     };
     timelineEl?.addEventListener("scroll", handleScroll, { passive: true });
-    timelineEl?.addEventListener("wheel", markUserScrollIntent, { passive: true });
-    timelineEl?.addEventListener("touchstart", markUserScrollIntent, { passive: true });
+    timelineEl?.addEventListener("wheel", markUserScrollIntent, {
+      passive: true,
+    });
+    timelineEl?.addEventListener("touchstart", markUserScrollIntent, {
+      passive: true,
+    });
     timelineEl?.addEventListener("pointerdown", markUserScrollIntent);
     timelineEl?.addEventListener("keydown", handleScrollIntentKey);
     const mutationObserver = new MutationObserver(noteStreamingContentMutation);
@@ -741,15 +754,23 @@ export function Timeline(props: {
   };
   const syncActiveDraftProxy = (
     target: StepItem,
-    draft: { draftId: string; content: string; reasoningContent?: string; reasoningStreaming?: boolean; at: number },
+    draft: {
+      kind?: "reply" | "compaction";
+      draftId: string;
+      content: string;
+      reasoningContent?: string;
+      reasoningStreaming?: boolean;
+      at: number;
+    },
   ) => {
+    const compacting = draft.kind === "compaction";
     target.step = `draft:${draft.draftId}` as StepItem["step"];
-    target.kind = "agent:Reply";
+    target.kind = compacting ? "agent:Compaction" : "agent:Reply";
     target.status = "agent:Running";
     target.at = Number(draft.at) || Date.now();
-    target.text = draft.content;
-    target.reasoningContent = draft.reasoningContent;
-    target.reasoningStreaming = draft.reasoningStreaming;
+    target.text = compacting ? `compaction\n${draft.content}` : draft.content;
+    target.reasoningContent = compacting ? undefined : draft.reasoningContent;
+    target.reasoningStreaming = compacting ? false : draft.reasoningStreaming;
     target.draftId = draft.draftId;
   };
 
@@ -761,7 +782,7 @@ export function Timeline(props: {
       .map((item) => {
         if (
           item.type !== "step" ||
-          item.kind !== "agent:Reply" ||
+          (item.kind !== "agent:Reply" && item.kind !== "agent:Compaction") ||
           !item.draftId
         )
           return item;
@@ -770,12 +791,17 @@ export function Timeline(props: {
         syncDraftProxy(proxy, item);
         return proxy;
       });
-    if (!draft || draft.chatId !== bag.chatId() || (!draft.content && !draft.reasoningContent)) return rows;
+    if (
+      !draft ||
+      draft.chatId !== bag.chatId() ||
+      (!draft.content && !draft.reasoningContent)
+    )
+      return rows;
     if (
       rows.some(
         (item) =>
           item.type === "step" &&
-          item.kind === "agent:Reply" &&
+          (item.kind === "agent:Reply" || item.kind === "agent:Compaction") &&
           item.draftId === draft.draftId,
       )
     ) {
@@ -816,7 +842,7 @@ export function Timeline(props: {
   const hasStreamingReply = () =>
     Boolean(
       bag.draftReply()?.chatId === bag.chatId() &&
-        (bag.draftReply()?.content || bag.draftReply()?.reasoningContent),
+      (bag.draftReply()?.content || bag.draftReply()?.reasoningContent),
     );
   const showStandaloneThinking = () =>
     (bag.thinking() || bag.compacting()) &&
@@ -848,7 +874,12 @@ export function Timeline(props: {
           <Show when={!chatLoading()}>
             <ModelPicker bag={bag} />
             <div class="conv-token-slot">
-              <TokenBar tokens={bag.tokens} onCompact={bag.compactChat} disabled={() => !bag.chatId() || bag.thinking()} compacting={bag.compacting} />
+              <TokenBar
+                tokens={bag.tokens}
+                onCompact={bag.compactChat}
+                disabled={() => !bag.chatId() || bag.thinking()}
+                compacting={bag.compacting}
+              />
             </div>
           </Show>
           <RightSidebarToggle bag={bag} />
@@ -899,9 +930,7 @@ export function Timeline(props: {
                     <Show
                       when={hasOnlyTrail()}
                       fallback={
-                        <>
-                          nothing yet — send a message to get started
-                        </>
+                        <>nothing yet — send a message to get started</>
                       }
                     >
                       <div class="empty-title">
@@ -941,7 +970,10 @@ export function Timeline(props: {
                         onOpenRunTSBlock={openRunTSBlockLightbox}
                       />
                     ) : entry.kind === "thought" ? (
-                      <ThoughtBox item={entry.item} streaming={bag.thinking()} />
+                      <ThoughtBox
+                        item={entry.item}
+                        streaming={bag.thinking()}
+                      />
                     ) : (
                       <Item
                         item={entry.item}
@@ -958,10 +990,14 @@ export function Timeline(props: {
                       class="thinking-dots"
                       label={bag.compacting() ? "compacting" : "thinking"}
                     />
-                    <div class="meta">{activeWaitLabel()} {thinkingElapsed()}</div>
+                    <div class="meta">
+                      {activeWaitLabel()} {thinkingElapsed()}
+                    </div>
                   </div>
                 </Show>
-                <Show when={bag.timelineRefreshing() && !showStandaloneThinking()}>
+                <Show
+                  when={bag.timelineRefreshing() && !showStandaloneThinking()}
+                >
                   <div class="history-loading history-loading-bottom">
                     <LoadingDots
                       class="history-loading-dots"
@@ -1019,10 +1055,7 @@ export function Timeline(props: {
               aria-labelledby="runts-lightbox-title"
               onClick={closeLightbox}
             >
-              <div
-                class="runts-lightbox"
-                onClick={(e) => e.stopPropagation()}
-              >
+              <div class="runts-lightbox" onClick={(e) => e.stopPropagation()}>
                 <div class="runts-lightbox-header">
                   <div class="runts-lightbox-title-wrap">
                     <div id="runts-lightbox-title" class="runts-lightbox-title">
@@ -1052,7 +1085,10 @@ export function Timeline(props: {
                   ref={runTSBlockLightboxContentEl}
                   class="runts-lightbox-content"
                   tabIndex={0}
-                  innerHTML={highlightRunTSBlock(block().content, block().language)}
+                  innerHTML={highlightRunTSBlock(
+                    block().content,
+                    block().language,
+                  )}
                 />
               </div>
             </div>
@@ -1096,14 +1132,16 @@ function TodoMetaBubbles(props: { item: AgentTodo }) {
 
 function TodoMarkdownInline(props: { content: string; className?: string }) {
   const className = () =>
-    (props.className ? props.className + " " : "") + "markdown todo-markdown-inline";
+    (props.className ? props.className + " " : "") +
+    "markdown todo-markdown-inline";
   const html = () => renderMarkdownInline(props.content.replace(/\n+/g, " "));
   return <span class={className()} innerHTML={html()} />;
 }
 
 function TodoMarkdownBlock(props: { content: string; className?: string }) {
   const className = () =>
-    (props.className ? props.className + " " : "") + "markdown todo-markdown-block";
+    (props.className ? props.className + " " : "") +
+    "markdown todo-markdown-block";
   return <div class={className()} innerHTML={renderMarkdown(props.content)} />;
 }
 
@@ -1111,7 +1149,10 @@ function TodoNote(props: { item: AgentTodo; className: string }) {
   const note = () => props.item.note || "";
   return (
     <Show when={note()}>
-      <TodoMarkdownBlock className={`${props.className} todo-note`} content={note()} />
+      <TodoMarkdownBlock
+        className={`${props.className} todo-note`}
+        content={note()}
+      />
     </Show>
   );
 }
@@ -1120,11 +1161,21 @@ function OngoingTodos(props: { todos: AgentTodo[] }) {
   const [showDone, setShowDone] = createSignal(false);
   const items = () => props.todos.filter((item) => item.status !== "dropped");
   const doneItems = () => items().filter((item) => item.status === "done");
-  const visibleItems = () => (showDone() ? items() : items().filter((item) => item.status !== "done"));
+  const visibleItems = () =>
+    showDone() ? items() : items().filter((item) => item.status !== "done");
   const label = (item: AgentTodo) => `${item.id}. ${item.text}`;
   return (
     <Show when={items().length > 0}>
-      <section class="ongoing-todos" classList={{ "only-done": !showDone() && visibleItems().length === 0 && doneItems().length > 0 }} aria-label="ongoing TODOs">
+      <section
+        class="ongoing-todos"
+        classList={{
+          "only-done":
+            !showDone() &&
+            visibleItems().length === 0 &&
+            doneItems().length > 0,
+        }}
+        aria-label="ongoing TODOs"
+      >
         <Show when={doneItems().length > 0}>
           <button
             type="button"
@@ -1138,9 +1189,15 @@ function OngoingTodos(props: { todos: AgentTodo[] }) {
         <ul class="ongoing-todos-list">
           <For each={visibleItems()}>
             {(item) => (
-              <li class="ongoing-todo" classList={{ [`todo-${item.status}`]: true }}>
+              <li
+                class="ongoing-todo"
+                classList={{ [`todo-${item.status}`]: true }}
+              >
                 <div class="ongoing-todo-line">
-                  <TodoMarkdownInline className="ongoing-todo-text" content={label(item)} />
+                  <TodoMarkdownInline
+                    className="ongoing-todo-text"
+                    content={label(item)}
+                  />
                   <TodoMetaBubbles item={item} />
                 </div>
                 <TodoNote item={item} className="ongoing-todo-details" />
@@ -1184,7 +1241,8 @@ function PendingItem(props: {
   let fileInput: HTMLInputElement | undefined;
   let blurTimer: number | null = null;
   const [autocompleteEnabled, setAutocompleteEnabled] = createSignal(false);
-  const attachmentsSupported = () => props.bag.chatModel()?.supportsAttachments !== false;
+  const attachmentsSupported = () =>
+    props.bag.chatModel()?.supportsAttachments !== false;
   const attachmentTitle = () =>
     attachmentsSupported()
       ? "attach image"
@@ -1197,7 +1255,8 @@ function PendingItem(props: {
     );
   const addImages = async (files: File[]) => {
     if (!attachmentsSupported()) {
-      if (files.some((f) => f.type.startsWith("image/"))) notifyUnsupportedAttachments();
+      if (files.some((f) => f.type.startsWith("image/")))
+        notifyUnsupportedAttachments();
       return;
     }
     const next = await imageAttachmentsFromFiles(files);
@@ -1772,7 +1831,8 @@ function InputBar(props: {
   const [attachments, setAttachments] = createSignal<ImageAttachment[]>([]);
   const [playPromptMode, setPlayPromptMode] =
     createSignal<PlayPromptMode>(null);
-  const attachmentsSupported = () => bag.chatModel()?.supportsAttachments !== false;
+  const attachmentsSupported = () =>
+    bag.chatModel()?.supportsAttachments !== false;
   const attachmentsDisabled = () => disabled() || !attachmentsSupported();
   const attachmentTitle = () => {
     if (disabled()) return "start a new chat to attach images";
@@ -1788,7 +1848,8 @@ function InputBar(props: {
     );
   const addImages = async (files: File[]) => {
     if (!attachmentsSupported()) {
-      if (files.some((f) => f.type.startsWith("image/"))) notifyUnsupportedAttachments();
+      if (files.some((f) => f.type.startsWith("image/")))
+        notifyUnsupportedAttachments();
       return;
     }
     const next = await imageAttachmentsFromFiles(files);
@@ -2224,7 +2285,9 @@ function Item(props: {
               }
             >
               <DiffItem
-                item={props.item as FileDiffItem | MemoryDiffItem | TodoDiffItem}
+                item={
+                  props.item as FileDiffItem | MemoryDiffItem | TodoDiffItem
+                }
                 bag={props.bag}
                 expansion={expansion()}
                 timelineKey={key()}
@@ -2395,13 +2458,28 @@ function TodoDiffBody(props: { item: TodoDiffItem }) {
     <ul class="todo-diff-list" aria-label="TODO changes">
       <For each={changes()}>
         {(change) => {
-          const item = () => change.kind === "removed" ? change.before : change.kind === "added" ? change.after : change.after;
-          const previous = () => change.kind === "updated" ? change.before : undefined;
+          const item = () =>
+            change.kind === "removed"
+              ? change.before
+              : change.kind === "added"
+                ? change.after
+                : change.after;
+          const previous = () =>
+            change.kind === "updated" ? change.before : undefined;
           return (
-            <li class="todo-diff-change" classList={{ [`todo-change-${change.kind}`]: true, [`todo-status-${item().status}`]: true }}>
+            <li
+              class="todo-diff-change"
+              classList={{
+                [`todo-change-${change.kind}`]: true,
+                [`todo-status-${item().status}`]: true,
+              }}
+            >
               <span class="todo-diff-main">
                 <span class="todo-diff-action">{todoChangeText(change)}</span>
-                <TodoMarkdownInline className="todo-diff-text" content={todoLabel(item())} />
+                <TodoMarkdownInline
+                  className="todo-diff-text"
+                  content={todoLabel(item())}
+                />
                 <Show when={change.kind !== "removed"}>
                   <TodoMetaBubbles item={item()} />
                 </Show>
@@ -2409,7 +2487,10 @@ function TodoDiffBody(props: { item: TodoDiffItem }) {
               <TodoNote item={item()} className="todo-diff-details" />
               <Show when={previous() && previous()!.text !== item().text}>
                 <div class="todo-diff-previous">
-                  <TodoMarkdownInline className="todo-diff-previous-text" content={`was: ${todoLabel(previous()!)}`} />
+                  <TodoMarkdownInline
+                    className="todo-diff-previous-text"
+                    content={`was: ${todoLabel(previous()!)}`}
+                  />
                 </div>
               </Show>
             </li>
@@ -2442,7 +2523,8 @@ function stepClass(item: StepItem): string {
       .toLowerCase();
   if (item.status === "agent:Failed") c += " failed";
   if (item.status === "agent:Cancelled") c += " cancelled";
-  if (item.kind === "agent:Reply" && item.status !== "agent:Done") c += " draft";
+  if (item.kind === "agent:Reply" && item.status !== "agent:Done")
+    c += " draft";
   if (item.kind === "agent:UserInput" && item.deletedAt) c += " message-hidden";
   return c;
 }
@@ -2450,7 +2532,11 @@ function stepClass(item: StepItem): string {
 function showStandardStepMeta(item: StepItem): boolean {
   // RunTS owns its own header (label is the headline), so suppress the
   // generic meta line for it. Subagent has a richer custom header too.
-  return item.kind !== "agent:RunTS" && item.kind !== "agent:RunJS" && item.kind !== "agent:Subagent";
+  return (
+    item.kind !== "agent:RunTS" &&
+    item.kind !== "agent:RunJS" &&
+    item.kind !== "agent:Subagent"
+  );
 }
 
 function stepMetaLabel(
@@ -2458,7 +2544,11 @@ function stepMetaLabel(
   compacting: boolean,
   active: boolean,
 ): string {
-  if (item.kind === "agent:Reply" && active && !isTerminalStepStatus(item.status)) {
+  if (
+    item.kind === "agent:Reply" &&
+    active &&
+    !isTerminalStepStatus(item.status)
+  ) {
     return activeReplyStatusLabel(item, compacting);
   }
   return displayStepKind(item.kind);
@@ -2586,7 +2676,12 @@ function Step(props: {
         <Show when={props.item.kind === "agent:ShellCommand"}>
           <ShellBody item={props.item} expansion={props.expansion} />
         </Show>
-        <Show when={(props.item.kind === "agent:RunTS" || props.item.kind === "agent:RunJS")}>
+        <Show
+          when={
+            props.item.kind === "agent:RunTS" ||
+            props.item.kind === "agent:RunJS"
+          }
+        >
           <RunTSBody
             item={props.item}
             bag={props.bag}
@@ -2688,7 +2783,9 @@ function SubagentBody(props: {
   const task = () => info().task || "";
   const statusText = () => result()?.status || props.item.status;
   const duration = () =>
-    typeof result()?.durationNs === "number" ? (result()?.durationNs || 0) / 1_000_000 : null;
+    typeof result()?.durationNs === "number"
+      ? (result()?.durationNs || 0) / 1_000_000
+      : null;
   return (
     <details
       class="runts-step subagent-step"
@@ -2772,10 +2869,18 @@ function CompactionBody(props: { item: StepItem }) {
   const summary = createMemo(() =>
     compactionSummaryText(props.item.text || ""),
   );
+  const active = () => !isTerminalStepStatus(props.item.status);
   return (
-    <details class="compaction-summary">
+    <details class="compaction-summary" open={active()}>
       <summary>
-        <span>{compactionLabel(props.item.text || "")}</span>
+        <span>
+          {active()
+            ? "compacting older turns"
+            : compactionLabel(props.item.text || "")}
+        </span>
+        <Show when={active()}>
+          <LoadingDots class="compaction-dots" label="compacting" />
+        </Show>
         <time>{absoluteTime(props.item.at)}</time>
       </summary>
       <Show when={summary()}>
@@ -2872,7 +2977,9 @@ function StepFooter(props: {
       <span class="step-time-group">
         <time class="step-time">{absoluteTime(props.item.at)}</time>
         <Show when={typeof props.durationNs === "number"}>
-          <span class="step-duration">{Math.round((props.durationNs ?? 0) / 1_000_000)}ms</span>
+          <span class="step-duration">
+            {Math.round((props.durationNs ?? 0) / 1_000_000)}ms
+          </span>
         </Show>
         <Show
           when={
@@ -2968,14 +3075,18 @@ function StepFooter(props: {
               visibilityPending()
                 ? "updating message visibility…"
                 : step()!.deletedAt
-                ? "send this user message to future LLM prompts again"
-                : "hide this user message from future LLM prompts"
+                  ? "send this user message to future LLM prompts again"
+                  : "hide this user message from future LLM prompts"
             }
             disabled={visibilityPending()}
             onClick={() => void toggleMessageVisibility()}
           >
             <span class="step-action-label">
-              {visibilityPending() ? "updating…" : step()!.deletedAt ? "restore" : "hide"}
+              {visibilityPending()
+                ? "updating…"
+                : step()!.deletedAt
+                  ? "restore"
+                  : "hide"}
             </span>
           </button>
         </span>
@@ -3017,7 +3128,11 @@ function ShellBody(props: {
 
 function parseStoreObjectJSON(object: unknown): unknown {
   if (!object || typeof object !== "object") return null;
-  const storeObject = object as { content?: unknown; text?: unknown; value?: unknown };
+  const storeObject = object as {
+    content?: unknown;
+    text?: unknown;
+    value?: unknown;
+  };
   if (storeObject.value !== undefined) return storeObject.value;
   const content =
     typeof storeObject.content === "string"
@@ -3033,7 +3148,11 @@ function parseStoreObjectJSON(object: unknown): unknown {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
   let timer: number | null = null;
   try {
     return await Promise.race([
@@ -3073,20 +3192,24 @@ function RunTSBody(props: {
   // Default render is a single line: "<title> · <desc>           <time>".
   // Click expands to reveal the full description (when long) plus the
   // code and result fold rows.
-  const [hydratedResultByHash, setHydratedResultByHash] = createSignal<Record<
-    string,
-    Pick<NonNullable<StepItem["runts"]>, "result" | "error" | "durationNs">
-  >>({});
+  const [hydratedResultByHash, setHydratedResultByHash] = createSignal<
+    Record<
+      string,
+      Pick<NonNullable<StepItem["runts"]>, "result" | "error" | "durationNs">
+    >
+  >({});
   const [hydratingHash, setHydratingHash] = createSignal<string | null>(null);
-  const [hydrateErrorByHash, setHydrateErrorByHash] = createSignal<Record<string, string>>({});
+  const [hydrateErrorByHash, setHydrateErrorByHash] = createSignal<
+    Record<string, string>
+  >({});
   const resultHash = () => props.item.resultHash ?? null;
   const hydratedResult = () => {
     const hash = resultHash();
-    return hash ? hydratedResultByHash()[hash] ?? null : null;
+    return hash ? (hydratedResultByHash()[hash] ?? null) : null;
   };
   const hydrateError = () => {
     const hash = resultHash();
-    return hash ? hydrateErrorByHash()[hash] ?? null : null;
+    return hash ? (hydrateErrorByHash()[hash] ?? null) : null;
   };
   const ensureHydrated = async () => {
     if (!(props.item.lazyRuntsResult || props.item.lazyRunjsResult)) return;
@@ -3211,11 +3334,11 @@ function RunTSBody(props: {
           </Show>
           <Show
             when={
-(props.item.lazyRuntsResult || props.item.lazyRunjsResult)
-                && !!resultHash()
-                && hydratingHash() === resultHash()
-                && !hydratedResult()
-                && !hydrateError()
+              (props.item.lazyRuntsResult || props.item.lazyRunjsResult) &&
+              !!resultHash() &&
+              hydratingHash() === resultHash() &&
+              !hydratedResult() &&
+              !hydrateError()
             }
           >
             <section class="runts-block" aria-label="Loading result">
@@ -3282,10 +3405,15 @@ function RunTSMarkdown(props: {
 }
 
 function highlightRunTSBlock(content: string, language?: string): string {
-  return language ? highlightMarkdownCode(content, language) : highlightAuto(content);
+  return language
+    ? highlightMarkdownCode(content, language)
+    : highlightAuto(content);
 }
 
-function runTSBlockLanguageForContent(content: string, language?: string): string | undefined {
+function runTSBlockLanguageForContent(
+  content: string,
+  language?: string,
+): string | undefined {
   if (language) return language;
   const trimmed = content.trim();
   if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";
@@ -3295,7 +3423,10 @@ function runTSBlockLanguageForContent(content: string, language?: string): strin
 
 function runTSBlockMeta(content: string, language?: string): string {
   const lineCount = content.split("\n").length;
-  const parts = [`${lineCount} ${lineCount === 1 ? "line" : "lines"}`, `${content.length} chars`];
+  const parts = [
+    `${lineCount} ${lineCount === 1 ? "line" : "lines"}`,
+    `${content.length} chars`,
+  ];
   const displayLanguage = isHjsonCodeLanguage(language) ? "hjson" : language;
   if (displayLanguage) parts.unshift(displayLanguage);
   return parts.join(" · ");
@@ -3311,8 +3442,10 @@ function RunTSBlock(props: {
 }) {
   let previewEl: HTMLDivElement | undefined;
   const [truncated, setTruncated] = createSignal(false);
-  const previewLineLimit = () => props.maxPreviewLines ?? RUNTS_BLOCK_PREVIEW_LINES;
-  const language = () => runTSBlockLanguageForContent(props.content, props.language);
+  const previewLineLimit = () =>
+    props.maxPreviewLines ?? RUNTS_BLOCK_PREVIEW_LINES;
+  const language = () =>
+    runTSBlockLanguageForContent(props.content, props.language);
   const html = () => highlightRunTSBlock(props.content, language());
   const meta = () => runTSBlockMeta(props.content, language());
   const measureOverflow = () => {
@@ -3380,10 +3513,19 @@ function RunTSBlock(props: {
   );
 }
 
-function isNestedInteractiveTarget(target: EventTarget | null, root: EventTarget | null): boolean {
+function isNestedInteractiveTarget(
+  target: EventTarget | null,
+  root: EventTarget | null,
+): boolean {
   if (!(target instanceof Element) || !(root instanceof Element)) return false;
-  const interactive = target.closest("button, a, input, textarea, select, summary, [contenteditable='true']");
-  return interactive instanceof Element && interactive !== root && root.contains(interactive);
+  const interactive = target.closest(
+    "button, a, input, textarea, select, summary, [contenteditable='true']",
+  );
+  return (
+    interactive instanceof Element &&
+    interactive !== root &&
+    root.contains(interactive)
+  );
 }
 
 function CollapsibleBlock(props: {
@@ -3547,7 +3689,14 @@ function TokenBar(props: {
 }) {
   const currentTokens = () => props.tokens();
   const safeTokens = () =>
-    currentTokens() ?? { used: 0, budget: 0, threshold: 0, fraction: 0, source: undefined, estimated: undefined };
+    currentTokens() ?? {
+      used: 0,
+      budget: 0,
+      threshold: 0,
+      fraction: 0,
+      source: undefined,
+      estimated: undefined,
+    };
   const safeBudget = () => Math.max(0, safeTokens().budget);
   const pct = () => {
     if (safeBudget() <= 0) return 0;
@@ -3598,8 +3747,14 @@ function TokenBar(props: {
       <button
         type="button"
         class="token-compact-button"
-        title={props.compacting() ? "Compacting older turns…" : "Compact older turns into a summary"}
-        aria-label={props.compacting() ? "Compacting older turns" : "Compact older turns"}
+        title={
+          props.compacting()
+            ? "Compacting older turns…"
+            : "Compact older turns into a summary"
+        }
+        aria-label={
+          props.compacting() ? "Compacting older turns" : "Compact older turns"
+        }
         disabled={props.disabled()}
         onClick={props.onCompact}
       >
@@ -3608,7 +3763,9 @@ function TokenBar(props: {
     </div>
   );
 }
-function compactionTrigger(detail: Record<string, any>): "manual" | "automatic" {
+function compactionTrigger(
+  detail: Record<string, any>,
+): "manual" | "automatic" {
   return detail.trigger === "manual" ? "manual" : "automatic";
 }
 
@@ -3620,13 +3777,19 @@ function compactionFailureIntro(detail: Record<string, any>): string {
   const status = Number(detail.status ?? 0) || 0;
   const reason = typeof detail.reason === "string" ? detail.reason : "";
   const trigger = compactionTrigger(detail);
-  if (status >= 400) return `The model provider rejected the ${trigger} compaction request.`;
+  if (status >= 400)
+    return `The model provider rejected the ${trigger} compaction request.`;
   if ((status >= 200 && status < 300) || /stream/i.test(reason)) {
     return `The model provider returned a stream error after accepting the ${trigger} compaction request.`;
   }
   return `${compactionTriggerTitle(detail)} compaction failed before the conversation could be summarized.`;
-}function CompactionErrorBody(props: { item: StepItem; detail: Record<string, any> }) {
-  const message = () => String(props.detail.message || props.detail.reason || "").trim();
+}
+function CompactionErrorBody(props: {
+  item: StepItem;
+  detail: Record<string, any>;
+}) {
+  const message = () =>
+    String(props.detail.message || props.detail.reason || "").trim();
   const diagnostics = () => errorDiagnosticLines(props.detail);
   const technicalDetails = () => formatErrorPayloadForView(props.item.error);
   const tokenDetails = () => {
@@ -3635,24 +3798,43 @@ function compactionFailureIntro(detail: Record<string, any>): string {
     const requestLimit = Number(props.detail.requestTokenLimit ?? 0) || 0;
     const budget = Number(props.detail.tokenBudget ?? 0) || 0;
     const threshold = Number(props.detail.tokenThreshold ?? 0) || 0;
-    if (!prompt && !requestPrompt && !requestLimit && !budget && !threshold) return "";
-    const hasFittedRequest = requestPrompt > 0 && (!prompt || requestPrompt !== prompt);
+    if (!prompt && !requestPrompt && !requestLimit && !budget && !threshold)
+      return "";
+    const hasFittedRequest =
+      requestPrompt > 0 && (!prompt || requestPrompt !== prompt);
     return [
-      prompt ? `${formatTokenCount(prompt)} ${hasFittedRequest ? "transcript" : "prompt"} tokens` : "",
-      hasFittedRequest ? `${formatTokenCount(requestPrompt)} request tokens` : "",
+      prompt
+        ? `${formatTokenCount(prompt)} ${hasFittedRequest ? "transcript" : "prompt"} tokens`
+        : "",
+      hasFittedRequest
+        ? `${formatTokenCount(requestPrompt)} request tokens`
+        : "",
       requestLimit ? `${formatTokenCount(requestLimit)} request cap` : "",
       budget ? `${formatTokenCount(budget)} token budget` : "",
       threshold ? `compaction at ${formatTokenCount(threshold)}` : "",
-    ].filter(Boolean).join(" · ");
+    ]
+      .filter(Boolean)
+      .join(" · ");
   };
   return (
     <>
       <div class="error-head">
         <span class="error-icon">!</span>
-        <strong>{compactionTriggerTitle(props.detail)} compaction failed</strong>
+        <strong>
+          {compactionTriggerTitle(props.detail)} compaction failed
+        </strong>
       </div>
       <div class="error-body">
-        {compactionFailureIntro(props.detail)} Your chat is intact, but no reply was generated. {compactionTrigger(props.detail) === "manual" ? "Try switching to a larger-context model, lowering reasoning effort, or reducing retained history." : <>Try compacting from the token bar, switch to a larger-context model, or reduce retained history.</>}
+        {compactionFailureIntro(props.detail)} Your chat is intact, but no reply
+        was generated.{" "}
+        {compactionTrigger(props.detail) === "manual" ? (
+          "Try switching to a larger-context model, lowering reasoning effort, or reducing retained history."
+        ) : (
+          <>
+            Try compacting from the token bar, switch to a larger-context model,
+            or reduce retained history.
+          </>
+        )}
       </div>
       <Show when={message()}>
         <div class="error-body">Provider message: {message()}</div>
@@ -3685,7 +3867,8 @@ function ErrorBody(props: { item: StepItem }) {
         compactErrorDetail(detail() ?? props.item.error) ||
         "No error details recorded.",
     ).trim();
-  const diagnostics = () => errorDiagnosticLines(detail() as Record<string, any> | undefined | null);
+  const diagnostics = () =>
+    errorDiagnosticLines(detail() as Record<string, any> | undefined | null);
   const payloadText = () => formatErrorPayloadForView(detail()?.body);
   const showPayload = () => {
     const payload = payloadText();
@@ -3723,7 +3906,8 @@ function ErrorBody(props: { item: StepItem }) {
 }
 
 function highlightErrorPayloadForView(body: unknown): string {
-  const text = typeof body === "string" ? body : formatErrorPayloadForView(body);
+  const text =
+    typeof body === "string" ? body : formatErrorPayloadForView(body);
   return text ? highlightAuto(text) : "";
 }
 function Input(props: { item: InputItem; bag: Bag; timelineKey: string }) {
