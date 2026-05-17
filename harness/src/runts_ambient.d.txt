@@ -958,7 +958,7 @@ type ProcRunArgs = {
     maxOutputBytes?: number | null;
 };
 type LineRange = [from: number, to: number];
-type ReadLinesArgs = {
+type PartialReadArgs = {
     path: string;
     ranges: LineRange[];
     numbered?: boolean;
@@ -969,7 +969,7 @@ type WorkspaceScope = {
         read(args: {
             path: string;
         }): Promise<string>;
-        readLines(args: ReadLinesArgs): Promise<string[]>;
+        partialRead(args: PartialReadArgs): Promise<string>;
         write(args: {
             path: string;
             content: string;
@@ -1168,7 +1168,7 @@ type Moo = {
         read(args: {
             path: string;
         }): Promise<string>;
-        readLines(args: ReadLinesArgs): Promise<string[]>;
+        partialRead(args: PartialReadArgs): Promise<string>;
         write(args: {
             path: string;
             content: string;

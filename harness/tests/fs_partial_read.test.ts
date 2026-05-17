@@ -51,7 +51,7 @@ function normalize(path: string): string {
 
 const { moo, withMooChatContext } = await import("../src/moo");
 
-describe("moo.fs.readLines", () => {
+describe("moo.fs.partialRead", () => {
   beforeEach(() => {
     files.clear();
     refs.clear();
@@ -62,49 +62,41 @@ describe("moo.fs.readLines", () => {
   test("returns selected ranges with ellipses between omitted regions", async () => {
     files.set("/home/test/moo/test/sample.txt", Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n"));
 
-    const lines = await withMooChatContext("test", () => moo.fs.readLines({ path: "sample.txt", ranges: [[1, 3], [50, 51]] }));
+    const text = await withMooChatContext("test", () => moo.fs.partialRead({ path: "sample.txt", ranges: [[1, 3], [50, 51]] }));
 
-    expect(lines).toEqual(["line 1", "line 2", "line 3", "…", "line 50", "line 51", "…"]);
+    expect(text).toBe("line 1\nline 2\nline 3\n…\nline 50\nline 51\n…");
   });
 
   test("sorts and merges overlapping ranges in file order", async () => {
     files.set("/home/test/moo/test/sample.txt", Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"));
 
-    const lines = await withMooChatContext("test", () => moo.fs.readLines({ path: "sample.txt", ranges: [[5, 7], [2, 5]] }));
+    const text = await withMooChatContext("test", () => moo.fs.partialRead({ path: "sample.txt", ranges: [[5, 7], [2, 5]] }));
 
-    expect(lines).toEqual(["…", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "…"]);
+    expect(text).toBe("…\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\n…");
   });
 
   test("formats numbered output with aligned 1-based line numbers", async () => {
     files.set("/home/test/moo/test/sample.txt", Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n") + "\n");
 
-    const lines = await withMooChatContext("test", () => moo.fs.readLines({ path: "sample.txt", ranges: [[1, 3], [50, 51]], numbered: true }));
+    const text = await withMooChatContext("test", () => moo.fs.partialRead({ path: "sample.txt", ranges: [[1, 3], [50, 51]], numbered: true }));
 
-    expect(lines).toEqual([
-      "   1: line 1",
-      "   2: line 2",
-      "   3: line 3",
-      "…",
-      "  50: line 50",
-      "  51: line 51",
-      "…",
-    ]);
+    expect(text).toBe("   1: line 1\n   2: line 2\n   3: line 3\n…\n  50: line 50\n  51: line 51\n…");
   });
 
   test("clamps ranges to existing lines and normalizes CRLF input", async () => {
     files.set("/home/test/moo/test/sample.txt", "alpha\r\nbeta\r\ngamma\r\n");
 
-    const lines = await withMooChatContext("test", () => moo.fs.readLines({ path: "sample.txt", ranges: [[2, 10]], numbered: true }));
+    const text = await withMooChatContext("test", () => moo.fs.partialRead({ path: "sample.txt", ranges: [[2, 10]], numbered: true }));
 
-    expect(lines).toEqual(["…", "   2: beta", "   3: gamma"]);
+    expect(text).toBe("…\n   2: beta\n   3: gamma");
   });
 
   test("is available on workspace scopes", async () => {
     files.set("/tmp/ws/sample.txt", "one\ntwo\nthree");
 
     const workspace = await moo.workspace.current({ root: "/tmp/ws" });
-    const lines = await workspace.fs.readLines({ path: "sample.txt", ranges: [[2, 2]], numbered: true });
+    const text = await workspace.fs.partialRead({ path: "sample.txt", ranges: [[2, 2]], numbered: true });
 
-    expect(lines).toEqual(["…", "   2: two", "…"]);
+    expect(text).toBe("…\n   2: two\n…");
   });
 });

@@ -545,13 +545,13 @@ export type ProcRunArgs = {
 };
 
 export type LineRange = [from: number, to: number];
-export type ReadLinesArgs = { path: string; ranges: LineRange[]; numbered?: boolean };
+export type PartialReadArgs = { path: string; ranges: LineRange[]; numbered?: boolean };
 
 export type WorkspaceScope = {
   root: string;
   fs: {
     read(args: { path: string }): Promise<string>;
-    readLines(args: ReadLinesArgs): Promise<string[]>;
+    partialRead(args: PartialReadArgs): Promise<string>;
     write(args: { path: string; content: string }): Promise<void>;
     list(args?: { path?: string }): Promise<string[]>;
     glob(args: { pattern: string }): Promise<string[]>;
@@ -638,7 +638,7 @@ export type Moo = {
   };
   fs: {
     read(args: { path: string }): Promise<string>;
-    readLines(args: ReadLinesArgs): Promise<string[]>;
+    partialRead(args: PartialReadArgs): Promise<string>;
     write(args: { path: string; content: string }): Promise<void>;
     list(args: { path: string }): Promise<string[]>;
     glob(args: { pattern: string }): Promise<string[]>;
