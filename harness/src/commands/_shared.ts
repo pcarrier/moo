@@ -7,8 +7,7 @@ export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue | undefined };
 
 export type ShellCommandPayload = JsonObject & {
-  cmd?: string;
-  args?: string[];
+  cmd?: string[];
   cwd?: string | null;
   stdin?: string | null;
 };
@@ -103,8 +102,7 @@ export type StepReferenceInput = {
 export type ShellCommandEnqueueInput = {
   kind: "agent:ShellCommand";
   payload?: ShellCommandPayload;
-  cmd?: string;
-  args?: string[];
+  cmd?: string[];
   cwd?: string | null;
   stdin?: string | null;
 };
@@ -138,6 +136,7 @@ export type StepDriverInput = {
   toolCall?: ToolCallInput | null;
   usedModel?: string | null;
   requestEffort?: string | null;
+  runTsStepId?: string | null;
 };
 
 export type LlmStreamResultInput = {
@@ -169,16 +168,20 @@ export type LlmResultInput = {
   requestModel?: string | null;
   requestProvider?: string | null;
   requestAuthMode?: string | null;
+  availableTokens?: number | string;
+  compactionsInARow?: number | string;
 };
 
 export type StepCommandInput = StepReferenceInput & UserStepInput & StepDriverInput & LlmResultInput & {
   leaseMs?: number;
   mode?: string;
-  compaction?: { promptTokens?: number; summary?: string; [key: string]: JsonValue | undefined };
+  compaction?: { promptTokens?: number; postPromptTokens?: number; summaryTokens?: number; summary?: string; [key: string]: JsonValue | undefined };
   requestPromptTokens?: number | string;
   requestTokenLimit?: number | string;
   tokenBudget?: number | string;
   tokenThreshold?: number | string;
+  availableTokens?: number | string;
+  compactionsInARow?: number | string;
   retries?: RetryScheduleStateInput;
 };
 
@@ -283,6 +286,9 @@ export type StepCommandName =
   | "resume"
   | "step-next"
   | "run-ts-tool"
+  | "run-ts-background"
+  | "run-ts-cancel"
+  | "run-ts-backgrounds"
   | "subagent-final"
   | "restart-ongoing"
   | "interrupt"

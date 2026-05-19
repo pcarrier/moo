@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { patchText } from "./patch";
+import { patchText, validatePatchEnvelopeTarget } from "./patch";
 
 describe("patchText", () => {
   test("empty diff returns original", () => {
@@ -11,6 +11,29 @@ describe("patchText", () => {
     expect(patchText("a\nb\nc\n", "@@ -1,3 +1,4 @@\n a\n+x\n b\n c\n")).toBe("a\nx\nb\nc\n");
     expect(patchText("a\nb\nc\n", "@@ -1,3 +1,2 @@\n a\n-b\n c\n")).toBe("a\nc\n");
     expect(patchText("a\nb\nc\n", "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n")).toBe("a\nB\nc\n");
+  });
+
+  test("accepts apply-patch envelopes around hunks", () => {
+    const diff = "*** Begin Patch\n*** Update File: sample.txt\n@@\n a\n-b\n+B\n c\n*** End Patch\n";
+    expect(patchText("a\nb\nc\n", diff)).toBe("a\nB\nc\n");
+  });
+  test("validates apply-patch envelope targets for single-file patching", () => {
+    expect(() => validatePatchEnvelopeTarget(
+      "*** Begin Patch\n*** Update File: sample.txt\n@@\n-a\n+b\n*** End Patch\n",
+      "sample.txt",
+    )).not.toThrow();
+
+    expect(() => validatePatchEnvelopeTarget(
+      "*** Begin Patch\n*** Update File: other.txt\n@@\n-a\n+b\n*** End Patch\n",
+      "sample.txt",
+    )).toThrow("does not match requested path");
+
+    for (const directive of ["*** Add File: sample.txt", "*** Delete File: sample.txt", "*** Move to: other.txt"]) {
+      expect(() => validatePatchEnvelopeTarget(
+        "*** Begin Patch\n" + directive + "\n@@\n-a\n+b\n*** End Patch\n",
+        "sample.txt",
+      )).toThrow("only supports updating one existing file");
+    }
   });
 
   test("preserves no-newline-at-eof marker", () => {

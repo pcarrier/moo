@@ -1,4 +1,5 @@
 import { moo } from "../moo";
+import * as host from "../host_ops";
 import type { StepKind } from "../types";
 import { chatRefs, decodeJsonPointer, encodeJsonPointer } from "../lib";
 import {
@@ -18,12 +19,16 @@ import {
   loadPayloadJSON,
   loadResultJSON,
   readCompactionChain,
+  readConsecutiveCompactions,
   readLastTokenPressure,
+  patchCompactionLayerPostTokens,
   persistCompactionLayer,
+  recordConsecutiveCompactions,
   recordCompactionFailure,
   recordErrorStep,
   recordLastCompactionPromptTokens,
   recordLastContextTokens,
+  resetConsecutiveCompactions,
   recordUsage,
   effortLevelsForProvider,
   reply,
@@ -36,6 +41,7 @@ import {
   llmBodyForTrace,
   messagesForTrace,
   messagesHaveImageAttachments,
+  MAX_CONSECUTIVE_COMPACTIONS,
   toolCallForTrace,
   traceMark,
   traceSpan,
@@ -45,6 +51,7 @@ import {
   compactionRequestTokenLimit,
   fitCompactionSummaryMessages,
   runCompaction,
+  estimateCompactionSummaryTokens,
   TOOLS,
 } from "../agent";
 import type {
@@ -155,6 +162,17 @@ function parseProviderErrorBody(raw: unknown): unknown {
     return JSON.parse(trimmed);
   } catch {
     return trimmed;
+  }
+}
+
+function parseToolArgs(toolCall: ToolCallInput | null | undefined): Record<string, unknown> {
+  const raw = toolCall?.function?.arguments;
+  if (raw == null || raw === "") return {};
+  if (typeof raw !== "string") return asObject(raw);
+  try {
+    return asObject(JSON.parse(raw));
+  } catch {
+    return {};
   }
 }
 
@@ -500,11 +518,10 @@ export async function enqueueCommand(input: Input) {
   const kind = (input.kind || "agent:Tick") as StepKind;
   const shellPayload = (
     value: unknown,
-  ): { cmd?: unknown; args?: unknown; cwd?: unknown; stdin?: unknown } =>
+  ): { cmd?: unknown; cwd?: unknown; stdin?: unknown } =>
     value != null && typeof value === "object"
       ? (value as {
           cmd?: unknown;
-          args?: unknown;
           cwd?: unknown;
           stdin?: unknown;
         })
@@ -512,18 +529,17 @@ export async function enqueueCommand(input: Input) {
 
   let payloadHash: string | null = null;
   if (kind === "agent:ShellCommand") {
-    const p = shellPayload(input.payload) || shellPayload(input);
-    if (typeof p.cmd !== "string" || !p.cmd) {
+    const p = input.payload != null ? shellPayload(input.payload) : shellPayload(input);
+    if (!Array.isArray(p.cmd) || p.cmd.length === 0 || p.cmd.some((part) => typeof part !== "string") || p.cmd[0] === "") {
       return {
         ok: false,
-        error: { message: "agent:ShellCommand requires payload.cmd" },
+        error: { message: "agent:ShellCommand requires non-empty payload.cmd string[]" },
       };
     }
     payloadHash = await moo.objects.putJSON({
       kind,
       value: {
         cmd: p.cmd,
-        args: Array.isArray(p.args) ? p.args : [],
         cwd: typeof p.cwd === "string" ? p.cwd : null,
         stdin: typeof p.stdin === "string" ? p.stdin : null,
       },
@@ -585,16 +601,15 @@ export async function tickCommand(input: Input) {
     if (kind === "agent:ShellCommand") {
       const payloadObj = await loadPayloadJSON(c.facts, c.graph, stepId);
       if (!payloadObj) throw new Error("ShellCommand step has no payload");
-      const { cmd, args, cwd, stdin } = payloadObj.value;
+      const { cmd, cwd, stdin } = payloadObj.value;
       const wt = cwd ?? (await moo.chat.scratch({ chatId: chatId }));
       result = await moo.proc.run({
-        cmd: cmd,
-        args: args || [],
+        cmd,
         ...{ cwd: wt, stdin },
       });
       resultHash = await moo.objects.putJSON({
         kind: "agent:ToolResult",
-        value: { kind, cmd, args, cwd: wt, ...result },
+        value: { kind, cmd, cwd: wt, ...result },
       });
       if (result.code !== 0 || result.timedOut) status = "agent:Failed";
     } else if (kind === "agent:Tick") {
@@ -839,6 +854,22 @@ export async function cancelChatInFlightSteps(
   return { cancelled: steps.size };
 }
 
+async function hasChatInFlightSteps(chatId: string): Promise<boolean> {
+  const c = chatRefs(chatId);
+  const [running, queued] = await Promise.all(
+    ["agent:Running", "agent:Queued"].map((status) =>
+      moo.facts.matchAll({
+        patterns: [
+          ["?step", "rdf:type", "agent:Step"],
+          ["?step", "agent:status", status],
+        ],
+        ...{ store: c.facts, graph: c.graph, limit: 1 },
+      }),
+    ),
+  );
+  return running.length > 0 || queued.length > 0;
+}
+
 // -- chat-driver state machine ----------------------------------------------
 //
 // The Rust chat driver calls these commands in sequence, with no V8
@@ -900,8 +931,9 @@ export async function compactPreludeCommand(input: Input) {
   });
   moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
   if (result === "compacted") {
+    await setChatOngoing(chatId, false);
     moo.events.publish({ payload: { kind: "compaction-end", chatId } });
-    return { ok: true, value: { kind: "loop", provider, mode: "resume" } };
+    return { ok: true, value: { kind: "done" } };
   }
 
   if (result === "failed") {
@@ -925,6 +957,7 @@ export async function stepPreludeCommand(input: Input) {
   // A new user turn makes the chat active again, regardless of whether it
   // was hidden in the archived section before the user sent the message.
   await moo.chat.unarchive({ chatId: chatId });
+  await resetConsecutiveCompactions(chatId);
 
   const artificial = input.artificial === true;
   const payloadHash = await moo.objects.putJSON({
@@ -1004,6 +1037,8 @@ type CommandResultValue =
       retryReason?: string;
       retryDelayMs?: number;
       forceCompact?: boolean;
+      availableTokens?: number | string;
+      compactionsInARow?: number | string;
       [key: string]: unknown;
     };
 type RawCommandResultValue = Omit<CommandResultValue, "messages"> & {
@@ -1212,6 +1247,8 @@ export async function stepContinueToolCallsCommand(input: Input) {
       ...toolCallForTrace(tc),
     });
     if (tc?.function?.name === "runTS") {
+      const toolArgs = parseToolArgs(tc);
+      const runTsStepId = host.newId("step");
       await traceMark("tool.runts.deferred", {
         chatId,
         index: i,
@@ -1231,7 +1268,12 @@ export async function stepContinueToolCallsCommand(input: Input) {
             requestEffort,
           },
           toolCall: tc,
+          runTsStepId,
           model: usedModel,
+          backgroundAfterNs:
+            typeof toolArgs?.backgroundAfterNs === "number"
+              ? toolArgs.backgroundAfterNs
+              : null,
         },
       };
     }
@@ -1286,26 +1328,68 @@ export async function runTsToolCommand(input: Input) {
       input.toolCall,
       input.model ?? state.usedModel ?? null,
       requestEffort,
+      typeof input.runTsStepId === "string" ? input.runTsStepId : null,
     );
+    const cancelled = /^cancelled:/i.test(exec.toolText) || /runTS cancelled/i.test(exec.toolText);
     return {
       ok: true,
       value: {
         toolCallId: input.toolCall?.id,
         content: exec.toolText,
-        status: "done",
+        status: cancelled ? "cancelled" : "done",
       },
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    const cancelled = /runTS cancelled/i.test(message);
     return {
       ok: true,
       value: {
         toolCallId: input.toolCall?.id,
-        content: `error: ${message}`,
-        status: "failed",
+        content: cancelled ? `cancelled: ${message}` : `error: ${message}`,
+        status: cancelled ? "cancelled" : "failed",
       },
     };
   }
+}
+
+export async function runTsBackgroundCommand(input: Input) {
+  const chatId = String(input.chatId ?? "").trim();
+  const stepId = String(input.stepId ?? input.step ?? "").trim();
+  if (!chatId)
+    return { ok: false, error: { message: "run-ts-background requires chatId" } };
+  return {
+    ok: true,
+    value: {
+      chatId,
+      stepId: stepId || null,
+      driver: { action: "background-runts", chatId, stepId: stepId || null },
+    },
+  };
+}
+
+export async function runTsCancelCommand(input: Input) {
+  const chatId = String(input.chatId ?? "").trim();
+  const stepId = String(input.stepId ?? input.step ?? "").trim();
+  if (!chatId)
+    return { ok: false, error: { message: "run-ts-cancel requires chatId" } };
+  return {
+    ok: true,
+    value: {
+      chatId,
+      stepId: stepId || null,
+      driver: { action: "cancel-runts", chatId, stepId: stepId || null },
+    },
+  };
+}
+
+export async function runTsBackgroundsCommand() {
+  return {
+    ok: true,
+    value: {
+      driver: { action: "list-runts" },
+    },
+  };
 }
 
 export async function subagentFinalCommand(input: Input) {
@@ -1361,19 +1445,17 @@ export async function restartOngoingCommand() {
   for (const c of chats) {
     if (c.archived) continue;
     const marked = await moo.pointers.get({ name: chatOngoingRef(c.chatId) });
-    const staleInflightStatus =
-      c.status === "agent:Running" || c.status === "agent:Queued";
     if (!marked) {
       // Only the durable ongoing marker means a chat is crash-recoverable.
       // Status-only Running/Queued rows can be leftovers from an interrupted
       // tool call (for example RunTS aborted before it could write Done).
       // Treat them as stale instead of relaunching the LLM after restart.
-      if (staleInflightStatus) {
-        await cancelChatInFlightSteps(
+      if (await hasChatInFlightSteps(c.chatId)) {
+        const cancelled = await cancelChatInFlightSteps(
           c.chatId,
           "cleared stale in-flight status during startup",
         );
-        clearedStale.push(c.chatId);
+        if (cancelled.cancelled > 0) clearedStale.push(c.chatId);
       }
       continue;
     }
@@ -1417,6 +1499,50 @@ type TokenPressure = {
 function tokenPressureCount(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
+export function availableTokensBeforeCompaction(
+  used: unknown,
+  threshold: unknown,
+): number {
+  return Math.max(0, tokenPressureCount(threshold) - tokenPressureCount(used));
+}
+
+function readableTokenCount(value: unknown): string {
+  const text = String(tokenPressureCount(value));
+  return text.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+async function announceCompactionAvailableTokens(
+  chatId: string,
+  detail: {
+    used: number;
+    budget: number;
+    threshold: number;
+    availableTokens: number;
+    compactionsInARow: number;
+    forceCompact?: boolean;
+  },
+): Promise<void> {
+  await traceMark("compaction.available_tokens", {
+    chatId,
+    used: detail.used,
+    tokenBudget: detail.budget,
+    tokenThreshold: detail.threshold,
+    availableTokens: detail.availableTokens,
+    compactionsInARow: detail.compactionsInARow,
+    forceCompact: detail.forceCompact === true,
+  });
+  moo.events.publish({
+    payload: tokenPressureEvent(chatId, detail.used, {
+      budget: detail.budget,
+      threshold: detail.threshold,
+      availableTokens: detail.availableTokens,
+      compactionsInARow: detail.compactionsInARow,
+      source: "compaction",
+      estimated: true,
+    }),
+  });
 }
 
 export function tokenPressureFromEstimates(
@@ -1526,11 +1652,19 @@ export async function stepPrepareCommand(input: Input) {
     );
     estimatedPromptTokens = pressure.used;
     const threshold = await compactionThresholdForBudget(budget);
+    const availableTokens = availableTokensBeforeCompaction(
+      estimatedPromptTokens,
+      threshold,
+    );
+    const previousConsecutiveCompactions =
+      await readConsecutiveCompactions(chatId);
     await recordLastCompactionPromptTokens(chatId, estimatedPromptTokens);
     moo.events.publish({
       payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
         budget,
         threshold,
+        availableTokens,
+        compactionsInARow: previousConsecutiveCompactions,
         source: pressure.source,
         estimated: true,
       }),
@@ -1544,9 +1678,15 @@ export async function stepPrepareCommand(input: Input) {
       previousPromptSource: previousPressure.source,
       tokenBudget: budget,
       tokenThreshold: threshold,
+      availableTokens,
+      compactionsInARow: previousConsecutiveCompactions,
     });
     const forceCompact = input.forceCompact === true;
-    const shouldCompact = forceCompact || estimatedPromptTokens >= threshold;
+    const overCompactionLimit =
+      previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS;
+    const shouldCompact =
+      (forceCompact || estimatedPromptTokens >= threshold) &&
+      !overCompactionLimit;
     await traceMark("compaction.check", {
       chatId,
       estimatedPromptTokens,
@@ -1556,9 +1696,35 @@ export async function stepPrepareCommand(input: Input) {
       previousPromptSource: previousPressure.source,
       tokenBudget: budget,
       tokenThreshold: threshold,
+      availableTokens,
+      compactionsInARow: previousConsecutiveCompactions,
       forceCompact,
+      overCompactionLimit,
       shouldCompact,
     });
+    if (overCompactionLimit && (forceCompact || estimatedPromptTokens >= threshold)) {
+      await traceMark("compaction.limit_reached", {
+        chatId,
+        estimatedPromptTokens,
+        compactionPromptTokens,
+        requestPromptTokens,
+        previousPromptTokens: previousPressure.used,
+        previousPromptSource: previousPressure.source,
+        tokenBudget: budget,
+        tokenThreshold: threshold,
+        availableTokens,
+        compactionsInARow: previousConsecutiveCompactions,
+        forceCompact,
+      });
+      await reply(
+        chatId,
+        `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row. ` +
+          `${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
+          `(${readableTokenCount(estimatedPromptTokens)} / ${readableTokenCount(threshold)}).`,
+      );
+      await setChatOngoing(chatId, false);
+      return { ok: true, value: { kind: "done" } };
+    }
     if (shouldCompact) {
       await traceMark("compaction.triggered", {
         chatId,
@@ -1569,6 +1735,18 @@ export async function stepPrepareCommand(input: Input) {
         previousPromptSource: previousPressure.source,
         tokenBudget: budget,
         tokenThreshold: threshold,
+        availableTokens,
+        compactionsInARow: previousConsecutiveCompactions,
+        nextCompactionsInARow: previousConsecutiveCompactions + 1,
+        forceCompact,
+      });
+      const nextConsecutiveCompactions = previousConsecutiveCompactions + 1;
+      await announceCompactionAvailableTokens(chatId, {
+        used: estimatedPromptTokens,
+        budget,
+        threshold,
+        availableTokens,
+        compactionsInARow: nextConsecutiveCompactions,
         forceCompact,
       });
       const compactionMessages = await traceSpan(
@@ -1611,6 +1789,8 @@ export async function stepPrepareCommand(input: Input) {
         requestTokenLimit,
         tokenBudget: budget,
         tokenThreshold: threshold,
+        availableTokens,
+        compactionsInARow: nextConsecutiveCompactions,
         truncatedForRequest:
           summaryRequestPromptTokens < estimateTokens(rawSummaryMessages),
         ...messagesForTrace(summaryMessages, null),
@@ -1630,6 +1810,8 @@ export async function stepPrepareCommand(input: Input) {
           estimatedPromptTokens,
           tokenBudget: budget,
           tokenThreshold: threshold,
+          availableTokens,
+          compactionsInARow: nextConsecutiveCompactions,
           requestPromptTokens: summaryRequestPromptTokens,
           requestTokenLimit,
           requestProvider: compactionProvider.name,
@@ -1640,6 +1822,8 @@ export async function stepPrepareCommand(input: Input) {
               estimatedPromptTokens,
               tokenBudget: budget,
               tokenThreshold: threshold,
+              availableTokens,
+              compactionsInARow: nextConsecutiveCompactions,
               provider: compactionProvider.name,
               model: request.requestModel,
               effort: request.requestEffort,
@@ -1672,10 +1856,18 @@ export async function stepPrepareCommand(input: Input) {
       ...messagesForTrace(messages, TOOLS),
     });
     const threshold = await compactionThresholdForBudget(budget);
+    const availableTokens = availableTokensBeforeCompaction(
+      estimatedPromptTokens,
+      threshold,
+    );
+    const previousConsecutiveCompactions =
+      await readConsecutiveCompactions(chatId);
     moo.events.publish({
       payload: tokenPressureEvent(chatId, estimatedPromptTokens, {
         budget,
         threshold,
+        availableTokens,
+        compactionsInARow: previousConsecutiveCompactions,
         source: "context",
         estimated: true,
       }),
@@ -1685,20 +1877,48 @@ export async function stepPrepareCommand(input: Input) {
       estimatedPromptTokens,
       tokenBudget: budget,
       tokenThreshold: threshold,
+      availableTokens,
+      compactionsInARow: previousConsecutiveCompactions,
+      overCompactionLimit:
+        previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS,
       shouldCompact: estimatedPromptTokens >= threshold,
     });
     if (estimatedPromptTokens >= threshold) {
+      if (previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS) {
+        await traceMark("compaction.carried_limit_reached", {
+          chatId,
+          estimatedPromptTokens,
+          tokenBudget: budget,
+          tokenThreshold: threshold,
+          availableTokens,
+          compactionsInARow: previousConsecutiveCompactions,
+        });
+        await reply(
+          chatId,
+          `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row. ` +
+            `${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
+            `(${readableTokenCount(estimatedPromptTokens)} / ${readableTokenCount(threshold)}).`,
+        );
+        await setChatOngoing(chatId, false);
+        return { ok: true, value: { kind: "done" } };
+      }
       await traceMark("compaction.carried_triggered", {
         chatId,
         estimatedPromptTokens,
         tokenBudget: budget,
         tokenThreshold: threshold,
+        availableTokens,
+        compactionsInARow: previousConsecutiveCompactions,
       });
       return { ok: true, value: { kind: "iterate", messages: null } };
     }
   }
 
   const threshold = await compactionThresholdForBudget(budget);
+  const availableTokens = availableTokensBeforeCompaction(
+    estimatedPromptTokens,
+    threshold,
+  );
   const draftId = await moo.id.new({ prefix: "draft" });
   await traceMark("llm.draft.created", { chatId, draftId });
   const request = buildStreamingLLMRequest(provider, messages, TOOLS);
@@ -1714,6 +1934,7 @@ export async function stepPrepareCommand(input: Input) {
     estimatedPromptTokens,
     tokenBudget: budget,
     tokenThreshold: threshold,
+    availableTokens,
     request: llmBodyForTrace(request.body),
   });
   return {
@@ -1729,10 +1950,13 @@ export async function stepPrepareCommand(input: Input) {
       estimatedPromptTokens,
       tokenBudget: budget,
       tokenThreshold: threshold,
+      availableTokens,
+      compactionsInARow: await readConsecutiveCompactions(chatId),
       streamEvents: llmStreamEventOptions(chatId, draftId, {
         estimatedPromptTokens,
         tokenBudget: budget,
         tokenThreshold: threshold,
+        availableTokens,
         provider: provider.name,
         model: request.requestModel,
         effort: request.requestEffort,
@@ -1840,6 +2064,11 @@ export async function stepHandleLlmCommand(input: Input) {
   }
 
   if (purpose === "compact") {
+    const compactionAvailableTokens = Number(input.availableTokens);
+    const compactionsInARow = Math.max(
+      1,
+      tokenPressureCount(input.compactionsInARow),
+    );
     if (!llmResult.ok) {
       const status = Number(llmResult.status) || 0;
       const parsed = parseProviderErrorBody(llmResult.errorBody);
@@ -1866,6 +2095,10 @@ export async function stepHandleLlmCommand(input: Input) {
         tokenThreshold: Number(input.tokenThreshold) || null,
         requestPromptTokens: Number(input.requestPromptTokens) || null,
         requestTokenLimit: Number(input.requestTokenLimit) || null,
+        availableTokens: Number.isFinite(compactionAvailableTokens)
+          ? compactionAvailableTokens
+          : null,
+        compactionsInARow,
         status,
         message,
         type,
@@ -1902,6 +2135,10 @@ export async function stepHandleLlmCommand(input: Input) {
           tokenThreshold: Number(input.tokenThreshold) || null,
           requestPromptTokens: Number(input.requestPromptTokens) || null,
           requestTokenLimit: Number(input.requestTokenLimit) || null,
+          availableTokens: Number.isFinite(compactionAvailableTokens)
+            ? compactionAvailableTokens
+            : null,
+          compactionsInARow,
           draftId: draftId || null,
         },
       );
@@ -1916,7 +2153,12 @@ export async function stepHandleLlmCommand(input: Input) {
       tokenThreshold: Number(input.tokenThreshold) || null,
       requestPromptTokens: Number(input.requestPromptTokens) || null,
       requestTokenLimit: Number(input.requestTokenLimit) || null,
+      availableTokens: Number.isFinite(compactionAvailableTokens)
+        ? compactionAvailableTokens
+        : null,
+      compactionsInARow,
       draftId: draftId || null,
+      summaryTokens: estimateCompactionSummaryTokens(summary),
     };
     const now = await moo.time.nowMs({});
     const lastUserAt = await latestUserInputAt(chatId);
@@ -1935,10 +2177,26 @@ export async function stepHandleLlmCommand(input: Input) {
       at: now,
       ...compactionTracking,
     });
+    const postMessages = await buildLLMMessages(chatId);
+    const postContextTokens = estimateTokens(postMessages, TOOLS);
+    const postPressureTokens = await estimateCompactionPromptTokens(
+      chatId,
+      postMessages,
+    );
+    const budget = Number(input.tokenBudget) || (await contextBudget());
+    const threshold =
+      Number(input.tokenThreshold) ||
+      (await compactionThresholdForBudget(budget));
+    const patchedCompactionHash =
+      (await patchCompactionLayerPostTokens(
+        chatId,
+        compactionHash,
+        postPressureTokens,
+      )) ?? compactionHash;
     await appendStep(chatId, {
       kind: "agent:Compaction",
       status: "agent:Done",
-      payloadHash: compactionHash,
+      payloadHash: patchedCompactionHash,
       extras: [
         ...stepLlmExtras(usedModel, input.requestEffort),
         ["agent:trigger", "agent:Automatic"],
@@ -1950,6 +2208,18 @@ export async function stepHandleLlmCommand(input: Input) {
               ] as [string, string],
             ]
           : []),
+        ...(compactionTracking.summaryTokens != null
+          ? [
+              [
+                "agent:summaryTokens",
+                String(compactionTracking.summaryTokens),
+              ] as [string, string],
+            ]
+          : []),
+        ["agent:postPromptTokens", String(postPressureTokens)] as [
+          string,
+          string,
+        ],
         ...(compactionTracking.tokenBudget != null
           ? [
               ["agent:tokenBudget", String(compactionTracking.tokenBudget)] as [
@@ -1969,23 +2239,20 @@ export async function stepHandleLlmCommand(input: Input) {
       ],
     });
     await traceMark("compaction.persisted", { chatId, compactionHash });
-    const postMessages = await buildLLMMessages(chatId);
-    const postContextTokens = estimateTokens(postMessages, TOOLS);
-    const postPressureTokens = await estimateCompactionPromptTokens(
-      chatId,
-      postMessages,
-    );
-    const budget = Number(input.tokenBudget) || (await contextBudget());
-    const threshold =
-      Number(input.tokenThreshold) ||
-      (await compactionThresholdForBudget(budget));
     await recordLastContextTokens(chatId, postContextTokens, {
       compactionPromptTokens: postPressureTokens,
+      consecutiveCompactions: compactionsInARow,
     });
+    await recordConsecutiveCompactions(chatId, compactionsInARow);
     moo.events.publish({
       payload: tokenPressureEvent(chatId, postPressureTokens, {
         budget,
         threshold,
+        availableTokens: availableTokensBeforeCompaction(
+          postPressureTokens,
+          threshold,
+        ),
+        compactionsInARow,
         source: "compaction",
         estimated: true,
         reset: true,
@@ -2023,6 +2290,8 @@ export async function stepHandleLlmCommand(input: Input) {
       isContextLengthExceededError(contextLengthParsed)
     ) {
       const status = Number(llmResult.status) || 0;
+      const previousConsecutiveCompactions =
+        await readConsecutiveCompactions(chatId);
       await traceMark("compaction.context_length_retry", {
         chatId,
         attempt,
@@ -2030,6 +2299,10 @@ export async function stepHandleLlmCommand(input: Input) {
         estimatedPromptTokens: Number(input.estimatedPromptTokens) || null,
         tokenBudget: Number(input.tokenBudget) || null,
         tokenThreshold: Number(input.tokenThreshold) || null,
+        availableTokens: Number(input.availableTokens) || null,
+        compactionsInARow: previousConsecutiveCompactions,
+        overCompactionLimit:
+          previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS,
         code: providerErrorCode(contextLengthParsed),
         type: providerErrorType(contextLengthParsed),
         requestId: providerErrorRequestId(
@@ -2037,6 +2310,15 @@ export async function stepHandleLlmCommand(input: Input) {
           llmResult.headers,
         ),
       });
+      if (previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS) {
+        await reply(
+          chatId,
+          `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row after a context-length error. ` +
+            `${readableTokenCount(input.availableTokens)} tokens remain before the compaction threshold.`,
+        );
+        await setChatOngoing(chatId, false);
+        return { ok: true, value: { kind: "done" } };
+      }
       return {
         ok: true,
         value: {
@@ -2100,6 +2382,7 @@ export async function stepHandleLlmCommand(input: Input) {
       input.requestEffort,
     );
     await setChatOngoing(chatId, false);
+    await resetConsecutiveCompactions(chatId);
     await traceMark("llm.provider_error.done", {
       chatId,
       attempt,
@@ -2145,6 +2428,7 @@ export async function stepHandleLlmCommand(input: Input) {
         draftId,
         reasoningContent,
       );
+      await resetConsecutiveCompactions(chatId);
     }
     messages.push({
       role: "assistant",
@@ -2209,6 +2493,7 @@ export async function stepHandleLlmCommand(input: Input) {
         draftId,
         reasoningContent || null,
       );
+      await resetConsecutiveCompactions(chatId);
     }
     const assistantMessage: {
       role: string;
@@ -2256,6 +2541,7 @@ export async function stepHandleLlmCommand(input: Input) {
       input.requestEffort,
     );
     await setChatOngoing(chatId, false);
+    await resetConsecutiveCompactions(chatId);
     await traceMark("llm.empty_completion.done", {
       chatId,
       stopReason,
@@ -2303,6 +2589,7 @@ export async function stepHandleLlmCommand(input: Input) {
     threshold: pressureThreshold,
   });
   await setChatOngoing(chatId, false);
+  await resetConsecutiveCompactions(chatId);
   await traceMark("llm.final_reply.done", { chatId, usedModel });
   return { ok: true, value: { kind: "done" } };
 }

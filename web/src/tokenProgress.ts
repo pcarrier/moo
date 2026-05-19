@@ -2,6 +2,8 @@ export type TokenProgressValue = {
   used: number;
   budget: number;
   threshold: number;
+  availableTokens?: number;
+  compactionsInARow?: number;
   fraction: number;
   source?: string;
   estimated?: boolean;

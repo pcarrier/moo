@@ -4,7 +4,7 @@ const dirs = new Map<string, string[]>();
 const stats = new Map<string, { kind: string; size: number; mtime: number }>();
 const refs = new Map<string, string>();
 const files = new Map<string, string>();
-const procCalls: Array<{ cmd: string; args?: string[]; cwd?: string }> = [];
+const procCalls: Array<{ cmd: string[]; cwd?: string }> = [];
 
 function normalize(path: string): string {
   return String(path || ".").replace(/\/+$/, "") || "/";
@@ -28,24 +28,24 @@ function addFile(path: string, content: string) {
 }
 
 (globalThis as any).__op_env_get = (name: string) => name === "HOME" ? "/home/test" : null;
-(globalThis as any).__op_proc_run = (cmd: string, argsJson: string = "[]", cwdArg: string | null = null) => {
-  const args = JSON.parse(argsJson || "[]") as string[];
-  procCalls.push({ cmd, args, cwd: cwdArg ?? undefined });
-  if (cmd === "pwd" && args[0] === "-P") {
+(globalThis as any).__op_proc_run = (cmdJson: string, cwdArg: string | null = null) => {
+  const cmd = JSON.parse(cmdJson || "[]") as string[];
+  procCalls.push({ cmd, cwd: cwdArg ?? undefined });
+  if (cmd[0] === "pwd" && cmd[1] === "-P") {
     const cwd = normalize(String(cwdArg ?? "."));
     return dirs.has(cwd)
       ? { code: 0, stdout: cwd + "\n", stderr: "", durationNs: 0, timedOut: false }
       : { code: 1, stdout: "", stderr: `not a directory: ${cwd}`, durationNs: 0, timedOut: false };
   }
-  if (cmd === "git" && args[0] === "worktree" && args[1] === "add") {
-    const targetArg = args.includes("--detach") ? args[args.indexOf("--detach") + 1] : args[3];
+  if (cmd[0] === "git" && cmd[1] === "worktree" && cmd[2] === "add") {
+    const targetArg = cmd.includes("--detach") ? cmd[cmd.indexOf("--detach") + 1] : cmd[4];
     const target = normalize(targetArg || "");
     addDir(target, ["src"]);
     addDir(target + "/src", []);
     stats.set(target + "/src", { kind: "dir", size: 0, mtime: 0 });
     return { code: 0, stdout: "", stderr: "", durationNs: 0, timedOut: false };
   }
-  if (cmd === "git" && args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+  if (cmd[0] === "git" && cmd[1] === "rev-parse" && cmd[2] === "--show-toplevel") {
     const cwd = normalize(String(cwdArg ?? "."));
     return dirs.has(cwd + "/.git")
       ? { code: 0, stdout: cwd + "\n", stderr: "", durationNs: 0, timedOut: false }
@@ -125,7 +125,7 @@ describe("fsListCommand", () => {
     expect(result.value.path).toBe("/home/test/moo/fresh");
     expect(result.value.entries.map((entry: any) => entry.name)).toEqual(["src"]);
     expect(dirs.has("/home/test/moo")).toBe(true);
-    expect(procCalls.some((call) => call.cmd === "git" && call.args?.[0] === "worktree" && call.cwd === "/repo")).toBe(true);
+    expect(procCalls.some((call) => call.cmd[0] === "git" && call.cmd[1] === "worktree" && call.cwd === "/repo")).toBe(true);
   });
 
   test("materializes repo-less chats as empty scratch directories", async () => {
@@ -139,7 +139,7 @@ describe("fsListCommand", () => {
     expect(result.value.entries).toEqual([]);
     expect(dirs.has("/home/test/moo")).toBe(true);
     expect(dirs.has("/home/test/moo/fresh")).toBe(true);
-    expect(procCalls.some((call) => call.cmd === "git" && call.args?.[0] === "worktree")).toBe(false);
+    expect(procCalls.some((call) => call.cmd[0] === "git" && call.cmd[1] === "worktree")).toBe(false);
   });
 });
 
@@ -169,7 +169,7 @@ describe("recentChatPathsCommand", () => {
       ok: true,
       value: { paths: ["/repo"], repos: [{ path: "/repo", repoKind: "git" }] },
     });
-    expect(procCalls.map((call) => [call.cmd, call.args?.[0]])).toContainEqual([
+    expect(procCalls.map((call) => [call.cmd[0], call.cmd[1]])).toContainEqual([
       "git",
       "rev-parse",
     ]);
@@ -212,12 +212,12 @@ describe("filesystem API", () => {
     refs.set("chat/active/path", "/repo");
     addDir("/home/test/moo/active", []);
 
-    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: "pwd", args: ["-P"] }))).resolves.toMatchObject({
+    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: ["pwd", "-P"] }))).resolves.toMatchObject({
       code: 0,
       stdout: "/home/test/moo/active\n",
     });
 
-    expect(procCalls.at(-1)).toMatchObject({ cmd: "pwd", cwd: "/home/test/moo/active" });
+    expect(procCalls.at(-1)).toMatchObject({ cmd: ["pwd", "-P"], cwd: "/home/test/moo/active" });
   });
 
   test("resolves relative moo.proc cwd under the chat scratch root", async () => {
@@ -226,12 +226,12 @@ describe("filesystem API", () => {
     addDir("/home/test/moo/active", ["src"]);
     addDir("/home/test/moo/active/src", []);
 
-    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: "pwd", args: ["-P"], cwd: "src" }))).resolves.toMatchObject({
+    await expect(withMooChatContext("active", () => moo.proc.run({ cmd: ["pwd", "-P"], cwd: "src" }))).resolves.toMatchObject({
       code: 0,
       stdout: "/home/test/moo/active/src\n",
     });
 
-    expect(procCalls.at(-1)).toMatchObject({ cmd: "pwd", cwd: "/home/test/moo/active/src" });
+    expect(procCalls.at(-1)).toMatchObject({ cmd: ["pwd", "-P"], cwd: "/home/test/moo/active/src" });
   });
 
   test("exposes split patch and delete helpers", async () => {
@@ -255,6 +255,34 @@ describe("filesystem API", () => {
 
     await expect(workspace.fs.delete({ path: "src/example.txt" })).resolves.toMatchObject({ status: "completed" });
     expect(files.has("/repo/src/example.txt")).toBe(false);
+  });
+
+  test("patch accepts apply-patch envelope metadata", async () => {
+    const workspace = await moo.workspace.current({ root: "/repo" });
+    addFile("/repo/example.txt", "alpha\nbeta\n");
+
+    await expect(workspace.fs.patch({
+      path: "example.txt",
+      diff: "*** Begin Patch\n*** Update File: example.txt\n@@\n alpha\n-beta\n+gamma\n*** End Patch\n",
+    })).resolves.toMatchObject({ status: "completed" });
+
+    expect(files.get("/repo/example.txt")).toBe("alpha\ngamma\n");
+  });
+  test("patch rejects apply-patch envelopes for other operations", async () => {
+    const workspace = await moo.workspace.current({ root: "/repo" });
+    addFile("/repo/example.txt", "alpha\nbeta\n");
+
+    await expect(workspace.fs.patch({
+      path: "example.txt",
+      diff: "*** Begin Patch\n*** Update File: other.txt\n@@\n alpha\n-beta\n+gamma\n*** End Patch\n",
+    })).rejects.toThrow("does not match requested path");
+
+    await expect(workspace.fs.patch({
+      path: "example.txt",
+      diff: "*** Begin Patch\n*** Delete File: example.txt\n@@\n-alpha\n*** End Patch\n",
+    })).rejects.toThrow("only supports updating one existing file");
+
+    expect(files.get("/repo/example.txt")).toBe("alpha\nbeta\n");
   });
 
   test("throws patch failures for invalid paths and mismatched hunks", async () => {

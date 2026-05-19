@@ -68,9 +68,9 @@ pub fn serve(
 ) -> Result<(), String> {
     let listener = TcpListener::bind((host_addr, port)).map_err(|e| e.to_string())?;
     let local_addr = listener.local_addr().map_err(|e| e.to_string())?;
-    // Pool size needs headroom for read-only commands (describe/triples/etc)
+    // Pool size caps need headroom for read-only commands (describe/triples/etc)
     // to overlap with long-running `step` calls that hold an isolate for the
-    // duration of LLM streaming.
+    // duration of LLM streaming. Pools now start small and grow on demand.
     let conn = host::open_db(db)?;
     if let Some(raw) = settings::get(&conn, settings::V8_CONFIG_KEY)? {
         let parsed: crate::pool::V8RuntimeSettings =

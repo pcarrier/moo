@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildLLMMessages } from "../src/agent";
 import { chatRefs } from "../src/lib";
+import { patchTodos } from "../src/todos";
 import { COMPACTION_CONTINUATION_USER_PROMPT } from "../src/prompt";
 
 type Quad = [string, string, string, string];
@@ -104,6 +105,7 @@ function installHostOps() {
   g.__op_trace_enabled = () => false;
   g.__op_trace_current = () => JSON.stringify(null);
   g.__op_trace_mark = () => {};
+  g.__op_broadcast = () => {};
 }
 
 function putJSON(kind: string, value: unknown): string {
@@ -123,6 +125,27 @@ describe("LLM prompt context", () => {
 
     expect(messages.at(-1)).toEqual({ role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT });
     expect(JSON.stringify(messages)).toContain("Next action: run the failing test.");
+  });
+
+  test("keeps active TODOs visible after compaction", async () => {
+    installHostOps();
+    const chatId = "prompt-context-compaction-todos";
+    const c = chatRefs(chatId);
+    const summary = "Earlier work. Next action: finish check.";
+    const compactionHash = putJSON("agent:Compaction", { summary, throughAt: 1000, at: 1000 });
+    refs.set(c.compaction, "json:" + JSON.stringify({
+      hash: compactionHash,
+      summary,
+      throughAt: 1000,
+      at: 1000,
+    }));
+    await patchTodos(chatId, { add: [{ text: "finish check", status: "doing" }] });
+
+    const messages = await buildLLMMessages(chatId);
+    const joined = JSON.stringify(messages);
+
+    expect(joined).toContain("Current TODO reminders:");
+    expect(joined).toContain("- doing 1: finish check");
   });
 
   test("includes post-compaction RunTS calls and results", async () => {

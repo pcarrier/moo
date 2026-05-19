@@ -31,4 +31,17 @@ describe("chat list auto loading", () => {
     expect(css).toContain(".chat-directory {");
     expect(css).not.toContain(".chat-cost,\n.chat-directory,\n.chat-actions {");
   });
+
+  test("shows base branches next to chat project paths", () => {
+    expect(sidebar).toContain('class="chat-repo-line"');
+    expect(sidebar).toContain('class="chat-base-branch"');
+    expect(sidebar).toContain('class="chat-repo-separator"');
+    expect(sidebar).toContain('title={"base branch: " + baseBranch()}');
+    expect(css).toContain(".chat-repo-line {");
+    expect(css).toContain(".chat-repo-separator {");
+    expect(css).toContain(".chat-base-branch {");
+    const branchRuleStart = css.indexOf(".chat-base-branch {");
+    const branchRule = css.slice(branchRuleStart, css.indexOf("}", branchRuleStart));
+    expect(branchRule).not.toContain("border");
+  });
 });

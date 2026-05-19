@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onMount } from "solid-js";
 
-import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type TraceConfig, type TraceSettingsValue, type V8PoolRuntimeSettings, type V8RuntimeSettings, type V8SettingsValue } from "./api";
+import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type OtelConfig, type OtelSettingsValue, type V8PoolRuntimeSettings, type V8RuntimeSettings, type V8SettingsValue } from "./api";
 import type { Bag } from "./state";
 import { ActionRow, Card, InlineActions, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
 import { TabBar, type TabBarItem } from "./TabBar";
@@ -19,7 +19,7 @@ type ProviderDraft = {
   baseUrl: string;
 };
 
-type SettingsTabId = "providers" | "runtime" | "traces" | "behavior";
+type SettingsTabId = "providers" | "runtime" | "otel" | "behavior";
 
 type SettingsTab = TabBarItem<SettingsTabId>;
 
@@ -27,7 +27,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "providers", title: "Providers" },
   { id: "behavior", title: "Behavior" },
   { id: "runtime", title: "Runtime" },
-  { id: "traces", title: "Traces" },
+  { id: "otel", title: "OTEL" },
 ];
 
 const PROVIDERS: ProviderMeta[] = [
@@ -63,6 +63,24 @@ function intOrNull(value: string): number | null {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
+function formatOtelHeaders(headers: { name: string; value: string }[] | null | undefined): string {
+  return (headers ?? []).map((header) => `${header.name}=${header.value}`).join("\n");
+}
+
+function parseOtelHeaders(raw: string): { name: string; value: string }[] {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const eq = line.indexOf("=");
+      return eq < 0
+        ? { name: line, value: "" }
+        : { name: line.slice(0, eq).trim(), value: line.slice(eq + 1).trim() };
+    })
+    .filter((header) => header.name.length > 0);
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
@@ -74,13 +92,13 @@ function errorMessage(err: unknown): string {
 export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [settings, setSettings] = createSignal<LlmAuthSettings | null>(props.bag.settingsCache());
   const [v8Settings, setV8Settings] = createSignal<V8SettingsValue | null>(props.bag.v8SettingsCache());
-  const [traceSettings, setTraceSettings] = createSignal<TraceSettingsValue | null>(props.bag.traceSettingsCache());
+  const [otelSettings, setOtelSettings] = createSignal<OtelSettingsValue | null>(props.bag.otelSettingsCache());
   const [saving, setSaving] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
-  const [testingTrace, setTestingTrace] = createSignal(false);
+  const [testingOtel, setTestingOtel] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [traceTestMessage, setTraceTestMessage] = createSignal<string | null>(null);
-  const [traceTestPassed, setTraceTestPassed] = createSignal(false);
+  const [otelTestMessage, setOtelTestMessage] = createSignal<string | null>(null);
+  const [otelTestPassed, setOtelTestPassed] = createSignal(false);
   const [activeTab, setActiveTab] = createSignal<SettingsTabId>("providers");
   const [drafts, setDrafts] = createSignal<Record<LlmProviderId, ProviderDraft>>({
     openai: blankDraft(),
@@ -138,14 +156,14 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     try {
       const d = drafts();
       const currentV8 = v8Settings();
-      const currentTrace = traceSettings();
-      if (!currentV8 || !currentTrace) {
+      const currentOtel = otelSettings();
+      if (!currentV8 || !currentOtel) {
         setError("Settings are still loading; try again in a moment.");
         return;
       }
       const [trace, v8, r] = await Promise.all([
-        api("trace-config-save", { config: currentTrace.config }),
-        api("v8-settings-save", { settings: currentV8.settings }),
+        api("otel-config-save", { config: currentOtel.config }),
+        api("v8-settings-save", { settings: v8SettingsForSave(currentV8) }),
         api("llm-auth-save", {
         serverBaseUrl: serverBaseUrl(),
         openai: {
@@ -192,8 +210,8 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         setError(trace.error.message);
         return;
       }
-      setTraceSettings(trace.value);
-      props.bag.setCachedTraceSettings(trace.value);
+      setOtelSettings(trace.value);
+      props.bag.setCachedOtelSettings(trace.value);
       if (!v8.ok) {
         setError(v8.error.message);
         return;
@@ -275,86 +293,130 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setV8Settings((prev) => prev ? ({ ...prev, settings: { ...prev.settings, ...patch } }) : prev);
   }
 
-  function patchV8Pool(key: "mainPool" | "readPool" | "scanPool" | "uiPool" | "toolPool", patch: Partial<V8PoolRuntimeSettings>) {
+  type V8PoolKey = "mainPool" | "readPool" | "scanPool" | "uiPool" | "toolPool";
+
+  function emptyV8PoolSettings(): V8PoolRuntimeSettings {
+    return { maxWorkers: null, maxOldGenerationBytes: null, maxYoungGenerationBytes: null, recycleUsedHeapBytes: null, autoscaleWindowSecs: null };
+  }
+
+  function patchV8Pool(key: V8PoolKey, patch: Partial<V8PoolRuntimeSettings>) {
     setV8Settings((prev) => {
       if (!prev) return prev;
-      const current = prev.settings[key] ?? { maxWorkers: null, maxOldGenerationBytes: null, maxYoungGenerationBytes: null, recycleUsedHeapBytes: null };
+      const current = prev.settings[key] ?? emptyV8PoolSettings();
       return { ...prev, settings: { ...prev.settings, [key]: { ...current, ...patch } } };
     });
   }
 
-  function patchTrace(patch: Partial<TraceConfig>) {
-    setTraceTestMessage(null);
-    setTraceTestPassed(false);
-    setTraceSettings((prev) => prev ? ({ ...prev, config: { ...prev.config, ...patch } }) : prev);
+  function resolvedAutoscaleWindowSecs(v8: V8SettingsValue, key: V8PoolKey): number | null {
+    return v8.settings[key]?.autoscaleWindowSecs
+      ?? v8.effective[key]?.autoscaleWindowSecs
+      ?? v8.defaults[key]?.autoscaleWindowSecs
+      ?? v8.settings.autoscaleWindowSecs
+      ?? v8.effective.autoscaleWindowSecs
+      ?? v8.defaults.autoscaleWindowSecs
+      ?? null;
   }
 
-  async function testTraceConfig() {
-    const currentTrace = traceSettings();
-    if (!currentTrace) return;
-    setTestingTrace(true);
+  function v8PoolSettingsForSave(v8: V8SettingsValue, key: V8PoolKey): V8PoolRuntimeSettings {
+    return {
+      ...(v8.settings[key] ?? emptyV8PoolSettings()),
+      maxWorkers: null,
+      autoscaleWindowSecs: resolvedAutoscaleWindowSecs(v8, key),
+    };
+  }
+
+  function v8SettingsForSave(v8: V8SettingsValue): V8RuntimeSettings {
+    return {
+      ...v8.settings,
+      maxWorkers: null,
+      readMaxWorkers: null,
+      scanMaxWorkers: null,
+      uiMaxWorkers: null,
+      toolMaxWorkers: null,
+      autoscaleWindowSecs: v8.settings.autoscaleWindowSecs ?? v8.effective.autoscaleWindowSecs ?? v8.defaults.autoscaleWindowSecs,
+      mainPool: v8PoolSettingsForSave(v8, "mainPool"),
+      readPool: v8PoolSettingsForSave(v8, "readPool"),
+      scanPool: v8PoolSettingsForSave(v8, "scanPool"),
+      uiPool: v8PoolSettingsForSave(v8, "uiPool"),
+      toolPool: v8PoolSettingsForSave(v8, "toolPool"),
+    };
+  }
+
+  function patchOtel(patch: Partial<OtelConfig>) {
+    setOtelTestMessage(null);
+    setOtelTestPassed(false);
+    setOtelSettings((prev) => prev ? ({ ...prev, config: { ...prev.config, ...patch } }) : prev);
+  }
+
+  async function testOtelConfig() {
+    const currentOtel = otelSettings();
+    if (!currentOtel) return;
+    setTestingOtel(true);
     setError(null);
-    setTraceTestMessage(null);
-    const result = await api("trace-config-test", { config: currentTrace.config });
-    setTestingTrace(false);
+    setOtelTestMessage(null);
+    const result = await api("otel-config-test", { config: currentOtel.config });
+    setTestingOtel(false);
     if (!result.ok) {
-      setTraceTestPassed(false);
+      setOtelTestPassed(false);
       setError(result.error.message);
       return;
     }
-    setTraceTestPassed(true);
-    setTraceTestMessage(result.value.message);
+    setOtelTestPassed(true);
+    setOtelTestMessage(result.value.message);
   }
 
   function useV8Preset(name: "tiny" | "balanced" | "roomy") {
     const presets: Record<typeof name, V8RuntimeSettings> = {
       tiny: {
-        maxWorkers: 4,
-        readMaxWorkers: 1,
-        scanMaxWorkers: 1,
-        uiMaxWorkers: 1,
-        toolMaxWorkers: 1,
+        maxWorkers: null,
+        readMaxWorkers: null,
+        scanMaxWorkers: null,
+        uiMaxWorkers: null,
+        toolMaxWorkers: null,
         maxOldGenerationBytes: 64 * 1024 * 1024,
         maxYoungGenerationBytes: 8 * 1024 * 1024,
         recycleUsedHeapBytes: 48 * 1024 * 1024,
+        autoscaleWindowSecs: 30,
         startupSnapshotsEnabled: true,
-        mainPool: { maxWorkers: 4, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
-        readPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
-        scanPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
-        uiPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
-        toolPool: { maxWorkers: 1, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024 },
+        mainPool: { maxWorkers: null, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        readPool: { maxWorkers: null, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        scanPool: { maxWorkers: null, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        uiPool: { maxWorkers: null, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        toolPool: { maxWorkers: null, maxOldGenerationBytes: 64 * 1024 * 1024, maxYoungGenerationBytes: 8 * 1024 * 1024, recycleUsedHeapBytes: 48 * 1024 * 1024, autoscaleWindowSecs: 30 },
       },
       balanced: {
-        maxWorkers: 16,
-        readMaxWorkers: 4,
-        scanMaxWorkers: 1,
-        uiMaxWorkers: 4,
-        toolMaxWorkers: 4,
+        maxWorkers: null,
+        readMaxWorkers: null,
+        scanMaxWorkers: null,
+        uiMaxWorkers: null,
+        toolMaxWorkers: null,
         maxOldGenerationBytes: 128 * 1024 * 1024,
         maxYoungGenerationBytes: 16 * 1024 * 1024,
         recycleUsedHeapBytes: 96 * 1024 * 1024,
+        autoscaleWindowSecs: 30,
         startupSnapshotsEnabled: true,
-        mainPool: { maxWorkers: 16, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
-        readPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
-        scanPool: { maxWorkers: 1, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
-        uiPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
-        toolPool: { maxWorkers: 4, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024 },
+        mainPool: { maxWorkers: null, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        readPool: { maxWorkers: null, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        scanPool: { maxWorkers: null, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        uiPool: { maxWorkers: null, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        toolPool: { maxWorkers: null, maxOldGenerationBytes: 128 * 1024 * 1024, maxYoungGenerationBytes: 16 * 1024 * 1024, recycleUsedHeapBytes: 96 * 1024 * 1024, autoscaleWindowSecs: 30 },
       },
       roomy: {
-        maxWorkers: 16,
-        readMaxWorkers: 6,
-        scanMaxWorkers: 2,
-        uiMaxWorkers: 6,
-        toolMaxWorkers: 6,
+        maxWorkers: null,
+        readMaxWorkers: null,
+        scanMaxWorkers: null,
+        uiMaxWorkers: null,
+        toolMaxWorkers: null,
         maxOldGenerationBytes: 256 * 1024 * 1024,
         maxYoungGenerationBytes: 32 * 1024 * 1024,
         recycleUsedHeapBytes: 192 * 1024 * 1024,
+        autoscaleWindowSecs: 30,
         startupSnapshotsEnabled: true,
-        mainPool: { maxWorkers: 16, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
-        readPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
-        scanPool: { maxWorkers: 2, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
-        uiPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
-        toolPool: { maxWorkers: 6, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024 },
+        mainPool: { maxWorkers: null, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        readPool: { maxWorkers: null, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        scanPool: { maxWorkers: null, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        uiPool: { maxWorkers: null, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024, autoscaleWindowSecs: 30 },
+        toolPool: { maxWorkers: null, maxOldGenerationBytes: 256 * 1024 * 1024, maxYoungGenerationBytes: 32 * 1024 * 1024, recycleUsedHeapBytes: 192 * 1024 * 1024, autoscaleWindowSecs: 30 },
       },
     };
     setV8Settings((prev) => prev ? ({ ...prev, settings: presets[name] }) : prev);
@@ -368,7 +430,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setV8Settings(props.bag.v8SettingsCache());
   });
   createEffect(() => {
-    setTraceSettings(props.bag.traceSettingsCache());
+    setOtelSettings(props.bag.otelSettingsCache());
   });
   createEffect(() => {
     const cachedError = props.bag.settingsError();
@@ -483,14 +545,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                                 { key: "toolPool" as const, title: "Async tool pool" },
                               ]}>
                                 {(pool) => {
-                                  const value = () => v8().settings[pool.key] ?? { maxWorkers: null, maxOldGenerationBytes: null, maxYoungGenerationBytes: null, recycleUsedHeapBytes: null };
+                                  const value = () => v8().settings[pool.key] ?? emptyV8PoolSettings();
+                                  const autoscaleWindowSecs = () => value().autoscaleWindowSecs ?? resolvedAutoscaleWindowSecs(v8(), pool.key);
                                   return (
                                     <fieldset class="v8-pool-fieldset">
                                       <legend>{pool.title}</legend>
-                                      <label>
-                                        <span>Workers</span>
-                                        <input type="number" min="1" max="128" value={value().maxWorkers ?? ""} onInput={(e) => patchV8Pool(pool.key, { maxWorkers: intOrNull(e.currentTarget.value) })} />
-                                      </label>
                                       <label>
                                         <span>Old generation cap (MiB)</span>
                                         <input type="number" min="1" value={mib(value().maxOldGenerationBytes)} onInput={(e) => patchV8Pool(pool.key, { maxOldGenerationBytes: mibToBytes(e.currentTarget.value) })} />
@@ -503,6 +562,10 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                                         <span>Recycle after used heap (MiB)</span>
                                         <input type="number" min="1" value={mib(value().recycleUsedHeapBytes)} onInput={(e) => patchV8Pool(pool.key, { recycleUsedHeapBytes: mibToBytes(e.currentTarget.value) })} />
                                       </label>
+                                      <label>
+                                        <span>Idle scale-down window (s)</span>
+                                        <input type="number" min="1" value={autoscaleWindowSecs() ?? ""} onInput={(e) => patchV8Pool(pool.key, { autoscaleWindowSecs: intOrNull(e.currentTarget.value) })} />
+                                      </label>
                                     </fieldset>
                                   );
                                 }}
@@ -514,61 +577,52 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                             </label>
                             <div class="v8-effective-box">
                               <strong>Effective now</strong>
-                              <span>main {v8().effective.mainPool?.maxWorkers} / {mib(v8().effective.mainPool?.maxOldGenerationBytes)} MiB · read {v8().effective.readPool?.maxWorkers} / {mib(v8().effective.readPool?.maxOldGenerationBytes)} MiB · scan {v8().effective.scanPool?.maxWorkers} / {mib(v8().effective.scanPool?.maxOldGenerationBytes)} MiB · tools {v8().effective.toolPool?.maxWorkers} / {mib(v8().effective.toolPool?.maxOldGenerationBytes)} MiB</span>
+                              <span>main {v8().effective.mainPool?.maxWorkers} / {mib(v8().effective.mainPool?.maxOldGenerationBytes)} MiB · read {v8().effective.readPool?.maxWorkers} / {mib(v8().effective.readPool?.maxOldGenerationBytes)} MiB · scan {v8().effective.scanPool?.maxWorkers} / {mib(v8().effective.scanPool?.maxOldGenerationBytes)} MiB · tools {v8().effective.toolPool?.maxWorkers} / {mib(v8().effective.toolPool?.maxOldGenerationBytes)} MiB · idle window {v8().effective.mainPool?.autoscaleWindowSecs ?? "—"}s</span>
                             </div>
-                            <p class="settings-help">Heap and recycle changes apply to new isolates; pool worker caps change after restart.</p>
+                            <p class="settings-help">Heap and recycle changes apply to new isolates; idle windows change after restart.</p>
                           </>}
                         </Show>
                       </Card>
                     </div>
                   </section>
                   <section
-                    class="settings-tab-panel"
-                    role="tabpanel"
-                    id="settings-pane-traces"
-                    aria-labelledby="settings-tab-traces"
-                    hidden={activeTab() !== "traces"}
+                    id="settings-pane-otel"
+                    aria-labelledby="settings-tab-otel"
+                    hidden={activeTab() !== "otel"}
                   >
-                    <div class="settings-grid trace-settings-grid">
-                      <Card class="settings-card">
-                        <h2 class="settings-heading-with-badge">ClickHouse tracing <span class="settings-experimental-badge">Experimental</span></h2>
-                        <Show when={traceSettings()}>
-                          {(trace) => <>
-                            <label class="toggle-row">
-                              <input type="checkbox" checked={trace().config.enabled} onChange={(e) => patchTrace({ enabled: e.currentTarget.checked })} />
-                              <span>Enable ClickHouse tracing</span>
+                    <div class="settings-grid otel-settings-grid">
+                      <Card class="settings-card settings-form-section">
+                        <h2>OTEL reporting</h2>
+                        <Show when={otelSettings()}>
+                          {(otel) => <>
+                            <label class="toggle-row settings-toggle">
+                              <input type="checkbox" checked={otel().config.enabled} onChange={(e) => patchOtel({ enabled: e.currentTarget.checked })} />
+                              <span>Report traces over OTLP/HTTP</span>
                             </label>
-                            <div class="settings-row trace-settings-fields">
+                            <div class="settings-row otel-settings-fields">
                               <label>
-                                <span>ClickHouse URL</span>
-                                <input value={trace().config.clickhouseUrl} onInput={(e) => patchTrace({ clickhouseUrl: e.currentTarget.value })} />
+                                <span>OTLP traces endpoint</span>
+                                <input value={otel().config.otelEndpoint} placeholder="http://localhost:4318/v1/traces" onInput={(e) => patchOtel({ otelEndpoint: e.currentTarget.value })} />
                               </label>
                               <label>
-                                <span>Database</span>
-                                <input value={trace().config.clickhouseDatabase} onInput={(e) => patchTrace({ clickhouseDatabase: e.currentTarget.value })} />
+                                <span>Service name</span>
+                                <input value={otel().config.serviceName} onInput={(e) => patchOtel({ serviceName: e.currentTarget.value })} />
                               </label>
                               <label>
-                                <span>Table prefix</span>
-                                <input value={trace().config.clickhouseTablePrefix} onInput={(e) => patchTrace({ clickhouseTablePrefix: e.currentTarget.value })} />
-                              </label>
-                              <label>
-                                <span>User</span>
-                                <input value={trace().config.clickhouseUser ?? ""} onInput={(e) => patchTrace({ clickhouseUser: e.currentTarget.value || null })} />
-                              </label>
-                              <label>
-                                <span>Password</span>
-                                <input type="password" value={trace().config.clickhousePassword ?? ""} onInput={(e) => patchTrace({ clickhousePassword: e.currentTarget.value || null })} />
+                                <span>Headers</span>
+                                <textarea rows={4} value={formatOtelHeaders(otel().config.headers)} placeholder={'signoz-access-token=…'} onInput={(e) => patchOtel({ headers: parseOtelHeaders(e.currentTarget.value) })} />
                               </label>
                             </div>
-                            <InlineActions class="settings-actions trace-test-actions">
-                              <button type="button" class="secondary" onClick={testTraceConfig} disabled={testingTrace() || saving()}>
-                                {testingTrace() ? "Testing…" : "Test"}
+                            <p class="settings-help">Send OTLP/HTTP traces to any compatible collector. Add vendor auth tokens as headers when required, for example <code>signoz-access-token=…</code> for Signoz Cloud.</p>
+                            <InlineActions class="settings-actions otel-test-actions">
+                              <button type="button" class="secondary" onClick={testOtelConfig} disabled={testingOtel() || saving()}>
+                                {testingOtel() ? "Testing…" : "Test OTEL"}
                               </button>
-                              <Show when={traceTestMessage()}>
-                                {(message) => <span class="settings-success trace-test-message">{message()}</span>}
+                              <Show when={otelTestMessage()}>
+                                {(message) => <span class="settings-success otel-test-message">{message()}</span>}
                               </Show>
                             </InlineActions>
-                            <p class="settings-help">{trace().note || "Restart required for trace config changes to affect the running process."}</p>
+                            <p class="settings-note">{otel().note}</p>
                           </>}
                         </Show>
                       </Card>

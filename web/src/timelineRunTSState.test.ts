@@ -30,3 +30,134 @@ describe("timeline runTS state merging", () => {
     expect(state).toContain('refreshTimelineIncrementalSoon();');
   });
 });
+
+
+test("cancelled runTS/runJS rows stay visible and styled", () => {
+  const utils = readFileSync(new URL("./timeline/utils.ts", import.meta.url), "utf8");
+  expect(utils).toContain('item.kind !== "agent:RunTS"');
+  expect(utils).toContain('item.kind !== "agent:RunJS"');
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  expect(timeline).toContain('runts-status-cancelled');
+  const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+  expect(css).toContain('.step.run-ts.cancelled');
+  expect(css).toContain('.step.run-js.cancelled');
+  expect(css).toContain('darkorange');
+  expect(css).toContain('background: color-mix(in srgb, var(--fg) 3%, transparent);');
+  expect(css).not.toContain('background: var(--bubble-runts);');
+});
+
+
+test("compaction drafts clear on compaction-end", () => {
+  expect(state).toContain('if (ev.kind === "compaction-end")');
+  expect(state).toContain('cur?.kind === "compaction" && cur.chatId === ev.chatId');
+  expect(state).toContain('setDraftReply(null);');
+});
+
+test("background runTS labels render as bounded markdown", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  expect(timeline).toContain('<RunTSMarkdown');
+  expect(timeline).toContain('class="background-runts-label"');
+  expect(timeline).toContain("<HighlightedPre");
+  expect(timeline).toContain("class={props.klass}");
+  expect(timeline).toContain("language={language()}");
+  const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+  expect(css).toContain('.background-runts-label > *');
+  expect(css).toContain('flex: 1 1 auto;');
+  expect(css).toContain('flex: 0 0 auto;');
+  expect(css).toContain('color: var(--fg);');
+  expect(css).toContain('border: 1px solid var(--line);');
+  expect(css).toContain(':root:not([data-theme="light"]) .runts-body .runts-code');
+});
+
+test("background runTS jobs stay compact below the timeline", () => {
+  const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+  const backgroundToolsBlock = css.slice(
+    css.indexOf(".background-runts-panel {"),
+    css.indexOf(".background-runts-title {"),
+  );
+  expect(backgroundToolsBlock).toContain('border: 0;');
+  expect(backgroundToolsBlock).toContain('background: transparent;');
+  expect(backgroundToolsBlock).toContain('color: var(--muted);');
+  expect(backgroundToolsBlock).toContain('padding: 0.18em 0.42em 0.12em;');
+  expect(css).toContain('flex-wrap: wrap;');
+  expect(backgroundToolsBlock).toContain('font-size: 0.65rem;');
+  expect(backgroundToolsBlock).toContain('line-height: 1.1;');
+  expect(backgroundToolsBlock).toContain('letter-spacing: 0.03em;');
+  expect(backgroundToolsBlock).toContain('text-transform: uppercase;');
+  expect(css).toContain('.background-runts-panel:hover {');
+  expect(css).toContain('background: var(--button-hover-bg);');
+  expect(css).toContain('.background-runts-cancel {');
+  expect(css).toContain('inline-size: 1rem;');
+  expect(css).toContain('block-size: 1rem;');
+  expect(css).toContain('color: inherit;');
+});
+
+test("backgrounded runTS rows do not offer background again", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  const controls = timeline.slice(
+    timeline.indexOf("const backgrounded = ()"),
+    timeline.indexOf("<button\n                type=\"button\"\n                class=\"runts-control runts-cancel\"")
+  );
+
+  expect(controls).toContain("props.bag.isRunTSBackgrounded?.(props.item.step) === true");
+  expect(controls).toContain("<Show when={!backgrounded()}");
+  expect(controls).toContain('aria-label="run in background"');
+});
+
+test("background runTS queue state unblocks follow-up draining", () => {
+  expect(state).toContain("const [backgroundRequestedRunTS, setBackgroundRequestedRunTS]");
+  expect(state).toContain("function isRunTSBackgrounded(");
+  expect(state).toContain("if (targetStep && isRunTSBackgrounded(targetStep, id)) return;");
+  expect(state).toContain("requestRunTSBackground(id, targetStep);");
+  expect(state).toContain("unblockRunTSQueue(ev.chatId);");
+  expect(state).toContain("clearRunTSQueueUnblock(ev.chatId);");
+  expect(state).toContain("clearRunTSBackgroundRequest(ev.chatId, ev.stepId);");
+  expect(state).toContain("drainSoon();");
+});
+
+test("background runTS start clears foreground thinking state", () => {
+  const handler = state.slice(
+    state.indexOf('if (ev.kind === "runts-background-start")'),
+    state.indexOf('if (ev.kind === "runts-background-end")'),
+  );
+
+  expect(handler).toContain("clearActiveChatRuntime(ev.chatId);");
+  expect(handler).toContain("unblockRunTSQueue(ev.chatId);");
+  expect(handler).toContain('status: "agent:Done"');
+});
+
+
+test("runTS block previews render highlighted HTML imperatively", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  expect(timeline).toContain("<HighlightedPre");
+  expect(timeline).toContain("class={props.klass}");
+  expect(timeline).toContain("content={props.content}");
+  expect(timeline).toContain("language={language()}");
+  expect(timeline).toContain('content={block().content}');
+  expect(timeline).toContain('language={block().language}');
+  expect(timeline).toContain('if (el) el.innerHTML = html();');
+  expect(timeline).not.toContain('<pre class={props.klass}>{props.content}</pre>');
+  expect(timeline).not.toContain('textContent={props.content}');
+});
+
+
+test("runTS preview height uses computed CSS variable", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+  expect(timeline).toContain('"--runts-preview-max-height": `${previewLineLimit() * 1.3}em`');
+  expect(css).toContain('--runts-preview-max-height: 13em;');
+  expect(css).toContain('max-block-size: var(--runts-preview-max-height);');
+  expect(css).not.toContain('calc(var(--runts-preview-lines) * 1.3em)');
+});
+test("timeline rows do not shrink when the scrollback overflows", () => {
+  const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+  const runtsBlock = css.slice(
+    css.indexOf(".step.run-ts,"),
+    css.indexOf(".step.run-ts.cancelled"),
+  );
+  expect(css).toContain(".timeline > * {");
+  expect(css).toContain("flex-shrink: 0;");
+  expect(runtsBlock).toContain("overflow: visible;");
+  expect(runtsBlock).not.toContain("overflow: hidden;");
+});
+

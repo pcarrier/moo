@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusty_v8 as v8;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub const DEFAULT_MAX_WORKERS: usize = 16;
 pub const DEFAULT_MAX_OLD_GENERATION_BYTES: usize = 128 * 1024 * 1024;
 pub const DEFAULT_MAX_YOUNG_GENERATION_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_RECYCLE_USED_HEAP_BYTES: usize = 96 * 1024 * 1024;
+pub const DEFAULT_AUTOSCALE_WINDOW_SECS: u64 = 30;
 const MIN_HEAP_LIMIT_BYTES: usize = 1024 * 1024;
 const V8_EVENTS_MAX: usize = 1000;
 const V8_LANES: &[&str] = &[
@@ -54,6 +55,7 @@ pub struct V8PoolRuntimeSettings {
     pub max_old_generation_bytes: Option<usize>,
     pub max_young_generation_bytes: Option<usize>,
     pub recycle_used_heap_bytes: Option<usize>,
+    pub autoscale_window_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -68,6 +70,7 @@ pub struct V8RuntimeSettings {
     pub max_old_generation_bytes: Option<usize>,
     pub max_young_generation_bytes: Option<usize>,
     pub recycle_used_heap_bytes: Option<usize>,
+    pub autoscale_window_secs: Option<u64>,
     pub startup_snapshots_enabled: Option<bool>,
     pub main_pool: Option<V8PoolRuntimeSettings>,
     pub read_pool: Option<V8PoolRuntimeSettings>,
@@ -81,12 +84,14 @@ fn pool_settings(
     max_old_generation_bytes: usize,
     max_young_generation_bytes: usize,
     recycle_used_heap_bytes: usize,
+    autoscale_window_secs: u64,
 ) -> V8PoolRuntimeSettings {
     V8PoolRuntimeSettings {
         max_workers: Some(max_workers),
         max_old_generation_bytes: Some(max_old_generation_bytes),
         max_young_generation_bytes: Some(max_young_generation_bytes),
         recycle_used_heap_bytes: Some(recycle_used_heap_bytes),
+        autoscale_window_secs: Some(autoscale_window_secs.max(1)),
     }
 }
 
@@ -100,36 +105,42 @@ pub fn default_v8_runtime_settings() -> V8RuntimeSettings {
         max_old_generation_bytes: Some(DEFAULT_MAX_OLD_GENERATION_BYTES),
         max_young_generation_bytes: Some(DEFAULT_MAX_YOUNG_GENERATION_BYTES),
         recycle_used_heap_bytes: Some(DEFAULT_RECYCLE_USED_HEAP_BYTES),
+        autoscale_window_secs: Some(DEFAULT_AUTOSCALE_WINDOW_SECS),
         startup_snapshots_enabled: Some(true),
         main_pool: Some(pool_settings(
             DEFAULT_MAX_WORKERS,
             DEFAULT_MAX_OLD_GENERATION_BYTES,
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
+            DEFAULT_AUTOSCALE_WINDOW_SECS,
         )),
         read_pool: Some(pool_settings(
             default_read_max_workers(DEFAULT_MAX_WORKERS),
             DEFAULT_MAX_OLD_GENERATION_BYTES,
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
+            DEFAULT_AUTOSCALE_WINDOW_SECS,
         )),
         scan_pool: Some(pool_settings(
             1,
             DEFAULT_MAX_OLD_GENERATION_BYTES,
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
+            DEFAULT_AUTOSCALE_WINDOW_SECS,
         )),
         ui_pool: Some(pool_settings(
             default_ui_max_workers(DEFAULT_MAX_WORKERS),
             DEFAULT_MAX_OLD_GENERATION_BYTES,
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
+            DEFAULT_AUTOSCALE_WINDOW_SECS,
         )),
         tool_pool: Some(pool_settings(
             default_tool_max_workers(DEFAULT_MAX_WORKERS),
             DEFAULT_MAX_OLD_GENERATION_BYTES,
             DEFAULT_MAX_YOUNG_GENERATION_BYTES,
             DEFAULT_RECYCLE_USED_HEAP_BYTES,
+            DEFAULT_AUTOSCALE_WINDOW_SECS,
         )),
     }
 }
@@ -144,6 +155,7 @@ pub fn effective_v8_runtime_settings() -> V8RuntimeSettings {
         max_old_generation_bytes: Some(max_old_generation_bytes_for_lane("moo-worker")),
         max_young_generation_bytes: Some(max_young_generation_bytes_for_lane("moo-worker")),
         recycle_used_heap_bytes: Some(recycle_used_heap_bytes_for_lane("moo-worker")),
+        autoscale_window_secs: Some(autoscale_window_secs_for_lane("moo-worker")),
         startup_snapshots_enabled: Some(startup_snapshots_enabled()),
         main_pool: Some(effective_pool_settings("moo-worker")),
         read_pool: Some(effective_pool_settings("moo-read-worker")),
@@ -168,6 +180,9 @@ fn normalize_pool_runtime_settings(settings: &mut Option<V8PoolRuntimeSettings>)
     }
     if let Some(value) = settings.recycle_used_heap_bytes.as_mut() {
         *value = (*value).max(MIN_HEAP_LIMIT_BYTES);
+    }
+    if let Some(value) = settings.autoscale_window_secs.as_mut() {
+        *value = (*value).max(1);
     }
 }
 
@@ -195,6 +210,9 @@ pub fn normalize_v8_runtime_settings(mut settings: V8RuntimeSettings) -> V8Runti
     }
     if let Some(value) = settings.recycle_used_heap_bytes.as_mut() {
         *value = (*value).max(MIN_HEAP_LIMIT_BYTES);
+    }
+    if let Some(value) = settings.autoscale_window_secs.as_mut() {
+        *value = (*value).max(1);
     }
     normalize_pool_runtime_settings(&mut settings.main_pool);
     normalize_pool_runtime_settings(&mut settings.read_pool);
@@ -225,6 +243,7 @@ pub struct V8ConfigSnapshot {
     pub cache_entries: usize,
     pub startup_snapshots_enabled: bool,
     pub max_workers: usize,
+    pub autoscale_window_secs: u64,
     pub pools: Vec<V8PoolConfigSnapshot>,
 }
 
@@ -236,6 +255,7 @@ pub struct V8PoolConfigSnapshot {
     pub recycle_used_heap_bytes: usize,
     pub max_old_generation_bytes: usize,
     pub max_young_generation_bytes: usize,
+    pub autoscale_window_secs: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -264,6 +284,11 @@ pub struct V8TotalsSnapshot {
 pub struct V8PoolQueueSnapshot {
     pub lane: String,
     pub queued: usize,
+    pub active_workers: usize,
+    pub max_workers: usize,
+    pub busy_workers: usize,
+    pub recent_max_utilization: usize,
+    pub autoscale_window_secs: u64,
     pub total_enqueued: u64,
     pub max_queued: usize,
     pub last_queue_wait_ms: u64,
@@ -271,6 +296,15 @@ pub struct V8PoolQueueSnapshot {
     pub total_queue_wait_ms: u64,
     pub observed_queue_waits: u64,
     pub average_queue_wait_ms: u64,
+    pub total_jobs: u64,
+    pub total_errors: u64,
+    pub total_terminations: u64,
+    pub total_recycles: u64,
+    pub total_near_heap_limit: u64,
+    pub total_cache_hits: u64,
+    pub total_cache_misses: u64,
+    pub total_snapshot_hits: u64,
+    pub total_snapshot_misses: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -434,6 +468,23 @@ impl V8Observability {
             });
     }
 
+    fn pool_runtime_update(&self, lane: &str, update: PoolRuntimeUpdate) {
+        let mut queues = self.queues.lock().expect("queues lock");
+        let queue = queues
+            .entry(lane.to_string())
+            .or_insert_with(|| V8PoolQueueSnapshot {
+                lane: lane.to_string(),
+                ..Default::default()
+            });
+        queue.active_workers = update.active_workers;
+        queue.max_workers = update.max_workers;
+        queue.busy_workers = update.busy_workers;
+        queue.recent_max_utilization = update.recent_max_utilization;
+        queue.autoscale_window_secs = update.autoscale_window_secs;
+        queue.queued = update.queued;
+        queue.max_queued = queue.max_queued.max(update.queued);
+    }
+
     fn job_queued(&self, lane: &str) {
         let mut queues = self.queues.lock().expect("queues lock");
         let queue = queues
@@ -445,17 +496,6 @@ impl V8Observability {
         queue.queued = queue.queued.saturating_add(1);
         queue.total_enqueued = queue.total_enqueued.saturating_add(1);
         queue.max_queued = queue.max_queued.max(queue.queued);
-    }
-
-    fn job_dequeued(&self, lane: &str) {
-        let mut queues = self.queues.lock().expect("queues lock");
-        let queue = queues
-            .entry(lane.to_string())
-            .or_insert_with(|| V8PoolQueueSnapshot {
-                lane: lane.to_string(),
-                ..Default::default()
-            });
-        queue.queued = queue.queued.saturating_sub(1);
     }
 
     fn observe_queue_wait(&self, lane: &str, queue_wait_ms: u64) {
@@ -643,12 +683,14 @@ impl V8Observability {
     fn worker_exit(&self, lane: &str, id: usize, generation: u64) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
-            state.snapshot.status = "stopped".to_string();
-            state.snapshot.current_command = None;
-            state.snapshot.current_job_started_at = None;
-            state.snapshot.current_job_elapsed_ns = None;
-            state.current_started_instant = None;
+        let snapshot = self
+            .workers
+            .lock()
+            .expect("workers lock")
+            .remove(&key)
+            .map(|state| state.snapshot);
+        if let Some(snapshot) = snapshot.as_ref() {
+            self.aggregate_worker_totals(snapshot);
         }
         self.push_event(V8Event {
             at: now,
@@ -661,6 +703,35 @@ impl V8Observability {
             command: None,
             detail: None,
         });
+    }
+
+    fn aggregate_worker_totals(&self, snapshot: &V8WorkerSnapshot) {
+        let mut queues = self.queues.lock().expect("queues lock");
+        let queue = queues
+            .entry(snapshot.lane.clone())
+            .or_insert_with(|| V8PoolQueueSnapshot {
+                lane: snapshot.lane.clone(),
+                ..Default::default()
+            });
+        queue.total_jobs = queue.total_jobs.saturating_add(snapshot.jobs);
+        queue.total_errors = queue.total_errors.saturating_add(snapshot.errors);
+        queue.total_terminations = queue
+            .total_terminations
+            .saturating_add(snapshot.terminations);
+        queue.total_recycles = queue.total_recycles.saturating_add(snapshot.recycles);
+        queue.total_near_heap_limit = queue
+            .total_near_heap_limit
+            .saturating_add(snapshot.near_heap_limit);
+        queue.total_cache_hits = queue.total_cache_hits.saturating_add(snapshot.cache_hits);
+        queue.total_cache_misses = queue
+            .total_cache_misses
+            .saturating_add(snapshot.cache_misses);
+        queue.total_snapshot_hits = queue
+            .total_snapshot_hits
+            .saturating_add(snapshot.snapshot_hits);
+        queue.total_snapshot_misses = queue
+            .total_snapshot_misses
+            .saturating_add(snapshot.snapshot_misses);
     }
 
     fn snapshot(&self) -> V8StatsSnapshot {
@@ -679,49 +750,90 @@ impl V8Observability {
             })
             .collect();
         workers.sort_by(|a, b| a.lane.cmp(&b.lane).then(a.worker_id.cmp(&b.worker_id)));
-        let mut pools: Vec<V8PoolQueueSnapshot> =
-            self.queues.lock().expect("queues lock").values().cloned().collect();
-        pools.sort_by(|a, b| a.lane.cmp(&b.lane));
-        let mut totals = V8TotalsSnapshot {
-            workers: workers.len(),
-            ..Default::default()
-        };
+        let mut pool_map: HashMap<String, V8PoolQueueSnapshot> = self
+            .queues
+            .lock()
+            .expect("queues lock")
+            .values()
+            .map(|pool| (pool.lane.clone(), pool.clone()))
+            .collect();
+        for lane in V8_LANES {
+            pool_map
+                .entry((*lane).to_string())
+                .or_insert_with(|| V8PoolQueueSnapshot {
+                    lane: (*lane).to_string(),
+                    ..Default::default()
+                });
+        }
         for worker in &workers {
-            if worker.status == "busy" {
-                totals.busy += 1;
-            }
-            totals.total_jobs = totals.total_jobs.saturating_add(worker.jobs);
-            totals.total_errors = totals.total_errors.saturating_add(worker.errors);
-            totals.total_terminations = totals
-                .total_terminations
-                .saturating_add(worker.terminations);
-            totals.total_recycles = totals.total_recycles.saturating_add(worker.recycles);
-            totals.total_near_heap_limit = totals
+            let pool = pool_map
+                .entry(worker.lane.clone())
+                .or_insert_with(|| V8PoolQueueSnapshot {
+                    lane: worker.lane.clone(),
+                    ..Default::default()
+                });
+            pool.total_jobs = pool.total_jobs.saturating_add(worker.jobs);
+            pool.total_errors = pool.total_errors.saturating_add(worker.errors);
+            pool.total_terminations = pool.total_terminations.saturating_add(worker.terminations);
+            pool.total_recycles = pool.total_recycles.saturating_add(worker.recycles);
+            pool.total_near_heap_limit = pool
                 .total_near_heap_limit
                 .saturating_add(worker.near_heap_limit);
-            totals.total_cache_hits = totals.total_cache_hits.saturating_add(worker.cache_hits);
-            totals.total_cache_misses = totals
-                .total_cache_misses
-                .saturating_add(worker.cache_misses);
-            totals.total_snapshot_hits = totals
+            pool.total_cache_hits = pool.total_cache_hits.saturating_add(worker.cache_hits);
+            pool.total_cache_misses = pool.total_cache_misses.saturating_add(worker.cache_misses);
+            pool.total_snapshot_hits = pool
                 .total_snapshot_hits
                 .saturating_add(worker.snapshot_hits);
-            totals.total_snapshot_misses = totals
+            pool.total_snapshot_misses = pool
                 .total_snapshot_misses
                 .saturating_add(worker.snapshot_misses);
+        }
+        let mut pools: Vec<V8PoolQueueSnapshot> = pool_map.into_values().collect();
+        pools.sort_by(|a, b| a.lane.cmp(&b.lane));
+        let mut totals = V8TotalsSnapshot::default();
+        for pool in &pools {
+            totals.workers = totals.workers.saturating_add(pool.active_workers);
+            totals.busy = totals.busy.saturating_add(pool.busy_workers);
+            totals.queued = totals.queued.saturating_add(pool.queued);
+            totals.total_enqueued = totals.total_enqueued.saturating_add(pool.total_enqueued);
+            totals.max_queued = totals.max_queued.max(pool.max_queued);
+            totals.total_jobs = totals.total_jobs.saturating_add(pool.total_jobs);
+            totals.total_errors = totals.total_errors.saturating_add(pool.total_errors);
+            totals.total_terminations = totals
+                .total_terminations
+                .saturating_add(pool.total_terminations);
+            totals.total_recycles = totals.total_recycles.saturating_add(pool.total_recycles);
+            totals.total_near_heap_limit = totals
+                .total_near_heap_limit
+                .saturating_add(pool.total_near_heap_limit);
+            totals.total_cache_hits = totals
+                .total_cache_hits
+                .saturating_add(pool.total_cache_hits);
+            totals.total_cache_misses = totals
+                .total_cache_misses
+                .saturating_add(pool.total_cache_misses);
+            totals.total_snapshot_hits = totals
+                .total_snapshot_hits
+                .saturating_add(pool.total_snapshot_hits);
+            totals.total_snapshot_misses = totals
+                .total_snapshot_misses
+                .saturating_add(pool.total_snapshot_misses);
+        }
+        for worker in &workers {
             if let Some(heap) = &worker.heap {
                 totals.used_heap_size = totals.used_heap_size.saturating_add(heap.used_heap_size);
                 totals.total_heap_size =
                     totals.total_heap_size.saturating_add(heap.total_heap_size);
             }
         }
-        for pool in &pools {
-            totals.queued = totals.queued.saturating_add(pool.queued);
-            totals.total_enqueued = totals.total_enqueued.saturating_add(pool.total_enqueued);
-            totals.max_queued = totals.max_queued.max(pool.max_queued);
-        }
         let cache_entries = workers.iter().map(|w| w.cache_entries).sum();
-        let events = self.events.lock().expect("events lock").iter().cloned().collect();
+        let events = self
+            .events
+            .lock()
+            .expect("events lock")
+            .iter()
+            .cloned()
+            .collect();
         V8StatsSnapshot {
             generated_at,
             workers,
@@ -734,6 +846,7 @@ impl V8Observability {
                 cache_entries,
                 startup_snapshots_enabled: startup_snapshots_enabled(),
                 max_workers: configured_max_workers(),
+                autoscale_window_secs: autoscale_window_secs_for_lane("moo-worker"),
                 pools: v8_pool_config_snapshots(),
             },
             totals,
@@ -804,7 +917,9 @@ fn read_bool_env(name: &str, default: bool) -> bool {
 }
 
 pub fn apply_v8_env_text(text: &str) {
-    let mut overrides = V8_CONFIG_OVERRIDES.lock().expect("v8 config overrides lock");
+    let mut overrides = V8_CONFIG_OVERRIDES
+        .lock()
+        .expect("v8 config overrides lock");
     overrides.clear();
     for raw in text.lines() {
         let line = raw.trim();
@@ -826,7 +941,9 @@ pub fn apply_v8_env_text(text: &str) {
 
 pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     let settings = normalize_v8_runtime_settings(settings.clone());
-    let mut overrides = V8_CONFIG_OVERRIDES.lock().expect("v8 config overrides lock");
+    let mut overrides = V8_CONFIG_OVERRIDES
+        .lock()
+        .expect("v8 config overrides lock");
     overrides.clear();
     if let Some(value) = settings.max_workers {
         overrides.insert("MOO_V8_WORKERS".to_string(), value.to_string());
@@ -858,6 +975,12 @@ pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     if let Some(value) = settings.recycle_used_heap_bytes {
         overrides.insert(
             "MOO_V8_RECYCLE_USED_HEAP_BYTES".to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = settings.autoscale_window_secs {
+        overrides.insert(
+            "MOO_V8_AUTOSCALE_WINDOW_SECS".to_string(),
             value.to_string(),
         );
     }
@@ -902,6 +1025,9 @@ fn apply_v8_pool_runtime_settings(
             format!("{prefix}_RECYCLE_USED_HEAP_BYTES"),
             value.to_string(),
         );
+    }
+    if let Some(value) = settings.autoscale_window_secs {
+        overrides.insert(format!("{prefix}_AUTOSCALE_WINDOW_SECS"), value.to_string());
     }
 }
 
@@ -972,6 +1098,7 @@ fn v8_pool_config_snapshots() -> Vec<V8PoolConfigSnapshot> {
             recycle_used_heap_bytes: recycle_used_heap_bytes_for_lane(lane),
             max_old_generation_bytes: max_old_generation_bytes_for_lane(lane),
             max_young_generation_bytes: max_young_generation_bytes_for_lane(lane),
+            autoscale_window_secs: autoscale_window_secs_for_lane(lane),
         })
         .collect()
 }
@@ -1032,12 +1159,23 @@ fn recycle_used_heap_bytes_for_lane(lane: &str) -> usize {
     )
 }
 
+fn autoscale_window_secs_for_lane(lane: &str) -> u64 {
+    read_lane_usize_env(
+        lane,
+        "AUTOSCALE_WINDOW_SECS",
+        "MOO_V8_AUTOSCALE_WINDOW_SECS",
+        DEFAULT_AUTOSCALE_WINDOW_SECS as usize,
+    )
+    .max(1) as u64
+}
+
 fn effective_pool_settings(lane: &str) -> V8PoolRuntimeSettings {
     pool_settings(
         configured_workers_for_lane(lane),
         max_old_generation_bytes_for_lane(lane),
         max_young_generation_bytes_for_lane(lane),
         recycle_used_heap_bytes_for_lane(lane),
+        autoscale_window_secs_for_lane(lane),
     )
 }
 
@@ -1068,14 +1206,269 @@ pub struct AsyncToolJob {
     pub enqueued_at: Instant,
 }
 
+type JobPool = DynamicPool<Job>;
+type AsyncToolPool = DynamicPool<AsyncToolJob>;
+
+struct DynamicPool<T> {
+    lane: String,
+    db: String,
+    max_workers: usize,
+    autoscale_window: Duration,
+    tx: Sender<T>,
+    rx: Arc<Mutex<mpsc::Receiver<T>>>,
+    state: Mutex<DynamicPoolState>,
+}
+
+#[derive(Debug)]
+struct DynamicPoolState {
+    active_workers: usize,
+    busy_workers: usize,
+    queued: usize,
+    next_worker_id: usize,
+    utilization: VecDeque<UtilizationSample>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UtilizationSample {
+    at: Instant,
+    busy: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PoolRuntimeUpdate {
+    queued: usize,
+    active_workers: usize,
+    max_workers: usize,
+    busy_workers: usize,
+    recent_max_utilization: usize,
+    autoscale_window_secs: u64,
+}
+
+enum DynamicRecv<T> {
+    Job(T),
+    Stop { already_exited: bool },
+}
+
+impl<T> DynamicPool<T> {
+    fn new(lane: &str, max_workers: usize, db: &str) -> Arc<Self> {
+        let (tx, rx) = mpsc::channel::<T>();
+        let max_workers = max_workers.max(1);
+        let pool = Arc::new(Self {
+            lane: lane.to_string(),
+            db: db.to_string(),
+            max_workers,
+            autoscale_window: Duration::from_secs(autoscale_window_secs_for_lane(lane)),
+            tx,
+            rx: Arc::new(Mutex::new(rx)),
+            state: Mutex::new(DynamicPoolState {
+                active_workers: 0,
+                busy_workers: 0,
+                queued: 0,
+                next_worker_id: 0,
+                utilization: VecDeque::new(),
+            }),
+        });
+        V8_OBSERVABILITY.register_pool(lane);
+        pool.publish_runtime_update(pool.runtime_update());
+        pool
+    }
+
+    fn lane(&self) -> &str {
+        &self.lane
+    }
+
+    fn sender(&self) -> &Sender<T> {
+        &self.tx
+    }
+
+    fn allocate_worker_id(&self) -> usize {
+        let update;
+        let id;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            id = self.allocate_worker_id_locked(&mut state);
+            update = self.runtime_update_locked(&mut state, Instant::now());
+        }
+        self.publish_runtime_update(update);
+        id
+    }
+
+    fn job_queued_and_allocate_worker_if_needed(&self) -> Option<usize> {
+        let mut id = None;
+        V8_OBSERVABILITY.job_queued(&self.lane);
+        let update;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            state.queued = state.queued.saturating_add(1);
+            if state.busy_workers.saturating_add(state.queued) > state.active_workers
+                && state.active_workers < self.max_workers
+            {
+                id = Some(self.allocate_worker_id_locked(&mut state));
+            }
+            update = self.runtime_update_locked(&mut state, Instant::now());
+        }
+        self.publish_runtime_update(update);
+        id
+    }
+
+    fn job_dequeued_on_send_error(&self) {
+        let update;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            state.queued = state.queued.saturating_sub(1);
+            update = self.runtime_update_locked(&mut state, Instant::now());
+        }
+        self.publish_runtime_update(update);
+    }
+
+    fn recv(&self) -> DynamicRecv<T> {
+        loop {
+            let result = self
+                .rx
+                .lock()
+                .expect("rx lock")
+                .recv_timeout(self.autoscale_window);
+            match result {
+                Ok(job) => {
+                    let update;
+                    {
+                        let mut state = self.state.lock().expect("dynamic pool state");
+                        let now = Instant::now();
+                        state.queued = state.queued.saturating_sub(1);
+                        state.busy_workers = state.busy_workers.saturating_add(1);
+                        self.record_utilization_locked(&mut state, now);
+                        update = self.runtime_update_locked(&mut state, now);
+                    }
+                    self.publish_runtime_update(update);
+                    return DynamicRecv::Job(job);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.retire_idle_worker_if_underutilized() {
+                        return DynamicRecv::Stop {
+                            already_exited: true,
+                        };
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return DynamicRecv::Stop {
+                        already_exited: false,
+                    };
+                }
+            }
+        }
+    }
+
+    fn job_finished(&self) {
+        let update;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            state.busy_workers = state.busy_workers.saturating_sub(1);
+            self.record_utilization_locked(&mut state, Instant::now());
+            update = self.runtime_update_locked(&mut state, Instant::now());
+        }
+        self.publish_runtime_update(update);
+    }
+
+    fn worker_start_failed(&self) {
+        self.worker_exited();
+    }
+
+    fn worker_exited(&self) {
+        let update;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            state.active_workers = state.active_workers.saturating_sub(1);
+            update = self.runtime_update_locked(&mut state, Instant::now());
+        }
+        self.publish_runtime_update(update);
+    }
+
+    fn retire_idle_worker_if_underutilized(&self) -> bool {
+        let mut retired = false;
+        let update;
+        {
+            let mut state = self.state.lock().expect("dynamic pool state");
+            let now = Instant::now();
+            let recent_max = self.recent_max_utilization_locked(&mut state, now);
+            if state.queued == 0 && state.active_workers > 1 && recent_max < state.active_workers {
+                state.active_workers = state.active_workers.saturating_sub(1);
+                retired = true;
+            }
+            update = self.runtime_update_locked(&mut state, now);
+        }
+        self.publish_runtime_update(update);
+        retired
+    }
+
+    fn allocate_worker_id_locked(&self, state: &mut DynamicPoolState) -> usize {
+        let id = state.next_worker_id;
+        state.next_worker_id = state.next_worker_id.saturating_add(1);
+        state.active_workers = state.active_workers.saturating_add(1).min(self.max_workers);
+        id
+    }
+
+    fn record_utilization_locked(&self, state: &mut DynamicPoolState, now: Instant) {
+        state.utilization.push_back(UtilizationSample {
+            at: now,
+            busy: state.busy_workers,
+        });
+        self.prune_utilization_locked(state, now);
+    }
+
+    fn recent_max_utilization_locked(&self, state: &mut DynamicPoolState, now: Instant) -> usize {
+        self.prune_utilization_locked(state, now);
+        state
+            .utilization
+            .iter()
+            .map(|sample| sample.busy)
+            .max()
+            .unwrap_or(0)
+            .max(state.busy_workers)
+    }
+
+    fn prune_utilization_locked(&self, state: &mut DynamicPoolState, now: Instant) {
+        while state
+            .utilization
+            .front()
+            .is_some_and(|sample| now.duration_since(sample.at) > self.autoscale_window)
+        {
+            state.utilization.pop_front();
+        }
+    }
+
+    fn runtime_update(&self) -> PoolRuntimeUpdate {
+        let mut state = self.state.lock().expect("dynamic pool state");
+        self.runtime_update_locked(&mut state, Instant::now())
+    }
+
+    fn runtime_update_locked(
+        &self,
+        state: &mut DynamicPoolState,
+        now: Instant,
+    ) -> PoolRuntimeUpdate {
+        PoolRuntimeUpdate {
+            queued: state.queued,
+            active_workers: state.active_workers,
+            max_workers: self.max_workers,
+            busy_workers: state.busy_workers,
+            recent_max_utilization: self.recent_max_utilization_locked(state, now),
+            autoscale_window_secs: self.autoscale_window.as_secs().max(1),
+        }
+    }
+
+    fn publish_runtime_update(&self, update: PoolRuntimeUpdate) {
+        V8_OBSERVABILITY.pool_runtime_update(&self.lane, update);
+    }
+}
+
 pub struct Pool {
-    tx: Sender<Job>,
-    read_tx: Sender<Job>,
-    scan_tx: Sender<Job>,
-    ui_tx: Sender<Job>,
-    async_tool_tx: Sender<AsyncToolJob>,
+    main_pool: Arc<JobPool>,
+    read_pool: Arc<JobPool>,
+    scan_pool: Arc<JobPool>,
+    ui_pool: Arc<JobPool>,
+    async_tool_pool: Arc<AsyncToolPool>,
     // Outer std::sync::Mutex protects the map and is only held while the
-    // inner Arc is cloned (microseconds). The inner per-chat lock is
+    // inner Arc is cloned quickly. The inner per-chat lock is
     // tokio::sync::Mutex so the chat driver can `lock().await` without
     // parking a runtime thread; sync `submit` callers (HTTP server thread)
     // use `blocking_lock` since they aren't inside a tokio runtime.
@@ -1086,39 +1479,38 @@ pub struct Pool {
 
 impl Pool {
     pub fn new(workers: usize, db: &str, server_base_url: Option<String>) -> Self {
-        let workers = workers.max(1);
-        let (tx, rx) = mpsc::channel::<Job>();
-        spawn_workers("moo-worker", workers, rx, db);
+        let main_pool = JobPool::new("moo-worker", workers.max(1), db);
+        spawn_worker(main_pool.clone(), main_pool.allocate_worker_id());
 
         // UI/API reads must stay responsive even while agent/tool work fills
         // the main isolate pool. Keep fast reads on their own lane, and keep
         // whole-store scans (triples/vocabulary) off that lane so they cannot
         // starve chat-models/ui-chat/describe refreshes.
-        let read_workers = configured_read_max_workers();
-        let (read_tx, read_rx) = mpsc::channel::<Job>();
-        spawn_workers("moo-read-worker", read_workers, read_rx, db);
+        let read_pool = JobPool::new("moo-read-worker", configured_read_max_workers(), db);
+        spawn_worker(read_pool.clone(), read_pool.allocate_worker_id());
 
-        let scan_workers = configured_scan_max_workers();
-        let (scan_tx, scan_rx) = mpsc::channel::<Job>();
-        spawn_workers("moo-scan-worker", scan_workers, scan_rx, db);
+        let scan_pool = JobPool::new("moo-scan-worker", configured_scan_max_workers(), db);
+        spawn_worker(scan_pool.clone(), scan_pool.allocate_worker_id());
 
         // UI app handler calls can include slow external MCP requests. Keep
         // them off the main write lane so agent streaming/turn work cannot
         // starve app RPCs, and app RPCs cannot starve agent bookkeeping.
-        let ui_workers = configured_ui_max_workers();
-        let (ui_tx, ui_rx) = mpsc::channel::<Job>();
-        spawn_workers("moo-ui-worker", ui_workers, ui_rx, db);
+        let ui_pool = JobPool::new("moo-ui-worker", configured_ui_max_workers(), db);
+        spawn_worker(ui_pool.clone(), ui_pool.allocate_worker_id());
 
-        let async_tool_workers = configured_tool_max_workers();
-        let (async_tool_tx, async_tool_rx) = mpsc::channel::<AsyncToolJob>();
-        spawn_async_tool_workers("moo-tool-worker", async_tool_workers, async_tool_rx, db);
+        let async_tool_pool =
+            AsyncToolPool::new("moo-tool-worker", configured_tool_max_workers(), db);
+        spawn_async_tool_worker(
+            async_tool_pool.clone(),
+            async_tool_pool.allocate_worker_id(),
+        );
 
         Pool {
-            tx,
-            read_tx,
-            scan_tx,
-            ui_tx,
-            async_tool_tx,
+            main_pool,
+            read_pool,
+            scan_pool,
+            ui_pool,
+            async_tool_pool,
             chat_locks: Arc::new(Mutex::new(HashMap::new())),
             server_base_url,
             db: db.to_string(),
@@ -1145,13 +1537,13 @@ impl Pool {
         let (lane, lock_key) = route_input(&input);
         match lane {
             Lane::FastRead => {
-                return self.dispatch_on("moo-read-worker", &self.read_tx, bundle, input);
+                return self.dispatch_on(&self.read_pool, bundle, input);
             }
             Lane::ScanRead => {
-                return self.dispatch_on("moo-scan-worker", &self.scan_tx, bundle, input);
+                return self.dispatch_on(&self.scan_pool, bundle, input);
             }
             Lane::Ui => {
-                return self.dispatch_on("moo-ui-worker", &self.ui_tx, bundle, input);
+                return self.dispatch_on(&self.ui_pool, bundle, input);
             }
             Lane::Write => {}
         }
@@ -1181,9 +1573,12 @@ impl Pool {
     ) -> Result<String, String> {
         let input = self.input_with_server_base_url(input);
         let (resp_tx, resp_rx) = mpsc::channel();
-        V8_OBSERVABILITY.job_queued("moo-tool-worker");
-        if self
-            .async_tool_tx
+        let pool = &self.async_tool_pool;
+        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed() {
+            spawn_async_tool_worker(pool.clone(), id);
+        }
+        if pool
+            .sender()
             .send(AsyncToolJob {
                 bundle,
                 input,
@@ -1195,7 +1590,7 @@ impl Pool {
             })
             .is_err()
         {
-            V8_OBSERVABILITY.job_dequeued("moo-tool-worker");
+            pool.job_dequeued_on_send_error();
             return Err("async tool isolate pool closed".to_string());
         }
         recv_job_result(resp_rx, "async tool isolate worker dropped")
@@ -1223,19 +1618,21 @@ impl Pool {
     }
 
     fn dispatch(&self, bundle: Arc<String>, input: String) -> Result<String, String> {
-        self.dispatch_on("moo-worker", &self.tx, bundle, input)
+        self.dispatch_on(&self.main_pool, bundle, input)
     }
 
     fn dispatch_on(
         &self,
-        lane: &str,
-        tx: &Sender<Job>,
+        pool: &Arc<JobPool>,
         bundle: Arc<String>,
         input: String,
     ) -> Result<String, String> {
         let (resp_tx, resp_rx) = mpsc::channel();
-        V8_OBSERVABILITY.job_queued(lane);
-        if tx
+        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed() {
+            spawn_worker(pool.clone(), id);
+        }
+        if pool
+            .sender()
             .send(Job {
                 bundle,
                 input,
@@ -1244,7 +1641,7 @@ impl Pool {
             })
             .is_err()
         {
-            V8_OBSERVABILITY.job_dequeued(lane);
+            pool.job_dequeued_on_send_error();
             return Err("isolate pool closed".to_string());
         }
         recv_job_result(resp_rx, "isolate worker dropped")
@@ -1259,27 +1656,19 @@ fn recv_job_result(
         .unwrap_or_else(|_| Err(dropped_message.to_string()))
 }
 
-fn recv_locked<T>(rx: &Arc<Mutex<mpsc::Receiver<T>>>) -> Option<T> {
-    rx.lock().expect("rx lock").recv().ok()
+fn spawn_worker(pool: Arc<JobPool>, id: usize) {
+    let thread_name = format!("{}-{id}", pool.lane());
+    thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || worker_loop(pool, id))
+        .expect("failed to spawn thread");
 }
 
-fn spawn_workers(name: &str, count: usize, rx: mpsc::Receiver<Job>, db: &str) {
-    let rx = Arc::new(Mutex::new(rx));
-    for i in 0..count.max(1) {
-        let rx = rx.clone();
-        let db = db.to_string();
-        let thread_name = format!("{name}-{i}");
-        let lane = name.to_string();
-        thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || worker_loop(rx, db, lane, i))
-            .expect("failed to spawn thread");
-    }
-}
-
-fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<Job>>>, db: String, lane: String, id: usize) {
-    if let Err(e) = host::install(&db) {
+fn worker_loop(pool: Arc<JobPool>, id: usize) {
+    let lane = pool.lane().to_string();
+    if let Err(e) = host::install(&pool.db) {
         eprintln!("[worker {id}] host init: {e}");
+        pool.worker_start_failed();
         return;
     }
     runtime::init_v8();
@@ -1287,10 +1676,15 @@ fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<Job>>>, db: String, lane: String, id
     let mut rt = WorkerRuntime::new(&lane, id, None);
 
     loop {
-        let Some(job) = recv_locked(&rx) else {
-            break; // channel closed
+        let job = match pool.recv() {
+            DynamicRecv::Job(job) => job,
+            DynamicRecv::Stop { already_exited } => {
+                if !already_exited {
+                    pool.worker_exited();
+                }
+                break;
+            }
         };
-        V8_OBSERVABILITY.job_dequeued(&lane);
         let command = command_from_input(&job.input);
         V8_OBSERVABILITY.job_start(&lane, id, rt.generation, &command);
         let started = Instant::now();
@@ -1351,6 +1745,7 @@ fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<Job>>>, db: String, lane: String, id
                 error: error.clone(),
             },
         );
+        pool.job_finished();
         let _ = job.response.send(result);
         if let Some(reason) = recycle_reason {
             rt.recycle(&reason);
@@ -1690,28 +2085,19 @@ fn run_snapshot_bundle_job(rt: &mut WorkerRuntime, input: &str, snapshot_hit: bo
     }
 }
 
-fn spawn_async_tool_workers(name: &str, count: usize, rx: mpsc::Receiver<AsyncToolJob>, db: &str) {
-    let rx = Arc::new(Mutex::new(rx));
-    for i in 0..count.max(1) {
-        let rx = rx.clone();
-        let db = db.to_string();
-        let thread_name = format!("{name}-{i}");
-        let lane = name.to_string();
-        thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || async_tool_worker_loop(rx, db, lane, i))
-            .expect("failed to spawn thread");
-    }
+fn spawn_async_tool_worker(pool: Arc<AsyncToolPool>, id: usize) {
+    let thread_name = format!("{}-{id}", pool.lane());
+    thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || async_tool_worker_loop(pool, id))
+        .expect("failed to spawn thread");
 }
 
-fn async_tool_worker_loop(
-    rx: Arc<Mutex<mpsc::Receiver<AsyncToolJob>>>,
-    db: String,
-    lane: String,
-    id: usize,
-) {
-    if let Err(e) = host::install(&db) {
+fn async_tool_worker_loop(pool: Arc<AsyncToolPool>, id: usize) {
+    let lane = pool.lane().to_string();
+    if let Err(e) = host::install(&pool.db) {
         eprintln!("[async tool worker {id}] host init: {e}");
+        pool.worker_start_failed();
         return;
     }
     runtime::init_v8();
@@ -1719,10 +2105,15 @@ fn async_tool_worker_loop(
     let mut rt = WorkerRuntime::new(&lane, id, None);
 
     loop {
-        let Some(job) = recv_locked(&rx) else {
-            break;
+        let job = match pool.recv() {
+            DynamicRecv::Job(job) => job,
+            DynamicRecv::Stop { already_exited } => {
+                if !already_exited {
+                    pool.worker_exited();
+                }
+                break;
+            }
         };
-        V8_OBSERVABILITY.job_dequeued(&lane);
         let command = command_from_input(&job.input).to_string();
         V8_OBSERVABILITY.job_start(&lane, id, rt.generation, &command);
         let started = Instant::now();
@@ -1789,6 +2180,7 @@ fn async_tool_worker_loop(
                 error: error.clone(),
             },
         );
+        pool.job_finished();
         let _ = job.response.send(result);
         if let Some(reason) = recycle_reason {
             rt.recycle(&reason);
@@ -1919,11 +2311,12 @@ const SCAN_READ_ONLY_COMMANDS: &[&str] = &[
 
 const FRESH_CONTEXT_COMMANDS: &[&str] = &["run-ts-tool", "ui-call"];
 
-// UI app handlers can be invoked from the browser while an agent turn for the
-// same chat still owns the per-chat write lock. Do not make app RPCs wait for
-// that lock: handlers run in a fresh V8 context and their individual host calls
-// still use the normal storage transaction boundaries.
-const CHAT_LOCK_BYPASS_COMMANDS: &[&str] = &["ui-call"];
+// Some browser actions can be invoked while an agent turn for the same chat
+// still owns the per-chat write lock. Do not make those RPCs wait for that
+// lock: handlers run in a fresh V8 context and their individual host calls
+// still use the normal storage transaction boundaries. Manual chat renames only
+// update title pointers, so waiting behind a long turn makes the UI appear hung.
+const CHAT_LOCK_BYPASS_COMMANDS: &[&str] = &["chat-rename", "ui-call"];
 
 fn needs_fresh_context(input: &str) -> bool {
     parse_input(input)
@@ -2096,6 +2489,14 @@ mod tests {
     }
 
     #[test]
+    fn chat_rename_uses_write_lane_without_chat_lock() {
+        assert_eq!(
+            route_input(r#"{"command":"chat-rename","chatId":"abc","title":"New title"}"#),
+            (Lane::Write, None)
+        );
+    }
+
+    #[test]
     fn chat_rm_chat_id_reads_command_payloads() {
         assert_eq!(
             chat_rm_chat_id(r#"{"command":"chat-rm","chatId":"abc"}"#),
@@ -2115,6 +2516,97 @@ mod tests {
         );
         assert_eq!(chat_rm_chat_id(r#"{"command":"chat-rm"}"#), None);
         assert_eq!(chat_rm_chat_id("not json"), None);
+    }
+
+    #[test]
+    fn dynamic_pool_scales_up_when_queue_exceeds_active_workers() {
+        let pool = JobPool::new("test-dynamic-grow", 3, ":memory:");
+        assert_eq!(pool.allocate_worker_id(), 0);
+
+        assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), None);
+        assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), Some(1));
+        assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), Some(2));
+        assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), None);
+
+        let state = pool.state.lock().expect("dynamic pool state");
+        assert_eq!(state.active_workers, 3);
+        assert_eq!(state.queued, 4);
+        assert_eq!(state.next_worker_id, 3);
+    }
+
+    #[test]
+    fn dynamic_pool_keeps_idle_worker_when_recent_max_reached_count() {
+        let pool = JobPool::new("test-dynamic-hold", 4, ":memory:");
+        for _ in 0..3 {
+            pool.allocate_worker_id();
+        }
+        {
+            let mut state = pool.state.lock().expect("dynamic pool state");
+            state.busy_workers = 0;
+            state.queued = 0;
+            state.utilization.clear();
+            state.utilization.push_back(UtilizationSample {
+                at: Instant::now(),
+                busy: 3,
+            });
+        }
+
+        assert!(!pool.retire_idle_worker_if_underutilized());
+        assert_eq!(
+            pool.state
+                .lock()
+                .expect("dynamic pool state")
+                .active_workers,
+            3
+        );
+    }
+
+    #[test]
+    fn dynamic_pool_retires_idle_worker_when_recent_max_below_count() {
+        let pool = JobPool::new("test-dynamic-shrink", 4, ":memory:");
+        for _ in 0..3 {
+            pool.allocate_worker_id();
+        }
+        {
+            let mut state = pool.state.lock().expect("dynamic pool state");
+            state.busy_workers = 0;
+            state.queued = 0;
+            state.utilization.clear();
+            state.utilization.push_back(UtilizationSample {
+                at: Instant::now(),
+                busy: 2,
+            });
+        }
+
+        assert!(pool.retire_idle_worker_if_underutilized());
+        assert_eq!(
+            pool.state
+                .lock()
+                .expect("dynamic pool state")
+                .active_workers,
+            2
+        );
+    }
+
+    #[test]
+    fn dynamic_pool_keeps_one_worker_warm() {
+        let pool = JobPool::new("test-dynamic-floor", 1, ":memory:");
+        pool.allocate_worker_id();
+        {
+            let mut state = pool.state.lock().expect("dynamic pool state");
+            state.busy_workers = 0;
+            state.queued = 0;
+            state.utilization.clear();
+        }
+
+        assert!(!pool.retire_idle_worker_if_underutilized());
+        assert_eq!(
+            pool.state
+                .lock()
+                .expect("dynamic pool state")
+                .active_workers,
+            1
+        );
     }
 
     #[test]

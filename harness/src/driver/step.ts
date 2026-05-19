@@ -30,6 +30,8 @@ export interface InflightState {
   estimatedPromptTokens?: number;
   tokenBudget?: number;
   tokenThreshold?: number;
+  availableTokens?: number;
+  compactionsInARow?: number;
   requestPromptTokens?: number;
   requestTokenLimit?: number;
   requestProvider?: string;
@@ -50,6 +52,8 @@ export interface LlmHandlingState {
   estimatedPromptTokens?: number;
   tokenBudget?: number;
   tokenThreshold?: number;
+  availableTokens?: number;
+  compactionsInARow?: number;
   requestPromptTokens?: number;
   requestTokenLimit?: number;
   llmResult: unknown;
@@ -165,10 +169,39 @@ function stepMessages(value: unknown): StepMessage[] | undefined {
 function toolResultPayload(value: unknown): ToolResultPayload | null {
   const record = objectRecord(value);
   if (!record) return null;
+  const rawToolCallId =
+    typeof record.toolCallId === "string" ? record.toolCallId.trim() : "";
   return {
-    ...(typeof record.toolCallId === "string" ? { toolCallId: record.toolCallId } : {}),
+    ...(rawToolCallId ? { toolCallId: rawToolCallId } : {}),
     ...(Object.prototype.hasOwnProperty.call(record, "content") ? { content: record.content } : {}),
   };
+}
+
+function unansweredToolCallId(state: StepDriverState): string | null {
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  let assistantIndex = -1;
+  let toolCalls: unknown[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      assistantIndex = i;
+      toolCalls = message.tool_calls;
+      break;
+    }
+  }
+  if (assistantIndex < 0) return null;
+  const answered = new Set<string>();
+  for (const message of messages.slice(assistantIndex + 1)) {
+    if (message?.role !== "tool") continue;
+    const id = typeof message.tool_call_id === "string" ? message.tool_call_id.trim() : "";
+    if (id) answered.add(id);
+  }
+  for (const toolCall of toolCalls) {
+    const record = objectRecord(toolCall);
+    const id = typeof record?.id === "string" ? record.id.trim() : "";
+    if (id && !answered.has(id)) return id;
+  }
+  return null;
 }
 
 export function initialStepDriverState(input: Record<string, unknown>): StepDriverState {
@@ -210,12 +243,18 @@ export function reduceStepDriverState(
   switch (event.type) {
     case "ToolResultReceived": {
       const tr = event.toolResult || {};
+      const toolCallId =
+        (typeof tr.toolCallId === "string" ? tr.toolCallId.trim() : "") ||
+        unansweredToolCallId(state) ||
+        "";
       const messages: StepMessage[] = Array.isArray(state.messages) ? [...state.messages] : [];
-      messages.push({
-        role: "tool",
-        tool_call_id: String(tr.toolCallId ?? ""),
-        content: typeof tr.content === "string" ? tr.content : String(tr.content ?? ""),
-      });
+      if (toolCallId) {
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCallId,
+          content: typeof tr.content === "string" ? tr.content : String(tr.content ?? ""),
+        });
+      }
       return {
         ...state,
         messages,
@@ -241,6 +280,8 @@ export function reduceStepDriverState(
           estimatedPromptTokens: optionalNumber(inflight.estimatedPromptTokens),
           tokenBudget: optionalNumber(inflight.tokenBudget),
           tokenThreshold: optionalNumber(inflight.tokenThreshold),
+          availableTokens: optionalNumber(inflight.availableTokens),
+          compactionsInARow: optionalNumber(inflight.compactionsInARow),
           requestPromptTokens: optionalNumber(inflight.requestPromptTokens),
           requestTokenLimit: optionalNumber(inflight.requestTokenLimit),
           llmResult: event.llmResult,
@@ -345,6 +386,8 @@ export function reduceStepDriverState(
           estimatedPromptTokens: optionalNumber(p.estimatedPromptTokens),
           tokenBudget: optionalNumber(p.tokenBudget),
           tokenThreshold: optionalNumber(p.tokenThreshold),
+          availableTokens: optionalNumber(p.availableTokens),
+          compactionsInARow: optionalNumber(p.compactionsInARow),
           requestPromptTokens: optionalNumber(p.requestPromptTokens),
           requestTokenLimit: optionalNumber(p.requestTokenLimit),
           requestProvider: optionalString(p.requestProvider) ?? state.provider?.name,
@@ -376,6 +419,8 @@ export function reduceStepDriverState(
           estimatedPromptTokens: p.estimatedPromptTokens,
           tokenBudget: p.tokenBudget,
           tokenThreshold: p.tokenThreshold,
+          availableTokens: p.availableTokens,
+          compactionsInARow: p.compactionsInARow,
         },
       };
     }

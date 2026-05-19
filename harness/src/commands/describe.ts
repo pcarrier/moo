@@ -8,6 +8,7 @@ import {
   loadPayloadJSON,
   loadResultJSON,
   readCompactionChain,
+  readConsecutiveCompactions,
   readLastTokenPressure,
 } from "../agent";
 import type { Input } from "./_shared";
@@ -16,10 +17,8 @@ import { defaultModelPricing, type ModelPrice } from "../llm_models";
 import { chatModelInfo } from "./models";
 
 const DEFAULT_TIMELINE_LIMIT = 160;
-// The trail sidebar is an index, not the transcript itself. Keep initial loads
-// bounded so old payload-heavy entries do not dominate chat switching time.
-const TRAIL_INDEX_LIMIT = 400;
-const TRAIL_STEP_INDEX_LIMIT = 240;
+// The trail sidebar is an index, not the transcript itself. Load it complete
+// even when the chat timeline only loads a recent window.
 
 type TimelineRef =
   | { type: "step"; id: string; at: number; updatedAt?: number }
@@ -56,6 +55,83 @@ function timelineTypeOrder(type: string): number {
 function finiteNumber(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const n = finiteNumber(value);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function estimatedTextTokens(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (text) return Math.ceil(text.length / 4);
+  }
+  return null;
+}
+
+function compactObject<T extends Record<string, unknown>>(value: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const [k, v] of Object.entries(value) as Array<[keyof T, T[keyof T]]>) {
+    if (v !== undefined && v !== null) out[k] = v;
+  }
+  return out;
+}
+
+export function compactionLayerDedupeKey(layer: unknown): string | null {
+  if (!layer || typeof layer !== "object" || Array.isArray(layer)) return null;
+  const record = layer as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? record.summary : "";
+  const throughAt = finiteNumber(record.throughAt);
+  if (!summary || throughAt == null) return null;
+  const parent = typeof record.parent === "string" ? record.parent : "";
+  const trigger = typeof record.trigger === "string" ? record.trigger : "";
+  const draftId = typeof record.draftId === "string" ? record.draftId : "";
+  return JSON.stringify([
+    summary,
+    throughAt,
+    parent,
+    trigger,
+    draftId,
+    finiteNumber(record.promptTokens),
+    finiteNumber(record.tokenBudget),
+    finiteNumber(record.tokenThreshold),
+  ]);
+}
+
+export function compactionDisplayMetadata(
+  primary: unknown,
+  fallback?: unknown,
+) {
+  const p =
+    primary && typeof primary === "object" && !Array.isArray(primary)
+      ? (primary as Record<string, unknown>)
+      : {};
+  const f =
+    fallback && typeof fallback === "object" && !Array.isArray(fallback)
+      ? (fallback as Record<string, unknown>)
+      : {};
+  return compactObject({
+    promptTokens: firstFiniteNumber(p.promptTokens, f.promptTokens),
+    postPromptTokens: firstFiniteNumber(
+      p.postPromptTokens,
+      f.postPromptTokens,
+    ),
+    summaryTokens:
+      firstFiniteNumber(p.summaryTokens, f.summaryTokens) ??
+      estimatedTextTokens(p.summary, f.summary),
+    tokenBudget: firstFiniteNumber(p.tokenBudget, f.tokenBudget),
+    tokenThreshold: firstFiniteNumber(p.tokenThreshold, f.tokenThreshold),
+    availableTokens: firstFiniteNumber(p.availableTokens, f.availableTokens),
+    compactionsInARow: firstFiniteNumber(
+      p.compactionsInARow,
+      f.compactionsInARow,
+    ),
+  });
 }
 
 function parseFactLiteral(value: string): string | null {
@@ -476,10 +552,13 @@ async function tokenPressure(chatId: string) {
   });
   const threshold = await compactionThresholdForBudget(budget);
   const used = pressure.used;
+  const availableTokens = Math.max(0, threshold - used);
   return {
     used,
     budget,
     threshold,
+    availableTokens,
+    compactionsInARow: await readConsecutiveCompactions(chatId),
     fraction: budget > 0 ? used / budget : 0,
     source: pressure.source,
     estimated: pressure.source === "compaction",
@@ -492,6 +571,7 @@ async function chatOverview(chatId: string) {
     head,
     title,
     path,
+    baseBranch,
     createdAt,
     lastAt,
     hiddenRaw,
@@ -501,6 +581,7 @@ async function chatOverview(chatId: string) {
     moo.pointers.get({ name: c.head }),
     moo.pointers.get({ name: `chat/${chatId}/title` }),
     moo.pointers.get({ name: `chat/${chatId}/path` }),
+    moo.pointers.get({ name: c.startBranch }),
     moo.pointers.get({ name: `chat/${chatId}/created-at` }),
     moo.pointers.get({ name: `chat/${chatId}/last-at` }),
     moo.pointers.get({ name: `chat/${chatId}/hidden` }),
@@ -537,6 +618,7 @@ async function chatOverview(chatId: string) {
     chatId,
     title: title || null,
     path,
+    baseBranch: baseBranch || null,
     worktreePath,
     createdAt: createdAt ? Number(createdAt) : null,
     lastAt: lastAt ? Number(lastAt) : null,
@@ -683,28 +765,28 @@ async function loadTimelineSnapshot(
     loadStepRowsByKind(
       c,
       "agent:FileDiff",
-      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+      0,
     ),
     loadStepRowsByKind(
       c,
       "agent:TodoDiff",
-      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+      0,
     ),
     loadStepRowsByKind(
       c,
       "agent:Subagent",
-      Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+      0,
     ),
     loadInputResponseRows(c, boundedScanLimit),
     loadLogRows(c, boundedScanLimit),
-    loadTrailEntryRows(c, Math.max(TRAIL_INDEX_LIMIT, boundedScanLimit)),
+    loadTrailEntryRows(c, 0),
   ]);
   const inputs = await loadInputRows(c, inputResponses, boundedScanLimit);
   const trailStepRows = newestByAt(
     [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows] as Array<
       Record<string, string>
     >,
-    Math.max(TRAIL_STEP_INDEX_LIMIT, effectiveTimelineLimit),
+    0,
     (row) => factTimestamp(row["?at"]),
   );
 
@@ -714,6 +796,19 @@ async function loadTimelineSnapshot(
   // layers as synthetic timeline rows, but do not duplicate layers that
   // already have a real step payload.
   const compactionLayers = await readCompactionChain(chatId);
+  const compactionLayerByKey = new Map<string, any>();
+  for (const layer of compactionLayers) {
+    const key = compactionLayerDedupeKey(layer);
+    if (!key) continue;
+    const existing = compactionLayerByKey.get(key);
+    if (
+      !existing ||
+      (finiteNumber(existing.postPromptTokens) == null &&
+        finiteNumber(layer.postPromptTokens) != null)
+    ) {
+      compactionLayerByKey.set(key, layer);
+    }
+  }
   const compactionStepPayloadHashes = new Set<string>();
   const compactionStepIds = (compactionSteps as Array<Record<string, string>>)
     .filter((row) => row["?kind"] === "agent:Compaction")
@@ -728,8 +823,20 @@ async function loadTimelineSnapshot(
     const hash = row[3];
     if (hash) compactionStepPayloadHashes.add(hash);
   }
+  const compactionStepLayerKeys = new Set<string>();
+  const compactionStepPayloads = await loadObjectsByHash(
+    compactionStepPayloadHashes,
+  );
+  for (const payload of compactionStepPayloads.values()) {
+    const key = compactionLayerDedupeKey(payload?.value);
+    if (key) compactionStepLayerKeys.add(key);
+  }
   const syntheticCompactions = compactionLayers
-    .filter((layer) => !compactionStepPayloadHashes.has(layer.hash))
+    .filter((layer) => {
+      if (compactionStepPayloadHashes.has(layer.hash)) return false;
+      const key = compactionLayerDedupeKey(layer);
+      return !key || !compactionStepLayerKeys.has(key);
+    })
     .map((layer) => ({
       type: "compaction" as const,
       id: layer.hash,
@@ -843,14 +950,7 @@ async function loadTimelineSnapshot(
   );
   const trailTimelineItems = includeTrail
     ? [
-        ...(await loadTrailItems(
-          c,
-          newestByAt(
-            trailEntries,
-            Math.max(TRAIL_INDEX_LIMIT, effectiveTimelineLimit),
-            (row) => factTimestamp(row["?at"]),
-          ),
-        )),
+        ...(await loadTrailItems(c, trailEntries, 0)),
         ...(await loadTrailStepItems(c, chatId, trailStepRows)),
       ].sort(compareTimelineItems)
     : undefined;
@@ -931,6 +1031,10 @@ async function loadTimelineSnapshot(
     if (deletedAt) item.deletedAt = Number(deletedAt) || deletedAt;
     const payload = lookupPayload(stepId);
     const result = lookupResult(stepId);
+    const compactionLayer =
+      s["?kind"] === "agent:Compaction" && payload?.value
+        ? compactionLayerByKey.get(compactionLayerDedupeKey(payload.value) ?? "")
+        : null;
     if (s["?kind"] === "agent:Subagent" && payload?.value) {
       item.subagent = {
         label: payload.value.label ?? null,
@@ -952,6 +1056,10 @@ async function loadTimelineSnapshot(
           ? { args: payload.value.args }
           : {}),
         code: payload.value.code ?? null,
+        backgroundAfterNs:
+          typeof payload.value.backgroundAfterNs === "number"
+            ? payload.value.backgroundAfterNs
+            : undefined,
         result:
           typeof result?.value?.value === "string" ? result.value.value : null,
         error:
@@ -995,6 +1103,12 @@ async function loadTimelineSnapshot(
         payloadHashByStep.get(stepId),
       );
     item.text = formatStep(item, payload, result);
+    if (s["?kind"] === "agent:Compaction" && payload?.value) {
+      item.compaction = compactionDisplayMetadata(
+        payload.value,
+        compactionLayer,
+      );
+    }
     if (s["?kind"] === "agent:Error" && payload?.value) {
       item.error = payload.value;
     }
@@ -1108,6 +1222,7 @@ async function loadTimelineSnapshot(
       status: "agent:Done",
       at: factTimestamp(layer.at || layer.throughAt),
       text: `${trigger}compaction\n${layer.summary || ""}`,
+      compaction: compactionDisplayMetadata(layer),
       ...(typeof layer.draftId === "string" && layer.draftId
         ? { draftId: layer.draftId }
         : {}),
@@ -1216,7 +1331,7 @@ async function loadTimelineSnapshot(
     },
     trail: {
       items: trailTimelineItems ?? [],
-      limit: Math.max(TRAIL_INDEX_LIMIT, effectiveTimelineLimit),
+      limit: 0,
     },
   };
 }

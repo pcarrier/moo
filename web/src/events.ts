@@ -90,6 +90,8 @@ export type Event =
       used?: number;
       budget?: number;
       threshold?: number;
+      availableTokens?: number;
+      compactionsInARow?: number;
       fraction?: number;
       usage?: unknown;
       source?: string;
@@ -115,15 +117,22 @@ export type Event =
       durationNs?: number;
       at?: number;
     }
+  | {
+      kind: "runts-background-start" | "runts-background-end";
+      chatId: string;
+      stepId: string;
+      label?: string;
+      requestedBy?: string;
+      at?: number;
+    }
   | { kind: "driver-error"; chatId: string; error: unknown; at?: number }
   | { kind: "v8"; event: V8Event }
   | { kind: "trace-write-error"; message: string; rows?: number; at?: number }
   | {
-      kind: "trace-init-error";
+      kind: "otel-export-error";
       message: string;
-      backend?: string;
       endpoint?: string;
-      database?: string;
+      rows?: number;
       at?: number;
     }
   | { kind: "ping" }
@@ -157,10 +166,12 @@ const EVENT_KINDS = new Set<string>([
   "draft-end",
   "llm-auth-required",
   "runts-step-finished",
+  "runts-background-start",
+  "runts-background-end",
   "driver-error",
   "v8",
   "trace-write-error",
-  "trace-init-error",
+  "otel-export-error",
   "ping",
   "online",
   "offline",
@@ -470,6 +481,8 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
         used: optionalNumber(frame, "used"),
         budget: optionalNumber(frame, "budget"),
         threshold: optionalNumber(frame, "threshold"),
+        availableTokens: optionalNumber(frame, "availableTokens"),
+        compactionsInARow: optionalNumber(frame, "compactionsInARow"),
         fraction: optionalNumber(frame, "fraction"),
         usage: frame.usage,
         source: optionalString(frame, "source"),
@@ -533,6 +546,22 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
         { kind: "llm-auth-required", chatId: optionalString(frame, "chatId") },
         frame,
       );
+    case "runts-background-start":
+    case "runts-background-end": {
+      const chatId = stringField(frame, "chatId");
+      const stepId = stringField(frame, "stepId");
+      if (!chatId || !stepId) return null;
+      return withOptionalAt(
+        {
+          kind: frame.kind as "runts-background-start" | "runts-background-end",
+          chatId,
+          stepId,
+          label: optionalString(frame, "label"),
+          requestedBy: optionalString(frame, "requestedBy"),
+        },
+        frame,
+      );
+    }
     case "runts-step-finished": {
       const chatId = stringField(frame, "chatId");
       const stepId = stringField(frame, "stepId");
@@ -576,16 +605,15 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
           )
         : null;
     }
-    case "trace-init-error": {
+    case "otel-export-error": {
       const message = stringField(frame, "message");
       return message
         ? withOptionalAt(
             {
-              kind: "trace-init-error",
+              kind: "otel-export-error",
               message,
-              backend: optionalString(frame, "backend"),
               endpoint: optionalString(frame, "endpoint"),
-              database: optionalString(frame, "database"),
+              rows: optionalNumber(frame, "rows"),
             },
             frame,
           )

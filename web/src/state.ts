@@ -33,7 +33,6 @@ import {
   type StoreObject,
   type PointerEntry,
   type Triple,
-  type TraceRow,
   type TriplesValue,
   type UiApp,
   type UiInstance,
@@ -41,7 +40,7 @@ import {
   type SkillSummary,
   type V8StatsValue,
   type LlmAuthSettings,
-  type TraceSettingsValue,
+  type OtelSettingsValue,
   type V8SettingsValue,
 } from "./api";
 import { collapseHome, setHomeDir_ } from "./paths";
@@ -135,7 +134,6 @@ const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:pointers",
   "view:skills",
   "view:v8",
-  "view:traces",
 ];
 const RIGHT_SIDEBAR_TABS_MAX = 8;
 const RIGHT_SIDEBAR_DIFF_EXPANSION_STATE_MAX = 300;
@@ -181,9 +179,9 @@ export function createState() {
     () => api("v8-settings-get", {}),
     () => "v8-settings",
   );
-  const traceSettingsSingle = createSingleFlight(
-    () => api("trace-config-get", {}),
-    () => "trace-settings",
+  const otelSettingsSingle = createSingleFlight(
+    () => api("otel-config-get", {}),
+    () => "otel-settings",
   );
   const skillsListSingle = createSingleFlight(
     (
@@ -506,8 +504,8 @@ export function createState() {
   }
   const [v8SettingsCache, setV8SettingsCache] =
     createSignal<V8SettingsValue | null>(null);
-  const [traceSettingsCache, setTraceSettingsCache] =
-    createSignal<TraceSettingsValue | null>(null);
+  const [otelSettingsCache, setOtelSettingsCache] =
+    createSignal<OtelSettingsValue | null>(null);
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
   const [chatUiApps, setChatUiApps] = createSignal<UiApp[]>([]);
   const [uiInstances, setUiInstances] = createSignal<UiInstance[]>([]);
@@ -645,6 +643,7 @@ export function createState() {
     };
     if (value.title !== undefined) patch.title = value.title;
     if (value.path !== undefined) patch.path = value.path;
+    if (value.baseBranch !== undefined) patch.baseBranch = value.baseBranch;
     if (value.worktreePath !== undefined)
       patch.worktreePath = value.worktreePath;
     if (value.hidden !== undefined) patch.hidden = value.hidden;
@@ -670,6 +669,7 @@ export function createState() {
         head: value.head,
         title: value.title ?? null,
         path: value.path ?? null,
+        baseBranch: value.baseBranch ?? null,
         worktreePath:
           value.worktreePath ??
           expectedChatWorktreePath({ chatId: id, path: value.path ?? null }),
@@ -1023,6 +1023,18 @@ export function createState() {
   const [activeChatStartedAt, setActiveChatStartedAt] = createSignal<
     Map<string, number>
   >(new Map());
+  const [backgroundRunTS, setBackgroundRunTS] = createSignal<
+    Array<{
+      chatId: string;
+      stepId: string;
+      label?: string | null;
+      requestedBy?: string | null;
+      startedAt?: number;
+    }>
+  >([]);
+  const [backgroundRequestedRunTS, setBackgroundRequestedRunTS] = createSignal<
+    Set<string>
+  >(new Set());
   // Local dispatch locks prevent sending another queued message for the same
   // chat while /api/run is being accepted and before the corresponding
   // step-start event arrives. These locks must not make the UI look like the
@@ -1037,9 +1049,15 @@ export function createState() {
   const [interruptingChats, setInterruptingChats] = createSignal<Set<string>>(
     new Set(),
   );
+  // Manual runTS background/cancel requests are accepted before chat-list can
+  // stop reporting the old foreground turn as running. While present, this set
+  // lets one queued follow-up drain for that chat despite stale activeChats.
+  const [runTSQueueUnblockedChats, setRunTSQueueUnblockedChats] = createSignal<
+    Set<string>
+  >(new Set());
   const setHas = (set: Set<string>, id: string) => set.has(id);
   const chatBusy = (id: string) =>
-    setHas(activeChats(), id) ||
+    (setHas(activeChats(), id) && !setHas(runTSQueueUnblockedChats(), id)) ||
     setHas(dispatchingChats(), id) ||
     setHas(interruptingChats(), id);
   function addToSet(
@@ -1078,6 +1096,51 @@ export function createState() {
     deleteChatStartedAt(id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
+  }
+  function unblockRunTSQueue(id: string) {
+    addToSet(setRunTSQueueUnblockedChats, runTSQueueUnblockedChats, id);
+  }
+  function clearRunTSQueueUnblock(id: string) {
+    deleteFromSet(setRunTSQueueUnblockedChats, runTSQueueUnblockedChats, id);
+  }
+  const runTSBackgroundKey = (chat: string, stepId: string | null | undefined) =>
+    JSON.stringify([chat, stepId || ""]);
+  function runTSBackgroundKeyParts(key: string): [string, string] | null {
+    try {
+      const parsed = JSON.parse(key);
+      return Array.isArray(parsed) &&
+        typeof parsed[0] === "string" &&
+        typeof parsed[1] === "string"
+        ? [parsed[0], parsed[1]]
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  function requestRunTSBackground(chat: string, stepId?: string | null) {
+    setBackgroundRequestedRunTS((current) => {
+      const next = new Set(current);
+      next.add(runTSBackgroundKey(chat, stepId));
+      return next;
+    });
+  }
+  function clearRunTSBackgroundRequest(chat: string, stepId?: string | null) {
+    const key = runTSBackgroundKey(chat, stepId);
+    setBackgroundRequestedRunTS((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  }
+  function isRunTSBackgrounded(stepId?: string | null, targetChatId?: string | null) {
+    const id = targetChatId || chatId();
+    if (!id || !stepId) return false;
+    const key = runTSBackgroundKey(id, stepId);
+    return (
+      backgroundRequestedRunTS().has(key) ||
+      backgroundRunTS().some((job) => job.chatId === id && job.stepId === stepId)
+    );
   }
   function setChatStartedAt(id: string, at: unknown) {
     const ms = Number(at);
@@ -1580,7 +1643,6 @@ export function createState() {
       case "pointers":
       case "skills":
       case "v8":
-      case "traces":
         return `view:${view()}`;
       default:
         return null;
@@ -1611,10 +1673,6 @@ export function createState() {
       case "pointers":
       case "v8":
         return tab.kind === "store" || tab.kind === "json";
-      case "traces":
-        return (
-          tab.kind === "store" || tab.kind === "json" || tab.kind === "trace"
-        );
       default:
         return false;
     }
@@ -1718,11 +1776,6 @@ export function createState() {
         return (
           a.json.target ===
           (b as Extract<RightSidebarTab, { kind: "json" }>).json.target
-        );
-      case "trace":
-        return (
-          a.trace.id ===
-          (b as Extract<RightSidebarTab, { kind: "trace" }>).trace.id
         );
       case "diff": {
         const diff = b as Extract<RightSidebarTab, { kind: "diff" }>;
@@ -2307,27 +2360,6 @@ export function createState() {
     setRightSidebarCollapsed(false);
   }
 
-  function openTraceEventInSidebar(trace: TraceRow, title?: string) {
-    const tab = {
-      id: "trace:" + encodeURIComponent(trace.id),
-      kind: "trace" as const,
-      title:
-        title?.trim() ||
-        String(trace.name || trace.kind || trace.id || "trace"),
-      trace,
-    };
-    if (view() === "traces") {
-      updateCurrentRightSidebarState((state) => ({
-        ...state,
-        tabs: [tab],
-        activeTabId: tab.id,
-        collapsed: false,
-      }));
-      return;
-    }
-    upsertRightSidebarTab(tab);
-  }
-
   function openDiffInSidebar(
     item: FileDiffItem,
     scope: "history" | "timeline" = "timeline",
@@ -2474,7 +2506,7 @@ export function createState() {
     localStorage.getItem(sidebarLayout.collapsedKey) === "1",
   );
 
-  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/skills`, `/apps`, `/traces[/<traceId>]`, `/traces/chat/<chatId>`.
+  // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/skills`, `/apps`.
   type Loc =
     | { view: "chat"; chatId: string | null }
     | { view: "new" }
@@ -2484,7 +2516,6 @@ export function createState() {
     | { view: "apps"; instanceId: string | null }
     | { view: "mcp" }
     | { view: "v8" }
-    | { view: "traces"; traceId: string | null; chatId: string | null }
     | { view: "settings" };
 
   function parseLocation(): Loc {
@@ -2521,16 +2552,6 @@ export function createState() {
       return { view: "skills" };
     if (path === "/mcp" || path.startsWith("/mcp/")) return { view: "mcp" };
     if (path === "/v8" || path.startsWith("/v8/")) return { view: "v8" };
-    if (path === "/traces" || path.startsWith("/traces/")) {
-      const parts = path
-        .split("/")
-        .filter(Boolean)
-        .map((part) => decodeURIComponent(part));
-      if (parts[1] === "chat") {
-        return { view: "traces", traceId: null, chatId: parts[2] || null };
-      }
-      return { view: "traces", traceId: parts[1] || null, chatId: null };
-    }
     if (path === "/settings" || path.startsWith("/settings/"))
       return { view: "settings" };
     return { view: "chat", chatId: null };
@@ -2546,13 +2567,10 @@ export function createState() {
       | "apps"
       | "mcp"
       | "v8"
-      | "traces"
       | "settings",
     id: string | null,
     subject: string | null,
     graph: string | null = null,
-    traceChat: string | null = null,
-    traceId: string | null = null,
   ): string {
     if (v === "new") return "/new";
     if (v === "apps") {
@@ -2567,12 +2585,6 @@ export function createState() {
     if (v === "skills") return "/skills";
     if (v === "mcp") return "/mcp";
     if (v === "v8") return "/v8";
-    if (v === "traces")
-      return traceChat
-        ? `/traces/chat/${encodeURIComponent(traceChat)}`
-        : traceId
-          ? `/traces/${encodeURIComponent(traceId)}`
-          : "/traces";
     if (v === "settings") return "/settings";
     if (!id) return "/";
     return `/chat/${encodeURIComponent(id)}`;
@@ -2616,15 +2628,8 @@ export function createState() {
     | "apps"
     | "mcp"
     | "v8"
-    | "traces"
     | "settings"
   >(initialLoc.view);
-  const [traceChatId, setTraceChatId] = createSignal<string | null>(
-    initialLoc.view === "traces" ? (initialLoc.chatId ?? null) : null,
-  );
-  const [traceId, setTraceId] = createSignal<string | null>(
-    initialLoc.view === "traces" ? (initialLoc.traceId ?? null) : null,
-  );
   const [focusedSubject, setFocusedSubject] = createSignal<string | null>(
     initialLoc.view === "facts" ? initialLoc.subject : null,
   );
@@ -2638,8 +2643,6 @@ export function createState() {
       chatId(),
       focusedSubject(),
       focusedGraph(),
-      traceChatId(),
-      traceId(),
     );
     if (location.pathname + location.search + location.hash !== path) {
       history.pushState(null, "", path);
@@ -2651,8 +2654,6 @@ export function createState() {
       chatId(),
       focusedSubject(),
       focusedGraph(),
-      traceChatId(),
-      traceId(),
     );
     history.replaceState(null, "", path);
   }
@@ -2743,28 +2744,6 @@ export function createState() {
     pushUrl();
   }
 
-  function showTraces(chatId?: string | null) {
-    setOpenUiId(null);
-    setOpenUiInstanceId(null);
-    setView("traces");
-    setTraceChatId(chatId ?? null);
-    setTraceId(null);
-    setFocusedSubject(null);
-    setFocusedGraph(null);
-    pushUrl();
-  }
-
-  function showTrace(id?: string | null) {
-    setOpenUiId(null);
-    setOpenUiInstanceId(null);
-    setView("traces");
-    setTraceChatId(null);
-    setTraceId(id ?? null);
-    setFocusedSubject(null);
-    setFocusedGraph(null);
-    pushUrl();
-  }
-
   function showSettings() {
     setOpenUiId(null);
     setOpenUiInstanceId(null);
@@ -2822,14 +2801,6 @@ export function createState() {
       setOpenUiId(null);
       setOpenUiInstanceId(null);
       void refreshV8Stats();
-    } else if (loc.view === "traces") {
-      setView("traces");
-      setTraceChatId(loc.chatId ?? null);
-      setTraceId(loc.traceId ?? null);
-      setFocusedSubject(null);
-      setFocusedGraph(null);
-      setOpenUiId(null);
-      setOpenUiInstanceId(null);
     } else if (loc.view === "settings") {
       setView(loc.view);
       setFocusedSubject(null);
@@ -2938,7 +2909,7 @@ export function createState() {
         return next;
       });
       if (chatId() && pending().some((p) => !live.has(p.chatId)))
-        queueMicrotask(drain);
+        drainSoon();
     } else {
       setChatsLoaded(true);
       reportError("chats", r.error);
@@ -3145,6 +3116,20 @@ export function createState() {
           return item;
         changed = true;
         return { ...item, status: "agent:Done" } as TimelineItem;
+      });
+      return changed ? compactTimelineRows(next) : items;
+    });
+  }
+
+  function settleTimelineStep(stepId: string, status: string = "agent:Done") {
+    if (!stepId) return;
+    setTimeline((items) => {
+      let changed = false;
+      const next = items.map((item) => {
+        if (item.type !== "step" || item.step !== stepId || item.status !== "agent:Running")
+          return item;
+        changed = true;
+        return { ...item, status } as TimelineItem;
       });
       return changed ? compactTimelineRows(next) : items;
     });
@@ -3359,14 +3344,14 @@ export function createState() {
         else noteError(result.error.message);
       })
       .catch((reason) => noteError(errorMessage(reason)));
-    const traceSettings = traceSettingsSingle()
+    const otelSettingsReq = otelSettingsSingle()
       .then((result) => {
-        if (result.ok) setTraceSettingsCache(result.value);
+        if (result.ok) setOtelSettingsCache(result.value);
         else noteError(result.error.message);
       })
       .catch((reason) => noteError(errorMessage(reason)));
 
-    await Promise.all([settings, v8Settings, traceSettings]);
+    await Promise.all([settings, v8Settings, otelSettingsReq]);
     setSettingsError(firstError);
   }
 
@@ -3378,8 +3363,8 @@ export function createState() {
     setV8SettingsCache(next);
   }
 
-  function setCachedTraceSettings(next: TraceSettingsValue) {
-    setTraceSettingsCache(next);
+  function setCachedOtelSettings(next: OtelSettingsValue) {
+    setOtelSettingsCache(next);
   }
 
   let v8StatsRefreshInFlight: Promise<void> | null = null;
@@ -3727,6 +3712,7 @@ export function createState() {
       head: null,
       title: null,
       path: path ?? null,
+      baseBranch: opts?.branch ?? null,
       worktreePath: expectedChatWorktreePath({
         chatId: requestedChatId,
         path: path ?? null,
@@ -3776,6 +3762,7 @@ export function createState() {
                 ...c,
                 chatId: r.value.chatId,
                 path: r.value.path ?? c.path,
+                baseBranch: r.value.baseBranch ?? r.value.branch ?? c.baseBranch,
                 worktreePath: r.value.worktreePath ?? c.worktreePath,
               }
             : c,
@@ -4067,8 +4054,17 @@ export function createState() {
     new Set(),
   );
   let draining = false;
+  let drainRequested = false;
   let pendingLoaded = false;
   let suppressPendingSave = false;
+
+  function drainSoon() {
+    if (draining) {
+      drainRequested = true;
+      return;
+    }
+    queueMicrotask(drain);
+  }
 
   async function loadPendingMessages() {
     const r = await api("pending-messages", {});
@@ -4081,7 +4077,7 @@ export function createState() {
     setPending(r.value.messages);
     suppressPendingSave = false;
     pendingLoaded = true;
-    queueMicrotask(drain);
+    drainSoon();
   }
 
   const wipKey = (id: string) => `moo.wip.${id}`;
@@ -4155,7 +4151,7 @@ export function createState() {
       { id, text, chatId: cid, ...(attachments.length ? { attachments } : {}) },
     ]);
     deleteFromSet(setInterruptedChats, interruptedChats, cid);
-    queueMicrotask(drain);
+    drainSoon();
   }
 
   function editPending(id: string, text: string) {
@@ -4194,6 +4190,28 @@ export function createState() {
       return next;
     });
   }
+  async function steerPending(id: string) {
+    const item = pending().find((p) => p.id === id);
+    if (!item) return;
+    setPending(pending().filter((p) => p.id !== id));
+    setEditingPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+    addToSet(setInterruptedChats, interruptedChats, item.chatId);
+    if (activeChats().has(item.chatId)) {
+      const previousChatId = chatId();
+      if (previousChatId !== item.chatId) setChatId(item.chatId);
+      await interruptAgent({ resumeQueued: false, offerResume: false });
+      if (previousChatId && previousChatId !== item.chatId) setChatId(previousChatId);
+    }
+    deleteFromSet(setInterruptedChats, interruptedChats, item.chatId);
+    setPending([item, ...pending()]);
+    drainSoon();
+  }
+
 
   function beginPendingEdit(id: string) {
     setEditingPendingIds((current) => {
@@ -4211,7 +4229,7 @@ export function createState() {
       next.delete(id);
       return next;
     });
-    queueMicrotask(drain);
+    drainSoon();
   }
 
   function appendOptimisticUserInput(
@@ -4255,8 +4273,13 @@ export function createState() {
   }
 
   async function drain() {
-    if (draining || !pendingLoaded) return;
+    if (draining) {
+      drainRequested = true;
+      return;
+    }
+    if (!pendingLoaded) return;
     draining = true;
+    drainRequested = false;
     try {
       while (true) {
         const pen = pending();
@@ -4273,6 +4296,7 @@ export function createState() {
         if (idx < 0) break;
         const head = pen[idx]!;
         setPending([...pen.slice(0, idx), ...pen.slice(idx + 1)]);
+        clearRunTSQueueUnblock(head.chatId);
 
         if (isMcpSetupMessage(head.text)) {
           deleteFromSet(setInterruptedChats, interruptedChats, head.chatId);
@@ -4320,6 +4344,7 @@ export function createState() {
       }
     } finally {
       draining = false;
+      if (drainRequested) drainSoon();
     }
   }
 
@@ -4554,6 +4579,7 @@ export function createState() {
       head: step,
       title: forkTitle(sourceSummary?.title ?? null, id),
       path: sourceSummary?.path ?? null,
+      baseBranch: sourceSummary?.baseBranch ?? null,
       worktreePath: expectedChatWorktreePath({
         chatId: requestedChatId,
         path: sourceSummary?.path ?? null,
@@ -4603,6 +4629,7 @@ export function createState() {
                 ...chat,
                 chatId: r.value.chatId,
                 path: r.value.path ?? chat.path,
+                baseBranch: r.value.baseBranch ?? chat.baseBranch,
                 worktreePath: r.value.worktreePath ?? chat.worktreePath,
                 lastAt: Date.now(),
               }
@@ -4733,9 +4760,15 @@ export function createState() {
   }
 
   async function renameChat(id: string, title: string | null) {
+    const previous = chats().find((chat) => chat.chatId === id)?.title ?? null;
+    updateChatSummary(id, { title });
     const r = await api("chat-rename", { chatId: id, title });
-    if (r.ok) updateChatSummary(id, { title: r.value.title });
-    else reportError(`rename ${id}`, r.error);
+    if (r.ok) {
+      updateChatSummary(id, { title: r.value.title });
+    } else {
+      updateChatSummary(id, { title: previous });
+      reportError(`rename ${id}`, r.error);
+    }
   }
 
   async function archiveChat(id: string, archived: boolean) {
@@ -4853,11 +4886,101 @@ export function createState() {
     const r = await api("interrupt", { chatId: id });
     deleteFromSet(setInterruptingChats, interruptingChats, id);
     if (!r.ok) reportError(`interrupt ${id}`, r.error);
-    if (options.resumeQueued) queueMicrotask(drain);
+    if (options.resumeQueued) drainSoon();
   }
 
   function stopAgent() {
     return interruptAgent({ resumeQueued: true, offerResume: true });
+  }
+
+  function currentRunningRunTSStepId(): string | null {
+    const items = timeline();
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.type !== "step") continue;
+      if (item.status !== "agent:Running") continue;
+      if (item.runts || item.runjs) return item.step || null;
+    }
+    return null;
+  }
+
+  function releaseRunTSForeground(
+    id: string,
+    stepId?: string | null,
+    status = "agent:Done",
+  ) {
+    const targetStep = stepId || currentRunningRunTSStepId();
+    if (targetStep) settleTimelineStep(targetStep, status);
+    clearActiveChatRuntime(id);
+    unblockRunTSQueue(id);
+    updateChatSummary(id, {
+      status: "agent:Done",
+      runningStartedAt: null,
+    });
+    drainSoon();
+  }
+
+  async function backgroundRunTSStep(stepId?: string | null) {
+    const id = chatId();
+    if (!id) return;
+    const targetStep = stepId || currentRunningRunTSStepId();
+    if (targetStep && isRunTSBackgrounded(targetStep, id)) return;
+    requestRunTSBackground(id, targetStep);
+    // Do the local release before awaiting the control RPC. The RPC can be
+    // delayed by host/db setup or transport backpressure, but the user's intent
+    // is clear and queued follow-ups should become dispatchable immediately.
+    releaseRunTSForeground(id, targetStep);
+    const r = await api("run-ts-background", { chatId: id, stepId: targetStep || null });
+    if (!r.ok) {
+      clearRunTSBackgroundRequest(id, targetStep);
+      reportError("background runTS", r.error);
+      return;
+    }
+    if (r.value.requested === false) clearRunTSBackgroundRequest(id, targetStep);
+  }
+
+  async function cancelRunTSStep(stepId?: string | null, targetChatId?: string | null) {
+    const id = targetChatId || chatId();
+    if (!id) return;
+    const targetStep = stepId || currentRunningRunTSStepId();
+    if (targetStep) requestRunTSBackground(id, targetStep);
+    const r = await api("run-ts-cancel", { chatId: id, stepId: targetStep || null });
+    if (!r.ok) {
+      if (targetStep) clearRunTSBackgroundRequest(id, targetStep);
+      reportError("cancel runTS", r.error);
+      return;
+    }
+    if (!r.value.cancelled && targetStep) clearRunTSBackgroundRequest(id, targetStep);
+    if (r.value.cancelled && id === chatId()) {
+      clearActiveChatRuntime(id);
+      unblockRunTSQueue(id);
+      updateChatSummary(id, {
+        status: "agent:Done",
+        runningStartedAt: null,
+      });
+      drainSoon();
+    }
+    await refreshBackgroundRunTS();
+  }
+
+  async function refreshBackgroundRunTS() {
+    const r = await api("run-ts-backgrounds", {});
+    if (r.ok) {
+      const jobs = r.value.jobs || [];
+      setBackgroundRunTS(jobs);
+      setBackgroundRequestedRunTS((current) => {
+        const next = new Set<string>();
+        for (const key of current) {
+          const parts = runTSBackgroundKeyParts(key);
+          if (
+            parts &&
+            jobs.some((job) => job.chatId === parts[0] && job.stepId === parts[1])
+          )
+            next.add(key);
+        }
+        return next;
+      });
+    }
   }
 
   // -- WS routing --------------------------------------------------------
@@ -4942,16 +5065,10 @@ export function createState() {
       );
       return;
     }
-    if (ev.kind === "trace-init-error") {
-      const detail =
-        typeof ev.endpoint === "string" && ev.endpoint
-          ? ev.backend === "clickhouse"
-            ? "ClickHouse " + ev.endpoint
-            : ev.endpoint
-          : typeof ev.backend === "string"
-            ? ev.backend
-            : undefined;
-      notify("tracing", ev.message || "trace initialization failed", detail);
+    if (ev.kind === "otel-export-error") {
+      const rows = typeof ev.rows === "number" ? ` · ${ev.rows} row${ev.rows === 1 ? "" : "s"}` : "";
+      const detail = typeof ev.endpoint === "string" && ev.endpoint ? `${ev.endpoint}${rows}` : rows || undefined;
+      notify("otel", ev.message || "OTEL export failed", detail);
       return;
     }
     if (ev.kind === "v8") {
@@ -5164,6 +5281,37 @@ export function createState() {
       return;
     }
 
+    if (ev.kind === "runts-background-start") {
+      setBackgroundRunTS((jobs) => {
+        const stepId = String(ev.stepId || "");
+        const job = {
+          chatId: ev.chatId,
+          stepId,
+          label: typeof ev.label === "string" ? ev.label : null,
+          requestedBy: typeof ev.requestedBy === "string" ? ev.requestedBy : null,
+          startedAt: Number(ev.at) || Date.now(),
+        };
+        return [...jobs.filter((j) => !(j.chatId === job.chatId && j.stepId === stepId)), job];
+      });
+      requestRunTSBackground(ev.chatId, ev.stepId);
+      clearActiveChatRuntime(ev.chatId);
+      unblockRunTSQueue(ev.chatId);
+      updateChatSummary(ev.chatId, {
+        status: "agent:Done",
+        runningStartedAt: null,
+      });
+      drainSoon();
+      return;
+    }
+    if (ev.kind === "runts-background-end") {
+      setBackgroundRunTS((jobs) =>
+        jobs.filter((job) => !(job.chatId === ev.chatId && job.stepId === ev.stepId)),
+      );
+      clearRunTSBackgroundRequest(ev.chatId, ev.stepId);
+      drainSoon();
+      return;
+    }
+
     if (ev.kind === "tokens") {
       const used = Number(ev.used);
       if (Number.isFinite(used)) {
@@ -5179,6 +5327,12 @@ export function createState() {
           used,
           budget,
           threshold,
+          availableTokens: Number.isFinite(Number(ev.availableTokens))
+            ? Number(ev.availableTokens)
+            : Math.max(0, threshold - used),
+          compactionsInARow: Number.isFinite(Number(ev.compactionsInARow))
+            ? Number(ev.compactionsInARow)
+            : cur?.compactionsInARow,
           fraction: Number.isFinite(explicitFraction)
             ? explicitFraction
             : budget > 0
@@ -5327,6 +5481,11 @@ export function createState() {
     if (ev.kind === "compaction-end") {
       if (typeof ev.chatId === "string" && ev.chatId) {
         deleteFromSet(setCompactingChats, compactingChats, ev.chatId);
+        const cur = draftReply();
+        if (cur?.kind === "compaction" && cur.chatId === ev.chatId) {
+          endedDraftReplyIds.delete(cur.draftId);
+          setDraftReply(null);
+        }
         if (ev.chatId === chatId()) refreshTimelineIncrementalSoon();
       }
       return;
@@ -5339,6 +5498,7 @@ export function createState() {
       setChatStartedAt(ev.chatId, ev.at);
       deleteFromSet(setDispatchingChats, dispatchingChats, ev.chatId);
       deleteFromSet(setInterruptingChats, interruptingChats, ev.chatId);
+      clearRunTSQueueUnblock(ev.chatId);
       updateChatSummary(ev.chatId, {
         status: "agent:Running",
         runningStartedAt: Number(ev.at) || Date.now(),
@@ -5352,7 +5512,7 @@ export function createState() {
         status: "agent:Done",
         runningStartedAt: null,
       });
-      queueMicrotask(drain);
+      drainSoon();
       return;
     }
     if (ev.kind === "driver-error") {
@@ -5690,7 +5850,6 @@ export function createState() {
         loc.view === "apps" ||
         loc.view === "mcp" ||
         loc.view === "v8" ||
-        loc.view === "traces" ||
         loc.view === "settings"
       ) {
         const hydrateFirstChat = () => {
@@ -5730,9 +5889,6 @@ export function createState() {
         } else if (loc.view === "v8") {
           setView("v8");
           void refreshV8Stats();
-        } else if (loc.view === "traces") {
-          setView("traces");
-          setTraceChatId(loc.chatId);
         } else if (loc.view === "settings") setView("settings");
         replaceUrl();
         if (pending().length > 0) drain();
@@ -5853,7 +6009,7 @@ export function createState() {
     v8StatsLoaded,
     settingsCache,
     v8SettingsCache,
-    traceSettingsCache,
+    otelSettingsCache,
     settingsError,
     chatUiApps,
     uiInstances,
@@ -5909,13 +6065,10 @@ export function createState() {
     openJsonPreviewInSidebar,
     openLogPreviewInSidebar,
     openAppCodeInSidebar,
-    openTraceEventInSidebar,
     archivedCollapsed,
     setArchivedCollapsed,
     tick,
     view,
-    traceChatId,
-    traceId,
     focusedSubject,
     focusedGraph,
     showNewChat,
@@ -5925,8 +6078,6 @@ export function createState() {
     showMcp,
     showSkills,
     showV8,
-    showTraces,
-    showTrace,
     showSettings,
     showChat,
     openUi,
@@ -5950,6 +6101,12 @@ export function createState() {
     interruptAgent,
     resumeAgent,
     stopAgent,
+    backgroundRunTSStep,
+    cancelRunTSStep,
+    isRunTSBackgrounded,
+    backgroundRunTS,
+    refreshBackgroundRunTS,
+    steerPending,
     editPending,
     beginPendingEdit,
     endPendingEdit,
@@ -5972,7 +6129,7 @@ export function createState() {
     refreshSettingsCache,
     setCachedSettings,
     setCachedV8Settings,
-    setCachedTraceSettings,
+    setCachedOtelSettings,
     refreshChatUis,
     retract: async (s: string, p: string, o: string) => {
       const r = await api("retract", { subject: s, predicate: p, object: o });

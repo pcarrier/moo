@@ -8,6 +8,7 @@ import {
   compactionContinuationSystemMessage,
 } from "../src/prompt";
 import {
+  availableTokensBeforeCompaction,
   isContextLengthExceededError,
   tokenPressureForCompactionCheck,
   tokenPressureFromEstimates,
@@ -20,6 +21,7 @@ import {
   compactionRequestTokenLimit,
   estimateTokens,
   fitCompactionSummaryMessages,
+  MAX_CONSECUTIVE_COMPACTIONS,
   parseSseDataEvents,
   accumulateSummaryStreamEvent,
   toAnthropicMessages,
@@ -121,6 +123,15 @@ describe("compaction prompts", () => {
         source: "context",
       }),
     ).toEqual({ used: 220_000, source: "compaction" });
+  });
+
+  test("reports available tokens before compaction", () => {
+    expect(availableTokensBeforeCompaction(190_000, 200_000)).toBe(10_000);
+    expect(availableTokensBeforeCompaction(210_000, 200_000)).toBe(0);
+  });
+
+  test("caps repeated automatic compactions at two", () => {
+    expect(MAX_CONSECUTIVE_COMPACTIONS).toBe(2);
   });
 
   test("carries force-compaction retry state after context overflow", () => {

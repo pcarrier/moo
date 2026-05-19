@@ -165,7 +165,7 @@ describe("chat stop queue integration", () => {
       interruptRpc,
     );
     const resumeQueuedDrain = stateSource.indexOf(
-      "if (options.resumeQueued) queueMicrotask(drain);",
+      "if (options.resumeQueued) drainSoon();",
     );
 
     expect(addInterrupting).toBeGreaterThanOrEqual(0);

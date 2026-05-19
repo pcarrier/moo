@@ -831,30 +831,11 @@
   line-height: 1.25;
 }
 
-.settings-heading-with-badge {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.settings-experimental-badge {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--warn, #f59e0b);
-  border-radius: 0;
-  color: var(--warn, #f59e0b);
-  font-size: 0.65rem;
-  font-weight: 600;
-  line-height: 1;
-  padding: 0.12rem 0.25rem;
-  text-transform: uppercase;
-}
-
 .settings-section input,
 .settings-section select,
 .settings-card input,
-.settings-card select {
+.settings-card select,
+.settings-card textarea {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--line-strong);
@@ -867,7 +848,8 @@
 .settings-section input:focus,
 .settings-section select:focus,
 .settings-card input:focus,
-.settings-card select:focus {
+.settings-card select:focus,
+.settings-card textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -895,8 +877,39 @@
   grid-template-columns: repeat(auto-fit, minmax(min(8.5rem, 100%), 1fr));
 }
 
-.trace-settings-fields {
+.otel-settings-fields {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.trace-json-block {
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid var(--border, var(--line));
+  border-radius: 0;
+  padding: 0.45rem;
+  background: color-mix(in srgb, var(--bg, #141414) 88%, #000 12%);
+  color: var(--fg, #e6edf3);
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-preview .trace-json-block {
+  display: block;
+  max-height: none;
+}
+
+.json-preview-bare .store-preview-body {
+  padding: 0;
+}
+
+.json-preview-bare .trace-json-block {
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .settings-row.compact {

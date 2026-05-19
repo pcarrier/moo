@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -9,11 +9,9 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, TransactionBehavior, params};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::broadcast;
 use crate::settings;
@@ -25,13 +23,11 @@ const TRACE_BATCH_MAX_ROWS: usize = 128;
 const TRACE_BATCH_MAX_DELAY: Duration = Duration::from_millis(50);
 
 // Single shared connection for all DB access. Rust-level Mutex serialization is
-// microseconds; SQLite WAL writer contention with busy_timeout is up to 30s.
+// sub-millisecond work; SQLite WAL writer contention with busy_timeout is up to 30s.
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 static DB_INIT_LOCK: Mutex<()> = Mutex::new(());
-static TRACE_BACKEND: Mutex<Option<ClickHouseTraceClient>> = Mutex::new(None);
-static TRACE_INITIALIZING: Mutex<Option<settings::TraceConfig>> = Mutex::new(None);
+static TRACE_EXPORTER: Mutex<Option<OtelTraceExporter>> = Mutex::new(None);
 static NEXT_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
-static NEXT_TRACE_STATE_VERSION: AtomicU64 = AtomicU64::new(1);
 static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQueue::start);
 static TRACE_IN_FLIGHT_ROWS: LazyLock<Mutex<HashMap<String, TraceInFlightRow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -47,594 +43,260 @@ fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
 }
 
 #[derive(Clone, Debug)]
-struct ClickHouseTraceClient {
+struct OtelTraceExporter {
     config: settings::TraceConfig,
-    trace_table: String,
-    state_table: String,
-    event_table: String,
-    blob_table: String,
+    endpoint: String,
     agent: ureq::Agent,
 }
 
-const CH_TIMEOUT: Duration = Duration::from_secs(10);
+const OTEL_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl ClickHouseTraceClient {
+impl OtelTraceExporter {
     fn new(config: settings::TraceConfig) -> Self {
-        let trace_table = config.clickhouse_table_prefix.clone();
+        let endpoint = config.otel_endpoint.clone();
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
-                .timeout_global(Some(CH_TIMEOUT))
+                .timeout_global(Some(OTEL_TIMEOUT))
                 .http_status_as_error(false)
                 .build(),
         );
         Self {
-            state_table: format!("{trace_table}_state"),
-            event_table: format!("{trace_table}_events"),
-            blob_table: format!("{trace_table}_blobs"),
-            trace_table,
             config,
+            endpoint,
             agent,
         }
     }
 
-    fn authed_builder(&self, url: &str, content_type: &str) -> ureq::http::request::Builder {
+    fn export(&self, rows: &[TraceRow]) -> Result<(), String> {
+        let spans = rows
+            .iter()
+            .filter_map(|row| otel_span_json(row))
+            .collect::<Vec<_>>();
+        if spans.is_empty() {
+            return Ok(());
+        }
+        let payload = json!({
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [
+                        otel_attr_string("service.name", &self.config.service_name),
+                        otel_attr_string("telemetry.sdk.language", "rust"),
+                        otel_attr_string("telemetry.sdk.name", "moo"),
+                    ]
+                },
+                "scopeSpans": [{
+                    "scope": { "name": "moo.trace" },
+                    "spans": spans,
+                }]
+            }]
+        });
+        let body = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
         let mut builder = ureq::http::Request::builder()
             .method("POST")
-            .uri(url)
-            .header("Content-Type", content_type);
-        if let Some(user) = &self.config.clickhouse_user {
-            builder = builder.header("X-ClickHouse-User", user);
+            .uri(&self.endpoint)
+            .header("Content-Type", "application/json");
+        for header in &self.config.headers {
+            builder = builder.header(&header.name, &header.value);
         }
-        if let Some(password) = &self.config.clickhouse_password {
-            builder = builder.header("X-ClickHouse-Key", password);
-        }
-        builder
-    }
-
-    fn query(&self, body: &str) -> Result<String, String> {
-        let url = format!(
-            "{}/?database={}",
-            self.config.clickhouse_url, self.config.clickhouse_database
-        );
-        let req = self
-            .authed_builder(&url, "text/plain")
-            .body(body.to_string())
-            .map_err(|e| e.to_string())?;
+        let req = builder.body(body).map_err(|e| e.to_string())?;
         let mut resp = self.agent.run(req).map_err(|e| e.to_string())?;
         let status = resp.status().as_u16();
-        let mut buf = Vec::new();
-        resp.body_mut()
-            .as_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&buf).to_string();
+        let mut text = String::new();
+        let _ = resp.body_mut().as_reader().read_to_string(&mut text);
         if status >= 400 {
-            return Err(format!("clickhouse {status}: {text}"));
-        }
-        Ok(text)
-    }
-
-    fn request(&self, body: &str) -> Result<(), String> {
-        self.query(body).map(|_| ())
-    }
-
-    fn ensure_tables(&self) -> Result<(), String> {
-        let t = &self.trace_table;
-        let ts = &self.state_table;
-        let te = &self.event_table;
-        let tb = &self.blob_table;
-        self.request(&format!(
-            "CREATE TABLE IF NOT EXISTS {t} (                id String,                parent_id Nullable(String),                chat_id Nullable(String),                run_id Nullable(String),                kind LowCardinality(String),                name String,                depth Int32,                seq Int64,                started_ns Int64,                input_hash Nullable(String),                invoked_from_step_id Nullable(String),                started_at DateTime64(9, 'UTC') MATERIALIZED fromUnixTimestamp64Nano(started_ns, 'UTC'),                is_root UInt8 MATERIALIZED if(isNull(parent_id), 1, 0),                chat_key String MATERIALIZED ifNull(chat_id, ''),                run_key String MATERIALIZED ifNull(run_id, ''),                parent_key String MATERIALIZED ifNull(parent_id, ''),                INDEX idx_id id TYPE bloom_filter(0.01) GRANULARITY 4,                INDEX idx_parent parent_key TYPE bloom_filter(0.01) GRANULARITY 4,                INDEX idx_run run_key TYPE bloom_filter(0.01) GRANULARITY 4,                INDEX idx_kind kind TYPE set(64) GRANULARITY 4,                INDEX idx_roots is_root TYPE set(2) GRANULARITY 4            ) ENGINE = MergeTree()            PARTITION BY toYYYYMM(started_at)            ORDER BY (chat_key, started_ns, id)            SETTINGS index_granularity = 8192"
-        ))?;
-        self.request(&format!(
-            "CREATE TABLE IF NOT EXISTS {ts} (                id String,                status LowCardinality(String),                ended_ns Nullable(Int64),                output_hash Nullable(String),                error_hash Nullable(String),                data_json Nullable(String),                data_hash Nullable(String),                _version UInt64,                ended_at Nullable(DateTime64(9, 'UTC')) MATERIALIZED if(isNull(ended_ns), NULL, fromUnixTimestamp64Nano(assumeNotNull(ended_ns), 'UTC')),                has_error UInt8 MATERIALIZED if(status = 'error' OR isNotNull(error_hash), 1, 0),                INDEX idx_status status TYPE set(16) GRANULARITY 4,                INDEX idx_errors has_error TYPE set(2) GRANULARITY 4            ) ENGINE = ReplacingMergeTree(_version)            ORDER BY id            SETTINGS index_granularity = 8192"
-        ))?;
-        self.request(&format!(
-            "CREATE TABLE IF NOT EXISTS {te} (                id UInt64,                span_id String,                ts_ns Int64,                level LowCardinality(String),                message String,                data_hash Nullable(String),                ts DateTime64(9, 'UTC') MATERIALIZED fromUnixTimestamp64Nano(ts_ns, 'UTC'),                INDEX idx_level level TYPE set(16) GRANULARITY 4            ) ENGINE = MergeTree()            PARTITION BY toYYYYMM(ts)            ORDER BY (span_id, ts_ns, id)            SETTINGS index_granularity = 8192"
-        ))?;
-        self.request(&format!(
-            "CREATE TABLE IF NOT EXISTS {tb} (                hash String,                kind LowCardinality(String),                encoding LowCardinality(String),                uncompressed_bytes UInt64,                data String,                created_at Int64,                created_at_dt DateTime64(3, 'UTC') MATERIALIZED fromUnixTimestamp64Milli(created_at, 'UTC')            ) ENGINE = ReplacingMergeTree()            PARTITION BY toYYYYMM(created_at_dt)            ORDER BY hash            SETTINGS index_granularity = 8192"
-        ))?;
-        Ok(())
-    }
-
-    fn insert_json_batch(&self, table: &str, rows: &[serde_json::Value]) -> Result<(), String> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let query = format!("INSERT INTO {table} FORMAT JSONEachRow");
-        let url = format!(
-            "{}/?database={}&query={}",
-            self.config.clickhouse_url,
-            self.config.clickhouse_database,
-            ch_encode_query(&query)
-        );
-        let mut body = String::new();
-        for row in rows {
-            body.push_str(&serde_json::to_string(row).map_err(|e| e.to_string())?);
-            body.push('\n');
-        }
-        let req = self
-            .authed_builder(&url, "application/json")
-            .body(body)
-            .map_err(|e| e.to_string())?;
-        let mut resp = self.agent.run(req).map_err(|e| e.to_string())?;
-        let status = resp.status().as_u16();
-        if status >= 400 {
-            let mut buf = Vec::new();
-            let _ = resp.body_mut().as_reader().read_to_end(&mut buf);
-            return Err(format!(
-                "clickhouse insert into {table} ({} row{}) {status}: {}",
-                rows.len(),
-                if rows.len() == 1 { "" } else { "s" },
-                String::from_utf8_lossy(&buf)
-            ));
+            return Err(format!("otel export {status}: {text}"));
         }
         Ok(())
-    }
-
-    fn select_json_each_row(&self, sql: &str) -> Result<Vec<Value>, String> {
-        let sql = format!("{} FORMAT JSONEachRow", sql.trim_end_matches(';'));
-        let output = self.query(&sql)?;
-        output
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str::<Value>(line).map_err(|e| e.to_string()))
-            .collect()
-    }
-
-    fn span_json(row: &TraceRow) -> serde_json::Value {
-        serde_json::json!({
-            "id": row.id, "parent_id": row.parent_id, "chat_id": row.chat_id, "run_id": row.run_id,
-            "kind": row.kind, "name": row.name, "depth": row.depth, "seq": row.seq,
-            "started_ns": row.started_ns, "input_hash": row.input_hash,
-            "invoked_from_step_id": row.invoked_from_step_id,
-        })
-    }
-
-    fn state_json(row: &TraceRow) -> serde_json::Value {
-        let wall_version = now_ms()
-            .max(row.ended_ns.unwrap_or(row.started_ns) / 1_000_000)
-            .max(row.started_ns / 1_000_000) as u64;
-        let version = (wall_version << 20)
-            | (NEXT_TRACE_STATE_VERSION.fetch_add(1, Ordering::Relaxed) & ((1 << 20) - 1));
-        serde_json::json!({
-            "id": row.id, "status": row.status, "ended_ns": row.ended_ns,
-            "output_hash": row.output_hash, "error_hash": row.error_hash,
-            "data_json": row.data_json, "data_hash": row.data_hash, "_version": version,
-        })
-    }
-
-    fn blob_json(
-        hash: &str,
-        kind: &str,
-        encoding: &str,
-        uncompressed_bytes: i64,
-        bytes: &[u8],
-        created_at: i64,
-    ) -> serde_json::Value {
-        serde_json::json!({ "hash": hash, "kind": kind, "encoding": encoding, "uncompressed_bytes": uncompressed_bytes, "data": BASE64.encode(bytes), "created_at": created_at })
-    }
-
-    fn select_trace_rows(&self, clause: &str, include_data: bool) -> Result<Vec<TraceRow>, String> {
-        let mut rows = self.select_latest_trace_rows(clause, None, include_data)?;
-        self.attach_trace_roots(&mut rows)?;
-        Ok(rows)
-    }
-
-    fn select_latest_trace_rows(
-        &self,
-        clause: &str,
-        having: Option<&str>,
-        include_data: bool,
-    ) -> Result<Vec<TraceRow>, String> {
-        let columns = if include_data {
-            TRACE_CH_SELECT_COLUMNS
-        } else {
-            TRACE_CH_LIST_COLUMNS
-        };
-        let sql = ch_latest_trace_rows_sql(
-            &self.trace_table,
-            &self.state_table,
-            columns,
-            clause,
-            having,
-        );
-        let mut rows = self
-            .select_json_each_row(&sql)?
-            .iter()
-            .map(ch_trace_row_from_json)
-            .collect::<Result<Vec<_>, _>>()?;
-        overlay_trace_in_flight_rows(&mut rows);
-        if include_data {
-            hydrate_trace_rows_ch(self, &mut rows)?;
-        }
-        Ok(rows)
-    }
-
-    fn get_trace_raw(&self, id: &str) -> Result<Option<TraceRow>, String> {
-        let sql = ch_latest_trace_rows_sql(
-            &self.trace_table,
-            &self.state_table,
-            TRACE_CH_SELECT_COLUMNS,
-            &format!("WHERE id = {} LIMIT 1", ch_sql_string(id)),
-            None,
-        );
-        let mut rows = self
-            .select_json_each_row(&sql)?
-            .iter()
-            .map(ch_trace_row_from_json)
-            .collect::<Result<Vec<_>, _>>()?;
-        overlay_trace_in_flight_rows(&mut rows);
-        hydrate_trace_rows_ch(self, &mut rows)?;
-        Ok(rows.pop())
-    }
-
-    fn get_trace(&self, id: &str) -> Result<Option<TraceRow>, String> {
-        let mut row = self.get_trace_raw(id)?;
-        if let Some(row) = row.as_mut() {
-            self.attach_trace_root(row)?;
-        }
-        Ok(row)
-    }
-
-    fn children_for_parents(&self, parent_ids: &[String]) -> Result<Vec<TraceRow>, String> {
-        let ids = parent_ids
-            .iter()
-            .map(|id| id.trim())
-            .filter(|id| !id.is_empty())
-            .map(ch_sql_string)
-            .collect::<Vec<_>>();
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        let ids = ids.join(", ");
-        // Subtree traversal sets root metadata once after traversal. Avoid
-        // select_trace_rows() here: it calls attach_trace_roots(), which used to
-        // climb to the root for every returned child and turned a breadth fetch
-        // into hundreds/thousands of ClickHouse point queries.
-        self.select_latest_trace_rows(
-            &format!("WHERE parent_id IN ({ids}) ORDER BY depth ASC, seq ASC"),
-            None,
-            false,
-        )
-    }
-
-    fn children(
-        &self,
-        parent_id: Option<&str>,
-        limit: Option<i64>,
-    ) -> Result<Vec<TraceRow>, String> {
-        let parent_id = parent_id.map(str::trim).filter(|id| !id.is_empty());
-        let clause = match parent_id {
-            Some(parent_id) => format!("WHERE parent_id = {}", ch_sql_string(parent_id)),
-            None => "WHERE isNull(parent_id)".to_string(),
-        };
-        let limit_clause = limit
-            .map(|limit| format!(" LIMIT {}", limit.clamp(1, 1000)))
-            .unwrap_or_default();
-        self.select_trace_rows(&format!("{clause} ORDER BY seq ASC{limit_clause}"), false)
-    }
-
-    fn events(
-        &self,
-        span_id: &str,
-        limit: i64,
-        before_ns: Option<i64>,
-    ) -> Result<Vec<TraceEventRow>, String> {
-        let limit = limit.clamp(1, 1000);
-        let before = before_ns
-            .map(|ns| format!(" AND ts_ns < {ns}"))
-            .unwrap_or_default();
-        let sql = format!(
-            "SELECT id, span_id, ts_ns, level, message, data_hash FROM {} WHERE span_id = {}{before} ORDER BY ts_ns ASC, id ASC LIMIT {limit}",
-            self.event_table,
-            ch_sql_string(span_id),
-        );
-        self.select_json_each_row(&sql)?
-            .iter()
-            .map(ch_trace_event_from_json)
-            .collect()
-    }
-
-    fn chat_roots(&self, limit: i64, before_ns: Option<i64>) -> Result<Vec<TraceRow>, String> {
-        let limit = limit.clamp(1, 200);
-        let before = before_ns
-            .map(|ns| format!(" AND started_ns < {ns}"))
-            .unwrap_or_default();
-        self.select_trace_rows(
-            &format!("WHERE {TRACE_ROOT_FILTER_SQL} AND kind = 'chat'{before} ORDER BY started_ns DESC LIMIT {limit}"),
-            false,
-        )
-    }
-
-    fn root_for(&self, id: &str) -> Result<Option<TraceRow>, String> {
-        let Some(mut row) = self.get_trace_raw(id)? else {
-            return Ok(None);
-        };
-        let mut seen = HashSet::new();
-        while let Some(parent_id) = row.parent_id.clone() {
-            if !seen.insert(parent_id.clone()) {
-                break;
-            }
-            let Some(parent) = self.get_trace_raw(&parent_id)? else {
-                break;
-            };
-            row = parent;
-        }
-        row.root_id = row.id.clone();
-        row.root_kind = row.kind.clone();
-        row.root_name = row.name.clone();
-        Ok(Some(row))
-    }
-
-    fn attach_trace_root(&self, row: &mut TraceRow) -> Result<(), String> {
-        if row.parent_id.is_none() {
-            row.root_id = row.id.clone();
-            row.root_kind = row.kind.clone();
-            row.root_name = row.name.clone();
-            return Ok(());
-        }
-        if let Some(root) = self.root_for(&row.id)? {
-            row.root_id = root.id;
-            row.root_kind = root.kind;
-            row.root_name = root.name;
-        }
-        Ok(())
-    }
-
-    fn attach_trace_roots(&self, rows: &mut [TraceRow]) -> Result<(), String> {
-        let mut roots: HashMap<String, (String, String, String)> = HashMap::new();
-        for row in rows.iter_mut() {
-            if row.parent_id.is_none() {
-                row.root_id = row.id.clone();
-                row.root_kind = row.kind.clone();
-                row.root_name = row.name.clone();
-                continue;
-            }
-            if let Some((root_id, root_kind, root_name)) = roots.get(&row.id).cloned() {
-                row.root_id = root_id;
-                row.root_kind = root_kind;
-                row.root_name = root_name;
-                continue;
-            }
-            if let Some(root) = self.root_for(&row.id)? {
-                let tuple = (root.id, root.kind, root.name);
-                row.root_id = tuple.0.clone();
-                row.root_kind = tuple.1.clone();
-                row.root_name = tuple.2.clone();
-                roots.insert(row.id.clone(), tuple);
-            }
-        }
-        Ok(())
-    }
-
-    fn search(&self, query: &TraceSearch, limit: i64, now: i64) -> Result<Vec<TraceRow>, String> {
-        let mut clauses: Vec<String> = Vec::new();
-        let mut having_clauses: Vec<String> = Vec::new();
-        if let Some(before_ns) = query.before_ns {
-            clauses.push(format!("started_ns < {before_ns}"));
-        }
-        let text = query.query.as_deref().unwrap_or("").trim();
-        if !text.is_empty() {
-            clauses.push(ch_text_filter(
-                &["name", "id", "ifNull(chat_id, '')", "ifNull(run_id, '')"],
-                text,
-            ));
-        }
-        if let Some(kind) = query
-            .kind
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            if kind == "chat" {
-                clauses.push(TRACE_CHAT_KIND_FILTER_SQL.to_string());
-            } else {
-                clauses.push(format!("kind = {}", ch_sql_string(kind)));
-            }
-        }
-        let status = if query.has_error {
-            Some("error")
-        } else {
-            query
-                .status
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-        };
-        if let Some(status) = status {
-            having_clauses.push(format!("status = {}", ch_sql_string(status)));
-        }
-        if let Some(chat_id) = query
-            .chat_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            clauses.push(format!("chat_id = {}", ch_sql_string(chat_id)));
-        }
-        if let Some(run_id) = query
-            .run_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            clauses.push(format!("run_id = {}", ch_sql_string(run_id)));
-        }
-        if query.roots_only {
-            clauses.push(TRACE_ROOT_FILTER_SQL.to_string());
-        }
-        match query.scope.as_deref().map(str::trim) {
-            Some("global") => clauses.push("chat_id IS NULL".to_string()),
-            Some("chat") => clauses.push("chat_id IS NOT NULL".to_string()),
-            _ => {}
-        }
-        if let Some(started_after_ns) = query.started_after_ns {
-            clauses.push(format!("started_ns >= {started_after_ns}"));
-        }
-        if let Some(started_before_ns) = query.started_before_ns {
-            clauses.push(format!("started_ns <= {started_before_ns}"));
-        }
-        let min_duration_ns = query.min_duration_ns.unwrap_or(0).max(0);
-        if min_duration_ns > 0 {
-            having_clauses.push(format!(
-                "(ifNull(ended_ns, {now}) - started_ns) >= {min_duration_ns}"
-            ));
-        }
-        if let Some(max_duration_ns) = query.max_duration_ns.filter(|v| *v < i64::MAX) {
-            having_clauses.push(format!(
-                "(ifNull(ended_ns, {now}) - started_ns) <= {max_duration_ns}"
-            ));
-        }
-        let where_clause = if clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", clauses.join(" AND "))
-        };
-        let mut rows = self.select_latest_trace_rows(
-            &format!("{where_clause} ORDER BY started_ns DESC LIMIT {limit}"),
-            Some(&having_clauses.join(" AND ")),
-            false,
-        )?;
-        self.attach_trace_roots(&mut rows)?;
-        Ok(rows)
-    }
-
-    fn chat_root_for(&self, chat_id: &str) -> Result<Option<TraceRow>, String> {
-        let mut rows = self.select_trace_rows(
-            &format!(
-                "WHERE {TRACE_ROOT_FILTER_SQL} AND kind = 'chat' AND chat_id = {} ORDER BY started_ns DESC LIMIT 1",
-                ch_sql_string(chat_id),
-            ),
-            false,
-        )?;
-        Ok(rows.pop())
-    }
-
-    fn chat_tree(
-        &self,
-        chat_id: &str,
-        max_depth: i32,
-    ) -> Result<(Option<TraceRow>, Vec<TraceRow>), String> {
-        let Some(mut root) = self.chat_root_for(chat_id)? else {
-            return Ok((None, Vec::new()));
-        };
-        let root_id = root.id.clone();
-        let root_kind = root.kind.clone();
-        let root_name = root.name.clone();
-        root.root_id = root_id.clone();
-        root.root_kind = root_kind.clone();
-        root.root_name = root_name.clone();
-
-        // Chat trace loading is the hot path. All chat-attached spans carry the
-        // chat_id, and the trace table is ordered by (chat_key, started_ns, id),
-        // so one chat-scoped range scan is dramatically cheaper than recursive
-        // parent_id bloom-filter lookups plus per-row root hydration.
-        let max_depth = i64::from(max_depth.max(0));
-        let max_node_depth = root.depth.saturating_add(max_depth);
-        let mut nodes = self.select_latest_trace_rows(
-            &format!(
-                "WHERE chat_id = {} AND depth <= {max_node_depth} ORDER BY depth ASC, seq ASC",
-                ch_sql_string(chat_id),
-            ),
-            None,
-            false,
-        )?;
-        if !nodes.iter().any(|row| row.id == root_id) {
-            nodes.push(root.clone());
-        }
-        nodes.sort_by_key(|row| (row.depth, row.seq));
-        for row in nodes.iter_mut() {
-            row.root_id = root_id.clone();
-            row.root_kind = root_kind.clone();
-            row.root_name = root_name.clone();
-        }
-        Ok((Some(root), nodes))
-    }
-
-    fn subtree_rows(&self, id: &str, max_depth: i32) -> Result<Vec<TraceRow>, String> {
-        let max_depth = max_depth.max(0) as usize;
-        let Some(root) = self.get_trace(id)? else {
-            return Ok(vec![]);
-        };
-        let root_id = root.id.clone();
-        let root_kind = root.kind.clone();
-        let root_name = root.name.clone();
-        let mut rows = vec![root];
-        let mut frontier = vec![id.to_string()];
-        for _ in 0..max_depth {
-            let mut next = Vec::new();
-            let children = self.children_for_parents(&frontier)?;
-            next.extend(children.iter().map(|row| row.id.clone()));
-            rows.extend(children);
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
-        }
-        rows.sort_by_key(|row| (row.depth, row.seq));
-        for row in rows.iter_mut() {
-            row.root_id = root_id.clone();
-            row.root_kind = root_kind.clone();
-            row.root_name = root_name.clone();
-        }
-        Ok(rows)
-    }
-
-    fn get_blob(&self, hash: &str) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.get_blobs(&[hash.to_string()])?.remove(hash))
-    }
-
-    fn get_blobs(&self, hashes: &[String]) -> Result<HashMap<String, Vec<u8>>, String> {
-        if hashes.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let ids = hashes
-            .iter()
-            .map(|hash| ch_sql_string(hash))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT hash, argMax(encoding, created_at) AS encoding, argMax(data, created_at) AS data FROM {} WHERE hash IN ({ids}) GROUP BY hash",
-            self.blob_table,
-        );
-        let mut out = HashMap::new();
-        for row in self.select_json_each_row(&sql)? {
-            let hash = ch_string(&row, "hash")?;
-            let encoding = ch_string(&row, "encoding")?;
-            let data = ch_string(&row, "data")?;
-            let bytes = BASE64.decode(data.as_bytes()).map_err(|e| e.to_string())?;
-            let decoded = match encoding.as_str() {
-                "br" => brotli_decompress(&bytes)?,
-                "identity" => bytes,
-                other => return Err(format!("unsupported trace blob encoding: {other}")),
-            };
-            out.insert(hash, decoded);
-        }
-        Ok(out)
     }
 }
 
-fn brotli_decompress(input: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    brotli::Decompressor::new(input, 4096)
-        .read_to_end(&mut out)
-        .map_err(|e| e.to_string())?;
-    Ok(out)
+#[derive(Clone, Debug, Default)]
+struct TraceStore {
+    rows: HashMap<String, TraceRow>,
+    blobs: HashMap<String, (String, Vec<u8>)>,
 }
 
-#[derive(Clone, Debug)]
+static TRACE_STORE: LazyLock<Mutex<TraceStore>> =
+    LazyLock::new(|| Mutex::new(TraceStore::default()));
+
+fn trace_store_put_blob(hash: String, kind: String, bytes: Vec<u8>) {
+    let Ok(mut store) = TRACE_STORE.lock() else {
+        return;
+    };
+    store.blobs.entry(hash).or_insert((kind, bytes));
+}
+
+fn trace_store_apply(row: TraceRow) {
+    let Ok(mut store) = TRACE_STORE.lock() else {
+        return;
+    };
+    store
+        .rows
+        .entry(row.id.clone())
+        .and_modify(|entry| merge_trace_row(entry, &row))
+        .or_insert(row);
+}
+
+fn trace_store_get(id: &str) -> Option<TraceRow> {
+    TRACE_STORE
+        .lock()
+        .ok()
+        .and_then(|store| store.rows.get(id).cloned())
+}
+
+fn trace_store_rows() -> Vec<TraceRow> {
+    TRACE_STORE
+        .lock()
+        .map(|store| store.rows.values().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn trace_store_blob(hash: &str) -> Option<(String, Vec<u8>)> {
+    TRACE_STORE
+        .lock()
+        .ok()
+        .and_then(|store| store.blobs.get(hash).cloned())
+}
+
+fn merge_trace_row(entry: &mut TraceRow, row: &TraceRow) {
+    if entry.kind.is_empty() || !row.kind.is_empty() {
+        entry.parent_id = row.parent_id.clone();
+        entry.root_id = row.root_id.clone();
+        entry.root_kind = row.root_kind.clone();
+        entry.root_name = row.root_name.clone();
+        entry.chat_id = row.chat_id.clone();
+        entry.run_id = row.run_id.clone();
+        entry.kind = row.kind.clone();
+        entry.name = row.name.clone();
+        entry.depth = row.depth;
+        entry.seq = row.seq;
+        entry.started_ns = row.started_ns;
+        entry.input_hash = row.input_hash.clone();
+        entry.invoked_from_step_id = row.invoked_from_step_id.clone();
+    }
+    entry.status = row.status.clone();
+    entry.ended_ns = row.ended_ns;
+    entry.output_hash = row.output_hash.clone();
+    entry.error_hash = row.error_hash.clone();
+    entry.data_json = row.data_json.clone();
+    entry.data_hash = row.data_hash.clone();
+}
+
+fn trace_attr_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(json!({ "boolValue": b })),
+        Value::Number(n) => n
+            .as_i64()
+            .map(|v| json!({ "intValue": v.to_string() }))
+            .or_else(|| n.as_u64().map(|v| json!({ "intValue": v.to_string() })))
+            .or_else(|| n.as_f64().map(|v| json!({ "doubleValue": v }))),
+        Value::String(s) => Some(json!({ "stringValue": s })),
+        other => Some(json!({ "stringValue": other.to_string() })),
+    }
+}
+
+fn otel_attr_string(key: &str, value: &str) -> Value {
+    json!({ "key": key, "value": { "stringValue": value } })
+}
+
+fn otel_attr_i64(key: &str, value: i64) -> Value {
+    json!({ "key": key, "value": { "intValue": value.to_string() } })
+}
+
+fn otel_attr_json(key: &str, value: &Value) -> Option<Value> {
+    trace_attr_value(value).map(|value| json!({ "key": key, "value": value }))
+}
+
+fn otel_trace_id(root_id: &str) -> String {
+    stable_hex(root_id, 16)
+}
+
+fn otel_span_id(id: &str) -> String {
+    stable_hex(id, 8)
+}
+
+fn stable_hex(input: &str, bytes: usize) -> String {
+    let hash = sha256_object_hash("otel:id", input.as_bytes());
+    let raw = hash.strip_prefix("sha256:").unwrap_or(&hash);
+    raw.chars().take(bytes * 2).collect()
+}
+
+fn otel_span_json(row: &TraceRow) -> Option<Value> {
+    let end = row.ended_ns?;
+    let mut attrs = vec![
+        otel_attr_string("moo.trace.id", &row.id),
+        otel_attr_string("moo.trace.kind", &row.kind),
+        otel_attr_string("moo.trace.status", &row.status),
+        otel_attr_i64("moo.trace.seq", row.seq),
+        otel_attr_i64("moo.trace.depth", row.depth),
+    ];
+    if let Some(chat_id) = &row.chat_id {
+        attrs.push(otel_attr_string("moo.chat.id", chat_id));
+    }
+    if let Some(run_id) = &row.run_id {
+        attrs.push(otel_attr_string("moo.run.id", run_id));
+    }
+    if let Some(step_id) = &row.invoked_from_step_id {
+        attrs.push(otel_attr_string("moo.step.id", step_id));
+    }
+    for (key, hash) in [
+        ("moo.trace.input_hash", &row.input_hash),
+        ("moo.trace.output_hash", &row.output_hash),
+        ("moo.trace.error_hash", &row.error_hash),
+        ("moo.trace.data_hash", &row.data_hash),
+    ] {
+        if let Some(hash) = hash {
+            attrs.push(otel_attr_string(key, hash));
+        }
+    }
+    if let Some(data_json) = &row.data_json {
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(data_json) {
+            for (key, value) in map.iter().take(64) {
+                if key.len() <= 128
+                    && let Some(attr) = otel_attr_json(&format!("moo.data.{key}"), value)
+                {
+                    attrs.push(attr);
+                }
+            }
+        } else {
+            attrs.push(otel_attr_string("moo.trace.data", data_json));
+        }
+    }
+    let mut span = json!({
+        "traceId": otel_trace_id(&row.root_id),
+        "spanId": otel_span_id(&row.id),
+        "name": row.name,
+        "kind": 1,
+        "startTimeUnixNano": row.started_ns.to_string(),
+        "endTimeUnixNano": end.max(row.started_ns).to_string(),
+        "attributes": attrs,
+        "status": otel_status(&row.status, row.error_hash.is_some()),
+    });
+    if let Some(parent_id) = &row.parent_id {
+        span["parentSpanId"] = Value::String(otel_span_id(parent_id));
+    }
+    Some(span)
+}
+
+fn otel_status(status: &str, has_error: bool) -> Value {
+    match status {
+        "ok" => json!({ "code": 1 }),
+        "error" => json!({ "code": 2, "message": "error" }),
+        "cancelled" => json!({ "code": 2, "message": "cancelled" }),
+        "timeout" => json!({ "code": 2, "message": "timeout" }),
+        other if has_error => json!({ "code": 2, "message": other }),
+        _ => json!({ "code": 0 }),
+    }
+}
+
 enum TraceWrite {
     Span(Box<TraceRow>),
     State(Box<TraceRow>),
     Blob {
         hash: String,
         kind: String,
-        encoding: String,
-        uncompressed_bytes: i64,
         bytes: Vec<u8>,
-        created_at: i64,
     },
 }
 
@@ -684,57 +346,31 @@ impl TraceWriteQueue {
 }
 
 fn report_trace_write_error(message: String, rows: usize) {
+    let endpoint = current_trace_exporter().map(|exporter| exporter.endpoint);
     broadcast::publish(
-        serde_json::json!({ "kind": "trace-write-error", "message": message, "rows": rows, "at": now_ms() })
+        serde_json::json!({ "kind": "otel-export-error", "message": message, "rows": rows, "endpoint": endpoint, "at": now_ms() })
             .to_string(),
     );
 }
 
-fn report_trace_init_error(message: String, config: &settings::TraceConfig) {
-    broadcast::publish(
-        serde_json::json!({
-            "kind": "trace-init-error",
-            "message": message,
-            "backend": "clickhouse",
-            "endpoint": config.clickhouse_url,
-            "database": config.clickhouse_database,
-            "at": now_ms(),
-        })
-        .to_string(),
-    );
-}
-
 fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(());
-    };
-    let mut spans = Vec::new();
-    let mut states = Vec::new();
-    let mut blobs = Vec::new();
+    let mut finished = Vec::new();
     for write in writes {
         match write {
-            TraceWrite::Span(row) => spans.push(ClickHouseTraceClient::span_json(row)),
-            TraceWrite::State(row) => states.push(ClickHouseTraceClient::state_json(row)),
-            TraceWrite::Blob {
-                hash,
-                kind,
-                encoding,
-                uncompressed_bytes,
-                bytes,
-                created_at,
-            } => blobs.push(ClickHouseTraceClient::blob_json(
-                hash,
-                kind,
-                encoding,
-                *uncompressed_bytes,
-                bytes,
-                *created_at,
-            )),
+            TraceWrite::Span(row) | TraceWrite::State(row) => {
+                trace_store_apply((**row).clone());
+                if row.ended_ns.is_some() {
+                    finished.push((**row).clone());
+                }
+            }
+            TraceWrite::Blob { hash, kind, bytes } => {
+                trace_store_put_blob(hash.clone(), kind.clone(), bytes.clone());
+            }
         }
     }
-    client.insert_json_batch(&client.blob_table, &blobs)?;
-    client.insert_json_batch(&client.trace_table, &spans)?;
-    client.insert_json_batch(&client.state_table, &states)?;
+    if let Some(exporter) = current_trace_exporter() {
+        exporter.export(&finished)?;
+    }
     Ok(())
 }
 
@@ -843,429 +479,8 @@ fn trace_in_flight_children(parent_id: Option<&str>, limit: Option<i64>) -> Vec<
     rows
 }
 
-fn overlay_trace_in_flight_rows(rows: &mut [TraceRow]) {
-    let Ok(in_flight) = TRACE_IN_FLIGHT_ROWS.lock() else {
-        return;
-    };
-    for row in rows {
-        let Some(local) = in_flight.get(&row.id).map(|entry| &entry.row) else {
-            continue;
-        };
-        if row.ended_ns.is_none() && local.ended_ns.is_some() {
-            row.status = local.status.clone();
-            row.ended_ns = local.ended_ns;
-            row.output_hash = local.output_hash.clone();
-            row.error_hash = local.error_hash.clone();
-            row.data_json = local.data_json.clone();
-            row.data_hash = local.data_hash.clone();
-        }
-    }
-}
-
-fn ch_encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
-                out.push(char::from(b"0123456789ABCDEF"[(b & 0xf) as usize]));
-            }
-        }
-    }
-    out
-}
-
-const TRACE_CH_SELECT_COLUMNS: &str = "s.id AS id, s.parent_id AS parent_id, s.chat_id AS chat_id, s.run_id AS run_id, s.kind AS kind, s.name AS name, s.depth AS depth, s.seq AS seq, ifNull(st.status, 'running') AS status, s.started_ns AS started_ns, st.ended_ns AS ended_ns, s.input_hash AS input_hash, st.output_hash AS output_hash, st.error_hash AS error_hash, s.invoked_from_step_id AS invoked_from_step_id, st.data_json AS data_json, st.data_hash AS data_hash";
-const TRACE_CH_LIST_COLUMNS: &str = "s.id AS id, s.parent_id AS parent_id, s.chat_id AS chat_id, s.run_id AS run_id, s.kind AS kind, s.name AS name, s.depth AS depth, s.seq AS seq, ifNull(st.status, 'running') AS status, s.started_ns AS started_ns, st.ended_ns AS ended_ns, s.input_hash AS input_hash, st.output_hash AS output_hash, st.error_hash AS error_hash, s.invoked_from_step_id AS invoked_from_step_id, NULL AS data_json, st.data_hash AS data_hash";
-const TRACE_ROOT_FILTER_SQL: &str = "isNull(parent_id)";
-const TRACE_CHAT_KIND_FILTER_SQL: &str =
-    "kind = 'chat' AND chat_id IS NOT NULL AND isNull(parent_id)";
-
-fn ch_sql_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' || ch == '\\' {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out.push('\'');
-    out
-}
-
-fn ch_like_pattern(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('%');
-    for ch in value.to_ascii_lowercase().chars() {
-        if matches!(ch, '%' | '_' | '\\' | '\'') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out.push('%');
-    out
-}
-
-fn ch_text_filter(exprs: &[&str], value: &str) -> String {
-    let pattern = ch_sql_string(&ch_like_pattern(value));
-    exprs
-        .iter()
-        .map(|expr| format!("lowerUTF8({expr}) LIKE {pattern}"))
-        .collect::<Vec<_>>()
-        .join(" OR ")
-        .pipe(|inner| format!("({inner})"))
-}
-
-fn ch_split_order_limit(clause: &str) -> (&str, &str) {
-    if clause.starts_with("ORDER BY ") {
-        ("", clause)
-    } else if let Some(pos) = clause.find(" ORDER BY ") {
-        (&clause[..pos], &clause[pos..])
-    } else {
-        (clause, "")
-    }
-}
-
-fn ch_latest_trace_state_sql(state_table: &str, base_ids: &str) -> String {
-    format!(
-        "SELECT id, tupleElement(state, 1) AS status, tupleElement(state, 2) AS ended_ns, tupleElement(state, 3) AS output_hash, tupleElement(state, 4) AS error_hash, tupleElement(state, 5) AS data_json, tupleElement(state, 6) AS data_hash FROM (SELECT id, argMax(tuple(toNullable(status), ended_ns, output_hash, error_hash, data_json, data_hash), tuple(if(isNull(ended_ns), 0, 1), _version)) AS state FROM {state_table} WHERE id IN ({base_ids}) GROUP BY id)"
-    )
-}
-
-fn ch_latest_trace_rows_sql(
-    table: &str,
-    state_table: &str,
-    columns: &str,
-    clause: &str,
-    having: Option<&str>,
-) -> String {
-    let (where_clause, order_limit) = ch_split_order_limit(clause.trim());
-    let where_clause = where_clause.trim();
-    let base_filter = if let Some(rest) = where_clause.strip_prefix("WHERE ") {
-        rest.trim()
-    } else {
-        where_clause
-    };
-    let base_where = if base_filter.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {base_filter}")
-    };
-    let order_limit = order_limit.trim();
-    let order_limit = if order_limit.is_empty() {
-        String::new()
-    } else {
-        format!(" {order_limit}")
-    };
-    if let Some(having) = having.map(str::trim).filter(|s| !s.is_empty()) {
-        let base_ids = format!("SELECT id FROM {table}{base_where}");
-        let state = ch_latest_trace_state_sql(state_table, &base_ids);
-        return format!(
-            "SELECT * FROM (SELECT {columns} FROM (SELECT * FROM {table}{base_where}) AS s ANY LEFT JOIN ({state}) AS st USING (id)) WHERE {having}{order_limit}"
-        );
-    }
-    let base_ids = format!("SELECT id FROM {table}{base_where}{order_limit}");
-    let state = ch_latest_trace_state_sql(state_table, &base_ids);
-    format!(
-        "SELECT {columns} FROM (SELECT * FROM {table}{base_where}{order_limit}) AS s ANY LEFT JOIN ({state}) AS st USING (id)"
-    )
-}
-
-trait Pipe: Sized {
-    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trace_raw_reads_apply_in_flight_overlay_before_hydration() {
-        let source = include_str!("host.rs");
-        let get_raw = &source
-            [source.find("fn get_trace_raw").unwrap()..source.find("fn get_trace(&self").unwrap()];
-
-        assert!(get_raw.contains("overlay_trace_in_flight_rows(&mut rows);"));
-        assert!(
-            get_raw
-                .find("overlay_trace_in_flight_rows(&mut rows);")
-                .unwrap()
-                < get_raw
-                    .find("hydrate_trace_rows_ch(self, &mut rows)?;")
-                    .unwrap()
-        );
-    }
-
-    #[test]
-    fn latest_trace_rows_sql_filters_after_final() {
-        let sql = ch_latest_trace_rows_sql(
-            "moo_traces",
-            "moo_traces_state",
-            TRACE_CH_LIST_COLUMNS,
-            "WHERE isNull(parent_id) ORDER BY started_ns DESC LIMIT 25",
-            Some("status = 'error'"),
-        );
-
-        assert!(sql.contains("SELECT * FROM (SELECT s.id AS id"));
-        assert!(sql.contains("FROM (SELECT * FROM moo_traces WHERE isNull(parent_id)) AS s ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status, tupleElement(state, 2) AS ended_ns"));
-        assert!(sql.contains("argMax(tuple(toNullable(status), ended_ns, output_hash, error_hash, data_json, data_hash), tuple(if(isNull(ended_ns), 0, 1), _version)) AS state"));
-        assert!(sql.contains("FROM moo_traces_state WHERE id IN (SELECT id FROM moo_traces WHERE isNull(parent_id)) GROUP BY id"));
-        assert!(sql.contains(")) WHERE status = 'error' ORDER BY started_ns DESC LIMIT 25"));
-        assert!(!sql.contains("LIMIT 1 BY id"));
-    }
-
-    #[test]
-    fn latest_trace_rows_sql_allows_empty_filters() {
-        let sql = ch_latest_trace_rows_sql(
-            "moo_traces",
-            "moo_traces_state",
-            TRACE_CH_SELECT_COLUMNS,
-            "ORDER BY seq ASC LIMIT 10",
-            None,
-        );
-
-        assert!(sql.contains(" FROM (SELECT * FROM moo_traces ORDER BY seq ASC LIMIT 10) AS s ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status"));
-        assert!(sql.contains("FROM moo_traces_state WHERE id IN (SELECT id FROM moo_traces ORDER BY seq ASC LIMIT 10) GROUP BY id"));
-        assert!(!sql.contains(") WHERE  ORDER"));
-    }
-
-    #[test]
-    fn latest_trace_rows_sql_filters_duration_after_joined_state() {
-        let sql = ch_latest_trace_rows_sql(
-            "moo_traces",
-            "moo_traces_state",
-            TRACE_CH_LIST_COLUMNS,
-            "WHERE isNull(parent_id) ORDER BY started_ns DESC LIMIT 100",
-            Some("(ifNull(ended_ns, 1234567890) - started_ns) >= 10000000"),
-        );
-
-        assert!(sql.contains("ANY LEFT JOIN (SELECT id, tupleElement(state, 1) AS status"));
-        assert!(sql.contains(
-            ")) WHERE (ifNull(ended_ns, 1234567890) - started_ns) >= 10000000 ORDER BY started_ns DESC LIMIT 100"
-        ));
-        assert!(!sql.contains("ifNull(st.ended_ns"));
-        assert!(sql.contains("GROUP BY id"));
-        assert!(!sql.contains("LIMIT 1 BY id"));
-    }
-
-    #[test]
-    fn latest_trace_state_prefers_finished_state_over_newer_running_state() {
-        let sql = ch_latest_trace_state_sql("moo_traces_state", "SELECT id FROM moo_traces");
-
-        assert!(sql.contains("tuple(if(isNull(ended_ns), 0, 1), _version)"));
-        assert!(!sql.contains("tuple(_version, if(isNull(ended_ns), 0, 1))"));
-    }
-
-    #[test]
-    fn inferred_step_attachment_root_is_not_step_kind() {
-        let (kind, name) = infer_trace_root_kind_name("step:abc123");
-
-        assert_eq!(kind, "missing-parent");
-        assert_eq!(name, "step:abc123");
-    }
-
-    #[test]
-    fn kind_chat_filter_only_selects_chat_roots() {
-        assert_eq!(
-            TRACE_CHAT_KIND_FILTER_SQL,
-            "kind = 'chat' AND chat_id IS NOT NULL AND isNull(parent_id)"
-        );
-    }
-
-    #[test]
-    fn trace_roots_sql_only_selects_null_parent_rows() {
-        let sql = ch_latest_trace_rows_sql(
-            "moo_traces",
-            "moo_traces_state",
-            TRACE_CH_LIST_COLUMNS,
-            "WHERE isNull(parent_id) AND started_ns < 100 ORDER BY started_ns DESC LIMIT 25",
-            None,
-        );
-
-        assert!(sql.contains(&format!(
-            "WHERE {TRACE_ROOT_FILTER_SQL} AND started_ns < 100 ORDER BY started_ns DESC LIMIT 25"
-        )));
-        assert!(!sql.contains("parent_id = ''"));
-    }
-
-    #[test]
-    fn trace_children_sql_uses_declared_parent_only() {
-        let sql = ch_latest_trace_rows_sql(
-            "moo_traces",
-            "moo_traces_state",
-            TRACE_CH_LIST_COLUMNS,
-            "WHERE parent_id = 'trace:parent' ORDER BY seq ASC LIMIT 25",
-            None,
-        );
-
-        assert!(sql.contains("WHERE parent_id = 'trace:parent' ORDER BY seq ASC LIMIT 25"));
-        assert!(!sql.contains("isNull(parent_id)"));
-    }
-
-    #[test]
-    fn trace_initialization_failures_are_published_structurally() {
-        let source = include_str!("host.rs");
-        assert!(source.contains("fn report_trace_init_error"));
-        assert!(source.contains(r#""kind": "trace-init-error""#));
-        assert!(source.contains(r#""backend": "clickhouse""#));
-        assert!(source.contains(r#""endpoint": config.clickhouse_url"#));
-        assert!(source.contains("report_trace_init_error(message, &config);"));
-    }
-
-    #[test]
-    fn global_db_and_trace_locks_recover_from_poison() {
-        let source = include_str!("host.rs");
-        for forbidden in [
-            concat!("DB", ".lock().expect"),
-            concat!("DB_INIT_LOCK", ".lock().map_err"),
-            concat!("TRACE_BACKEND", ".lock().expect"),
-            concat!("TRACE_INITIALIZING", ".lock().expect"),
-            concat!("TRACE_IN_FLIGHT_ROWS", ".lock().expect"),
-            concat!("lock", "().unwrap()"),
-        ] {
-            assert!(!source.contains(forbidden), "host global lock still panics on poison: {forbidden}");
-        }
-        assert!(source.contains("fn lock_recover"));
-    }
-}
-
-fn ch_value<'a>(row: &'a Value, key: &str) -> Result<&'a Value, String> {
-    row.get(key)
-        .ok_or_else(|| format!("clickhouse row missing {key}"))
-}
-
-fn ch_string(row: &Value, key: &str) -> Result<String, String> {
-    match ch_value(row, key)? {
-        Value::String(s) => Ok(s.clone()),
-        other => Err(format!("clickhouse {key} must be string, got {other}")),
-    }
-}
-
-fn ch_opt_string(row: &Value, key: &str) -> Result<Option<String>, String> {
-    match ch_value(row, key)? {
-        Value::Null => Ok(None),
-        Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed.to_string()))
-            }
-        }
-        other => Err(format!(
-            "clickhouse {key} must be nullable string, got {other}"
-        )),
-    }
-}
-
-fn ch_i64(row: &Value, key: &str) -> Result<i64, String> {
-    match ch_value(row, key)? {
-        Value::Number(n) => n
-            .as_i64()
-            .or_else(|| n.as_u64().and_then(|v| i64::try_from(v).ok()))
-            .ok_or_else(|| format!("clickhouse {key} is out of i64 range")),
-        other => Err(format!("clickhouse {key} must be integer, got {other}")),
-    }
-}
-
-fn ch_opt_i64(row: &Value, key: &str) -> Result<Option<i64>, String> {
-    match ch_value(row, key)? {
-        Value::Null => Ok(None),
-        Value::Number(n) => n
-            .as_i64()
-            .or_else(|| n.as_u64().and_then(|v| i64::try_from(v).ok()))
-            .map(Some)
-            .ok_or_else(|| format!("clickhouse {key} is out of i64 range")),
-        other => Err(format!(
-            "clickhouse {key} must be nullable integer, got {other}"
-        )),
-    }
-}
-
-fn ch_trace_row_from_json(row: &Value) -> Result<TraceRow, String> {
-    Ok(TraceRow {
-        id: ch_string(row, "id")?,
-        parent_id: ch_opt_string(row, "parent_id")?,
-        root_id: ch_string(row, "id")?,
-        root_kind: ch_string(row, "kind")?,
-        root_name: ch_string(row, "name")?,
-        chat_id: ch_opt_string(row, "chat_id")?,
-        run_id: ch_opt_string(row, "run_id")?,
-        kind: ch_string(row, "kind")?,
-        name: ch_string(row, "name")?,
-        depth: ch_i64(row, "depth")?,
-        seq: ch_i64(row, "seq")?,
-        status: ch_string(row, "status")?,
-        started_ns: ch_i64(row, "started_ns")?,
-        ended_ns: ch_opt_i64(row, "ended_ns")?,
-        input_hash: ch_opt_string(row, "input_hash")?,
-        output_hash: ch_opt_string(row, "output_hash")?,
-        error_hash: ch_opt_string(row, "error_hash")?,
-        invoked_from_step_id: ch_opt_string(row, "invoked_from_step_id")?,
-        data_json: ch_opt_string(row, "data_json")?,
-        data_hash: ch_opt_string(row, "data_hash")?,
-    })
-}
-
-fn ch_trace_event_from_json(row: &Value) -> Result<TraceEventRow, String> {
-    Ok(TraceEventRow {
-        id: ch_i64(row, "id")?,
-        span_id: ch_string(row, "span_id")?,
-        ts_ns: ch_i64(row, "ts_ns")?,
-        level: ch_string(row, "level")?,
-        message: ch_string(row, "message")?,
-        data_hash: ch_opt_string(row, "data_hash")?,
-    })
-}
-
-fn hydrate_trace_row_ch(client: &ClickHouseTraceClient, row: &mut TraceRow) -> Result<(), String> {
-    if row.data_json.is_none()
-        && let Some(hash) = row.data_hash.as_deref()
-        && let Some(bytes) = client.get_blob(hash)?
-    {
-        row.data_json = Some(String::from_utf8_lossy(&bytes).to_string());
-    }
-    Ok(())
-}
-
-fn hydrate_trace_rows_ch(
-    client: &ClickHouseTraceClient,
-    rows: &mut [TraceRow],
-) -> Result<(), String> {
-    let mut hashes = Vec::new();
-    for row in rows.iter() {
-        if row.data_json.is_none()
-            && let Some(hash) = row.data_hash.as_deref()
-            && !hashes.iter().any(|existing: &String| existing == hash)
-        {
-            hashes.push(hash.to_string());
-        }
-    }
-    if hashes.is_empty() {
-        return Ok(());
-    }
-    let blobs = client.get_blobs(&hashes)?;
-    for row in rows {
-        if row.data_json.is_none()
-            && let Some(hash) = row.data_hash.as_deref()
-            && let Some(bytes) = blobs.get(hash)
-        {
-            row.data_json = Some(String::from_utf8_lossy(bytes).to_string());
-        }
-    }
-    Ok(())
-}
-
-fn current_trace_client() -> Option<ClickHouseTraceClient> {
-    lock_recover(&TRACE_BACKEND, "trace backend").clone()
+fn current_trace_exporter() -> Option<OtelTraceExporter> {
+    lock_recover(&TRACE_EXPORTER, "trace exporter").clone()
 }
 
 pub fn with_db<R>(f: impl FnOnce(&mut Connection) -> R) -> R {
@@ -1355,48 +570,24 @@ pub fn install(db_path: &str) -> Result<(), String> {
 }
 
 fn install_trace_config_async(config: settings::TraceConfig) {
-    let config = settings::normalize_trace_config(config);
+    apply_trace_config_local(&config);
+}
+
+fn apply_trace_config_local(config: &settings::TraceConfig) {
+    let config = settings::normalize_trace_config(config.clone());
+    let mut guard = lock_recover(&TRACE_EXPORTER, "trace exporter");
     if !config.enabled {
-        *lock_recover(&TRACE_BACKEND, "trace backend") = None;
-        *lock_recover(&TRACE_INITIALIZING, "trace initializing") = None;
+        *guard = None;
         return;
     }
-
-    if current_trace_client()
+    if guard
         .as_ref()
-        .map(|client| client.config == config)
+        .map(|exporter| exporter.config == config)
         .unwrap_or(false)
     {
         return;
     }
-
-    {
-        let mut initializing = lock_recover(&TRACE_INITIALIZING, "trace initializing");
-        if initializing
-            .as_ref()
-            .map(|pending| pending == &config)
-            .unwrap_or(false)
-        {
-            return;
-        }
-        *initializing = Some(config.clone());
-    }
-
-    thread::spawn(move || {
-        if let Err(err) = apply_trace_config(&config) {
-            let message = format!("failed to initialize trace tables: {err}");
-            eprintln!("ClickHouse tracing disabled: {message}");
-            report_trace_init_error(message, &config);
-        }
-        let mut initializing = lock_recover(&TRACE_INITIALIZING, "trace initializing");
-        if initializing
-            .as_ref()
-            .map(|pending| pending == &config)
-            .unwrap_or(false)
-        {
-            *initializing = None;
-        }
-    });
+    *guard = Some(OtelTraceExporter::new(config));
 }
 
 pub fn test_trace_config(config: &settings::TraceConfig) -> Result<(), String> {
@@ -1404,24 +595,47 @@ pub fn test_trace_config(config: &settings::TraceConfig) -> Result<(), String> {
     if !config.enabled {
         return Ok(());
     }
-    ClickHouseTraceClient::new(config).ensure_tables()
+    let exporter = OtelTraceExporter::new(config);
+    if exporter.endpoint.trim().is_empty() {
+        return Err("OTEL endpoint is empty".to_string());
+    }
+    let now = now_ns();
+    let sample = TraceRow {
+        id: "otel-config-test".to_string(),
+        parent_id: None,
+        root_id: "otel-config-test".to_string(),
+        root_kind: "system".to_string(),
+        root_name: "otel config test".to_string(),
+        chat_id: None,
+        run_id: None,
+        kind: "system".to_string(),
+        name: "otel config test".to_string(),
+        depth: 0,
+        seq: 0,
+        status: "ok".to_string(),
+        started_ns: now,
+        ended_ns: Some(now.saturating_add(1_000_000)),
+        input_hash: None,
+        output_hash: None,
+        error_hash: None,
+        invoked_from_step_id: None,
+        data_json: Some(json!({ "source": "settings", "test": true }).to_string()),
+        data_hash: None,
+    };
+    exporter.export(&[sample])
 }
 
 pub fn apply_trace_config(config: &settings::TraceConfig) -> Result<(), String> {
-    let config = settings::normalize_trace_config(config.clone());
-    if !config.enabled {
-        *lock_recover(&TRACE_BACKEND, "trace backend") = None;
-        *lock_recover(&TRACE_INITIALIZING, "trace initializing") = None;
-        return Ok(());
-    }
-    let client = ClickHouseTraceClient::new(config);
-    client.ensure_tables()?;
-    *lock_recover(&TRACE_BACKEND, "trace backend") = Some(client);
+    apply_trace_config_local(config);
     Ok(())
 }
 
 pub fn tracing_enabled() -> bool {
-    current_trace_client().is_some()
+    otel_reporting_enabled()
+}
+
+pub fn otel_reporting_enabled() -> bool {
+    current_trace_exporter().is_some()
 }
 
 pub fn trace_config_from_conn(conn: &Connection) -> Result<settings::TraceConfig, String> {
@@ -1444,21 +658,47 @@ fn apply_trace_env_overrides(config: &mut settings::TraceConfig) {
     if let Some(enabled) = env_bool("MOO_TRACE_ENABLED") {
         config.enabled = enabled;
     }
-    if let Ok(value) = env::var("MOO_CLICKHOUSE_URL") {
-        config.clickhouse_url = value;
+    if let Some(enabled) = env_bool("MOO_OTEL_ENABLED") {
+        config.enabled = enabled;
     }
-    if let Ok(value) = env::var("MOO_CLICKHOUSE_DATABASE") {
-        config.clickhouse_database = value;
+    if let Ok(value) = env::var("MOO_OTEL_ENDPOINT") {
+        config.otel_endpoint = value;
     }
-    if let Ok(value) = env::var("MOO_CLICKHOUSE_TABLE_PREFIX") {
-        config.clickhouse_table_prefix = value;
+    if let Ok(value) = env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
+        config.otel_endpoint = value;
+    } else if let Ok(value) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        config.otel_endpoint = format!("{}/v1/traces", value.trim().trim_end_matches('/'));
     }
-    if let Ok(value) = env::var("MOO_CLICKHOUSE_USER") {
-        config.clickhouse_user = Some(value);
+    if let Ok(value) = env::var("MOO_OTEL_SERVICE_NAME") {
+        config.service_name = value;
     }
-    if let Ok(value) = env::var("MOO_CLICKHOUSE_PASSWORD") {
-        config.clickhouse_password = Some(value);
+    if let Ok(value) = env::var("OTEL_SERVICE_NAME") {
+        config.service_name = value;
     }
+    if let Ok(value) = env::var("MOO_OTEL_HEADERS") {
+        config.headers = parse_otel_headers(&value);
+    }
+    if let Ok(value) = env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS") {
+        config.headers.extend(parse_otel_headers(&value));
+    } else if let Ok(value) = env::var("OTEL_EXPORTER_OTLP_HEADERS") {
+        config.headers.extend(parse_otel_headers(&value));
+    }
+}
+
+fn parse_otel_headers(raw: &str) -> Vec<settings::OtelHeader> {
+    raw.split(',')
+        .filter_map(|part| {
+            let (name, value) = part.split_once('=')?;
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(settings::OtelHeader {
+                name: name.to_string(),
+                value: value.trim().to_string(),
+            })
+        })
+        .collect()
 }
 
 fn env_bool(name: &str) -> Option<bool> {
@@ -1483,8 +723,8 @@ pub fn install_fresh(db_path: &str) -> Result<(), String> {
     crate::ops::facts::clear_chat_fact_summaries_cache();
     lock_recover(&TRACE_IN_FLIGHT_ROWS, "trace in-flight rows").clear();
     NEXT_TRACE_SEQ.store(1, Ordering::Relaxed);
-    NEXT_TRACE_STATE_VERSION.store(1, Ordering::Relaxed);
-    *lock_recover(&TRACE_BACKEND, "trace backend") = None;
+    *lock_recover(&TRACE_EXPORTER, "trace exporter") = None;
+    *lock_recover(&TRACE_STORE, "trace store") = TraceStore::default();
     Ok(())
 }
 
@@ -1646,6 +886,9 @@ pub fn put_object(kind: &str, bytes: &[u8]) -> Result<String, String> {
 }
 
 pub fn get_object(hash: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+    if let Some(blob) = trace_store_blob(hash) {
+        return Ok(Some(blob));
+    }
     with_db(|conn| {
         conn.prepare_cached("select kind, bytes from objects where hash = ?1")
             .map_err(|e| e.to_string())?
@@ -1681,34 +924,6 @@ pub struct TraceRow {
     pub data_hash: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct TraceEventRow {
-    pub id: i64,
-    pub span_id: String,
-    pub ts_ns: i64,
-    pub level: String,
-    pub message: String,
-    pub data_hash: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TraceSearch {
-    pub query: Option<String>,
-    pub kind: Option<String>,
-    pub status: Option<String>,
-    pub chat_id: Option<String>,
-    pub run_id: Option<String>,
-    pub scope: Option<String>,
-    pub has_error: bool,
-    pub limit: i64,
-    pub before_ns: Option<i64>,
-    pub started_after_ns: Option<i64>,
-    pub started_before_ns: Option<i64>,
-    pub min_duration_ns: Option<i64>,
-    pub max_duration_ns: Option<i64>,
-    pub roots_only: bool,
-}
-
 pub struct TraceRootParams<'a> {
     pub id: &'a str,
     pub chat_id: Option<&'a str>,
@@ -1722,17 +937,11 @@ pub struct TraceRootParams<'a> {
 }
 
 fn trace_put_blob_queued(kind: &str, bytes: &[u8]) -> Result<String, String> {
-    let hash = sha256_object_hash(kind, bytes);
-    // Do not Brotli-compress trace blobs at runtime. Brotli is reserved for
-    // serving assets that were already compressed at build time; trace blobs use
-    // identity encoding so tracing cannot become a CPU-heavy compressor.
+    let hash = put_object(kind, bytes)?;
     enqueue_trace_write(TraceWrite::Blob {
         hash: hash.clone(),
         kind: kind.to_string(),
-        encoding: "identity".to_string(),
-        uncompressed_bytes: bytes.len() as i64,
         bytes: bytes.to_vec(),
-        created_at: now_ms(),
     })?;
     Ok(hash)
 }
@@ -1763,6 +972,9 @@ fn prepare_trace_data_queued(data_json: Option<&str>) -> Result<PreparedTraceDat
 }
 
 pub fn trace_ensure_root(params: TraceRootParams<'_>) -> Result<(), String> {
+    if !tracing_enabled() {
+        return Ok(());
+    }
     let TraceRootParams {
         id,
         chat_id,
@@ -1825,6 +1037,9 @@ pub struct TraceOpenParams<'a> {
 }
 
 pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
+    if !tracing_enabled() {
+        return Ok(());
+    }
     let TraceOpenParams {
         id,
         parent_id,
@@ -1920,10 +1135,7 @@ pub fn trace_open(params: TraceOpenParams<'_>) -> Result<(), String> {
 pub fn trace_update_data(id: &str, data_json: Option<&str>) -> Result<bool, String> {
     let mut row = if let Some(row) = trace_in_flight_get(id) {
         row
-    } else if let Some(client) = current_trace_client() {
-        let Some(row) = client.get_trace_raw(id)? else {
-            return Ok(false);
-        };
+    } else if let Some(row) = trace_store_get(id) {
         row
     } else {
         return Ok(false);
@@ -1948,29 +1160,8 @@ pub fn trace_finish(
 ) -> Result<bool, String> {
     let mut row = if let Some(row) = trace_in_flight_get(id) {
         row
-    } else if let Some(client) = current_trace_client() {
-        client.get_trace_raw(id)?.unwrap_or_else(|| TraceRow {
-            id: id.to_string(),
-            parent_id: None,
-            root_id: id.to_string(),
-            root_kind: String::new(),
-            root_name: String::new(),
-            chat_id: None,
-            run_id: None,
-            kind: String::new(),
-            name: String::new(),
-            depth: 0,
-            seq: 0,
-            status: "running".to_string(),
-            started_ns: ended_ns,
-            ended_ns: None,
-            input_hash: None,
-            output_hash: None,
-            error_hash: None,
-            invoked_from_step_id: None,
-            data_json: None,
-            data_hash: None,
-        })
+    } else if let Some(row) = trace_store_get(id) {
+        row
     } else {
         return Ok(false);
     };
@@ -1986,111 +1177,37 @@ pub fn trace_finish(
 }
 
 pub fn trace_get(id: &str) -> Result<Option<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(trace_in_flight_get(id));
-    };
-    if let Some(mut row) = trace_in_flight_get(id) {
-        let _ = hydrate_trace_row_ch(&client, &mut row);
+    if let Some(row) = trace_in_flight_get(id) {
         return Ok(Some(row));
     }
-    client.get_trace(id)
+    Ok(trace_store_get(id))
 }
 
 pub fn trace_children(
     parent_id: Option<&str>,
     limit: Option<i64>,
 ) -> Result<Vec<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(trace_in_flight_children(parent_id, limit));
-    };
-    client.children(parent_id, limit)
-}
-
-pub fn trace_ancestors(id: &str) -> Result<Vec<TraceRow>, String> {
-    if current_trace_client().is_none() {
-        return Ok(vec![]);
-    }
-    let mut rows = Vec::new();
-    let mut current = trace_get(id)?;
-    while let Some(row) = current {
-        let parent_id = row.parent_id.clone();
-        rows.push(row);
-        current = match parent_id {
-            Some(parent_id) => trace_get(&parent_id)?,
-            None => None,
-        };
-    }
+    let mut rows: Vec<TraceRow> = trace_store_rows()
+        .into_iter()
+        .filter(|row| row.parent_id.as_deref() == parent_id)
+        .collect();
+    let mut in_flight = trace_in_flight_children(parent_id, None);
+    rows.append(&mut in_flight);
+    dedupe_trace_rows(&mut rows);
     rows.sort_by_key(|row| (row.depth, row.seq));
+    if let Some(limit) = limit {
+        rows.truncate(limit.max(0) as usize);
+    }
     Ok(rows)
 }
 
-pub fn trace_subtree(id: &str, max_depth: i32) -> Result<Vec<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(vec![]);
-    };
-    client.subtree_rows(id, max_depth)
-}
-
-pub fn trace_events(
-    span_id: &str,
-    limit: i64,
-    before_ns: Option<i64>,
-) -> Result<Vec<TraceEventRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(vec![]);
-    };
-    client.events(span_id, limit, before_ns)
-}
-
-pub fn trace_chat_roots(limit: i64, before_ns: Option<i64>) -> Result<Vec<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(vec![]);
-    };
-    client.chat_roots(limit, before_ns)
-}
-
-pub fn trace_chat_tree(
-    chat_id: &str,
-    max_depth: i32,
-) -> Result<(Option<TraceRow>, Vec<TraceRow>), String> {
-    let Some(client) = current_trace_client() else {
-        return Ok((None, vec![]));
-    };
-    client.chat_tree(chat_id, max_depth)
-}
-
-pub fn trace_roots(mut query: TraceSearch) -> Result<Vec<TraceRow>, String> {
-    query.roots_only = true;
-    trace_search(query)
-}
-
-pub fn trace_failed(
-    limit: i64,
-    chat_id: Option<&str>,
-    before_ns: Option<i64>,
-    started_after_ns: Option<i64>,
-    started_before_ns: Option<i64>,
-    min_duration_ns: Option<i64>,
-    max_duration_ns: Option<i64>,
-) -> Result<Vec<TraceRow>, String> {
-    let query = TraceSearch {
-        limit,
-        chat_id: chat_id.map(ToString::to_string),
-        has_error: true,
-        before_ns,
-        started_after_ns,
-        started_before_ns,
-        min_duration_ns,
-        max_duration_ns,
-        ..Default::default()
-    };
-    trace_search(query)
-}
-
-pub fn trace_search(query: TraceSearch) -> Result<Vec<TraceRow>, String> {
-    let Some(client) = current_trace_client() else {
-        return Ok(vec![]);
-    };
-    let limit = query.limit.clamp(1, 500);
-    client.search(&query, limit, now_ns())
+fn dedupe_trace_rows(rows: &mut Vec<TraceRow>) {
+    let mut deduped: HashMap<String, TraceRow> = HashMap::new();
+    for row in rows.drain(..) {
+        deduped
+            .entry(row.id.clone())
+            .and_modify(|entry| merge_trace_row(entry, &row))
+            .or_insert(row);
+    }
+    rows.extend(deduped.into_values());
 }

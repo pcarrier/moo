@@ -40,7 +40,7 @@ export async function appendStep(chatId: string, args: AppendStepArgs): Promise<
   const refs = chatRefs(chatId);
   touchChat(chatId);
   const runId = await ensureRun(chatId);
-  const stepId = host.newId("step");
+  const stepId = args.stepId || host.newId("step");
   const previous = host.getRef(refs.head);
   const now = args.at ?? host.now();
   const adds: Quad[] = [

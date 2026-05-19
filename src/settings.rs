@@ -39,64 +39,66 @@ pub const SERVER_BASE_URL_KEY: &str = "server.baseUrl";
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceConfig {
+    #[serde(default)]
     pub enabled: bool,
-    pub clickhouse_url: String,
-    pub clickhouse_database: String,
-    pub clickhouse_table_prefix: String,
-    pub clickhouse_user: Option<String>,
-    pub clickhouse_password: Option<String>,
+    #[serde(default = "default_trace_otel_endpoint")]
+    pub otel_endpoint: String,
+    #[serde(default = "default_trace_service_name")]
+    pub service_name: String,
+    #[serde(default)]
+    pub headers: Vec<OtelHeader>,
 }
 
-pub fn default_trace_clickhouse_url() -> String {
-    "http://localhost:8123".to_string()
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OtelHeader {
+    pub name: String,
+    pub value: String,
 }
 
-pub fn default_trace_clickhouse_database() -> String {
-    "default".to_string()
+pub fn default_trace_otel_endpoint() -> String {
+    "http://localhost:4318/v1/traces".to_string()
 }
 
-pub fn default_trace_clickhouse_table_prefix() -> String {
-    "moo_traces".to_string()
+pub fn default_trace_service_name() -> String {
+    "moo".to_string()
 }
 
 pub fn default_trace_config() -> TraceConfig {
     TraceConfig {
         enabled: false,
-        clickhouse_url: default_trace_clickhouse_url(),
-        clickhouse_database: default_trace_clickhouse_database(),
-        clickhouse_table_prefix: default_trace_clickhouse_table_prefix(),
-        clickhouse_user: None,
-        clickhouse_password: None,
+        otel_endpoint: default_trace_otel_endpoint(),
+        service_name: default_trace_service_name(),
+        headers: vec![],
     }
 }
 
 pub fn normalize_trace_config(mut config: TraceConfig) -> TraceConfig {
     let defaults = default_trace_config();
-    if config.clickhouse_url.trim().is_empty() {
-        config.clickhouse_url = defaults.clickhouse_url;
+    if config.otel_endpoint.trim().is_empty() {
+        config.otel_endpoint = defaults.otel_endpoint;
     } else {
-        config.clickhouse_url = config
-            .clickhouse_url
-            .trim()
-            .trim_end_matches('/')
-            .to_string();
+        config.otel_endpoint = config.otel_endpoint.trim().to_string();
     }
-    if config.clickhouse_database.trim().is_empty() {
-        config.clickhouse_database = defaults.clickhouse_database;
+    if config.service_name.trim().is_empty() {
+        config.service_name = defaults.service_name;
     } else {
-        config.clickhouse_database = config.clickhouse_database.trim().to_string();
+        config.service_name = config.service_name.trim().to_string();
     }
-    if config.clickhouse_table_prefix.trim().is_empty() {
-        config.clickhouse_table_prefix = defaults.clickhouse_table_prefix;
-    } else {
-        config.clickhouse_table_prefix = config.clickhouse_table_prefix.trim().to_string();
-    }
-    config.clickhouse_user = config
-        .clickhouse_user
-        .and_then(|user| (!user.trim().is_empty()).then(|| user.trim().to_string()));
-    config.clickhouse_password = config
-        .clickhouse_password
-        .and_then(|password| (!password.trim().is_empty()).then(|| password.trim().to_string()));
+    config.headers = config
+        .headers
+        .into_iter()
+        .filter_map(|header| {
+            let name = header.name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(OtelHeader {
+                name: name.to_string(),
+                value: header.value.trim().to_string(),
+            })
+        })
+        .collect();
     config
 }
 
@@ -144,57 +146,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trace_config_defaults_to_disabled_clickhouse() {
+    fn trace_config_defaults_to_disabled_otel() {
         let config = default_trace_config();
         assert!(!config.enabled);
-        assert_eq!(config.clickhouse_url, "http://localhost:8123");
-        assert_eq!(config.clickhouse_database, "default");
-        assert_eq!(config.clickhouse_table_prefix, "moo_traces");
-        assert_eq!(config.clickhouse_user, None);
-        assert_eq!(config.clickhouse_password, None);
+        assert_eq!(config.otel_endpoint, "http://localhost:4318/v1/traces");
+        assert_eq!(config.service_name, "moo");
+        assert!(config.headers.is_empty());
     }
 
     #[test]
     fn trace_config_normalizes_blank_and_trimmed_values() {
         let config = TraceConfig {
             enabled: true,
-            clickhouse_url: " https://clickhouse.example.com/ ".to_string(),
-            clickhouse_database: " moo ".to_string(),
-            clickhouse_table_prefix: " trace_store ".to_string(),
-            clickhouse_user: Some(" user ".to_string()),
-            clickhouse_password: Some(" secret ".to_string()),
+            otel_endpoint: " https://signoz.example.com:4318/v1/traces ".to_string(),
+            service_name: " moo-dev ".to_string(),
+            headers: vec![
+                OtelHeader {
+                    name: " signoz-access-token ".to_string(),
+                    value: " secret ".to_string(),
+                },
+                OtelHeader {
+                    name: "  ".to_string(),
+                    value: "ignored".to_string(),
+                },
+            ],
         };
         let normalized = normalize_trace_config(config);
         assert!(normalized.enabled);
-        assert_eq!(normalized.clickhouse_url, "https://clickhouse.example.com");
-        assert_eq!(normalized.clickhouse_database, "moo");
-        assert_eq!(normalized.clickhouse_table_prefix, "trace_store");
-        assert_eq!(normalized.clickhouse_user.as_deref(), Some("user"));
-        assert_eq!(normalized.clickhouse_password.as_deref(), Some("secret"));
+        assert_eq!(
+            normalized.otel_endpoint,
+            "https://signoz.example.com:4318/v1/traces"
+        );
+        assert_eq!(normalized.service_name, "moo-dev");
+        assert_eq!(normalized.headers.len(), 1);
+        assert_eq!(normalized.headers[0].name, "signoz-access-token");
+        assert_eq!(normalized.headers[0].value, "secret");
 
         let blank = TraceConfig {
             enabled: true,
-            clickhouse_url: "   ".to_string(),
-            clickhouse_database: "".to_string(),
-            clickhouse_table_prefix: "  ".to_string(),
-            clickhouse_user: Some("  ".to_string()),
-            clickhouse_password: Some("	".to_string()),
+            otel_endpoint: "   ".to_string(),
+            service_name: "".to_string(),
+            headers: vec![],
         };
         let normalized_blank = normalize_trace_config(blank);
-        assert_eq!(
-            normalized_blank.clickhouse_url,
-            default_trace_clickhouse_url()
-        );
-        assert_eq!(
-            normalized_blank.clickhouse_database,
-            default_trace_clickhouse_database()
-        );
-        assert_eq!(
-            normalized_blank.clickhouse_table_prefix,
-            default_trace_clickhouse_table_prefix()
-        );
-        assert_eq!(normalized_blank.clickhouse_user, None);
-        assert_eq!(normalized_blank.clickhouse_password, None);
+        assert_eq!(normalized_blank.otel_endpoint, default_trace_otel_endpoint());
+        assert_eq!(normalized_blank.service_name, default_trace_service_name());
+        assert!(normalized_blank.headers.is_empty());
     }
 
     #[test]

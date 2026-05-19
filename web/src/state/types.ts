@@ -10,7 +10,6 @@ import type {
   FsEntry,
   MemoryDiffItem,
   StoreObject,
-  TraceRow,
   UiApp,
   UiInstance,
 } from "../api";
@@ -84,7 +83,6 @@ export type RightSidebarTab =
       scrollTopByMode?: Partial<Record<DiffContentMode, number>>;
       sourceRevision?: string;
     }
-  | { id: string; kind: "trace"; title: string; trace: TraceRow }
   | {
       id: string;
       kind: "memory-diff";

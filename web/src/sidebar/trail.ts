@@ -18,6 +18,7 @@ export type AgentTrailItem = {
   path?: string;
   targetChatId?: string;
   stats?: { added: number; removed: number };
+  status?: "done" | "running" | "failed" | "cancelled" | "queued" | "pending";
   titleMarkdown?: boolean;
   detailMarkdown?: boolean;
 };
@@ -96,10 +97,7 @@ export function subagentTimelineItem(item: StepItem): AgentTrailItem | null {
   const info = item.subagent || {};
   const label = String(info.label || "Subagent").trim() || "Subagent";
   const task = String(info.task || "").trim();
-  const status = String(info.result?.status || item.status || "").replace(
-    /^agent:/,
-    "",
-  );
+  const status = normalizeTrailStatus(info.result?.status || item.status || "");
   const childChatId = String(
     info.childChatId || info.result?.childChatId || "",
   ).trim();
@@ -109,7 +107,7 @@ export function subagentTimelineItem(item: StepItem): AgentTrailItem | null {
       : "";
   const error = String(info.result?.error || "").trim();
   const detail = [
-    status ? `${status}${duration}` : "",
+    duration ? duration.replace(/^ · /, "") : "",
     error ? `error: ${error}` : "",
     task,
   ]
@@ -124,7 +122,25 @@ export function subagentTimelineItem(item: StepItem): AgentTrailItem | null {
     detail,
     kind: item.kind,
     tone: "subagent",
+    status,
   };
+}
+
+export function normalizeTrailStatus(
+  status: string,
+): AgentTrailItem["status"] | undefined {
+  const normalized = String(status || "")
+    .replace(/^agent:/, "")
+    .replace(/^ui:/, "")
+    .toLowerCase();
+  if (normalized === "done") return "done";
+  if (normalized === "running") return "running";
+  if (normalized === "failed") return "failed";
+  if (normalized === "cancelled" || normalized === "canceled")
+    return "cancelled";
+  if (normalized === "queued") return "queued";
+  if (normalized === "pending") return "pending";
+  return undefined;
 }
 
 export function formatTrailDuration(ms: number): string {

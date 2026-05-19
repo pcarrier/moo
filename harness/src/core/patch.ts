@@ -62,6 +62,14 @@ function splitLines(text: string): string[] {
 const HUNK_HEADER_RE =
   /^@@ -(?<old_start>\d+)(?:,(?<old_count>\d+))? \+(?<new_start>\d+)(?:,(?<new_count>\d+))? @@(?: .*)?$/;
 const DIFF_HEADER_PREFIXES = ["diff --git ", "index ", "--- ", "+++ "];
+const APPLY_PATCH_UPDATE_FILE_PREFIX = "*** Update File: ";
+const UNSUPPORTED_APPLY_PATCH_FILE_HEADER_PREFIXES = [
+  "*** Add File: ",
+  "*** Delete File: ",
+  "*** Move to: ",
+];
+const APPLY_PATCH_BEGIN = "*** Begin Patch";
+const APPLY_PATCH_END = "*** End Patch";
 const CONTEXT_HUNK_PREFIX = "@@ ";
 const EMPTY_CONTEXT_HUNK = "@@";
 const END_OF_FILE_MARKER = "*** End of File";
@@ -102,6 +110,50 @@ function startsWithAny(line: string, prefixes: readonly string[]): boolean {
   return prefixes.some((p) => line.startsWith(p));
 }
 
+function isDiffMetadataLine(line: string): boolean {
+  return (
+    startsWithAny(line, DIFF_HEADER_PREFIXES) ||
+    line.startsWith(APPLY_PATCH_UPDATE_FILE_PREFIX) ||
+    line === APPLY_PATCH_BEGIN ||
+    line === APPLY_PATCH_END
+  );
+}
+
+function normalizeApplyPatchPath(path: string): string {
+  const trimmed = path.trim();
+  const absolute = trimmed.startsWith("/");
+  const parts = trimmed.split("/").filter((part) => part !== "" && part !== ".");
+  return (absolute ? "/" : "") + parts.join("/");
+}
+
+export function validatePatchEnvelopeTarget(diff: string, targetPath: string): void {
+  if (!diff.trim()) return;
+  const lines = splitLines(diff).map((l) => l.replace(/\r$/, ""));
+  const normalizedTarget = normalizeApplyPatchPath(targetPath);
+  for (const line of lines) {
+    if (startsWithAny(line, UNSUPPORTED_APPLY_PATCH_FILE_HEADER_PREFIXES)) {
+      throw new PatchError(
+        "moo.fs.patch only supports updating one existing file; " +
+          line +
+          " requires a different filesystem operation.",
+      );
+    }
+    if (!line.startsWith(APPLY_PATCH_UPDATE_FILE_PREFIX)) {
+      continue;
+    }
+    const declaredPath = normalizeApplyPatchPath(line.slice(APPLY_PATCH_UPDATE_FILE_PREFIX.length));
+    if (declaredPath !== normalizedTarget) {
+      throw new PatchError(
+        "apply-patch target " +
+          JSON.stringify(declaredPath) +
+          " does not match requested path " +
+          JSON.stringify(normalizedTarget) +
+          ".",
+      );
+    }
+  }
+}
+
 export function patchText(originalText: string, diff: string): string {
   if (!diff.trim()) {
     return originalText;
@@ -131,7 +183,7 @@ export function patchText(originalText: string, diff: string): string {
 
 function detectDiffFormat(lines: string[]): "unified" | "context" | null {
   for (const line of lines) {
-    if (!line || startsWithAny(line, DIFF_HEADER_PREFIXES)) {
+    if (!line || isDiffMetadataLine(line)) {
       continue;
     }
     if (HUNK_HEADER_RE.test(line)) {
@@ -158,7 +210,7 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
       i++;
       continue;
     }
-    if (startsWithAny(line, DIFF_HEADER_PREFIXES)) {
+    if (isDiffMetadataLine(line)) {
       i++;
       continue;
     }
@@ -174,7 +226,7 @@ function parseUnifiedDiffLines(lines: string[]): UnifiedHunk[] {
       const next = lines[i]!;
       if (
         HUNK_HEADER_RE.test(next) ||
-        startsWithAny(next, DIFF_HEADER_PREFIXES)
+        isDiffMetadataLine(next)
       ) {
         break;
       }
@@ -225,7 +277,7 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
       i++;
       continue;
     }
-    if (startsWithAny(line, DIFF_HEADER_PREFIXES)) {
+    if (isDiffMetadataLine(line)) {
       i++;
       continue;
     }
@@ -244,7 +296,7 @@ function parseContextDiffLines(lines: string[]): ContextHunk[] {
       const next = lines[i]!;
       if (
         isContextHunkHeader(next) ||
-        startsWithAny(next, DIFF_HEADER_PREFIXES)
+        isDiffMetadataLine(next)
       ) {
         break;
       }

@@ -8,7 +8,7 @@ import type { ObjectCommands } from "./objects";
 import type { UiCommands } from "./ui";
 import type { V8Commands } from "./v8";
 import type { LlmAuthCommands } from "./llmAuth";
-import type { TraceCommands } from "./traces";
+import type { OtelCommands } from "./traces";
 import type { SkillCommands } from "./skills";
 import type { DescribeSnapshotValue, DescribeUpdateValue } from "./types";
 
@@ -27,7 +27,7 @@ export type KnownApiCommand =
   | McpCommands
   | V8Commands
   | LlmAuthCommands
-  | TraceCommands
+  | OtelCommands
   | SkillCommands;
 
 export type KnownCommandName = KnownApiCommand["command"];

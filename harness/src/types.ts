@@ -312,6 +312,7 @@ export type AppendStepArgs = {
   status: StepStatus;
   payloadHash?: string | null;
   extras?: Array<[string, string]>;
+  stepId?: string | null;
   at?: number;
 };
 
@@ -534,8 +535,7 @@ export type PatchResult = {
 };
 
 export type ProcRunArgs = {
-  cmd: string;
-  args?: string[];
+  cmd: string[];
   cwd?: string | null;
   stdin?: string | null;
   timeoutMs?: number;
@@ -697,12 +697,14 @@ export type Moo = {
         head: string | null;
         title: string | null;
         path: string | null;
+        baseBranch?: string | null;
         worktreePath?: string | null;
         archived: boolean;
         archivedAt: number | null;
         hidden?: boolean;
         parentChatId?: string | null;
         status: string;
+        runningStartedAt?: number | null;
         totalFacts: number;
         totalTurns: number;
         totalSteps: number;
@@ -736,6 +738,13 @@ export type Moo = {
    * ordinary property traversal: await moo.mcp.<server>.<tool>(args).
    */
   mcp: Mcp;
+  tools: {
+    cancel(args: {
+      id?: string | null;
+      stepId?: string | null;
+      chatId?: string | null;
+    }): Promise<{ chatId: string; stepId: string | null; cancelled: number }>;
+  };
   agent: {
     claim(args: { store: string; graph: string; runId: string | null; leaseMs?: number }): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;
     complete(args: { store: string; graph: string; stepId: string; status?: StepStatus }): Promise<void>;

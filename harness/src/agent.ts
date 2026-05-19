@@ -54,7 +54,7 @@ export const TOOLS = [
     function: {
       name: "runTS",
       description:
-        "Compile and run TypeScript 6 against bundled ES2025 + Moo harness type definitions. Body is wrapped in an async function; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope; `setTimeout` and `setImmediate` are available. Use `moo.agent.run(...)` for substantial independent awaited subagent work.",
+        "Compile and run TypeScript 6 against bundled ES2025 + Moo harness type definitions. Body is wrapped in an async function; use `return value` to surface a result. `moo`, `chatId`, `repo`, `scratch`, and optional `args` are in scope; `setTimeout` and `setImmediate` are available. Runs in the foreground unless `backgroundAfterNs: 0` is explicitly set; positive values are nanoseconds before auto-backgrounding; detached results include an id cancellable with `await moo.tools.cancel({ id })`; use `moo.agent.run(...)` for substantial independent awaited subagent work.",
       parameters: {
         type: "object",
         properties: {
@@ -76,6 +76,11 @@ export const TOOLS = [
           args: {
             description:
               "Arbitrary JSON value made available to the TypeScript body as `args`.",
+          },
+          backgroundAfterNs: {
+            type: "number",
+            description:
+              "Optional nanosecond delay before detaching this runTS call; set to 0 to detach immediately while the chat turn ends.",
           },
         },
         required: ["label", "description", "code"],
@@ -120,6 +125,8 @@ export async function compactionThresholdForBudget(
   const percent = await currentCompactionThresholdPercent();
   return Math.floor(budget * (percent / 100));
 }
+
+export const MAX_CONSECUTIVE_COMPACTIONS = 2;
 
 function modelExtras(
   model: string | null | undefined,
@@ -1021,9 +1028,11 @@ export function toResponsesInput(messages: any[]): any[] {
   for (const msg of outboundMessages) {
     if (msg.role === "system" && hasNonSystem) continue;
     if (msg.role === "tool") {
+      const callId = String(msg.tool_call_id ?? "").trim();
+      if (!callId) continue;
       input.push({
         type: "function_call_output",
-        call_id: msg.tool_call_id,
+        call_id: callId,
         output: String(msg.content ?? ""),
       });
       continue;
@@ -1034,9 +1043,11 @@ export function toResponsesInput(messages: any[]): any[] {
     }
     if (Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
+        const callId = String(tc?.id ?? "").trim();
+        if (!callId) continue;
         input.push({
           type: "function_call",
-          call_id: tc.id,
+          call_id: callId,
           name: tc.function?.name || "",
           arguments: tc.function?.arguments || "{}",
         });
@@ -1521,6 +1532,8 @@ export type LlmStreamProgress = {
   estimatedPromptTokens: number;
   tokenBudget: number;
   tokenThreshold: number;
+  availableTokens?: number;
+  compactionsInARow?: number;
   provider?: string | null;
   model?: string | null;
   effort?: string | null;
@@ -1552,6 +1565,8 @@ export function llmStreamEventOptions(
       chatId,
       budget: tokenProgress.tokenBudget,
       threshold: tokenProgress.tokenThreshold,
+      availableTokens: tokenProgress.availableTokens,
+      compactionsInARow: tokenProgress.compactionsInARow,
       estimated: tokenProgress.estimated ?? true,
       source: tokenProgress.source,
       reset: tokenProgress.reset,
@@ -1601,6 +1616,8 @@ export function tokenPressureEvent(
   options: {
     budget: number;
     threshold: number;
+    availableTokens?: number;
+    compactionsInARow?: number;
     source?: "context" | "compaction";
     estimated?: boolean;
     reset?: boolean;
@@ -1615,6 +1632,14 @@ export function tokenPressureEvent(
     used: n,
     budget,
     threshold,
+    availableTokens:
+      options.availableTokens == null
+        ? Math.max(0, threshold - n)
+        : tokenCountOrZero(options.availableTokens),
+    compactionsInARow:
+      options.compactionsInARow == null
+        ? undefined
+        : tokenCountOrZero(options.compactionsInARow),
     fraction: budget > 0 ? n / budget : 0,
     source: options.source,
     estimated: options.estimated,
@@ -1640,6 +1665,9 @@ export type ChatUsage = {
   // exceed the provider request context because compaction includes persisted
   // tool/file-diff payloads that are not all sent in the ordinary reply prompt.
   lastCompactionPromptTokens?: number;
+  // Number of compaction summaries generated back-to-back without a normal
+  // assistant reply or a new user turn completing between them.
+  consecutiveCompactions?: number;
 };
 
 function normalizeChatUsage(value: unknown): ChatUsage {
@@ -1733,6 +1761,11 @@ function tokenCountOrZero(value: unknown): number {
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
 }
 
+function readableTokenCount(value: unknown): string {
+  const text = String(tokenCountOrZero(value));
+  return text.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 async function readChatUsage(
   chatId: string,
 ): Promise<{ ref: string; current: ChatUsage }> {
@@ -1744,7 +1777,10 @@ async function readChatUsage(
 export async function recordLastContextTokens(
   chatId: string,
   tokens: number,
-  options: { compactionPromptTokens?: number | null } = {},
+  options: {
+    compactionPromptTokens?: number | null;
+    consecutiveCompactions?: number | null;
+  } = {},
 ): Promise<void> {
   const { ref, current } = await readChatUsage(chatId);
   current.lastContextTokens = tokenCountOrZero(tokens);
@@ -1752,7 +1788,18 @@ export async function recordLastContextTokens(
     current.lastCompactionPromptTokens = tokenCountOrZero(
       options.compactionPromptTokens,
     );
+  if (options.consecutiveCompactions != null)
+    current.consecutiveCompactions = tokenCountOrZero(
+      options.consecutiveCompactions,
+    );
   await writeChatUsageTarget(ref, current);
+}
+
+export function estimateCompactionSummaryTokens(
+  summary: string | null | undefined,
+): number {
+  const text = typeof summary === "string" ? summary.trim() : "";
+  return text ? tokenCountOrZero(Math.ceil(text.length / 4)) : 0;
 }
 
 export async function recordLastCompactionPromptTokens(
@@ -1781,6 +1828,27 @@ export async function readLastTokenPressure(
   if (context > 0) return { used: context, source: "context" };
   if (compaction > 0) return { used: compaction, source: "compaction" };
   return { used: 0, source: "none" };
+}
+
+export async function readConsecutiveCompactions(
+  chatId: string,
+): Promise<number> {
+  const ref = chatRefs(chatId).usage;
+  const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
+  return tokenCountOrZero(current.consecutiveCompactions ?? 0);
+}
+
+export async function recordConsecutiveCompactions(
+  chatId: string,
+  count: number,
+): Promise<void> {
+  const { ref, current } = await readChatUsage(chatId);
+  current.consecutiveCompactions = tokenCountOrZero(count);
+  await writeChatUsageTarget(ref, current);
+}
+
+export async function resetConsecutiveCompactions(chatId: string): Promise<void> {
+  await recordConsecutiveCompactions(chatId, 0);
 }
 
 export function estimateRawUsage(
@@ -1819,8 +1887,12 @@ type CompactionPointerValue = {
   draftId?: string | null;
   trigger?: string | null;
   promptTokens?: number | null;
+  postPromptTokens?: number | null;
+  summaryTokens?: number | null;
   tokenBudget?: number | null;
   tokenThreshold?: number | null;
+  availableTokens?: number | null;
+  compactionsInARow?: number | null;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -1907,6 +1979,29 @@ export async function persistCompactionLayer(
   return hash;
 }
 
+export async function patchCompactionLayerPostTokens(
+  chatId: string,
+  _hash: string,
+  postPromptTokens: number,
+): Promise<string | null> {
+  const ref = chatRefs(chatId).compaction;
+  const current = readCompactionPointerTarget(
+    await moo.pointers.get({ name: ref }),
+  );
+  if (!current) return null;
+  const { hash: _oldHash, ...rest } = current.value;
+  const patched: CompactionPointerValue = { ...rest, postPromptTokens };
+  const newHash = await moo.objects.putJSON({
+    kind: "agent:Compaction",
+    value: patched,
+  });
+  await moo.pointers.set({
+    name: ref,
+    target: encodeJsonPointer({ ...patched, hash: newHash }),
+  });
+  return newHash;
+}
+
 async function deletedUserInputSteps(
   chatId: string,
 ): Promise<Array<{ step: string; at: number }>> {
@@ -1937,8 +2032,12 @@ export async function readCompactionChain(chatId: string) {
     trigger?: string | null;
     draftId?: string | null;
     promptTokens?: number | null;
+    postPromptTokens?: number | null;
+    summaryTokens?: number | null;
     tokenBudget?: number | null;
     tokenThreshold?: number | null;
+    availableTokens?: number | null;
+    compactionsInARow?: number | null;
   }> = [];
   let layer: {
     target: string;
@@ -1959,8 +2058,12 @@ export async function readCompactionChain(chatId: string) {
       trigger: layer.value.trigger ?? null,
       draftId: layer.value.draftId ?? null,
       promptTokens: layer.value.promptTokens ?? null,
+      postPromptTokens: layer.value.postPromptTokens ?? null,
+      summaryTokens: layer.value.summaryTokens ?? null,
       tokenBudget: layer.value.tokenBudget ?? null,
       tokenThreshold: layer.value.tokenThreshold ?? null,
+      availableTokens: layer.value.availableTokens ?? null,
+      compactionsInARow: layer.value.compactionsInARow ?? null,
     });
     layer = await readCompactionLayerHash(layer.value.parent);
   }
@@ -1970,6 +2073,7 @@ export async function readCompactionChain(chatId: string) {
 export type CompactionTracking = {
   trigger?: "automatic" | "manual";
   promptTokens?: number | null;
+  summaryTokens?: number | null;
   tokenBudget?: number | null;
   tokenThreshold?: number | null;
   status?: number | null;
@@ -1983,6 +2087,8 @@ export type CompactionTracking = {
   provider?: string | null;
   requestPromptTokens?: number | null;
   requestTokenLimit?: number | null;
+  availableTokens?: number | null;
+  compactionsInARow?: number | null;
   model?: string | null;
   effort?: string | null;
   draftId?: string | null;
@@ -1999,10 +2105,16 @@ function compactionExtras(
   extras.push(["agent:trigger", trigger]);
   if (meta?.promptTokens != null)
     extras.push(["agent:promptTokens", String(meta.promptTokens)]);
+  if (meta?.summaryTokens != null)
+    extras.push(["agent:summaryTokens", String(meta.summaryTokens)]);
   if (meta?.tokenBudget != null)
     extras.push(["agent:tokenBudget", String(meta.tokenBudget)]);
   if (meta?.tokenThreshold != null)
     extras.push(["agent:tokenThreshold", String(meta.tokenThreshold)]);
+  if (meta?.availableTokens != null)
+    extras.push(["agent:availableTokens", String(meta.availableTokens)]);
+  if (meta?.compactionsInARow != null)
+    extras.push(["agent:compactionsInARow", String(meta.compactionsInARow)]);
   return extras;
 }
 
@@ -2040,6 +2152,8 @@ export async function recordCompactionFailure(
     tokenThreshold: meta.tokenThreshold,
     requestPromptTokens: meta.requestPromptTokens,
     requestTokenLimit: meta.requestTokenLimit,
+    availableTokens: meta.availableTokens,
+    compactionsInARow: meta.compactionsInARow,
   });
   const payloadHash = await moo.objects.putJSON({
     kind: "agent:Error",
@@ -2204,6 +2318,11 @@ export async function runCompaction(
     requestTokenLimit,
   );
   const requestPromptTokens = estimateTokens(summaryMessages);
+  const availableTokens = Math.max(0, threshold - rawPromptTokens);
+  const compactionsInARow = Math.max(
+    1,
+    (await readConsecutiveCompactions(chatId)) + 1,
+  );
   const tracking: CompactionTracking = compactObject({
     ...meta,
     trigger: meta.trigger ?? "manual",
@@ -2212,6 +2331,8 @@ export async function runCompaction(
     tokenThreshold: meta.tokenThreshold ?? threshold,
     requestPromptTokens,
     requestTokenLimit,
+    availableTokens: meta.availableTokens ?? availableTokens,
+    compactionsInARow: meta.compactionsInARow ?? compactionsInARow,
     provider: meta.provider ?? requestProvider.name,
     model: meta.model ?? requestProvider.model,
     effort: meta.effort ?? requestProvider.effort,
@@ -2224,9 +2345,17 @@ export async function runCompaction(
     requestTokenLimit,
     tokenBudget: budget,
     tokenThreshold: threshold,
+    availableTokens,
+    compactionsInARow,
     requestEffort: requestProvider.effort,
     truncated: requestPromptTokens < rawPromptTokens,
   });
+
+  await reply(
+    chatId,
+    `Compaction starting: ${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
+      `(${readableTokenCount(rawPromptTokens)} / ${readableTokenCount(threshold)}).`,
+  );
 
   const draftId =
     typeof tracking.draftId === "string" && tracking.draftId
@@ -2301,8 +2430,10 @@ export async function runCompaction(
   const now = await moo.time.nowMs({});
   const lastUserAt = await latestUserInputAt(chatId);
   const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
+  const summaryTokens = estimateCompactionSummaryTokens(summary);
   const compactionHash = await persistCompactionLayer(chatId, {
     summary,
+    summaryTokens,
     draftId,
     throughAt,
     at: now,
@@ -2310,16 +2441,8 @@ export async function runCompaction(
     promptTokens: tracking.promptTokens ?? null,
     tokenBudget: tracking.tokenBudget ?? null,
     tokenThreshold: tracking.tokenThreshold ?? null,
-  });
-  await appendStep(chatId, {
-    kind: "agent:Compaction",
-    status: "agent:Done",
-    payloadHash: compactionHash,
-    extras: compactionExtras(
-      tracking,
-      body?.model || requestProvider.model,
-      requestProvider.effort,
-    ),
+    availableTokens: tracking.availableTokens ?? null,
+    compactionsInARow: tracking.compactionsInARow ?? null,
   });
   const postMessages = await buildLLMMessages(chatId);
   const postContextTokens = estimateTokens(postMessages, TOOLS);
@@ -2327,13 +2450,36 @@ export async function runCompaction(
     chatId,
     postMessages,
   );
+  const patchedCompactionHash =
+    (await patchCompactionLayerPostTokens(
+      chatId,
+      compactionHash,
+      postPressureTokens,
+    )) ?? compactionHash;
+  await appendStep(chatId, {
+    kind: "agent:Compaction",
+    status: "agent:Done",
+    payloadHash: patchedCompactionHash,
+    extras: compactionExtras(
+      tracking,
+      body?.model || requestProvider.model,
+      requestProvider.effort,
+    ),
+  });
   await recordLastContextTokens(chatId, postContextTokens, {
     compactionPromptTokens: postPressureTokens,
+    consecutiveCompactions: tokenCountOrZero(tracking.compactionsInARow),
   });
+  await recordConsecutiveCompactions(
+    chatId,
+    tokenCountOrZero(tracking.compactionsInARow),
+  );
   moo.events.publish({
     payload: tokenPressureEvent(chatId, postPressureTokens, {
       budget,
       threshold,
+      availableTokens: Math.max(0, threshold - postPressureTokens),
+      compactionsInARow: tokenCountOrZero(tracking.compactionsInARow),
       source: "compaction",
       estimated: true,
       reset: true,
@@ -2573,7 +2719,10 @@ export async function buildCompactionMessages(chatId: string): Promise<any[]> {
   if (compaction.summary) {
     messages.push({
       role: "system",
-      content: compactionContinuationSystemMessage(compaction.summary),
+      content: compactionContinuationSystemMessage(
+        compaction.summary,
+        await formatTodosForPrompt(chatId),
+      ),
     });
   }
   messages.push(...(await transcriptMessages(chatId, compaction.throughAt)));
@@ -2728,6 +2877,7 @@ async function toolRunTS(
   toolArgs: any,
   model?: string | null,
   effort?: string | null,
+  runTsStepId?: string | null,
 ): Promise<{ toolText: string }> {
   const code = typeof toolArgs?.code === "string" ? toolArgs.code : "";
   const label =
@@ -2741,6 +2891,11 @@ async function toolRunTS(
     "args",
   );
   const runArgs = hasRunArgs ? toolArgs.args : undefined;
+  const backgroundAfterNs =
+    typeof toolArgs?.backgroundAfterNs === "number" &&
+    Number.isFinite(toolArgs.backgroundAfterNs)
+      ? Math.max(0, Math.floor(toolArgs.backgroundAfterNs))
+      : null;
   const started = Date.now();
   const runTsStep = await startRunTSStep(
     chatId,
@@ -2749,40 +2904,32 @@ async function toolRunTS(
     description,
     runArgs,
     hasRunArgs,
+    backgroundAfterNs,
     started,
     model,
     effort,
+    runTsStepId,
   );
-  const trace = await startRunTSTraceRoot(runTsStep.stepId, {
-    chatId,
-    label: label || null,
-    description: description || null,
-    code,
-    args: runArgs ?? null,
-    argsProvided: hasRunArgs,
-    model: model || null,
-    effort: effort || null,
-  });
-  if (!code.trim()) {
-    const resultHash = await finishRunTSStep(
-      chatId,
-      runTsStep.stepId,
-      null,
-      "missing code",
-      started,
-    );
-    await finishRunTSTraceRoot({
-      id: trace?.id,
-      resultHash,
-      error: "missing code",
-      status: "error",
-    });
-    return { toolText: "error: runTS requires `code`" };
-  }
+  let trace: any = null;
   let result: any = undefined;
   let error: string | null = null;
   let serialized = "undefined";
+  let missingCode = false;
   try {
+    trace = await startRunTSTraceRoot(runTsStep.stepId, {
+      chatId,
+      label: label || null,
+      description: description || null,
+      code,
+      args: runArgs ?? null,
+      argsProvided: hasRunArgs,
+      model: model || null,
+      effort: effort || null,
+    });
+    if (!code.trim()) {
+      missingCode = true;
+      throw new Error("missing code");
+    }
     const compiled = await moo.traces.span({
       name: "ts.compile",
       data: { code, target: "es2025", typescript: "6" },
@@ -2825,20 +2972,23 @@ async function toolRunTS(
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
+  const cancelled = typeof error === "string" && /runTS cancelled/i.test(error);
   const resultHash = await finishRunTSStep(
     chatId,
     runTsStep.stepId,
     error ? null : { value: serialized },
     error,
     started,
+    cancelled ? "agent:Cancelled" : undefined,
   );
   await finishRunTSTraceRoot({
     id: trace?.id,
     resultHash,
     error,
-    status: error ? "error" : "ok",
+    status: cancelled ? "cancelled" : error ? "error" : "ok",
   });
-  if (error) return { toolText: `error: ${error}` };
+  if (missingCode) return { toolText: "error: runTS requires `code`" };
+  if (error) return { toolText: `${cancelled ? "cancelled" : "error"}: ${error}` };
   return { toolText: truncate(serialized ?? "undefined", 4000) };
 }
 
@@ -2855,9 +3005,11 @@ async function startRunTSStep(
   description: string,
   runArgs: any,
   hasRunArgs: boolean,
+  backgroundAfterNs: number | null,
   startedAt: number,
   model?: string | null,
   effort?: string | null,
+  runTsStepId?: string | null,
 ) {
   const payloadHash = await moo.objects.putJSON({
     kind: "agent:RunTS",
@@ -2866,12 +3018,14 @@ async function startRunTSStep(
       label: label || null,
       description: description || null,
       ...(hasRunArgs ? { args: runArgs } : {}),
+      ...(backgroundAfterNs != null ? { backgroundAfterNs } : {}),
     },
   });
   return await appendStep(chatId, {
     kind: "agent:RunTS",
     status: "agent:Running",
     payloadHash,
+    stepId: runTsStepId || undefined,
     extras: modelExtras(model, effort),
     at: startedAt,
   });
@@ -2883,6 +3037,7 @@ async function finishRunTSStep(
   result: { value: string } | null,
   error: string | null,
   startedAt?: number,
+  statusOverride?: "agent:Done" | "agent:Failed" | "agent:Cancelled",
 ): Promise<string | null> {
   const c = chatRefs(chatId);
   const resultHash = result
@@ -2894,7 +3049,7 @@ async function finishRunTSStep(
         })
       : null;
   const endedAt = Date.now();
-  const status = error ? "agent:Failed" : "agent:Done";
+  const status = statusOverride ?? (error ? "agent:Failed" : "agent:Done");
   const durationNs =
     typeof startedAt === "number"
       ? Math.max(0, endedAt - startedAt) * 1_000_000
@@ -2976,6 +3131,7 @@ export async function executeToolCall(
   tc: any,
   model?: string | null,
   effort?: string | null,
+  runTsStepId?: string | null,
 ): Promise<{ toolText: string }> {
   const name = tc?.function?.name;
   let args: any = {};
@@ -2996,7 +3152,7 @@ export async function executeToolCall(
         description: args?.description ?? null,
         args,
       },
-      () => toolRunTS(chatId, args, model, effort),
+      () => toolRunTS(chatId, args, model, effort, runTsStepId),
     );
   }
   const started = Date.now();
@@ -3007,6 +3163,7 @@ export async function executeToolCall(
     "",
     undefined,
     false,
+    null,
     started,
     model,
     effort,
@@ -3020,8 +3177,9 @@ export async function runToolCall(
   tc: any,
   model?: string | null,
   effort?: string | null,
+  runTsStepId?: string | null,
 ): Promise<{ toolText: string }> {
-  return executeToolCall(chatId, tc, model, effort);
+  return executeToolCall(chatId, tc, model, effort, runTsStepId);
 }
 
 export async function runShellAndRecord(
@@ -3030,20 +3188,19 @@ export async function runShellAndRecord(
   procOpts: { cwd?: string; stdin?: string; timeoutMs?: number } = {},
 ) {
   const argv = parseArgv(cmdline);
-  const [cmd, ...args] = argv;
+  const [cmd] = argv;
   if (!cmd) return await reply(chatId, "usage: /run <cmd> [args...]");
   const wt = await moo.chat.scratch({ chatId: chatId });
   const payloadHash = await moo.objects.putJSON({
     kind: "agent:ShellCommand",
-    value: { cmd, args, cwd: wt },
+    value: { cmd: argv, cwd: wt },
   });
   let result: any = null;
   let status: "agent:Done" | "agent:Failed" = "agent:Done";
   let errMsg: string | null = null;
   try {
     result = await moo.proc.run({
-      cmd: cmd,
-      args: args,
+      cmd: argv,
       ...{ cwd: wt, ...procOpts },
     });
     if (result.timedOut || result.code !== 0) status = "agent:Failed";
@@ -3056,7 +3213,7 @@ export async function runShellAndRecord(
   if (result) {
     const resultHash = await moo.objects.putJSON({
       kind: "agent:ToolResult",
-      value: { cmd, args, cwd: wt, ...result },
+      value: { cmd: argv, cwd: wt, ...result },
     });
     extras.push(["agent:result", resultHash]);
     extras.push(["agent:exitCode", String(result.code)]);
@@ -3172,9 +3329,7 @@ export function formatStepForCompaction(
     }
     case "agent:ShellCommand": {
       const cmd = payload?.value
-        ? `$ ${payload.value.cmd}${(payload.value.args || [])
-            .map((a: string) => " " + maybeQuote(a))
-            .join("")}`
+        ? `$ ${Array.isArray(payload.value.cmd) ? payload.value.cmd.map((a: string) => maybeQuote(a)).join(" ") : payload.value.cmd}`
         : "";
       const tail = result?.value
         ? `(exit ${result.value.code} · ${Math.round(result.value.durationNs / 1_000_000)}ms${
@@ -3273,9 +3428,7 @@ export function formatStep(item: any, payload: any, result: any): string {
     }
     case "agent:ShellCommand": {
       const cmd = payload?.value
-        ? `$ ${payload.value.cmd}${(payload.value.args || [])
-            .map((a: string) => " " + maybeQuote(a))
-            .join("")}`
+        ? `$ ${Array.isArray(payload.value.cmd) ? payload.value.cmd.map((a: string) => maybeQuote(a)).join(" ") : payload.value.cmd}`
         : "";
       const tail = result?.value
         ? `(exit ${result.value.code} · ${Math.round(result.value.durationNs / 1_000_000)}ms${

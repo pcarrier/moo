@@ -21,6 +21,7 @@ export type RunTSDetails = {
   description?: string | null;
   args?: unknown;
   code?: string | null;
+  backgroundAfterNs?: number;
   result?: string | null;
   error?: string | null;
   durationNs?: number;
@@ -57,6 +58,15 @@ export type StepItem = {
   lazyRunjsResult?: boolean;
   resultHash?: string | null;
   subagent?: SubagentDetails;
+  compaction?: {
+    promptTokens?: number | null;
+    postPromptTokens?: number | null;
+    summaryTokens?: number | null;
+    tokenBudget?: number | null;
+    tokenThreshold?: number | null;
+    availableTokens?: number | null;
+    compactionsInARow?: number | null;
+  };
   attachments?: ImageAttachment[];
   // Provider-echoed model that produced the step (for LLM-driven kinds).
   model?: string;

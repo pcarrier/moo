@@ -25,33 +25,38 @@ fn op_proc_run(
     if !required_args(
         scope,
         &args,
-        2,
-        "proc_run requires (cmd, argsJson, [cwd], [stdin], [timeoutMs], [envJson], [maxOutputBytes])",
+        1,
+        "proc_run requires (cmdJson, [cwd], [stdin], [timeoutMs], [envJson], [maxOutputBytes])",
     ) {
         return;
     }
-    let cmd = args.get(0).to_rust_string_lossy(scope);
-    let args_json = args.get(1).to_rust_string_lossy(scope);
-    let argv: Vec<String> = match serde_json::from_str(&args_json) {
+    let cmd_json = args.get(0).to_rust_string_lossy(scope);
+    let cmd_argv: Vec<String> = match serde_json::from_str(&cmd_json) {
         Ok(v) => v,
         Err(e) => {
-            throw(scope, &format!("proc_run args: {e}"));
+            throw(scope, &format!("proc_run cmd: {e}"));
             return;
         }
     };
-    let cwd = if args.length() > 2 && !args.get(2).is_null_or_undefined() {
+    if cmd_argv.is_empty() {
+        throw(scope, "proc_run cmd must not be empty");
+        return;
+    }
+    let program = &cmd_argv[0];
+    let program_args = &cmd_argv[1..];
+    let cwd = if args.length() > 1 && !args.get(1).is_null_or_undefined() {
+        Some(args.get(1).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    let stdin_text = if args.length() > 2 && !args.get(2).is_null_or_undefined() {
         Some(args.get(2).to_rust_string_lossy(scope))
     } else {
         None
     };
-    let stdin_text = if args.length() > 3 && !args.get(3).is_null_or_undefined() {
-        Some(args.get(3).to_rust_string_lossy(scope))
-    } else {
-        None
-    };
-    let timeout_ms: Option<u64> = if args.length() > 4 && args.get(4).is_number() {
+    let timeout_ms: Option<u64> = if args.length() > 3 && args.get(3).is_number() {
         let n = args
-            .get(4)
+            .get(3)
             .to_number(scope)
             .map(|n| n.value())
             .unwrap_or(0.0);
@@ -64,8 +69,8 @@ fn op_proc_run(
         None
     };
     let env_overrides: Option<HashMap<String, Option<String>>> =
-        if args.length() > 5 && !args.get(5).is_null_or_undefined() {
-            let env_json = args.get(5).to_rust_string_lossy(scope);
+        if args.length() > 4 && !args.get(4).is_null_or_undefined() {
+            let env_json = args.get(4).to_rust_string_lossy(scope);
             match serde_json::from_str(&env_json) {
                 Ok(v) => Some(v),
                 Err(e) => {
@@ -76,9 +81,9 @@ fn op_proc_run(
         } else {
             None
         };
-    let max_output_bytes: Option<usize> = if args.length() > 6 && args.get(6).is_number() {
+    let max_output_bytes: Option<usize> = if args.length() > 5 && args.get(5).is_number() {
         let n = args
-            .get(6)
+            .get(5)
             .to_number(scope)
             .map(|n| n.value())
             .unwrap_or(0.0);
@@ -92,8 +97,8 @@ fn op_proc_run(
     };
 
     let started = Instant::now();
-    let mut command = Command::new(&cmd);
-    command.args(&argv);
+    let mut command = Command::new(program);
+    command.args(program_args);
     configure_process_group(&mut command);
     if let Some(c) = &cwd {
         command.current_dir(c);
@@ -122,7 +127,7 @@ fn op_proc_run(
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
-            throw(scope, &format!("proc_run spawn {cmd}: {e}"));
+            throw(scope, &format!("proc_run spawn {program}: {e}"));
             return;
         }
     };

@@ -76,6 +76,9 @@ export function mergeCachedOverviewWithSummary(
     totalTurns: summary.totalTurns,
     totalSteps: summary.totalSteps,
   };
+  if (summary.baseBranch !== undefined) {
+    next.baseBranch = summary.baseBranch;
+  }
   if (summary.worktreePath !== undefined) {
     next.worktreePath = summary.worktreePath;
   }

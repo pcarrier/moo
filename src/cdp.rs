@@ -276,10 +276,10 @@ struct Shared {
 unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
-fn now_micros() -> u64 {
+fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as u64)
+        .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }
 
@@ -723,7 +723,7 @@ fn handle_frontend_protocol_message(shared: *const Shared, msg: &[u8]) -> bool {
                 .unwrap_or(false);
             unsafe {
                 (*shared).tracing_return_stream.set(return_stream);
-                (*shared).tracing_start_ts.set(now_micros());
+                (*shared).tracing_start_ts.set(now_nanos());
             }
             // Chrome's Performance panel records through Tracing.*. A plain
             // V8 inspector target only implements Profiler.*, so bridge the
@@ -992,11 +992,11 @@ fn finish_tracing(shared: *const Shared, profile: Option<Value>) {
 fn trace_events(shared: *const Shared, profile: Option<Value>) -> Value {
     let start_ts = unsafe { (*shared).tracing_start_ts.get() };
     let ts = if start_ts == 0 {
-        now_micros()
+        now_nanos()
     } else {
         start_ts
     };
-    let end_ts = now_micros();
+    let end_ts = now_nanos();
     let mut events = vec![
         json!({"name":"process_name","ph":"M","pid":1,"tid":1,"ts":ts,"args":{"name":"moo"}}),
         json!({"name":"thread_name","ph":"M","pid":1,"tid":1,"ts":ts,"args":{"name":"v8 inspector"}}),

@@ -33,6 +33,7 @@ export type ParsedRunTS = {
   result: string;
   hasResult: boolean;
   error: string;
+  backgroundAfterNs?: number;
   durationNs?: number;
 };
 
@@ -47,6 +48,10 @@ export function normalizeRunTS(runts: NonNullable<StepItem["runts"]>): ParsedRun
     result: trimRunTSBlock(String(runts.result ?? "")),
     hasResult: runts.result != null,
     error: trimRunTSBlock(String(runts.error ?? "")),
+    backgroundAfterNs:
+      typeof runts.backgroundAfterNs === "number"
+        ? runts.backgroundAfterNs
+        : undefined,
     durationNs:
       typeof runts.durationNs === "number" ? runts.durationNs : undefined,
   };

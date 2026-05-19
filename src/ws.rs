@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -139,8 +140,8 @@ pub fn handle(
                                 .unwrap_or("")
                                 .to_string();
                             let payload = payload.clone();
-                            let command = command_from_payload(&payload);
-                            let run_inline = inline_builtin_command(command);
+                            let command = command_from_payload(&payload).to_string();
+                            let run_inline = inline_builtin_command(&command);
                             let writer_tx = writer_tx.clone();
                             let pool = pool.clone();
                             let bundle = bundle.clone();
@@ -204,22 +205,26 @@ fn run_command(
     db: String,
     base_url: Option<String>,
 ) {
-    let command = command_from_payload(&payload);
+    let command = command_from_payload(&payload).to_string();
+    if command == "interrupt" {
+        if let Some(chat_id) = payload.get("chatId").and_then(|v| v.as_str()) {
+            crate::driver::cancel_runts(chat_id, None);
+        }
+    }
 
-    // Some observability builtins do not need per-request host/db setup.
-    // v8-stats is process-local; trace-frontend writes through the trace
-    // subsystem directly. Return them before host initialization so UI
-    // observability calls do not contend with normal command setup.
-    if no_host_builtin_command(command)
-        && let Some(result) = builtin_command_result(command, &db, &payload)
+    // Some builtins do not need per-request host/db setup. Return them before
+    // host initialization so UI observability calls do not contend with normal
+    // command setup.
+    if no_host_builtin_command(&command)
+        && let Some(result) = builtin_command_result(&command, &db, &payload)
     {
         send_run_result(&writer_tx, &id, result);
         return;
     }
 
-    let install_result = if settings_command(command) {
+    let install_result = if settings_command(&command) {
         Ok(())
-    } else if db_only_command(command) {
+    } else if db_only_command(&command) {
         host::install_db(&db)
     } else {
         host::install(&db)
@@ -236,7 +241,7 @@ fn run_command(
         return;
     }
 
-    if let Some(result) = builtin_command_result(command, &db, &payload) {
+    if let Some(result) = builtin_command_result(&command, &db, &payload) {
         send_run_result(&writer_tx, &id, result);
         return;
     }
@@ -244,6 +249,11 @@ fn run_command(
     let source = bundle();
     let effective_base_url = effective_server_base_url(&db, base_url.as_deref());
     let payload = payload_with_base_url(payload, effective_base_url.as_deref());
+    if command == "run-ts-tool" {
+        if handle_run_ts_tool_command(&pool, source.clone(), payload.clone(), &writer_tx, &id) {
+            return;
+        }
+    }
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
     apply_driver_actions(&result_value, &pool, source);
     send_run_result(&writer_tx, &id, result_value);
@@ -254,23 +264,59 @@ fn builtin_command_result(command: &str, db: &str, payload: &Value) -> Option<Va
         "v8-stats" => crate::pool::v8_stats_json(),
         "v8-settings-get" => v8_settings_get(db),
         "v8-settings-save" => v8_settings_save(db, payload),
-        "trace-config-get" => trace_config_get(db),
-        "trace-config-save" => trace_config_save(db, payload),
-        "trace-config-test" => trace_config_test(db, payload),
+        "otel-config-get" => otel_config_get(db),
+        "otel-config-save" => otel_config_save(db, payload),
+        "otel-config-test" => otel_config_test(db, payload),
         "llm-auth-get" => llm_auth_get(db),
         "llm-auth-save" => llm_auth_save(db, payload),
-        "trace-frontend" => trace_frontend(payload),
-        "trace-chats" => trace_chats(db, payload),
-        "trace-roots" => trace_roots(db, payload),
-        "trace-node" => trace_node(db, payload),
-        "trace-subtree" => trace_subtree_command(db, payload),
-        "trace-events" => trace_events_command(db, payload),
-        "trace-search" => trace_search(db, payload),
-        "trace-failed" => trace_failed(db, payload),
-        "trace-chat-tree" => trace_chat_tree(db, payload),
+        "run-ts-background" => run_ts_background_command(payload),
+        "run-ts-cancel" => run_ts_cancel_command(payload),
+        "run-ts-backgrounds" => crate::driver::background_runts_json(),
         "pointers" => pointers_command(db, payload),
         "graph-summaries" => graph_summaries_command(db, payload),
         _ => return None,
+    })
+}
+
+fn run_ts_background_command(payload: &Value) -> Value {
+    let Some(chat_id) = payload
+        .get("chatId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return json!({ "ok": false, "error": { "message": "run-ts-background requires chatId" } });
+    };
+    let requested = crate::driver::request_foreground_runts_background(chat_id);
+    json!({
+        "ok": true,
+        "value": {
+            "chatId": chat_id,
+            "stepId": payload.get("stepId").cloned().unwrap_or(Value::Null),
+            "requested": requested,
+        },
+    })
+}
+
+fn run_ts_cancel_command(payload: &Value) -> Value {
+    let Some(chat_id) = payload
+        .get("chatId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return json!({ "ok": false, "error": { "message": "run-ts-cancel requires chatId" } });
+    };
+    let step_id = payload
+        .get("stepId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let cancelled = crate::driver::cancel_runts(chat_id, step_id);
+    json!({
+        "ok": true,
+        "value": {
+            "chatId": chat_id,
+            "stepId": payload.get("stepId").cloned().unwrap_or(Value::Null),
+            "cancelled": cancelled,
+        },
     })
 }
 
@@ -581,17 +627,17 @@ fn v8_settings_save(db: &str, payload: &Value) -> Value {
     }
 }
 
-fn trace_config_get(db: &str) -> Value {
+fn otel_config_get(db: &str) -> Value {
     let result: Result<settings::TraceConfig, String> =
         with_settings_connection(db, host::trace_config_from_conn).and_then(|inner| inner);
     match result {
         Ok(config) => {
             let defaults = settings::default_trace_config();
             json!({ "ok": true, "value": {
-                "enabled": host::tracing_enabled(),
+                "enabled": host::otel_reporting_enabled(),
                 "config": config,
                 "defaults": defaults,
-                "note": "Trace configuration applied immediately. Environment overrides: MOO_TRACE_ENABLED, MOO_CLICKHOUSE_URL, MOO_CLICKHOUSE_DATABASE, MOO_CLICKHOUSE_TABLE_PREFIX, MOO_CLICKHOUSE_USER, MOO_CLICKHOUSE_PASSWORD.",
+                "note": "OTEL reporting configuration applied immediately. Environment overrides: MOO_OTEL_ENABLED, MOO_OTEL_ENDPOINT, MOO_OTEL_SERVICE_NAME, MOO_OTEL_HEADERS, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS, OTEL_SERVICE_NAME.",
             }})
         }
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
@@ -599,14 +645,11 @@ fn trace_config_get(db: &str) -> Value {
 }
 
 fn no_host_builtin_command(command: &str) -> bool {
-    matches!(command, "v8-stats" | "trace-frontend")
+    matches!(command, "v8-stats" | "run-ts-background" | "run-ts-cancel")
 }
 
 fn inline_builtin_command(command: &str) -> bool {
     // Only pure process-local reads should run on the WebSocket reader thread.
-    // Commands like trace-frontend avoid host initialization, but still touch
-    // trace storage and may block on external backends; if they run inline they
-    // can stop the reader from dispatching later UI load RPCs on the same socket.
     matches!(command, "v8-stats")
 }
 
@@ -615,9 +658,9 @@ fn settings_command(command: &str) -> bool {
         command,
         "v8-settings-get"
             | "v8-settings-save"
-            | "trace-config-get"
-            | "trace-config-save"
-            | "trace-config-test"
+            | "otel-config-get"
+            | "otel-config-save"
+            | "otel-config-test"
             | "llm-auth-get"
             | "llm-auth-save"
             | "llm-auth-oauth-start"
@@ -632,7 +675,7 @@ fn db_only_command(command: &str) -> bool {
     matches!(command, "")
 }
 
-fn trace_config_save(db: &str, payload: &Value) -> Value {
+fn otel_config_save(db: &str, payload: &Value) -> Value {
     let Some(value) = payload.get("config") else {
         return json!({ "ok": false, "error": { "message": "missing trace config" } });
     };
@@ -652,16 +695,16 @@ fn trace_config_save(db: &str, payload: &Value) -> Value {
     .and_then(|()| host::apply_trace_config(&parsed));
     match result {
         Ok(()) => json!({ "ok": true, "value": {
-            "enabled": host::tracing_enabled(),
+            "enabled": host::otel_reporting_enabled(),
             "config": parsed,
             "defaults": settings::default_trace_config(),
-            "note": "Trace configuration applied immediately. Environment overrides: MOO_TRACE_ENABLED, MOO_CLICKHOUSE_URL, MOO_CLICKHOUSE_DATABASE, MOO_CLICKHOUSE_TABLE_PREFIX, MOO_CLICKHOUSE_USER, MOO_CLICKHOUSE_PASSWORD.",
+            "note": "OTEL reporting configuration applied immediately. Environment overrides: MOO_OTEL_ENABLED, MOO_OTEL_ENDPOINT, MOO_OTEL_SERVICE_NAME, MOO_OTEL_HEADERS, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS, OTEL_SERVICE_NAME.",
         }}),
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
     }
 }
 
-fn trace_config_test(_db: &str, payload: &Value) -> Value {
+fn otel_config_test(_db: &str, payload: &Value) -> Value {
     let Some(value) = payload.get("config") else {
         return json!({ "ok": false, "error": { "message": "missing trace config" } });
     };
@@ -670,11 +713,11 @@ fn trace_config_test(_db: &str, payload: &Value) -> Value {
         Err(err) => return json!({ "ok": false, "error": { "message": err.to_string() } }),
     };
     if !parsed.enabled {
-        return json!({ "ok": true, "value": { "message": "ClickHouse tracing is disabled. These draft settings have not been saved and no ClickHouse connection was attempted." } });
+        return json!({ "ok": true, "value": { "message": "OTEL reporting is disabled. These draft settings have not been saved and no endpoint request was attempted." } });
     }
     match host::test_trace_config(&parsed) {
         Ok(()) => {
-            json!({ "ok": true, "value": { "message": "ClickHouse configuration OK. These draft settings have not been saved yet." } })
+            json!({ "ok": true, "value": { "message": "OTEL configuration OK. These draft settings have not been saved yet." } })
         }
         Err(message) => json!({ "ok": false, "error": { "message": message } }),
     }
@@ -1023,420 +1066,6 @@ fn llm_auth_save(db: &str, payload: &Value) -> Value {
     }
 }
 
-fn trace_error(message: impl Into<String>) -> Value {
-    json!({ "ok": false, "error": { "message": message.into() } })
-}
-
-fn trace_ok(value: Value) -> Value {
-    json!({ "ok": true, "value": value })
-}
-
-fn trace_payload<'a>(payload: &'a Value, key: &str) -> Option<&'a Value> {
-    payload
-        .get(key)
-        .or_else(|| payload.get("input").and_then(|v| v.get(key)))
-}
-
-fn trace_string(payload: &Value, key: &str) -> Result<Option<String>, String> {
-    match trace_payload(payload, key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        _ => Err(format!("{key} must be a string")),
-    }
-}
-
-fn trace_required_string(payload: &Value, key: &str) -> Result<String, String> {
-    trace_string(payload, key)?.ok_or_else(|| format!("{key} is required"))
-}
-
-fn trace_i64(payload: &Value, key: &str) -> Result<Option<i64>, String> {
-    match trace_payload(payload, key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => n
-            .as_i64()
-            .ok_or_else(|| format!("{key} must be an integer"))
-            .map(Some),
-        Some(Value::String(s)) => s
-            .trim()
-            .parse::<i64>()
-            .map(Some)
-            .map_err(|_| format!("{key} must be an integer")),
-        _ => Err(format!("{key} must be a number")),
-    }
-}
-
-fn trace_ns(payload: &Value, ns_key: &str) -> Result<Option<i64>, String> {
-    trace_i64(payload, ns_key)
-}
-
-fn trace_bool(payload: &Value, key: &str) -> Result<Option<bool>, String> {
-    match trace_payload(payload, key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(b)) => Ok(Some(*b)),
-        _ => Err(format!("{key} must be a boolean")),
-    }
-}
-
-fn trace_limit(payload: &Value, default: i64, max: i64) -> Result<i64, String> {
-    Ok(trace_i64(payload, "limit")?
-        .unwrap_or(default)
-        .clamp(1, max))
-}
-
-fn trace_depth(payload: &Value, default: i32, max: i32) -> Result<i32, String> {
-    Ok(trace_i64(payload, "maxDepth")?
-        .unwrap_or(default as i64)
-        .clamp(0, max as i64) as i32)
-}
-
-fn trace_object_to_json(hash: Option<&str>) -> Value {
-    let Some(hash) = hash else {
-        return Value::Null;
-    };
-    match host::get_object(hash) {
-        Ok(Some((kind, bytes))) => {
-            let content = String::from_utf8_lossy(&bytes).to_string();
-            json!({
-                "kind": kind,
-                "content": content,
-                "bytesBase64": B64.encode(&bytes),
-                "size": bytes.len(),
-            })
-        }
-        _ => Value::Null,
-    }
-}
-
-fn trace_row_to_json(row: &host::TraceRow) -> Value {
-    trace_row_to_json_with_objects(row, false)
-}
-
-fn trace_row_to_json_with_objects(row: &host::TraceRow, include_objects: bool) -> Value {
-    let data_json = row
-        .data_json
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .unwrap_or(Value::Null);
-    let mut value = json!({
-        "id": row.id,
-        "parentId": row.parent_id,
-        "rootId": row.root_id,
-        "rootKind": row.root_kind,
-        "rootName": row.root_name,
-        "traceId": row.root_id,
-        "chatId": row.chat_id,
-        "runId": row.run_id,
-        "kind": row.kind,
-        "name": row.name,
-        "depth": row.depth,
-        "seq": row.seq,
-        "status": row.status,
-        "t0Ns": row.started_ns,
-        "t1Ns": row.ended_ns,
-        "inputHash": row.input_hash,
-        "outputHash": row.output_hash,
-        "errorHash": row.error_hash,
-        "invokedFromStepId": row.invoked_from_step_id,
-        "dataJson": data_json,
-        "dataHash": row.data_hash,
-    });
-    if include_objects && let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "inputObject".to_string(),
-            trace_object_to_json(row.input_hash.as_deref()),
-        );
-        obj.insert(
-            "outputObject".to_string(),
-            trace_object_to_json(row.output_hash.as_deref()),
-        );
-        obj.insert(
-            "errorObject".to_string(),
-            trace_object_to_json(row.error_hash.as_deref()),
-        );
-    }
-    value
-}
-
-fn trace_event_to_json(row: &host::TraceEventRow) -> Value {
-    json!({
-        "id": row.id,
-        "spanId": row.span_id,
-        "tsNs": row.ts_ns,
-        "level": row.level,
-        "message": row.message,
-        "dataHash": row.data_hash,
-    })
-}
-
-fn trace_rows_json(rows: Vec<host::TraceRow>) -> Vec<Value> {
-    rows.iter().map(trace_row_to_json).collect()
-}
-
-fn trace_events_json(rows: Vec<host::TraceEventRow>) -> Vec<Value> {
-    rows.iter().map(trace_event_to_json).collect()
-}
-
-fn trace_ancestors_for_node(id: &str) -> Result<Vec<host::TraceRow>, String> {
-    let mut ancestors = host::trace_ancestors(id)?;
-    if ancestors.last().map(|row| row.id.as_str()) == Some(id) {
-        ancestors.pop();
-    }
-    Ok(ancestors)
-}
-
-fn trace_root_from_ancestors<'a>(
-    node: &'a host::TraceRow,
-    ancestors: &'a [host::TraceRow],
-) -> &'a host::TraceRow {
-    ancestors.first().unwrap_or(node)
-}
-
-fn trace_frontend(payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let command = trace_required_string(payload, "name")?;
-        let status = trace_string(payload, "status")?.unwrap_or_else(|| "ok".to_string());
-        if !matches!(status.as_str(), "ok" | "error" | "cancelled" | "timeout") {
-            return Err("status must be ok, error, cancelled, or timeout".to_string());
-        }
-        let started_ns = trace_i64(payload, "startedNs")?.unwrap_or_else(util::now_ns);
-        let ended_ns = trace_i64(payload, "endedNs")?
-            .unwrap_or(started_ns)
-            .max(started_ns);
-        let route = trace_string(payload, "route")?;
-        let rpc_duration_ns = trace_i64(payload, "rpcDurationNs")?.unwrap_or(0).max(0);
-        let data = json!({
-            "scope": "global",
-            "source": "frontend",
-            "command": command,
-            "route": route,
-            "frontendDurationMs": ended_ns.saturating_sub(started_ns) / 1_000_000,
-            "rpcDurationNs": rpc_duration_ns,
-            "status": status,
-            "error": trace_string(payload, "error")?,
-        });
-        let data_json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-        let id = trace_string(payload, "id")?
-            .filter(|id| !id.trim().is_empty())
-            .unwrap_or_else(|| util::random_id("fronttrace"));
-        if let Some(row) = host::trace_get(&id)? {
-            host::trace_update_data(&id, Some(&data_json))?;
-            if row.kind == "frontend" {
-                host::trace_finish(
-                    &id,
-                    ended_ns.max(started_ns),
-                    &status,
-                    None,
-                    None,
-                    Some(&data_json),
-                )?;
-            }
-        } else {
-            host::trace_open(host::TraceOpenParams {
-                id: &id,
-                parent_id: None,
-                chat_id: None,
-                run_id: None,
-                kind: "frontend",
-                name: &command,
-                started_ns,
-                input_hash: None,
-                invoked_from_step_id: None,
-                data_json: Some(&data_json),
-            })?;
-            host::trace_finish(
-                &id,
-                ended_ns.max(started_ns),
-                &status,
-                None,
-                None,
-                Some(&data_json),
-            )?;
-        }
-        Ok(json!({ "id": id }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_chats(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let limit = trace_limit(payload, 50, 200)?;
-        let before_ns = trace_ns(payload, "beforeNs")?;
-        Ok(json!({ "chats": trace_rows_json(host::trace_chat_roots(limit, before_ns)?) }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_roots(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let limit = trace_limit(payload, 100, 500)?;
-        let before_ns = trace_ns(payload, "beforeNs")?;
-        let query = trace_string(payload, "query")?;
-        let started_after_ns = trace_ns(payload, "startedAfterNs")?;
-        let started_before_ns = trace_ns(payload, "startedBeforeNs")?;
-        let min_duration_ns = trace_ns(payload, "minDurationNs")?;
-        let max_duration_ns = trace_ns(payload, "maxDurationNs")?;
-        let kind = trace_string(payload, "kind")?;
-        let status = trace_string(payload, "status")?;
-        let scope = trace_string(payload, "scope")?;
-        Ok(
-            json!({ "roots": trace_rows_json(host::trace_roots(host::TraceSearch {
-                query,
-                kind,
-                status,
-                scope,
-                limit,
-                before_ns,
-                started_after_ns,
-                started_before_ns,
-                min_duration_ns,
-                max_duration_ns,
-                ..Default::default()
-            })?) }),
-        )
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_node(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let id = trace_required_string(payload, "id")?;
-        let node = host::trace_get(&id)?.ok_or_else(|| format!("trace node not found: {id}"))?;
-        let children = host::trace_children(Some(&id), None)?;
-        let ancestors = trace_ancestors_for_node(&id)?;
-        let events = host::trace_events(&id, 1000, None)?;
-        let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
-        Ok(json!({
-            "node": trace_row_to_json_with_objects(&node, true),
-            "children": trace_rows_json(children),
-            "ancestors": trace_rows_json(ancestors),
-            "root": root,
-            "events": trace_events_json(events),
-        }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_subtree_command(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let id = trace_required_string(payload, "id")?;
-        let max_depth = trace_depth(payload, 4, 10)?;
-        let nodes = host::trace_subtree(&id, max_depth)?;
-        let root = nodes.first().map(trace_row_to_json);
-        Ok(json!({ "root": root, "nodes": trace_rows_json(nodes) }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_events_command(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let span_id = trace_required_string(payload, "spanId")?;
-        let limit = trace_limit(payload, 200, 1000)?;
-        let before_ns = trace_i64(payload, "beforeNs")?;
-        Ok(json!({ "events": trace_events_json(host::trace_events(&span_id, limit, before_ns)?) }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_search(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let limit = trace_limit(payload, 50, 200)?;
-        let query = host::TraceSearch {
-            query: trace_string(payload, "query")?,
-            kind: trace_string(payload, "kind")?,
-            status: trace_string(payload, "status")?,
-            chat_id: trace_string(payload, "chatId")?,
-            run_id: trace_string(payload, "runId")?,
-            scope: trace_string(payload, "scope")?,
-            has_error: trace_bool(payload, "hasError")?.unwrap_or(false),
-            limit,
-            before_ns: trace_ns(payload, "beforeNs")?,
-            started_after_ns: trace_ns(payload, "startedAfterNs")?,
-            started_before_ns: trace_ns(payload, "startedBeforeNs")?,
-            min_duration_ns: trace_ns(payload, "minDurationNs")?,
-            max_duration_ns: trace_ns(payload, "maxDurationNs")?,
-            roots_only: false,
-        };
-        let nodes = host::trace_search(query)?;
-        let mut hits = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let ancestors = trace_ancestors_for_node(&node.id)?;
-            let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
-            hits.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors), "root": root }));
-        }
-        Ok(json!({ "hits": hits }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_failed(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let limit = trace_limit(payload, 50, 200)?;
-        let chat_id = trace_string(payload, "chatId")?;
-        let before_ns = trace_ns(payload, "beforeNs")?;
-        let started_after_ns = trace_ns(payload, "startedAfterNs")?;
-        let started_before_ns = trace_ns(payload, "startedBeforeNs")?;
-        let min_duration_ns = trace_ns(payload, "minDurationNs")?;
-        let max_duration_ns = trace_ns(payload, "maxDurationNs")?;
-        let nodes = host::trace_failed(
-            limit,
-            chat_id.as_deref(),
-            before_ns,
-            started_after_ns,
-            started_before_ns,
-            min_duration_ns,
-            max_duration_ns,
-        )?;
-        let mut failures = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let ancestors = trace_ancestors_for_node(&node.id)?;
-            let root = trace_row_to_json(trace_root_from_ancestors(&node, &ancestors));
-            failures.push(json!({ "node": trace_row_to_json(&node), "ancestors": trace_rows_json(ancestors), "root": root }));
-        }
-        Ok(json!({ "failures": failures }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
-fn trace_chat_tree(_db: &str, payload: &Value) -> Value {
-    let result: Result<Value, String> = (|| {
-        let chat_id = trace_required_string(payload, "chatId")?;
-        let max_depth = trace_depth(payload, 6, 10)?;
-        let (root, nodes) = host::trace_chat_tree(&chat_id, max_depth)?;
-        Ok(json!({
-            "root": root.as_ref().map(trace_row_to_json),
-            "nodes": trace_rows_json(nodes),
-        }))
-    })();
-    match result {
-        Ok(value) => trace_ok(value),
-        Err(message) => trace_error(message),
-    }
-}
-
 fn command_from_payload(payload: &Value) -> &str {
     payload
         .get("argv")
@@ -1454,6 +1083,102 @@ fn submit_to_pool(pool: &Pool, bundle: Arc<String>, body: String) -> Value {
         ),
         Err(e) => json!({ "ok": false, "error": { "message": e } }),
     }
+}
+
+fn handle_run_ts_tool_command(
+    pool: &Arc<Pool>,
+    bundle: Arc<String>,
+    payload: Value,
+    writer_tx: &mpsc::Sender<String>,
+    id: &str,
+) -> bool {
+    let Some(background_after_ns) = driver::runts_tool_background_after_ns(&payload) else {
+        return false;
+    };
+    let chat_id = payload
+        .get("chatId")
+        .or_else(|| payload.pointer("/state/chatId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if chat_id.is_empty() {
+        return false;
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let payload = ensure_runts_step_id(payload);
+    let mut handle =
+        driver::spawn_runts_tool_command(pool.clone(), bundle, payload.clone(), cancel.clone());
+    if background_after_ns == 0 {
+        let result = detached_runts_tool_result(&payload);
+        driver::background_runts_command(chat_id, payload, cancel, handle);
+        send_run_result(writer_tx, id, result);
+        return true;
+    }
+    let wait = crate::async_runtime::runtime().block_on(async {
+        tokio::time::timeout(Duration::from_nanos(background_after_ns), &mut handle).await
+    });
+    match wait {
+        Ok(joined) => {
+            let result = joined.unwrap_or_else(|e| {
+                json!({
+                    "content": format!("error: runTS task failed: {e}"),
+                    "status": "failed",
+                })
+            });
+            send_run_result(writer_tx, id, json!({ "ok": true, "value": result }));
+        }
+        Err(_) => {
+            driver::background_runts_command(chat_id, payload.clone(), cancel, handle);
+            send_run_result(writer_tx, id, detached_runts_tool_result(&payload));
+        }
+    }
+    true
+}
+
+fn ensure_runts_step_id(mut payload: Value) -> Value {
+    let has_step_id = payload
+        .get("runTsStepId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .is_some();
+    if !has_step_id {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "runTsStepId".to_string(),
+                Value::String(util::random_id("step")),
+            );
+        }
+    }
+    payload
+}
+
+fn detached_runts_tool_result(payload: &Value) -> Value {
+    let mut tool_call_id = payload
+        .get("toolCall")
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let step_id = payload
+        .get("runTsStepId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| tool_call_id.clone());
+    if tool_call_id.is_empty() {
+        tool_call_id = step_id.clone();
+    }
+    json!({
+        "ok": true,
+        "value": {
+            "toolCallId": tool_call_id,
+            "stepId": step_id,
+            "runTsStepId": step_id,
+            "backgroundId": step_id,
+            "content": format!("detached: runTS continues in background; id: {step_id}; cancel with await moo.tools.cancel({{ id: \"{step_id}\" }})"),
+            "status": "done",
+        }
+    })
 }
 
 fn apply_driver_actions(result: &Value, pool: &Arc<Pool>, bundle: Arc<String>) {
@@ -1700,17 +1425,15 @@ mod tests {
     }
 
     #[test]
-    fn trace_config_test_disabled_does_not_require_clickhouse() {
-        let result = trace_config_test(
+    fn otel_config_test_disabled_does_not_require_otel_endpoint() {
+        let result = otel_config_test(
             ":memory:",
             &json!({
                 "config": {
                     "enabled": false,
-                    "clickhouseUrl": "http://127.0.0.1:1",
-                    "clickhouseDatabase": "default",
-                    "clickhouseTablePrefix": "moo_",
-                    "clickhouseUser": null,
-                    "clickhousePassword": null
+                    "otelEndpoint": "http://127.0.0.1:1/v1/traces",
+                    "serviceName": "moo",
+                    "headers": []
                 }
             }),
         );
@@ -1720,21 +1443,19 @@ mod tests {
             .and_then(|v| v.get("message"))
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        assert!(message.contains("no ClickHouse connection was attempted"));
+        assert!(message.contains("no endpoint request was attempted"));
     }
 
     #[test]
-    fn trace_config_test_enabled_validates_clickhouse() {
-        let result = trace_config_test(
+    fn otel_config_test_enabled_validates_otel_endpoint() {
+        let result = otel_config_test(
             ":memory:",
             &json!({
                 "config": {
                     "enabled": true,
-                    "clickhouseUrl": "http://127.0.0.1:1",
-                    "clickhouseDatabase": "default",
-                    "clickhouseTablePrefix": "moo_",
-                    "clickhouseUser": null,
-                    "clickhousePassword": null
+                    "otelEndpoint": "http://127.0.0.1:1/v1/traces",
+                    "serviceName": "moo",
+                    "headers": []
                 }
             }),
         );
@@ -1748,36 +1469,32 @@ mod tests {
     }
 
     #[test]
-    fn trace_config_save_enabled_validates_clickhouse() {
+    fn otel_config_save_enabled_applies_without_endpoint_probe() {
         let _guard = host::TEST_DB_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "moo-ws-trace-config-{}",
+            "moo-ws-otel-config-{}",
             crate::util::random_id("test")
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("store.sqlite");
         host::install_fresh(db_path.to_str().unwrap()).unwrap();
 
-        let result = trace_config_save(
+        let result = otel_config_save(
             ":memory:",
             &json!({
                 "config": {
                     "enabled": true,
-                    "clickhouseUrl": "http://127.0.0.1:1",
-                    "clickhouseDatabase": "default",
-                    "clickhouseTablePrefix": "moo_",
-                    "clickhouseUser": null,
-                    "clickhousePassword": null
+                    "otelEndpoint": "http://127.0.0.1:1/v1/traces",
+                    "serviceName": "moo",
+                    "headers": []
                 }
             }),
         );
-        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
-        let message = result
-            .get("error")
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        assert!(!message.is_empty());
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            result["value"]["config"]["otelEndpoint"].as_str(),
+            Some("http://127.0.0.1:1/v1/traces")
+        );
     }
 
     #[test]
@@ -1864,9 +1581,9 @@ mod tests {
 
     #[test]
     fn settings_commands_bypass_full_host_install() {
-        assert!(settings_command("trace-config-get"));
-        assert!(settings_command("trace-config-save"));
-        assert!(settings_command("trace-config-test"));
+        assert!(settings_command("otel-config-get"));
+        assert!(settings_command("otel-config-save"));
+        assert!(settings_command("otel-config-test"));
         assert!(settings_command("v8-settings-get"));
         assert!(settings_command("v8-settings-save"));
         assert!(settings_command("llm-auth-get"));
@@ -1882,8 +1599,6 @@ mod tests {
 
     #[test]
     fn only_pure_process_builtins_run_on_ws_reader_thread() {
-        assert!(no_host_builtin_command("trace-frontend"));
-        assert!(!inline_builtin_command("trace-frontend"));
         assert!(inline_builtin_command("v8-stats"));
     }
 }

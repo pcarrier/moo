@@ -105,86 +105,79 @@ type PoolSummary = {
   contexts: number;
 };
 
+function emptyPoolSummary(lane: string): PoolSummary {
+  return {
+    lane,
+    workers: 0,
+    busy: 0,
+    idle: 0,
+    recycling: 0,
+    stopped: 0,
+    queued: 0,
+    totalEnqueued: 0,
+    maxQueued: 0,
+    jobs: 0,
+    errors: 0,
+    recycles: 0,
+    nearHeapLimit: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    snapshotHits: 0,
+    snapshotMisses: 0,
+    usedHeapSize: 0,
+    heapSizeLimit: 0,
+    cacheEntries: 0,
+    contexts: 0,
+  };
+}
+
 function summarizePools(workers: V8WorkerSnapshot[], queues: V8PoolQueueSnapshot[] = []): PoolSummary[] {
   const byLane = new Map<string, PoolSummary>();
+  for (const queue of queues) {
+    const pool = emptyPoolSummary(queue.lane);
+    pool.workers = queue.activeWorkers ?? 0;
+    pool.busy = queue.busyWorkers ?? 0;
+    pool.idle = Math.max(0, pool.workers - pool.busy);
+    pool.queued = queue.queued ?? 0;
+    pool.totalEnqueued = queue.totalEnqueued ?? 0;
+    pool.maxQueued = queue.maxQueued ?? 0;
+    pool.jobs = queue.totalJobs ?? 0;
+    pool.errors = queue.totalErrors ?? 0;
+    pool.recycles = queue.totalRecycles ?? 0;
+    pool.nearHeapLimit = queue.totalNearHeapLimit ?? 0;
+    pool.cacheHits = queue.totalCacheHits ?? 0;
+    pool.cacheMisses = queue.totalCacheMisses ?? 0;
+    pool.snapshotHits = queue.totalSnapshotHits ?? 0;
+    pool.snapshotMisses = queue.totalSnapshotMisses ?? 0;
+    byLane.set(queue.lane, pool);
+  }
   for (const worker of workers) {
     let pool = byLane.get(worker.lane);
     if (!pool) {
-      pool = {
-        lane: worker.lane,
-        workers: 0,
-        busy: 0,
-        idle: 0,
-        recycling: 0,
-        stopped: 0,
-        queued: 0,
-        totalEnqueued: 0,
-        maxQueued: 0,
-        jobs: 0,
-        errors: 0,
-        recycles: 0,
-        nearHeapLimit: 0,
-        cacheHits: 0,
-        cacheMisses: 0,
-        snapshotHits: 0,
-        snapshotMisses: 0,
-        usedHeapSize: 0,
-        heapSizeLimit: 0,
-        cacheEntries: 0,
-        contexts: 0,
-      };
+      pool = emptyPoolSummary(worker.lane);
       byLane.set(worker.lane, pool);
     }
-    pool.workers += 1;
-    if (worker.status === "busy") pool.busy += 1;
+    if (!queues.length) {
+      pool.workers += 1;
+      pool.jobs += worker.jobs;
+      pool.errors += worker.errors;
+      pool.recycles += worker.recycles;
+      pool.nearHeapLimit += worker.nearHeapLimit;
+      pool.cacheHits += worker.cacheHits;
+      pool.cacheMisses += worker.cacheMisses;
+      pool.snapshotHits += worker.snapshotHits;
+      pool.snapshotMisses += worker.snapshotMisses;
+    }
+    if (worker.status === "busy") pool.busy += queues.length ? 0 : 1;
     else if (worker.status === "recycling") pool.recycling += 1;
     else if (worker.status === "stopped") pool.stopped += 1;
-    else pool.idle += 1;
-    pool.jobs += worker.jobs;
-    pool.errors += worker.errors;
-    pool.recycles += worker.recycles;
-    pool.nearHeapLimit += worker.nearHeapLimit;
-    pool.cacheHits += worker.cacheHits;
-    pool.cacheMisses += worker.cacheMisses;
-    pool.snapshotHits += worker.snapshotHits;
-    pool.snapshotMisses += worker.snapshotMisses;
+    else if (!queues.length) pool.idle += 1;
     pool.usedHeapSize += worker.heap?.usedHeapSize ?? 0;
     pool.heapSizeLimit += worker.heap?.heapSizeLimit ?? 0;
     pool.cacheEntries += worker.cacheEntries;
     pool.contexts += worker.heap?.numberOfNativeContexts ?? 0;
   }
-  for (const queue of queues) {
-    let pool = byLane.get(queue.lane);
-    if (!pool) {
-      pool = {
-        lane: queue.lane,
-        workers: 0,
-        busy: 0,
-        idle: 0,
-        recycling: 0,
-        stopped: 0,
-        queued: 0,
-        totalEnqueued: 0,
-        maxQueued: 0,
-        jobs: 0,
-        errors: 0,
-        recycles: 0,
-        nearHeapLimit: 0,
-        cacheHits: 0,
-        cacheMisses: 0,
-        snapshotHits: 0,
-        snapshotMisses: 0,
-        usedHeapSize: 0,
-        heapSizeLimit: 0,
-        cacheEntries: 0,
-        contexts: 0,
-      };
-      byLane.set(queue.lane, pool);
-    }
-    pool.queued = queue.queued;
-    pool.totalEnqueued = queue.totalEnqueued;
-    pool.maxQueued = queue.maxQueued;
-  }
+  for (const pool of byLane.values()) pool.idle = Math.max(0, pool.workers - pool.busy - pool.recycling - pool.stopped);
   return [...byLane.values()].sort((a, b) => a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0);
 }
 
@@ -222,7 +215,7 @@ function PoolCharts(props: { pools: PoolSummary[] }) {
   return (
     <section class="v8-charts">
       <article class="v8-chart-panel">
-        <header><h2>workers per pool</h2><span>busy / total + queued</span></header>
+        <header><h2>workers per pool</h2><span>busy / active + queued</span></header>
         <div class="v8-chart-legend"><span class="busy">busy</span><span class="idle">idle</span><span class="warn">recycling</span><span class="error">stopped</span></div>
         <For each={props.pools} fallback={<div class="memory-loading">No pools.</div>}>
           {(pool) => <WorkerCountBar pool={pool} max={maxWorkers()} />}
@@ -368,6 +361,7 @@ export function V8View(props: { bag: Bag; onToggleSidebar: () => void }) {
 
         <section class="v8-config-row">
           <span>heap recycle <strong>{formatBytes(config()?.recycleUsedHeapBytes)}</strong></span>
+          <span>idle window <strong>{formatCount(config()?.autoscaleWindowSecs)}s</strong></span>
           <span>cached contexts <strong>{config()?.cacheEntries ?? "—"}</strong></span>
           <span>updated <strong>{formatTime(stats()?.generatedAt)}</strong></span>
         </section>

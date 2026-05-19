@@ -81,3 +81,31 @@ export function RefreshIcon(props: IconProps): JSX.Element {
     </svg>
   );
 }
+
+export function CrossIcon(props: { class?: string }) {
+  return (
+    <svg class={props.class || "ui-icon"} viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" />
+    </svg>
+  );
+}
+
+export function BackgroundIcon(props: { class?: string }) {
+  return (
+    <svg class={props.class || "ui-icon"} viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 5h8v8H3z" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M6 2h7v7" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M6 2v3M11 9h2" fill="none" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+  );
+}
+
+export function SteerIcon(props: { class?: string }) {
+  return (
+    <svg class={props.class || "ui-icon"} viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 8h8" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path d="M8 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="miter" />
+      <path d="M3 3v10" fill="none" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+  );
+}

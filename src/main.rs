@@ -62,7 +62,7 @@ enum Cmd {
     },
     /// Clear all ongoing markers so no chats restart on next startup.
     Freeze,
-    /// Disable tracing in the database. Works even if the server won't start.
+    /// Disable OTEL reporting in the database. Works even if the server won't start.
     DisableTracing,
     /// Re-run the canonical installer at this binary's install location.
     Upgrade,
@@ -256,13 +256,13 @@ fn real_main(cli: Cli) -> Result<(), String> {
             .and_then(|v| serde_json::from_str::<settings::TraceConfig>(&v).ok())
             .unwrap_or_else(settings::default_trace_config);
         if !config.enabled {
-            eprintln!("tracing is already disabled");
+            eprintln!("OTEL reporting is already disabled");
             return Ok(());
         }
         config.enabled = false;
         let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
         settings::set(&conn, settings::TRACE_CONFIG_KEY, &json)?;
-        eprintln!("tracing disabled (restart the server to apply)");
+        eprintln!("OTEL reporting disabled (restart the server to apply)");
         return Ok(());
     }
 

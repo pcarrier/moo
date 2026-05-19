@@ -34,7 +34,8 @@ export function newestTimelineWatermark(items: TimelineItem[]): number {
 
 export function timelineItemKey(item: TimelineItem): string {
   if (item.type === "step") {
-    return item.kind === "agent:Reply" && item.draftId
+    return (item.kind === "agent:Reply" || item.kind === "agent:Compaction") &&
+      item.draftId
       ? `step:draft:${item.draftId}`
       : `step:${item.step}`;
   }

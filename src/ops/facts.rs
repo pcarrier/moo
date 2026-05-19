@@ -929,21 +929,20 @@ fn load_chat_fact_summaries() -> Result<HashMap<String, ChatFactSummary>, String
         {
             let mut stmt = conn
                 .prepare_cached(
-                    "select distinct ref_name, object
+                    "select distinct ref_name
                        from quads
                       where ref_name >= 'chat/' and ref_name < 'chat0' and substr(ref_name, length(ref_name) - 5) = '/facts'
                         and predicate = 'agent:status'
-                        and object in ('agent:Running', 'agent:Queued')",
+                        and object = 'agent:Queued'",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .query_map([], |r| r.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
             for row in rows {
-                let (ref_name, status) = row.map_err(|e| e.to_string())?;
+                let ref_name = row.map_err(|e| e.to_string())?;
                 if let Some(chat_id) = chat_id_from_facts_ref(&ref_name) {
-                    let rank = if status == "agent:Running" { 2 } else { 1 };
-                    if priority_status.get(&chat_id).copied().unwrap_or(0) >= rank {
+                    if priority_status.get(&chat_id).copied().unwrap_or(0) >= 1 {
                         continue;
                     }
                     summaries
@@ -952,8 +951,8 @@ fn load_chat_fact_summaries() -> Result<HashMap<String, ChatFactSummary>, String
                             status: "agent:Done".to_string(),
                             ..Default::default()
                         })
-                        .status = status;
-                    priority_status.insert(chat_id, rank);
+                        .status = "agent:Queued".to_string();
+                    priority_status.insert(chat_id, 1);
                 }
             }
         }

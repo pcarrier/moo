@@ -59,6 +59,11 @@ describe("timeline runTS result rendering", () => {
       "setTruncated(previewEl.scrollHeight > maxPreviewHeight + 1);",
     );
     expect(timeline).toContain("function runTSBlockLanguageForContent(");
+    expect(timeline).toContain("function highlightRunTSBlock(");
+    expect(timeline).toContain("highlightMarkdownCode(content, language)");
+    expect(timeline).toContain("highlightAuto(content)");
+    expect(timeline).toContain("function HighlightedPre(props: {");
+    expect(timeline).toContain("if (el) el.innerHTML = html();");
     expect(timeline).toContain("content: string,");
     expect(timeline).toContain("language?: string,");
     expect(timeline).toContain(
@@ -73,18 +78,21 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain("content={parsed().args}");
     expect(timeline).toContain("onOpenFull={props.onOpenRunTSBlock}");
     expect(timeline).toContain('class="runts-lightbox-backdrop"');
+    expect(timeline).toContain("content={block().content}");
+    expect(timeline).toContain("language={block().language}");
     expect(timeline).toContain('role="button"');
     expect(timeline).toContain('"runts-block-preview": true');
+    expect(timeline).toContain("language={language()}");
     expect(timeline).toContain('class="runts-lightbox-copy"');
     expect(timeline).toContain(
       "if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;",
     );
     expect(timeline).toContain('class="runts-block-fade"');
     expect(timeline).toContain(
-      'style={{ "--runts-preview-lines": String(previewLineLimit()) }}',
+      'style={{ "--runts-preview-max-height": `${previewLineLimit() * 1.3}em` }}',
     );
     expect(timelineCss).toContain(
-      "max-block-size: calc(var(--runts-preview-lines) * 1.3em);",
+      "max-block-size: var(--runts-preview-max-height);",
     );
     expect(timeline).not.toContain('class="runts-block-open"');
     expect(timeline).not.toContain('class="runts-block-more"');

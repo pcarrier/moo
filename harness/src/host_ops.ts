@@ -88,14 +88,13 @@ export const statFile = (path: string): FsStat | null => __op_fs_stat(path);
 export const canonicalPath = (path: string): string => __op_fs_canonical(path);
 
 export const runProcess = (
-  cmd: string,
-  argsJson: string,
+  cmdJson: string,
   cwd: string | null,
   stdin: string | null,
   timeoutMs: number,
   envJson?: string | null,
   maxOutputBytes?: number | null,
-): ProcRunResult => __op_proc_run(cmd, argsJson, cwd, stdin, timeoutMs, envJson, maxOutputBytes);
+): ProcRunResult => __op_proc_run(cmdJson, cwd, stdin, timeoutMs, envJson, maxOutputBytes);
 
 export const fetchHttp = (method: string, url: string, headersJson: string, body: string | null, timeoutMs: number): HttpFetchResult =>
   __op_http_fetch(method, url, headersJson, body, timeoutMs);
@@ -110,6 +109,7 @@ export const broadcast = (json: string): void => __op_broadcast(json);
 export const runningChatIds = (): string => __op_chat_running_ids();
 export const runningChatStartedAt = (): string => __op_chat_running_started_at();
 export const runAgent = (requestJson: string): Promise<string> => __op_agent_run(requestJson);
+export const cancelRunTS = (chatId: string, stepId?: string | null): string => __op_runts_cancel(chatId, stepId ?? null);
 
 type TraceProbeGlobal = {
   readonly __op_trace_insert?: unknown;
@@ -187,4 +187,5 @@ export const TRACED_NATIVE_OPS: readonly TracedNativeOp[] = [
   { globalName: "__op_chat_running_ids", traceName: "runningChatIds" },
   { globalName: "__op_chat_running_started_at", traceName: "runningChatStartedAt" },
   { globalName: "__op_agent_run", traceName: "runAgent" },
+  { globalName: "__op_runts_cancel", traceName: "cancelRunTS" },
 ] as const;

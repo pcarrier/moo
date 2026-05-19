@@ -2,7 +2,7 @@ import * as host from "./host_ops";
 import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
-import { PatchError, patchText } from "./core/patch";
+import { PatchError, patchText, validatePatchEnvelopeTarget } from "./core/patch";
 import { encodeObject, stringBytes, term, validate } from "./core/terms";
 import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
@@ -1314,6 +1314,12 @@ function patchResult(status: string, output: string): PatchResult {
 
 async function executePatch(path: string, diff: string | null | undefined, workingDirectory: string | null): Promise<PatchResult> {
   const [display, absolute] = resolvePatchPaths(path, workingDirectory);
+  const patch = diff ?? "";
+  try {
+    validatePatchEnvelopeTarget(patch, display);
+  } catch (e) {
+    throw new PatchError("Could not patch '" + display + "': " + (e as Error).message);
+  }
 
   const stat = await fs.stat({ path: absolute });
   if (stat === null) {
@@ -1330,7 +1336,7 @@ async function executePatch(path: string, diff: string | null | undefined, worki
   }
   let content: string;
   try {
-    content = patchText(original, diff ?? "");
+    content = patchText(original, patch);
   } catch (e) {
     throw new PatchError("Could not patch '" + display + "': " + (e as Error).message);
   }
@@ -1431,15 +1437,34 @@ const fs: Moo["fs"] = {
   },
 };
 
+function formatProcCommand(cmd: readonly string[]): string {
+  return cmd.map((part) => JSON.stringify(part)).join(" ");
+}
+
+function normalizeProcCommand(cmd: readonly string[]): string[] {
+  if (!Array.isArray(cmd) || cmd.length === 0) {
+    throw new MooApiError("invalid_request", "proc.run requires non-empty cmd array", { cmd });
+  }
+  return cmd.map((part, index) => {
+    if (typeof part !== "string") {
+      throw new MooApiError("invalid_request", "proc.run cmd entries must be strings", { cmd, index });
+    }
+    if (index === 0 && part.length === 0) {
+      throw new MooApiError("invalid_request", "proc.run command name must not be empty", { cmd });
+    }
+    return part;
+  });
+}
+
 function checkedProcResult(input: ProcRunArgs, result: ProcResult): ProcResult {
   if (input.check && result.code !== 0) {
     const code = result.timedOut ? "timeout" : "process_failed";
+    const command = formatProcCommand(input.cmd);
     const message = result.timedOut
-      ? "process timed out: " + input.cmd
-      : "process failed: " + input.cmd + " exited " + result.code;
+      ? "process timed out: " + command
+      : "process failed: " + command + " exited " + result.code;
     throw new MooApiError(code, message, {
       cmd: input.cmd,
-      args: input.args ?? [],
       cwd: input.cwd ?? null,
       code: result.code,
       timedOut: result.timedOut,
@@ -1454,11 +1479,11 @@ function checkedProcResult(input: ProcRunArgs, result: ProcResult): ProcResult {
 
 const proc: Moo["proc"] = {
   async run(input) {
-    const { cmd, args = [], stdin = null, timeoutMs = 60_000, env = undefined, maxOutputBytes = null } = input;
+    const { stdin = null, timeoutMs = 60_000, env = undefined, maxOutputBytes = null } = input;
+    const cmd = normalizeProcCommand(input.cmd);
     const cwd = await resolveActiveCwd(input.cwd);
     return await traceObserved("moo.proc.run", {
       cmd,
-      args,
       cwd,
       timeoutMs,
       hasStdin: stdin != null,
@@ -1468,15 +1493,14 @@ const proc: Moo["proc"] = {
       check: input.check === true,
     }, () => {
       const result = host.runProcess(
-        cmd,
-        JSON.stringify(args),
+        JSON.stringify(cmd),
         cwd,
         stdin,
         timeoutMs,
         env == null ? null : JSON.stringify(env),
         maxOutputBytes ?? null,
       );
-      return checkedProcResult({ ...input, cwd }, result);
+      return checkedProcResult({ ...input, cmd, cwd }, result);
     }, (result) => ({
       code: result.code,
       timedOut: result.timedOut,
@@ -1935,7 +1959,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.4.0" },
+    clientInfo: { name: "moo", version: "0.5.0" },
   };
 }
 
@@ -2576,6 +2600,7 @@ type ChatUsageSummary = {
   models: Record<string, { input: number; cachedInput: number; cacheWriteInput?: number; output: number }>;
   lastContextTokens?: number;
   lastCompactionPromptTokens?: number;
+  consecutiveCompactions?: number;
 };
 
 function normalizeChatUsageSummary(value: unknown): ChatUsageSummary | null {
@@ -2602,6 +2627,25 @@ type CachedChatFactsSummary = ChatFactsSummary & {
 };
 
 const chatFactsSummaryCache = new Map<string, CachedChatFactsSummary>();
+
+function driverRunningChatState(): {
+  running: Set<string>;
+  startedAt: Record<string, number>;
+} {
+  let running: Set<string>;
+  let startedAt: Record<string, number>;
+  try {
+    running = new Set(JSON.parse(host.runningChatIds()));
+  } catch {
+    running = new Set();
+  }
+  try {
+    startedAt = JSON.parse(host.runningChatStartedAt());
+  } catch {
+    startedAt = {};
+  }
+  return { running, startedAt };
+}
 
 function invalidateChatFactsSummary(store: string): void {
   const m = /^chat\/([^/]+)\/facts$/.exec(String(store || ""));
@@ -2669,8 +2713,6 @@ async function summarizeChatFacts(chatId: string): Promise<ChatFactsSummary> {
   let status = "agent:Done";
   if (pendingInputs.length > 0) {
     status = "ui:Pending";
-  } else if (stepRows.some((s) => s["?status"] === "agent:Running")) {
-    status = "agent:Running";
   } else if (stepRows.some((s) => s["?status"] === "agent:Queued")) {
     status = "agent:Queued";
   } else {
@@ -2774,9 +2816,9 @@ const chat: Moo["chat"] = {
     // plain mkdir when repo-specific workspace creation fails.
     if (await fs.exists({ path: joinPath(root, ".jj") })) {
       const startRevision = (await pointers.get({ name: `chat/${chatId}/start-branch` }))?.trim() || "@";
-      let result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", startRevision, path], ...{ cwd: root, timeoutMs: 10_000 } });
+      let result = await proc.run({ cmd: ["jj", "workspace", "add", "--quiet", "--revision", startRevision, path], ...{ cwd: root, timeoutMs: 10_000 } });
       if (result.code !== 0 && startRevision !== "@") {
-        result = await proc.run({ cmd: "jj", args: ["workspace", "add", "--quiet", "--revision", "@", path], ...{ cwd: root, timeoutMs: 10_000 } });
+        result = await proc.run({ cmd: ["jj", "workspace", "add", "--quiet", "--revision", "@", path], ...{ cwd: root, timeoutMs: 10_000 } });
       }
       if (result.code === 0) return await canonicalDir(path);
     }
@@ -2785,9 +2827,9 @@ const chat: Moo["chat"] = {
     // clean state.
     if (await fs.exists({ path: joinPath(root, ".git") })) {
       const startBranch = (await pointers.get({ name: `chat/${chatId}/start-branch` }))?.trim() || "HEAD";
-      let result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, startBranch], ...{ cwd: root, timeoutMs: 10_000 } });
+      let result = await proc.run({ cmd: ["git", "worktree", "add", "--quiet", "--detach", path, startBranch], ...{ cwd: root, timeoutMs: 10_000 } });
       if (result.code !== 0 && startBranch !== "HEAD") {
-        result = await proc.run({ cmd: "git", args: ["worktree", "add", "--quiet", "--detach", path, "HEAD"], ...{ cwd: root, timeoutMs: 10_000 } });
+        result = await proc.run({ cmd: ["git", "worktree", "add", "--quiet", "--detach", path, "HEAD"], ...{ cwd: root, timeoutMs: 10_000 } });
       }
       if (result.code === 0) return await canonicalDir(path);
     }
@@ -2806,6 +2848,11 @@ const chat: Moo["chat"] = {
     const all = await pointers.entries({ prefix: "chat/" });
     const ids = new Set<string>();
     const byChat = new Map<string, Record<string, string>>();
+    // The Rust driver is the source of truth for active foreground turns.
+    // Persisted step rows can legitimately stay agent:Running after a runTS tool
+    // is detached to the background; those rows should keep their spinner/cancel
+    // affordance, but they must not make the chat summary/sidebar look busy.
+    const { running, startedAt: runningStartedAt } = driverRunningChatState();
     for (const [name, target] of all) {
       const parts = name.split("/");
       if (parts.length < 3) continue;
@@ -2828,6 +2875,7 @@ const chat: Moo["chat"] = {
         const head = refsForChat["head"] || null;
         const title = refsForChat["title"] || null;
         const path = refsForChat["path"] || null;
+        const baseBranch = refsForChat["start-branch"] || null;
         const archivedRaw = refsForChat["archived-at"] || null;
         const hiddenRaw = refsForChat["hidden"] || null;
         const parentChatId = refsForChat["parent"] || null;
@@ -2845,6 +2893,13 @@ const chat: Moo["chat"] = {
         // lazily when code actually needs it, and chat-new returns it when a new
         // chat is explicitly materialized.
         const worktreePath = null;
+        const status = summary.status === "ui:Pending"
+          ? "ui:Pending"
+          : running.has(cid)
+            ? "agent:Running"
+            : summary.status === "agent:Running"
+              ? "agent:Done"
+              : summary.status;
         return {
           chatId: cid,
           title: title || null,
@@ -2852,6 +2907,7 @@ const chat: Moo["chat"] = {
           lastAt: lastAt ? Number(lastAt) : created ? Number(created) : 0,
           head: head || null,
           path,
+          baseBranch,
           worktreePath,
           archived: archivedAt != null,
           archivedAt,
@@ -2860,7 +2916,8 @@ const chat: Moo["chat"] = {
           totalFacts: summary.totalFacts,
           totalTurns: summary.totalTurns,
           totalSteps: summary.totalSteps,
-          status: summary.status,
+          status,
+          runningStartedAt: status === "agent:Running" ? (runningStartedAt[cid] ?? null) : null,
           usage,
         };
       }),
@@ -2931,9 +2988,9 @@ const chat: Moo["chat"] = {
     // the git CLI so we don't leave dangling worktree metadata.
     const gitFile = await fs.stat({ path: `${path}/.git` });
     if (gitFile && gitFile.kind === "file") {
-      await proc.run({ cmd: "git", args: ["worktree", "remove", "--force", path], timeoutMs: 10_000 });
+      await proc.run({ cmd: ["git", "worktree", "remove", "--force", path], timeoutMs: 10_000 });
     } else if (await fs.exists({ path: path })) {
-      await proc.run({ cmd: "rm", args: ["-rf", path], timeoutMs: 10_000 });
+      await proc.run({ cmd: ["rm", "-rf", path], timeoutMs: 10_000 });
     }
     const all = await pointers.list({ prefix: `chat/${chatId}/` });
     let clearedQuads = 0;
@@ -3280,7 +3337,7 @@ function encodeProjectMemoryId(projectId: string): string {
   );
 }
 async function currentProjectMemoryId(): Promise<string> {
-  const git = await proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
+  const git = await proc.run({ cmd: ["git", "rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
   if (git.code === 0 && git.stdout.trim()) return git.stdout.trim();
   const pwd = await env.get({ name: "PWD" });
   if (pwd && pwd.trim()) return pwd.trim();
@@ -3500,6 +3557,26 @@ export const tryApi: Moo["try"] = async ({ fn }) => {
   }
 };
 
+const tools: Moo["tools"] = {
+  async cancel({ id, stepId, chatId }) {
+    const targetChatId = String(chatId ?? activeChatId ?? "").trim();
+    if (!targetChatId) throw new Error("moo.tools.cancel requires chatId outside an active chat context");
+    const rawStepId = stepId ?? id ?? null;
+    const targetStepId = rawStepId == null ? null : String(rawStepId).trim();
+    const raw = host.cancelRunTS(targetChatId, targetStepId || null);
+    const parsed = JSON.parse(raw) as {
+      chatId?: string;
+      stepId?: string | null;
+      cancelled?: number;
+    };
+    return {
+      chatId: parsed.chatId ?? targetChatId,
+      stepId: parsed.stepId ?? (targetStepId || null),
+      cancelled: Number(parsed.cancelled ?? 0),
+    };
+  },
+};
+
 const rawMoo: Moo = {
   try: tryApi,
   time,
@@ -3520,6 +3597,7 @@ const rawMoo: Moo = {
   chat,
   ui,
   mcp,
+  tools,
   agent,
   memory,
   vocab,

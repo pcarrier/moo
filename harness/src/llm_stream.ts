@@ -70,7 +70,13 @@ type LlmAccumulatorState = {
   anthropicToolBlockToCall: Record<string, number>;
   anthropicThinkingBlockIndex: number | null;
   anthropicThinkingBlockToIndex: Record<string, number>;
+  nextSyntheticToolCallId: number;
 };
+
+function syntheticToolCallId(state: LlmAccumulatorState): string {
+  state.nextSyntheticToolCallId += 1;
+  return `call_moo_${state.nextSyntheticToolCallId}`;
+}
 
 export function llmStreamInitCommand(input: LlmStreamInitInput) {
   return llmStreamInitEffect(input).map((value) => ok(value));
@@ -107,6 +113,7 @@ export function llmStreamInitEffect(
             anthropicToolBlockToCall: {},
             anthropicThinkingBlockIndex: null,
             anthropicThinkingBlockToIndex: {},
+            nextSyntheticToolCallId: 0,
           };
           const events: StreamOutputEvent[] = [];
           const tokenEvent = streamEvents.tokenProgressEvent;
@@ -402,6 +409,8 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
       isObject(raw) && isObject(raw.anthropicThinkingBlockToIndex)
         ? numericRecord(raw.anthropicThinkingBlockToIndex)
         : {},
+    nextSyntheticToolCallId:
+      Number(isObject(raw) ? (raw.nextSyntheticToolCallId ?? 0) : 0) || 0,
   };
 }
 
@@ -547,7 +556,7 @@ function accumulateLlmStreamEvent(
   const item = isObject(parsed.item) ? parsed.item : {};
   if (type === "response.output_item.done" && item.type === "function_call") {
     state.toolCalls.push({
-      id: String(item.call_id || item.id || ""),
+      id: String(item.call_id || item.id || syntheticToolCallId(state)),
       type: "function",
       function: {
         name: String(item.name || ""),
@@ -583,7 +592,7 @@ function accumulateLlmStreamEvent(
       const i = Number.isFinite(Number(tc.index)) ? Number(tc.index) : 0;
       while (state.toolCalls.length <= i) {
         state.toolCalls.push({
-          id: "",
+          id: syntheticToolCallId(state),
           type: "function",
           function: { name: "", arguments: "" },
         });

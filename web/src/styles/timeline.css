@@ -49,7 +49,10 @@
   padding: calc((var(--top-bar-h) - var(--top-bar-button-size)) / 2) 0.55rem;
   border-bottom: 1px solid var(--line);
   display: grid;
-  grid-template-columns: auto minmax(0, max-content) minmax(8rem, 1fr) auto minmax(9rem, 0.55fr) auto;
+  grid-template-columns: auto minmax(0, max-content) minmax(
+      8rem,
+      1fr
+    ) auto minmax(9rem, 0.55fr) auto;
   grid-template-areas: "nav parent title model tokens right";
   column-gap: 0.5rem;
   row-gap: 0.25rem;
@@ -442,6 +445,10 @@
   min-height: 0;
 }
 
+.timeline > * {
+  flex-shrink: 0;
+}
+
 @container conversation-main (max-width: 68rem) {
   .conv-header {
     grid-template-columns:
@@ -773,14 +780,22 @@
   align-self: flex-start;
 }
 
-.step.run-j-s {
-  background: var(--bubble-runts);
+.step.run-ts,
+.step.run-js {
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  border: 1px solid var(--line);
   align-self: flex-start;
   box-sizing: border-box;
   max-width: 100%;
   min-width: 0;
   width: 100%;
-  overflow: hidden;
+  overflow: visible;
+}
+
+.step.run-ts.cancelled,
+.step.run-js.cancelled {
+  border: 1px solid color-mix(in srgb, darkorange 70%, var(--line-strong));
+  box-shadow: inset 3px 0 0 darkorange;
 }
 /* Code/result blocks inside runTS are wrapped in <pre>, which already
    inherits the ui-monospace rule. The title and description are prose, so
@@ -829,6 +844,14 @@
 .compaction-summary > summary time {
   font-size: 0.75em;
   opacity: 0.75;
+}
+
+.compaction-token-delta {
+  font-size: 0.75em;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  padding: 0.05em 0.35em;
+  background: color-mix(in srgb, var(--bubble-compact) 72%, transparent);
 }
 
 .compaction-summary[open] > summary::before {
@@ -1079,10 +1102,56 @@ details.runts-step > summary::-webkit-details-marker {
   flex-shrink: 0;
 }
 
+.subagent-title-prefix {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .runts-loading {
   flex-shrink: 0;
   margin-right: 0.1em;
   vertical-align: baseline;
+}
+
+.runts-status {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.runts-status-cancelled {
+  color: darkorange;
+}
+
+.subagent-status {
+  border: 1px solid currentColor;
+  padding: 0.02rem 0.22rem;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
+.subagent-status-running,
+.subagent-status-pending,
+.subagent-status-queued {
+  color: var(--accent);
+}
+
+.subagent-status-done {
+  color: var(--success, #4ade80);
+}
+
+.subagent-status-failed {
+  color: var(--danger, #f87171);
+}
+
+.subagent-status-cancelled {
+  color: darkorange;
 }
 
 .runts-markdown {
@@ -1205,17 +1274,17 @@ details.runts-step:not([open]) > .step-footer {
 }
 
 .runts-block-preview {
-  --runts-preview-lines: 10;
+  --runts-preview-max-height: 13em;
   position: relative;
   display: block;
   width: 100%;
-  max-block-size: calc(var(--runts-preview-lines) * 1.3em);
+  max-block-size: var(--runts-preview-max-height);
   overflow: hidden;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: inherit;
+  color: var(--fg);
   cursor: zoom-in;
   font: inherit;
   text-align: start;
@@ -1252,8 +1321,10 @@ details.runts-step:not([open]) > .step-footer {
   box-sizing: border-box;
   max-inline-size: 100%;
   overflow-x: auto;
-  background: rgba(0, 0, 0, 0.05);
-  border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--muted) 70%, transparent);
   border-radius: 0;
   padding: 0.3em 0.45em;
   font-size: 0.82em;
@@ -1271,7 +1342,7 @@ details.runts-step:not([open]) > .step-footer {
   :root:not([data-theme="light"]) .runts-body .runts-code,
   :root:not([data-theme="light"]) .runts-body .runts-args,
   :root:not([data-theme="light"]) .runts-body .runts-out {
-    background: rgba(255, 255, 255, 0.05);
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
   }
 }
 
@@ -1379,6 +1450,15 @@ details.runts-step:not([open]) > .step-footer {
   margin: 0;
   font-size: 0.86em;
   line-height: 1.3;
+}
+
+.runts-body .runts-code,
+.runts-body .runts-args,
+.runts-body .runts-out {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--muted) 70%, transparent);
 }
 
 details.collapsible {
@@ -1581,6 +1661,12 @@ details.collapsible > pre {
   :root:not([data-theme="light"]) .runts-out,
   :root:not([data-theme="light"]) details.collapsible {
     background: rgba(255, 255, 255, 0.05);
+  }
+  :root:not([data-theme="light"]) .runts-body .runts-code,
+  :root:not([data-theme="light"]) .runts-body .runts-args,
+  :root:not([data-theme="light"]) .runts-body .runts-out {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
   }
 }
 
@@ -2084,4 +2170,127 @@ body.mermaid-lightbox-open {
   :root:not([data-theme="light"]) .markdown .mermaid {
     background: rgba(255, 255, 255, 0.05);
   }
+}
+
+.background-runts-panel {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.18em 0.42em 0.12em;
+  margin: 0.2rem 0;
+  max-inline-size: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.24em;
+  flex-wrap: wrap;
+  font: inherit;
+  font-size: 0.65rem;
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.background-runts-panel:hover {
+  background: var(--button-hover-bg);
+  color: var(--fg);
+}
+.background-runts-title {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  margin: 0 0.1rem 0 0;
+  flex: 0 0 auto;
+}
+.background-runts-job {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24em;
+  justify-content: space-between;
+  min-width: 0;
+  max-inline-size: 100%;
+}
+.background-runts-label {
+  display: inline-block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  line-height: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.background-runts-label > * {
+  display: inline;
+}
+.background-runts-cancel,
+.runts-control {
+  flex: 0 0 auto;
+  inline-size: 1.45rem;
+  block-size: 1.45rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.background-runts-cancel {
+  inline-size: 1rem;
+  block-size: 1rem;
+  border: 0;
+  color: inherit;
+}
+.background-runts-cancel:hover,
+.runts-control:hover {
+  background: var(--button-hover-bg);
+}
+.runts-control-icon,
+.pending-action-icon {
+  inline-size: 0.9rem;
+  block-size: 0.9rem;
+  display: block;
+  pointer-events: none;
+}
+
+.runts-countdown {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 2.6em;
+  block-size: 1.65em;
+  padding: 0 0.45em;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--button-bg);
+  font-size: 0.82rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.runts-controls {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-left: auto;
+  padding-left: 0.5rem;
+}
+.runts-cancel {
+  color: crimson;
+}
+
+.pending-steer-btn,
+.pending-remove-btn {
+  inline-size: var(--compact-header-button-size);
+  block-size: var(--compact-header-button-size);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }

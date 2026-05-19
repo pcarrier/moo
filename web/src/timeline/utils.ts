@@ -115,7 +115,12 @@ export function timelineJumpKeys(item: TimelineItem): string[] {
 }
 
 export function isCancelledTimelineItem(item: TimelineItem): item is StepItem {
-  return item.type === "step" && item.status === "agent:Cancelled";
+  return (
+    item.type === "step" &&
+    item.status === "agent:Cancelled" &&
+    item.kind !== "agent:RunTS" &&
+    item.kind !== "agent:RunJS"
+  );
 }
 
 export function dismissedTimelineEntryKey(
@@ -297,12 +302,40 @@ export function latestTerminalReplySettlesActiveTurn(
   items: TimelineItem[],
   activeStartedAt: number | null | undefined,
 ): boolean {
+  return latestTerminalStepSettlesActiveTurn(items, activeStartedAt, (item) =>
+    item.kind === "agent:Reply",
+  );
+}
+
+function isManualCompactionStep(item: StepItem): boolean {
+  return (
+    item.kind === "agent:Compaction" &&
+    /^manual compaction(?:\n|$)/.test(item.text || "")
+  );
+}
+
+export function latestTerminalInteractiveStepSettlesActiveTurn(
+  items: TimelineItem[],
+  activeStartedAt: number | null | undefined,
+): boolean {
+  return latestTerminalStepSettlesActiveTurn(
+    items,
+    activeStartedAt,
+    (item) => item.kind === "agent:Reply" || isManualCompactionStep(item),
+  );
+}
+
+function latestTerminalStepSettlesActiveTurn(
+  items: TimelineItem[],
+  activeStartedAt: number | null | undefined,
+  settles: (item: StepItem) => boolean,
+): boolean {
   const startedAt = Number(activeStartedAt);
   if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
   const latest = items[items.length - 1];
   return (
     latest?.type === "step" &&
-    latest.kind === "agent:Reply" &&
+    settles(latest) &&
     isTerminalStepStatus(latest.status) &&
     Number(latest.at) >= startedAt
   );

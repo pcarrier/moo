@@ -314,7 +314,7 @@ export async function projectMemoryStoreFor(project: unknown): Promise<string> {
       "%" + ch.charCodeAt(0).toString(16).toUpperCase(),
     ) + "/facts";
   }
-  const git = await moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
+  const git = await moo.proc.run({ cmd: ["git", "rev-parse", "--show-toplevel"], ...{ timeoutMs: 2_000 } });
   const raw = git.code === 0 && git.stdout.trim() ? git.stdout.trim() : (await moo.env.get({ name: "PWD" })) || ".";
   return projectMemoryStoreFor(raw);
 }

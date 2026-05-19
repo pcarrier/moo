@@ -51,6 +51,34 @@ describe("timeline row helpers", () => {
     expect(timelineItemKey(fileDiff("diff1", 1))).toBe("file-diff:diff1");
   });
 
+  test("keys compactions by draft id so patched and synthetic rows collapse", () => {
+    const persisted = step({
+      step: "step:real",
+      kind: "agent:Compaction",
+      text: "automatic compaction\nsummary",
+      draftId: "draft-compact",
+      at: 1,
+    });
+    const synthetic = step({
+      step: "compaction:sha256:patched",
+      kind: "agent:Compaction",
+      text: "automatic compaction\nsummary",
+      draftId: "draft-compact",
+      at: 2,
+    });
+
+    expect(timelineItemKey(persisted)).toBe("step:draft:draft-compact");
+    expect(timelineItemKey(synthetic)).toBe("step:draft:draft-compact");
+    expect(
+      mergeTimelineUpdateRows([synthetic], [persisted], {
+        limit: 10,
+        liveSlack: 0,
+      }).filter(
+        (item) => item.type === "step" && item.kind === "agent:Compaction",
+      ),
+    ).toEqual([synthetic]);
+  });
+
   test("keeps updatedAt in timeline watermarks", () => {
     expect(newestTimelineWatermark([
       step({ step: "s1", kind: "agent:RunTS", text: "run", at: 10, updatedAt: 25 }),

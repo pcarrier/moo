@@ -13,18 +13,15 @@ describe("typed WS events", () => {
     expect(parseWsFrame({ kind: "reconnect" })).toEqual({ kind: "reconnect" });
 
     const trace = parseWsFrame({
-      kind: "trace-init-error",
-      message: "connect failed",
-      backend: "clickhouse",
-      endpoint: "http://localhost:8123",
-      database: "moo",
+      kind: "otel-export-error",
+      message: "export failed",
+      endpoint: "http://localhost:4318/v1/traces",
       at: 123,
     });
-    expect(trace?.kind).toBe("trace-init-error");
-    if (trace?.kind !== "trace-init-error") throw new Error("trace event did not parse");
-    expect(trace.message).toBe("connect failed");
-    expect(trace.backend).toBe("clickhouse");
-    expect(trace.endpoint).toBe("http://localhost:8123");
+    expect(trace?.kind).toBe("otel-export-error");
+    if (trace?.kind !== "otel-export-error") throw new Error("otel event did not parse");
+    expect(trace.message).toBe("export failed");
+    expect(trace.endpoint).toBe("http://localhost:4318/v1/traces");
 
     const runts = parseWsFrame({
       kind: "runts-step-finished",
@@ -40,6 +37,20 @@ describe("typed WS events", () => {
     expect(runts.stepId).toBe("step1");
     expect(runts.resultHash).toBe("hash1");
     expect(runts.durationNs).toBe(42);
+
+    const tokens = parseWsFrame({
+      kind: "tokens",
+      chatId: "chat1",
+      used: 200,
+      budget: 1_000,
+      threshold: 500,
+      availableTokens: 300,
+      compactionsInARow: 2,
+    });
+    expect(tokens?.kind).toBe("tokens");
+    if (tokens?.kind !== "tokens") throw new Error("tokens event did not parse");
+    expect(tokens.availableTokens).toBe(300);
+    expect(tokens.compactionsInARow).toBe(2);
   });
 
   test("guards structured TODO and memory diff arrays", () => {

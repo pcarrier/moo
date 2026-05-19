@@ -26,14 +26,17 @@ export type ChatCommands =
   | ApiCommand<"compact", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"resume", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"interrupt", { chatId: ChatId }, { chatId: ChatId; aborted: boolean }>
+  | ApiCommand<"run-ts-background", { chatId: ChatId; stepId?: StepId | null }, { chatId: ChatId; stepId: StepId | null; requested?: boolean }>
+  | ApiCommand<"run-ts-cancel", { chatId: ChatId; stepId?: StepId | null }, { chatId: ChatId; stepId: StepId | null; cancelled?: number }>
+  | ApiCommand<"run-ts-backgrounds", Record<string, never>, { jobs: Array<{ chatId: ChatId; stepId: StepId; label?: string | null; requestedBy?: string | null; startedAt?: number }> }>
   | ApiCommand<"submit", { chatId: ChatId; requestId: string; values?: Record<string, unknown>; cancelled?: true }, { chatId: ChatId; requestId: string; kind: string }>
   | ApiCommand<"chats", Record<string, never>, { chats: ChatSummary[]; homeDir: string | null }>
   | ApiCommand<"chat-autocomplete", { query: string; limit?: number }, { suggestions: ChatAutocompleteSuggestion[] }>
-  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; worktreePath?: string | null; recent?: string[] }>
+  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; baseBranch?: string | null; worktreePath?: string | null; recent?: string[] }>
   | ApiCommand<"chat-recent-paths", { includeRepos?: boolean }, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
   | ApiCommand<"chat-remove-recent-path", { path: string }, { removed: boolean; paths: string[] }>
   | ApiCommand<"chat-rm", { chatId: ChatId }, { chatId: ChatId; refsDeleted: number; quadsCleared: number }>
-  | ApiCommand<"chat-fork", { chatId: ChatId; step: StepId; forkChatId?: ChatId }, { chatId: ChatId; sourceChatId: ChatId; forkedFromStep: StepId; forkedFromAt: number; path?: string | null; worktreePath?: string | null; copiedFacts: number }>
+  | ApiCommand<"chat-fork", { chatId: ChatId; step: StepId; forkChatId?: ChatId }, { chatId: ChatId; sourceChatId: ChatId; forkedFromStep: StepId; forkedFromAt: number; path?: string | null; baseBranch?: string | null; worktreePath?: string | null; copiedFacts: number }>
   | ApiCommand<"chat-rename", { chatId: ChatId; title: string | null }, { chatId: ChatId; title: string | null }>
   | ApiCommand<"chat-archive", { chatId: ChatId; archived: boolean }, { chatId: ChatId; archived: boolean; archivedAt: number | null }>
   | ApiCommand<"chat-models", { chatId: ChatId }, ChatModelInfo>

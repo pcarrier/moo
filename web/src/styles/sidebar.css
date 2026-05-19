@@ -199,12 +199,38 @@
   line-height: 1.25;
 }
 
+.chat-repo-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .chat-directory {
   font-size: 0.78em;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.chat-repo-separator,
+.chat-base-branch {
+  font-size: 0.78em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chat-repo-separator {
+  flex: 0 0 auto;
+  padding: 0 0.28em;
+}
+
+.chat-base-branch {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-meta {

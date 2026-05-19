@@ -37,7 +37,6 @@ import { AppsView } from "./AppsView";
 import { McpView } from "./McpView";
 import { SkillsView } from "./SkillsView";
 import { V8View } from "./V8View";
-import { TracesView } from "./TracesView";
 import { SettingsView } from "./SettingsView";
 import { type Bag } from "./state";
 import { startMermaidRenderer } from "./mermaid";
@@ -50,7 +49,7 @@ export function App(props: { bag: Bag }) {
   const [mobileNavMode, setMobileNavMode] = createSignal(compactNavMatches());
   let mobileRightSidebarCollapsedForChat: string | null = null;
   const viewHasRightSidebar = () =>
-    ["chat", "apps", "facts", "pointers", "skills", "v8", "traces"].includes(bag.view());
+    ["chat", "apps", "facts", "pointers", "skills", "v8"].includes(bag.view());
   const isMobileNav = () => {
     if (typeof window === "undefined") return mobileNavMode();
     return compactNavMatches();
@@ -235,14 +234,6 @@ export function App(props: { bag: Bag }) {
         return <SkillsView bag={bag} onToggleSidebar={toggleSidebar} />;
       case "settings":
         return <SettingsView bag={bag} onToggleSidebar={toggleSidebar} />;
-      case "traces":
-        return (
-          <TracesView
-            bag={bag}
-            onToggleSidebar={toggleSidebar}
-            onOpenSidebar={openSidebar}
-          />
-        );
       case "v8":
         return <V8View bag={bag} onToggleSidebar={toggleSidebar} />;
       case "new":

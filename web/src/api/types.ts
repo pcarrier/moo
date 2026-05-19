@@ -17,8 +17,10 @@ export type ChatSummary = {
   head: string | null;
   title: string | null;
   path: string | null;
+  baseBranch?: string | null;
   worktreePath?: string | null;
   status: string;
+  runningStartedAt?: number | null;
   totalFacts: number;
   totalTurns: number;
   totalSteps: number;
@@ -37,7 +39,6 @@ export type ChatSummary = {
   effectiveEffort?: never;
   archived: boolean;
   archivedAt: number | null;
-  runningStartedAt?: number | null;
   hidden?: boolean;
   parentChatId?: ChatId | null;
 };
@@ -138,6 +139,8 @@ export type TokenPressure = {
   used: number;
   budget: number;
   threshold: number;
+  availableTokens?: number;
+  compactionsInARow?: number;
   fraction: number;
   source?: string;
   estimated?: boolean;
@@ -147,6 +150,7 @@ export type DescribeOverviewValue = {
   chatId: ChatId;
   title?: string | null;
   path?: string | null;
+  baseBranch?: string | null;
   worktreePath?: string | null;
   createdAt?: number | null;
   lastAt?: number | null;
@@ -201,6 +205,8 @@ export type CompactionLayer = {
   parent: string | null;
   trigger: string | null;
   promptTokens: number | null;
+  postPromptTokens?: number | null;
+  summaryTokens?: number | null;
   tokenBudget: number | null;
   tokenThreshold: number | null;
 };
@@ -430,8 +436,27 @@ export type V8HeapSnapshot = {
 export type V8PoolQueueSnapshot = {
   lane: string;
   queued: number;
+  activeWorkers: number;
+  maxWorkers: number;
+  busyWorkers: number;
+  recentMaxUtilization: number;
+  autoscaleWindowSecs: number;
   totalEnqueued: number;
   maxQueued: number;
+  lastQueueWaitMs: number;
+  maxQueueWaitMs: number;
+  totalQueueWaitMs: number;
+  observedQueueWaits: number;
+  averageQueueWaitMs: number;
+  totalJobs: number;
+  totalErrors: number;
+  totalTerminations: number;
+  totalRecycles: number;
+  totalNearHeapLimit: number;
+  totalCacheHits: number;
+  totalCacheMisses: number;
+  totalSnapshotHits: number;
+  totalSnapshotMisses: number;
 };
 
 export type V8WorkerSnapshot = {
@@ -485,6 +510,7 @@ export type V8PoolRuntimeSettings = {
   maxOldGenerationBytes: number | null;
   maxYoungGenerationBytes: number | null;
   recycleUsedHeapBytes: number | null;
+  autoscaleWindowSecs: number | null;
 };
 
 export type V8RuntimeSettings = {
@@ -496,6 +522,7 @@ export type V8RuntimeSettings = {
   maxOldGenerationBytes: number | null;
   maxYoungGenerationBytes: number | null;
   recycleUsedHeapBytes: number | null;
+  autoscaleWindowSecs: number | null;
   startupSnapshotsEnabled: boolean | null;
   mainPool: V8PoolRuntimeSettings | null;
   readPool: V8PoolRuntimeSettings | null;
@@ -510,23 +537,26 @@ export type V8SettingsValue = {
   effective: V8RuntimeSettings;
 };
 
-export type TraceConfig = {
-  enabled: boolean;
-  clickhouseUrl: string;
-  clickhouseDatabase: string;
-  clickhouseTablePrefix: string;
-  clickhouseUser: string | null;
-  clickhousePassword: string | null;
+export type OtelHeader = {
+  name: string;
+  value: string;
 };
 
-export type TraceSettingsValue = {
+export type OtelConfig = {
   enabled: boolean;
-  config: TraceConfig;
-  defaults: TraceConfig;
+  otelEndpoint: string;
+  serviceName: string;
+  headers: OtelHeader[];
+};
+
+export type OtelSettingsValue = {
+  enabled: boolean;
+  config: OtelConfig;
+  defaults: OtelConfig;
   note: string;
 };
 
-export type TraceConfigTestValue = {
+export type OtelConfigTestValue = {
   message: string;
 };
 
@@ -542,6 +572,15 @@ export type V8StatsValue = {
     cacheEntries: number;
     startupSnapshotsEnabled: boolean;
     maxWorkers: number;
+    autoscaleWindowSecs: number;
+    pools: Array<{
+      lane: string;
+      maxWorkers: number;
+      recycleUsedHeapBytes: number;
+      maxOldGenerationBytes: number;
+      maxYoungGenerationBytes: number;
+      autoscaleWindowSecs: number;
+    }>;
   };
   totals: {
     workers: number;
@@ -561,48 +600,4 @@ export type V8StatsValue = {
     usedHeapSize: number;
     totalHeapSize: number;
   };
-};
-
-export interface TraceRow {
-  id: string;
-  traceId?: string | null;
-  rootId?: string | null;
-  rootKind?: string | null;
-  rootName?: string | null;
-  parentId: string | null;
-  chatId: string | null;
-  runId: string | null;
-  kind: "chat" | "turn" | "step" | "llm" | "tool" | "runts" | "runjs" | "system" | "user" | "frontend" | string;
-  name: string;
-  depth: number;
-  seq: number;
-  status: "ok" | "error" | "running" | "cancelled" | "timeout" | string;
-  t0Ns: number;
-  t1Ns: number | null;
-  inputHash: string | null;
-  outputHash: string | null;
-  errorHash: string | null;
-  inputObject?: StoreObject;
-  outputObject?: StoreObject;
-  errorObject?: StoreObject;
-  invokedFromStepId: string | null;
-  dataHash?: string | null;
-  dataJson: any | null;
-}
-
-
-export type TraceSearchArgs = Record<string, unknown> & {
-  query?: string;
-  kind?: string;
-  status?: string;
-  chatId?: string;
-  runId?: string;
-  scope?: "chat" | "global" | "any";
-  hasError?: boolean;
-  limit?: number;
-  beforeNs?: number | string;
-  startedAfterNs?: number | string;
-  startedBeforeNs?: number | string;
-  minDurationNs?: number | string;
-  maxDurationNs?: number | string;
 };

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { TimelineItem } from "./api";
 import { readStylesheetForTest } from "./styleTestUtils.test.ts";
-import { latestTerminalReplySettlesActiveTurn } from "./timeline/utils";
+import { latestTerminalInteractiveStepSettlesActiveTurn, latestTerminalReplySettlesActiveTurn } from "./timeline/utils";
 
 const timeline = readFileSync(
   new URL("./Timeline.tsx", import.meta.url),
@@ -22,7 +22,7 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("when={showStandaloneThinking()}");
   });
 
-  test("hides standalone Thinking after the active turn reply lands", () => {
+  test("hides standalone Thinking after the active interactive row lands", () => {
     const reply = (at: number): TimelineItem => ({
       type: "step",
       step: "step1",
@@ -39,6 +39,14 @@ describe("timeline thinking status", () => {
       at,
       text: "tool done",
     });
+    const manualCompaction = (at: number): TimelineItem => ({
+      type: "step",
+      step: "step3",
+      kind: "agent:Compaction",
+      status: "agent:Done",
+      at,
+      text: "manual compaction\nsummary",
+    });
 
     expect(latestTerminalReplySettlesActiveTurn([reply(2000)], 1000)).toBe(
       true,
@@ -49,10 +57,16 @@ describe("timeline thinking status", () => {
     expect(
       latestTerminalReplySettlesActiveTurn([reply(2000), tool(2500)], 1000),
     ).toBe(false);
+    expect(
+      latestTerminalInteractiveStepSettlesActiveTurn(
+        [manualCompaction(2000)],
+        1000,
+      ),
+    ).toBe(true);
     expect(timeline).toContain(
-      "const activeTurnReplySettled = createMemo(() =>",
+      "const activeTurnSettled = createMemo(() =>",
     );
-    expect(timeline).toContain("!activeTurnReplySettled()");
+    expect(timeline).toContain("!activeTurnSettled()");
   });
 
   test("labels manual compaction failures distinctly", () => {
@@ -86,6 +100,7 @@ describe("timeline thinking status", () => {
     expect(step).toContain('stepLifecycleEvents(chatId, mode === "compact")');
     expect(step).toContain('{ kind: "step-start", chatId, compacting: true }');
     expect(step).toContain('{ draftKind: "compaction-draft" }');
+    expect(step).toContain('return { ok: true, value: { kind: "done" } };');
     expect(state).toContain("if (ev.compacting === true)");
     expect(state).toContain(
       "addToSet(setCompactingChats, compactingChats, ev.chatId);",
@@ -101,14 +116,18 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain(
       'label={bag.compacting() ? "compacting" : "thinking"}',
     );
+    expect(timeline).toContain("const compactingTokenPrompt = () =>");
+    expect(timeline).toContain("tokens before compaction");
+    expect(timeline).toContain("compactions in a row");
+    expect(timeline).toContain("summaryTokens");
+    expect(timeline).toContain("next-compaction pressure");
+    expect(timeline).toContain("summarized");
   });
 
   test("renders streamed compaction drafts", () => {
     expect(state).toContain('if (ev.kind === "compaction-draft")');
     expect(state).toContain('kind: "compaction"');
-    expect(timeline).toContain(
-      'target.kind = compacting ? "agent:Compaction" : "agent:Reply";',
-    );
+    expect(timeline).toContain("syncDraftStepItem(proxy, draft)");
     expect(timeline).toContain('? "compacting older turns"');
     expect(timeline).toContain('class="compaction-dots"');
   });

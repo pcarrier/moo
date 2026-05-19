@@ -62,6 +62,11 @@
     background: rgba(0, 0, 0, 0.35);
   }
 
+  .mobile-scrim:hover:not(:disabled),
+  .mobile-scrim:active:not(:disabled) {
+    background: rgba(0, 0, 0, 0.35);
+  }
+
   #app.mobile-nav-open .mobile-scrim,
   #app[data-mobile-nav-open="true"] .mobile-scrim,
   #app.repo-file-open .mobile-scrim {

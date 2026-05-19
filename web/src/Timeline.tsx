@@ -18,10 +18,10 @@ import {
   repoFilePathFromHref,
 } from "./markdown";
 import {
-  formatHjson,
-  formatHjsonTextForView,
   highlightAuto,
   highlightMarkdownCode,
+  formatHjson,
+  formatHjsonTextForView,
   isHjsonCodeLanguage,
   looksLikeMarkdownText,
   maybeFormatHjsonTextForView,
@@ -31,6 +31,7 @@ import { DiffView } from "./DiffView";
 import { diffStats } from "./diffs";
 import { LoadingDots } from "./LoadingDots";
 import { CompactIcon } from "./icons";
+import { BackgroundIcon, CrossIcon, SteerIcon } from "./icons";
 import { ChatTerminals } from "./TerminalView";
 import {
   compareTimelineItems,
@@ -42,7 +43,7 @@ import {
   isCancelledTimelineItem,
   isRunningTimelineItem,
   isTerminalStepStatus,
-  latestTerminalReplySettlesActiveTurn,
+  latestTerminalInteractiveStepSettlesActiveTurn,
   replyDraftKey,
   sameDismissedTimelineEntries,
   timelineAnchorKey,
@@ -81,6 +82,11 @@ import {
   shortHash,
   type ParsedRunTS,
 } from "./timeline/format";
+import {
+  draftStepItem,
+  syncDraftStepItem,
+  syncStepItem,
+} from "./timeline/stepProxy";
 import {
   compactErrorDetail,
   compactionErrorDetail,
@@ -337,6 +343,18 @@ export function Timeline(props: {
   });
   const activeWaitLabel = () =>
     bag.compacting() ? "Compacting…" : "Thinking…";
+  const compactingTokenPrompt = () => {
+    if (!bag.compacting()) return null;
+    const current = bag.tokens();
+    if (!current) return null;
+    const available = Math.max(
+      0,
+      Math.trunc(
+        Number(current.availableTokens ?? current.threshold - current.used) || 0,
+      ),
+    );
+    return `${formatTokenCount(available)} tokens before compaction`;
+  };
 
   // Keep the scroll position stable across timeline refreshes. If the user is
   // at the bottom, new content sticks to the bottom. If they have scrolled up,
@@ -720,58 +738,23 @@ export function Timeline(props: {
     wasOlderTimelineLoading = loading;
   });
 
-  const draftReplyProxies = new Map<string, StepItem>();
+  const draftStepProxies = new Map<string, StepItem>();
   const draftProxyFor = (draftId: string): StepItem => {
-    let item = draftReplyProxies.get(draftId);
+    let item = draftStepProxies.get(draftId);
     if (!item) {
-      item = createMutable<StepItem>({
-        type: "step",
-        step: `draft:${draftId}` as StepItem["step"],
-        kind: "agent:Reply",
-        status: "agent:Running",
-        at: Date.now(),
-        text: "",
-        draftId,
-        reasoningContent: "",
-        reasoningStreaming: false,
-      });
-      draftReplyProxies.set(draftId, item);
+      item = createMutable<StepItem>(
+        draftStepItem({
+          kind: "reply",
+          draftId,
+          content: "",
+          reasoningContent: "",
+          reasoningStreaming: false,
+          at: Date.now(),
+        }),
+      );
+      draftStepProxies.set(draftId, item);
     }
     return item;
-  };
-  const syncDraftProxy = (target: StepItem, source: StepItem) => {
-    target.step = source.step;
-    target.kind = source.kind;
-    target.status = source.status;
-    target.at = source.at;
-    target.text = source.text;
-    target.model = source.model;
-    target.effort = source.effort;
-    target.thoughtDurationNs = source.thoughtDurationNs;
-    target.draftId = source.draftId;
-    target.reasoningContent = source.reasoningContent;
-    target.reasoningStreaming = source.reasoningStreaming;
-  };
-  const syncActiveDraftProxy = (
-    target: StepItem,
-    draft: {
-      kind?: "reply" | "compaction";
-      draftId: string;
-      content: string;
-      reasoningContent?: string;
-      reasoningStreaming?: boolean;
-      at: number;
-    },
-  ) => {
-    const compacting = draft.kind === "compaction";
-    target.step = `draft:${draft.draftId}` as StepItem["step"];
-    target.kind = compacting ? "agent:Compaction" : "agent:Reply";
-    target.status = "agent:Running";
-    target.at = Number(draft.at) || Date.now();
-    target.text = compacting ? `compaction\n${draft.content}` : draft.content;
-    target.reasoningContent = compacting ? undefined : draft.reasoningContent;
-    target.reasoningStreaming = compacting ? false : draft.reasoningStreaming;
-    target.draftId = draft.draftId;
   };
 
   const visibleTimeline = createMemo(() => {
@@ -786,9 +769,9 @@ export function Timeline(props: {
           !item.draftId
         )
           return item;
-        const proxy = draftReplyProxies.get(item.draftId);
+        const proxy = draftStepProxies.get(item.draftId);
         if (!proxy) return item;
-        syncDraftProxy(proxy, item);
+        syncStepItem(proxy, item);
         return proxy;
       });
     if (
@@ -808,7 +791,7 @@ export function Timeline(props: {
       return rows;
     }
     const proxy = draftProxyFor(draft.draftId);
-    syncActiveDraftProxy(proxy, draft);
+    syncDraftStepItem(proxy, draft);
     return insertTimelineItemChronologically(rows, proxy);
   });
   const visibleDismissedReplies = createMemo(() => {
@@ -833,8 +816,8 @@ export function Timeline(props: {
   const hasRunningTimelineRow = createMemo(() =>
     visibleTimeline().some(isRunningTimelineItem),
   );
-  const activeTurnReplySettled = createMemo(() =>
-    latestTerminalReplySettlesActiveTurn(
+  const activeTurnSettled = createMemo(() =>
+    latestTerminalInteractiveStepSettlesActiveTurn(
       visibleTimeline(),
       bag.thinkingStartedAt(),
     ),
@@ -846,7 +829,7 @@ export function Timeline(props: {
     );
   const showStandaloneThinking = () =>
     (bag.thinking() || bag.compacting()) &&
-    !activeTurnReplySettled() &&
+    !activeTurnSettled() &&
     !hasStreamingReply() &&
     !hasRunningTimelineRow();
   const currentChat = () => bag.currentChatSummary();
@@ -992,6 +975,9 @@ export function Timeline(props: {
                     />
                     <div class="meta">
                       {activeWaitLabel()} {thinkingElapsed()}
+                      <Show when={compactingTokenPrompt()}>
+                        {(text) => <> · {text()}</>}
+                      </Show>
                     </div>
                   </div>
                 </Show>
@@ -1081,19 +1067,18 @@ export function Timeline(props: {
                     ×
                   </button>
                 </div>
-                <pre
-                  ref={runTSBlockLightboxContentEl}
+                <HighlightedPre
+                  ref={(el) => (runTSBlockLightboxContentEl = el)}
                   class="runts-lightbox-content"
                   tabIndex={0}
-                  innerHTML={highlightRunTSBlock(
-                    block().content,
-                    block().language,
-                  )}
+                  content={block().content}
+                  language={block().language}
                 />
               </div>
             </div>
           )}
         </Show>
+        <BackgroundRunTSPanel bag={bag} />
         <PendingList bag={bag} onOpenImage={openLightbox} />
         <InputBar bag={bag} onOpenImage={openLightbox} />
       </section>
@@ -1205,6 +1190,43 @@ function OngoingTodos(props: { todos: AgentTodo[] }) {
             )}
           </For>
         </ul>
+      </section>
+    </Show>
+  );
+}
+
+function BackgroundRunTSPanel(props: { bag: Bag }) {
+  const jobs = () =>
+    (props.bag.backgroundRunTS?.() || []).filter(
+      (job) => job.chatId === props.bag.chatId(),
+    );
+  return (
+    <Show when={jobs().length > 0}>
+      <section
+        class="background-runts-panel"
+        aria-label="Background runTS tools"
+      >
+        <div class="background-runts-title">Background tools</div>
+        <For each={jobs()}>
+          {(job) => (
+            <div class="background-runts-job">
+              <RunTSMarkdown
+                class="background-runts-label"
+                content={job.label || "runTS"}
+                inline
+              />
+              <button
+                type="button"
+                class="background-runts-cancel"
+                title={`cancel ${job.label || "runTS"}`}
+                aria-label={`cancel ${job.label || "runTS"}`}
+                onClick={() => props.bag.cancelRunTSStep(job.stepId, job.chatId)}
+              >
+                <CrossIcon class="runts-control-icon" />
+              </button>
+            </div>
+          )}
+        </For>
       </section>
     </Show>
   );
@@ -1402,12 +1424,21 @@ function PendingItem(props: {
         </div>
         <button
           type="button"
+          class="primary send-btn pending-steer-btn"
+          title="steer with this queued message now"
+          aria-label="steer with this queued message now"
+          onClick={() => props.bag.steerPending(props.item().id)}
+        >
+          <SteerIcon class="pending-action-icon" />
+        </button>
+        <button
+          type="button"
           class="primary send-btn pending-remove-btn"
           title="remove queued message"
           aria-label="remove queued message"
           onClick={() => props.bag.removePending(props.item().id)}
         >
-          ×
+          <CrossIcon class="pending-action-icon" />
         </button>
       </div>
     </li>
@@ -2781,7 +2812,9 @@ function SubagentBody(props: {
   const setOpen = (next: boolean) => props.expansion.setOpen(key(), next);
   const label = () => info().label || "Subagent";
   const task = () => info().task || "";
-  const statusText = () => result()?.status || props.item.status;
+  const statusText = () =>
+    subagentStatusText(result()?.status || props.item.status);
+  const statusClass = () => `subagent-status-${statusText() || "unknown"}`;
   const duration = () =>
     typeof result()?.durationNs === "number"
       ? (result()?.durationNs || 0) / 1_000_000
@@ -2796,6 +2829,9 @@ function SubagentBody(props: {
         <Show when={props.item.status === "agent:Running"}>
           <LoadingDots class="runts-loading" label="running" />
         </Show>
+        <span class="subagent-title-prefix" aria-hidden="true">
+          ↳
+        </span>
         <RunTSMarkdown class="runts-label" content={label()} inline />
         <Show when={task()}>
           <span class="runts-desc-inline">
@@ -2817,7 +2853,9 @@ function SubagentBody(props: {
           <Show when={info().childChatId || result()}>
             <div class="subagent-result">
               <Show when={result()}>
-                <span class="subagent-status">{statusText()}</span>
+                <span class={`subagent-status ${statusClass()}`}>
+                  {statusText()}
+                </span>
                 <Show when={duration() !== null}>
                   <span> · {formatThoughtDuration(duration() || 0)}</span>
                 </Show>
@@ -2865,11 +2903,44 @@ function SubagentBody(props: {
   );
 }
 
+function subagentStatusText(status: string | undefined): string {
+  return String(status || "")
+    .replace(/^agent:/, "")
+    .replace(/^ui:/, "")
+    .toLowerCase()
+    .replace(/^canceled$/, "cancelled");
+}
+
+function compactionTokenDelta(item: StepItem): string {
+  const before = Number(item.compaction?.promptTokens ?? 0) || 0;
+  const postPressure = Number(item.compaction?.postPromptTokens ?? 0) || 0;
+  const summaryTokens = Number(item.compaction?.summaryTokens ?? 0) || 0;
+  const available = Number(item.compaction?.availableTokens ?? 0) || 0;
+  const streak = Number(item.compaction?.compactionsInARow ?? 0) || 0;
+  const parts = [];
+  if (before) parts.push(`${formatTokenCount(before)} summarized`);
+  if (summaryTokens) parts.push(`${formatTokenCount(summaryTokens)} summary`);
+  if (postPressure) {
+    const saved = before > postPressure ? before - postPressure : 0;
+    parts.push(
+      saved
+        ? `${formatTokenCount(
+            postPressure,
+          )} next-compaction pressure (${formatTokenCount(saved)} lower)`
+        : `${formatTokenCount(postPressure)} next-compaction pressure`,
+    );
+  }
+  if (available) parts.push(`${formatTokenCount(available)} before threshold`);
+  if (streak) parts.push(`${streak} in a row`);
+  return parts.join(" · ");
+}
+
 function CompactionBody(props: { item: StepItem }) {
   const summary = createMemo(() =>
     compactionSummaryText(props.item.text || ""),
   );
   const active = () => !isTerminalStepStatus(props.item.status);
+  const tokenDelta = () => compactionTokenDelta(props.item);
   return (
     <details class="compaction-summary" open={active()}>
       <summary>
@@ -2878,6 +2949,9 @@ function CompactionBody(props: { item: StepItem }) {
             ? "compacting older turns"
             : compactionLabel(props.item.text || "")}
         </span>
+        <Show when={tokenDelta()}>
+          <span class="compaction-token-delta">{tokenDelta()}</span>
+        </Show>
         <Show when={active()}>
           <LoadingDots class="compaction-dots" label="compacting" />
         </Show>
@@ -3180,6 +3254,29 @@ function runTSResultFromObject(
   };
 }
 
+function RunTSBackgroundCountdown(props: { item: StepItem; afterMs?: number }) {
+  const afterMs = () => Number(props.afterMs ?? 0);
+  const [now, setNow] = createSignal(Date.now());
+  createEffect(() => {
+    if (props.item.status !== "agent:Running" || afterMs() <= 0) return;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    onCleanup(() => window.clearInterval(id));
+  });
+  const remainingMs = createMemo(() =>
+    Math.max(0, props.item.at + afterMs() - now()),
+  );
+  const seconds = createMemo(() => Math.ceil(remainingMs() / 1000));
+  return (
+    <span
+      class="runts-countdown"
+      title={`Auto-backgrounds in ${seconds()}s`}
+      aria-label={`Auto-backgrounds in ${seconds()} seconds`}
+    >
+      {seconds()}s
+    </span>
+  );
+}
+
 function RunTSBody(props: {
   item: StepItem;
   bag: Bag;
@@ -3265,6 +3362,7 @@ function RunTSBody(props: {
       ? normalizeRunTS(currentRunTS()!)
       : parseRunTS(props.item.text),
   );
+  const backgrounded = () => props.bag.isRunTSBackgrounded?.(props.item.step) === true;
 
   const key = () => timelineExpansionKey(props.item);
   const open = () => props.expansion.isOpen(key());
@@ -3286,6 +3384,9 @@ function RunTSBody(props: {
         <Show when={props.item.status === "agent:Running"}>
           <LoadingDots class="runts-loading" label="running" />
         </Show>
+        <Show when={props.item.status === "agent:Cancelled"}>
+          <span class="runts-status runts-status-cancelled">Cancelled</span>
+        </Show>
         <RunTSMarkdown
           class="runts-label"
           content={parsed().label || "(unlabeled)"}
@@ -3301,6 +3402,67 @@ function RunTSBody(props: {
               content={parsed().description}
               inline
             />
+          </span>
+        </Show>
+        <Show
+          when={
+            props.item.status === "agent:Running" &&
+            Number(parsed().backgroundAfterNs ?? 0) > 0
+          }
+        >
+          <RunTSBackgroundCountdown
+            item={props.item}
+            afterMs={Math.ceil(
+              Number(parsed().backgroundAfterNs ?? 0) / 1_000_000,
+            )}
+          />
+        </Show>
+        <Show when={props.item.status === "agent:Running"}>
+          <span
+            class="runts-controls"
+            onPointerDown={(ev) => ev.stopPropagation()}
+            onMouseDown={(ev) => ev.stopPropagation()}
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+            }}
+          >
+            <Show when={!backgrounded()}>
+              <button
+                type="button"
+                class="runts-control"
+                title="run in background"
+                aria-label="run in background"
+                onPointerDown={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  props.bag.backgroundRunTSStep(props.item.step);
+                }}
+                onClick={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                }}
+              >
+                <BackgroundIcon class="runts-control-icon" />
+              </button>
+            </Show>
+            <button
+              type="button"
+              class="runts-control runts-cancel"
+              title="cancel runTS"
+              aria-label="cancel runTS"
+              onPointerDown={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                props.bag.cancelRunTSStep(props.item.step);
+              }}
+              onClick={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+              }}
+            >
+              <CrossIcon class="runts-control-icon" />
+            </button>
           </span>
         </Show>
       </summary>
@@ -3410,6 +3572,25 @@ function highlightRunTSBlock(content: string, language?: string): string {
     : highlightAuto(content);
 }
 
+function HighlightedPre(props: {
+  class?: string;
+  content: string;
+  language?: string;
+  tabIndex?: number;
+  ref?: (el: HTMLPreElement) => void;
+}) {
+  let el: HTMLPreElement | undefined;
+  const html = () => highlightRunTSBlock(props.content, props.language);
+  const setEl = (node: HTMLPreElement) => {
+    el = node;
+    props.ref?.(node);
+  };
+  createEffect(() => {
+    if (el) el.innerHTML = html();
+  });
+  return <pre ref={setEl} class={props.class} tabIndex={props.tabIndex} />;
+}
+
 function runTSBlockLanguageForContent(
   content: string,
   language?: string,
@@ -3446,7 +3627,6 @@ function RunTSBlock(props: {
     props.maxPreviewLines ?? RUNTS_BLOCK_PREVIEW_LINES;
   const language = () =>
     runTSBlockLanguageForContent(props.content, props.language);
-  const html = () => highlightRunTSBlock(props.content, language());
   const meta = () => runTSBlockMeta(props.content, language());
   const measureOverflow = () => {
     if (!previewEl) return;
@@ -3499,12 +3679,16 @@ function RunTSBlock(props: {
           "runts-block-preview": true,
           "is-truncated": truncated(),
         }}
-        style={{ "--runts-preview-lines": String(previewLineLimit()) }}
+        style={{ "--runts-preview-max-height": `${previewLineLimit() * 1.3}em` }}
         onClick={openFullFromPointer}
         onKeyDown={openFullFromKeyboard}
         title={`Open full ${props.label}`}
       >
-        <pre class={props.klass} innerHTML={html()} />
+        <HighlightedPre
+          class={props.klass}
+          content={props.content}
+          language={language()}
+        />
         <Show when={truncated()}>
           <div class="runts-block-fade" aria-hidden="true" />
         </Show>
@@ -3679,6 +3863,8 @@ function TokenBar(props: {
     used: number;
     budget: number;
     threshold: number;
+    availableTokens?: number;
+    compactionsInARow?: number;
     fraction: number;
     source?: string;
     estimated?: boolean;
@@ -3693,6 +3879,8 @@ function TokenBar(props: {
       used: 0,
       budget: 0,
       threshold: 0,
+      availableTokens: 0,
+      compactionsInARow: undefined,
       fraction: 0,
       source: undefined,
       estimated: undefined,
@@ -3728,7 +3916,12 @@ function TokenBar(props: {
   const title = () => {
     const tokens = safeTokens();
     if (!currentTokens()) return "token usage loading";
-    return `${tokens.used.toLocaleString()} / ${tokens.budget.toLocaleString()} tokens (${sourceLabel()}) · compaction at ${tokens.threshold.toLocaleString()}`;
+    const available = Math.max(
+      0,
+      Number(tokens.availableTokens ?? tokens.threshold - tokens.used) || 0,
+    );
+    const streak = Number(tokens.compactionsInARow ?? 0) || 0;
+    return `${tokens.used.toLocaleString()} / ${tokens.budget.toLocaleString()} tokens (${sourceLabel()}) · compaction threshold ${tokens.threshold.toLocaleString()} · ${available.toLocaleString()} tokens before threshold${streak ? ` · ${streak} compactions in a row` : ""}`;
   };
   return (
     <div class={cls()} title={title()} aria-label={title()}>
@@ -3798,7 +3991,17 @@ function CompactionErrorBody(props: {
     const requestLimit = Number(props.detail.requestTokenLimit ?? 0) || 0;
     const budget = Number(props.detail.tokenBudget ?? 0) || 0;
     const threshold = Number(props.detail.tokenThreshold ?? 0) || 0;
-    if (!prompt && !requestPrompt && !requestLimit && !budget && !threshold)
+    const available = Number(props.detail.availableTokens ?? 0) || 0;
+    const streak = Number(props.detail.compactionsInARow ?? 0) || 0;
+    if (
+      !prompt &&
+      !requestPrompt &&
+      !requestLimit &&
+      !budget &&
+      !threshold &&
+      !available &&
+      !streak
+    )
       return "";
     const hasFittedRequest =
       requestPrompt > 0 && (!prompt || requestPrompt !== prompt);
@@ -3811,7 +4014,9 @@ function CompactionErrorBody(props: {
         : "",
       requestLimit ? `${formatTokenCount(requestLimit)} request cap` : "",
       budget ? `${formatTokenCount(budget)} token budget` : "",
-      threshold ? `compaction at ${formatTokenCount(threshold)}` : "",
+      threshold ? `threshold ${formatTokenCount(threshold)}` : "",
+      available ? `${formatTokenCount(available)} before threshold` : "",
+      streak ? `${streak} compactions in a row` : "",
     ]
       .filter(Boolean)
       .join(" · ");

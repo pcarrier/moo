@@ -64,7 +64,7 @@ describe("settings layout", () => {
     expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 50");
   });
   it("orders behavior immediately after providers", () => {
-    expect(settingsView).toContain('{ id: "providers", title: "Providers" },\n  { id: "behavior", title: "Behavior" },\n  { id: "runtime", title: "Runtime" },\n  { id: "traces", title: "Traces" },');
+    expect(settingsView).toContain('{ id: "providers", title: "Providers" },\n  { id: "behavior", title: "Behavior" },\n  { id: "runtime", title: "Runtime" },\n  { id: "otel", title: "OTEL" },');
   });
 
   it("removes duplicate explanatory headers from the settings body", () => {
@@ -158,16 +158,17 @@ describe("settings layout", () => {
     expect(radii.every((radius) => radius === "0")).toBe(true);
   });
 
-  it("lays out ClickHouse settings one per line", () => {
-    expect(settingsView).toContain('class="settings-row trace-settings-fields"');
-    const traceFields = cssBlock(".trace-settings-fields");
-    expect(traceFields).toContain("grid-template-columns: minmax(0, 1fr)");
+  it("lays out OTEL settings one per line", () => {
+    expect(settingsView).toContain('class="settings-row otel-settings-fields"');
+    expect(settingsView).toContain('class="toggle-row settings-toggle"');
+    const otelFields = cssBlock(".otel-settings-fields");
+    expect(otelFields).toContain("grid-template-columns: minmax(0, 1fr)");
   });
 
   it("places actions without extra chrome", () => {
-    expect(settingsView).toContain('class="settings-actions trace-test-actions"');
-    expect(settingsView).toContain('{testingTrace() ? "Testing…" : "Test"}');
-    expect(settingsView).not.toContain("Test ClickHouse configuration before saving");
+    expect(settingsView).toContain('class="settings-actions otel-test-actions"');
+    expect(settingsView).toContain('{testingOtel() ? "Testing…" : "Test OTEL"}');
+    expect(settingsView).not.toContain("Test OTEL configuration before saving");
     expect(settingsView).not.toContain('BackToChatButton');
     expect(settingsView).not.toContain('navigation={<BackToChatButton bag={props.bag} />}');
     expect(settingsView).toContain('class="settings-header-save"');
@@ -184,9 +185,9 @@ describe("settings layout", () => {
     expect(tabsIndex).toBeGreaterThanOrEqual(0);
     expect(contentIndex).toBeGreaterThan(tabsIndex);
     expect(settingsView).not.toContain('class="settings-footer"');
-    expect(settingsView).not.toContain('activeTab() === "traces" && !traceTestPassed()');
+    expect(settingsView).not.toContain('activeTab() === "otel" && !otelTestPassed()');
     expect(settingsView).not.toContain("Save settings");
-    expect(settingsView).toMatch(/trace-test-actions[\s\S]*settings-success trace-test-message/);
+    expect(settingsView).toMatch(/otel-test-actions[\s\S]*settings-success otel-test-message/);
 
     expect(css).toContain(".settings-header-save {");
     const headerSaveStart = css.indexOf(".settings-header-save {");
@@ -207,27 +208,35 @@ describe("settings layout", () => {
     expect(settingsView).toContain('class="settings-card behavior-settings-card"');
     expect(settingsView).toContain('class="settings-row three"');
   });
-  it("does not render unsafe optimistic runtime or trace defaults", () => {
+  it("does not render unsafe optimistic runtime or otel defaults", () => {
     expect(settingsView).not.toContain("const DEFAULT_V8_SETTINGS");
     expect(settingsView).not.toContain("const DEFAULT_TRACE_SETTINGS");
     expect(settingsView).not.toContain("Loading V8 runtime settings");
     expect(settingsView).toContain("createSignal<V8SettingsValue | null>");
-    expect(settingsView).toContain("createSignal<TraceSettingsValue | null>");
+    expect(settingsView).toContain("createSignal<OtelSettingsValue | null>");
     expect(settingsView).toContain('<h2>V8 runtime</h2>');
-    expect(settingsView).toContain('<h2 class="settings-heading-with-badge">ClickHouse tracing <span class="settings-experimental-badge">Experimental</span></h2>');
+    expect(settingsView).not.toContain('<span>Workers</span>');
+    expect(settingsView).not.toContain('patchV8Pool(pool.key, { maxWorkers: intOrNull');
+    expect(settingsView).toContain('v8SettingsForSave(currentV8)');
+    expect(settingsView).toContain('maxWorkers: null');
+    expect(settingsView).toContain('resolvedAutoscaleWindowSecs(v8(), pool.key)');
+    expect(settingsView).toContain('value={autoscaleWindowSecs() ?? ""}');
+    expect(settingsView).toContain('autoscaleWindowSecs: resolvedAutoscaleWindowSecs(v8, key)');
+    expect(settingsView).toContain('<h2>OTEL reporting</h2>');
+    expect(settingsView).not.toContain('settings-experimental-badge');
   });
 
   it("hydrates independent settings as each request completes", () => {
     expect(state).not.toContain(`Promise.allSettled([
       settingsSingle(),
       v8SettingsSingle(),
-      traceSettingsSingle(),
+      otelSettingsSingle(),
     ])`);
     expect(state).toContain("const v8Settings = v8SettingsSingle()");
     expect(state).toContain("if (result.ok) setV8SettingsCache(result.value);");
-    expect(state).toContain("const traceSettings = traceSettingsSingle()");
-    expect(state).toContain("if (result.ok) setTraceSettingsCache(result.value);");
-    expect(state).toContain("await Promise.all([settings, v8Settings, traceSettings]);");
+    expect(state).toContain("const otelSettingsReq = otelSettingsSingle()");
+    expect(state).toContain("if (result.ok) setOtelSettingsCache(result.value);");
+    expect(state).toContain("await Promise.all([settings, v8Settings, otelSettingsReq]);");
     expect(state).toContain("void refreshSettingsCache();");
   });
 });
@@ -238,6 +247,6 @@ it("keeps settings commands on database-only initialization", () => {
   expect(ws).toContain("fn db_only_command(command: &str) -> bool");
   expect(ws).toContain('"v8-settings-get"');
   expect(ws).toContain('"v8-settings-save"');
-  expect(ws).toContain('"trace-config-get"');
-  expect(ws).not.toContain("trace_config_command(command)");
+  expect(ws).toContain('"otel-config-get"');
+  expect(ws).not.toContain("otel_config_command(command)");
 });

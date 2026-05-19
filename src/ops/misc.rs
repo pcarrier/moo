@@ -20,6 +20,7 @@ pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
         "__op_chat_running_started_at",
         op_chat_running_started_at,
     )?;
+    install_fn(scope, "__op_runts_cancel", op_runts_cancel)?;
     Ok(())
 }
 
@@ -40,6 +41,31 @@ fn op_chat_running_started_at(
 ) {
     let started_at = driver::running_started_at();
     let json = serde_json::to_string(&started_at).unwrap_or_else(|_| "{}".to_string());
+    set_return_str(scope, &mut rv, &json);
+}
+
+fn op_runts_cancel(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if !required_args(scope, &args, 1, "runts_cancel requires (chatId, stepId?)") {
+        return;
+    }
+    let chat_id = args.get(0).to_rust_string_lossy(scope);
+    let step_id = if args.length() > 1 && !args.get(1).is_null_or_undefined() {
+        let s = args.get(1).to_rust_string_lossy(scope);
+        if s.trim().is_empty() { None } else { Some(s) }
+    } else {
+        None
+    };
+    let cancelled = driver::cancel_runts(&chat_id, step_id.as_deref());
+    let json = serde_json::json!({
+        "chatId": chat_id,
+        "stepId": step_id,
+        "cancelled": cancelled,
+    })
+    .to_string();
     set_return_str(scope, &mut rv, &json);
 }
 

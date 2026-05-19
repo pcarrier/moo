@@ -83,8 +83,7 @@ declare global {
   function __op_fs_stat(path: string): { kind: string; size: number; mtime: number } | null;
   function __op_fs_canonical(path: string): string;
   function __op_proc_run(
-    cmd: string,
-    argsJson: string,
+    cmdJson: string,
     cwd: string | null,
     stdin: string | null,
     timeoutMs: number,
@@ -121,6 +120,7 @@ declare global {
   function __op_chat_running_ids(): string;
   function __op_chat_running_started_at(): string;
   function __op_agent_run(requestJson: string): Promise<string>;
+  function __op_runts_cancel(chatId: string, stepId?: string | null): string;
   function __op_trace_ensure_root(optsJson: string): string;
   function __op_trace_ensure_span(optsJson: string): string;
   function __op_trace_start_root(stepId: string | null, dataJson: string): string;

@@ -464,7 +464,6 @@ sequenceDiagram
   participant Trace as moo.traces
   participant Tool as tool/subspan
   participant DB as trace tables
-  participant UI as TracesView
 
   Command->>Trace: startTraceRoot(stepId,input summary)
   Trace->>DB: insert root row
@@ -489,7 +488,6 @@ flowchart LR
   App --> Events[events.ts<br/>/api/ws listener]
   API --> Timeline[Timeline.tsx]
   API --> Memory[MemoryView.tsx]
-  API --> Traces[TracesView.tsx]
   API --> MCP[McpView.tsx]
   API --> Apps[AppsView.tsx + ChatApps.tsx]
   Events --> Timeline
@@ -504,7 +502,6 @@ Relevant files:
 - [`web/src/api.ts`](../web/src/api.ts): HTTP client for harness commands.
 - [`web/src/events.ts`](../web/src/events.ts): WebSocket event subscription.
 - [`web/src/Timeline.tsx`](../web/src/Timeline.tsx): chat/timeline rendering.
-- [`web/src/TracesView.tsx`](../web/src/TracesView.tsx): trace browser.
 - [`web/src/MemoryView.tsx`](../web/src/MemoryView.tsx): memory/facts interface.
 - [`web/src/AppsView.tsx`](../web/src/AppsView.tsx), [`web/src/ChatApps.tsx`](../web/src/ChatApps.tsx): generated app registry and per-chat app instances.
 - [`web/src/markdown.ts`](../web/src/markdown.ts), [`web/src/mermaid.ts`](../web/src/mermaid.ts): Markdown and Mermaid rendering.
@@ -660,7 +657,7 @@ A few examples:
 - **Markdown Mermaid rendering:** [`web/src/markdown.ts`](../web/src/markdown.ts) emits `.mermaid` placeholders; [`web/src/mermaid.ts`](../web/src/mermaid.ts) observes and renders them.
 - **A tool call:** [`harness/src/agent.ts`](../harness/src/agent.ts) defines/executes tools; each tool normally delegates to `moo.*`; native work lands in [`src/ops/`](../src/ops/).
 - **Memory query:** UI calls a command in [`commands/memory.ts`](../harness/src/commands/memory.ts); agents call `moo.memory`/`moo.facts`/`moo.sparql`; Rust evaluates store queries.
-- **Trace browser:** commands/tool helpers write trace rows via `moo.traces`; [`web/src/TracesView.tsx`](../web/src/TracesView.tsx) reads recent/tree/summary commands.
+- **Trace reporting:** commands/tool helpers write trace rows via `moo.traces`; OTEL reporting is configured from `/settings`.
 
 ## 16. Design invariants
 

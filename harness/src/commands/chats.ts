@@ -4,6 +4,7 @@ import { chatRefs } from "../lib";
 import type { Input } from "./_shared";
 import { applyLastChatSettings, rememberChatEffort, rememberChatModel, setChatEffort, setChatModel } from "./models";
 import { estimateCostUsd, loadPricing } from "./describe";
+import { hasPendingInput } from "../agent";
 import type { FactHistoryRow } from "../types";
 
 
@@ -290,21 +291,6 @@ export async function chatAutocompleteCommand(input: Input) {
 export async function chatsListCommand() {
   const chats = await moo.chat.list();
   const pricing = await loadPricing();
-  // Source of truth for "is the agent currently running?" is the Rust
-  // driver's tracking map — fact-store steps no longer carry the running
-  // state. Override fact-derived status so a page refresh reflects reality.
-  let running: Set<string>;
-  let runningStartedAt: Record<string, number>;
-  try {
-    running = new Set(JSON.parse(host.runningChatIds()));
-  } catch {
-    running = new Set();
-  }
-  try {
-    runningStartedAt = JSON.parse(host.runningChatStartedAt());
-  } catch {
-    runningStartedAt = {};
-  }
   const enriched = [];
   for (const c of chats) {
     const showHidden = "showHidden" in c && Boolean(c.showHidden);
@@ -331,10 +317,12 @@ export async function chatsListCommand() {
     void selectedEffort;
     void effectiveEffort;
     const cost = estimateCostUsd(c.usage, pricing);
+    const pendingInput = c.status === "ui:Pending" || (await hasPendingInput(c.chatId));
+    const status = pendingInput ? "ui:Pending" : c.status;
     enriched.push({
       ...summary,
-      status: running.has(c.chatId) ? "agent:Running" : c.status,
-      runningStartedAt: runningStartedAt[c.chatId] ?? null,
+      status,
+      runningStartedAt: status === "agent:Running" ? (c.runningStartedAt ?? null) : null,
       selectedModel: null,
       costUsd: cost.costUsd,
       costEstimated: true,
@@ -424,7 +412,7 @@ export async function rememberChatPath(path: string, alreadyNormalized = false):
 
 
 async function isJjAvailable(): Promise<boolean> {
-  const result = await moo.proc.run({ cmd: "sh", args: ["-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 });
+  const result = await moo.proc.run({ cmd: ["sh", "-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 });
   return result.code === 0;
 }
 
@@ -561,29 +549,28 @@ function dedupeGitBranches(branches: GitBranchItem[]): GitBranchItem[] {
 
 async function defaultGitBranch(gitRoot: string): Promise<string | null> {
   const symbolic = await moo.proc.run({
-    cmd: "git",
-    args: ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    cmd: ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
     ...{ cwd: gitRoot, timeoutMs: 5_000 },
   });
   if (symbolic.code === 0) {
     const remoteName = cleanGitLine(symbolic.stdout);
     const localName = remoteName.replace(/^origin\//, "");
     if (localName) {
-      const local = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/heads/" + localName], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+      const local = await moo.proc.run({ cmd: ["git", "show-ref", "--verify", "--quiet", "refs/heads/" + localName], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
       return local.code === 0 ? localName : remoteName;
     }
   }
   for (const candidate of ["main", "master"]) {
-    const local = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/heads/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+    const local = await moo.proc.run({ cmd: ["git", "show-ref", "--verify", "--quiet", "refs/heads/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
     if (local.code === 0) return candidate;
-    const remote = await moo.proc.run({ cmd: "git", args: ["show-ref", "--verify", "--quiet", "refs/remotes/origin/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+    const remote = await moo.proc.run({ cmd: ["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/" + candidate], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
     if (remote.code === 0) return "origin/" + candidate;
   }
   return null;
 }
 
 async function gitHasRemote(gitRoot: string): Promise<boolean> {
-  const remotes = await moo.proc.run({ cmd: "git", args: ["remote"], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
+  const remotes = await moo.proc.run({ cmd: ["git", "remote"], ...{ cwd: gitRoot, timeoutMs: 5_000 } });
   return remotes.code === 0 && remotes.stdout.split("\n").some((line) => cleanGitLine(line));
 }
 
@@ -598,18 +585,18 @@ function dedupeJjRevisions(revisions: JjRevisionItem[]): JjRevisionItem[] {
 
 async function loadJjRevisions(jjRoot: string): Promise<{ revisions: JjRevisionItem[]; current: string | null; selected: string | null }> {
   const revisions: JjRevisionItem[] = [{ name: "Current change (@)", rev: "@", kind: "current", current: true }];
-  const current = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "1", "-r", "@", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
+  const current = await moo.proc.run({ cmd: ["jj", "log", "--no-graph", "--limit", "1", "-r", "@", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
   if (current.code === 0) {
     const [changeId = "", description = ""] = current.stdout.split("\t");
     const cleanChange = cleanGitLine(changeId);
     if (cleanChange) revisions[0] = { ...revisions[0], name: "Current change @ " + cleanChange, description: cleanGitLine(description) || null };
   }
-  const trunk = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "1", "-r", "trunk()", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
+  const trunk = await moo.proc.run({ cmd: ["jj", "log", "--no-graph", "--limit", "1", "-r", "trunk()", "-T", "change_id.short() ++ '\t' ++ description.first_line()"], cwd: jjRoot, timeoutMs: 5_000 });
   if (trunk.code === 0 && trunk.stdout.trim()) {
     const [changeId = "", description = ""] = trunk.stdout.split("\t");
     revisions.push({ name: "Trunk " + cleanGitLine(changeId), rev: "trunk()", kind: "trunk", description: cleanGitLine(description) || null });
   }
-  const bookmarks = await moo.proc.run({ cmd: "jj", args: ["bookmark", "list", "--template", "name ++ '\t' ++ if(remote, remote, '') ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
+  const bookmarks = await moo.proc.run({ cmd: ["jj", "bookmark", "list", "--template", "name ++ '\t' ++ if(remote, remote, '') ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
   if (bookmarks.code === 0) {
     for (const line of bookmarks.stdout.split("\n")) {
       if (!line.trim()) continue;
@@ -621,7 +608,7 @@ async function loadJjRevisions(jjRoot: string): Promise<{ revisions: JjRevisionI
       revisions.push({ name: remote ? name + " (" + remote + ")" : name, rev, kind: "bookmark" });
     }
   }
-  const recent = await moo.proc.run({ cmd: "jj", args: ["log", "--no-graph", "--limit", "12", "-r", "visible_heads() | ancestors(@, 6)", "-T", "change_id.short() ++ '\t' ++ description.first_line() ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
+  const recent = await moo.proc.run({ cmd: ["jj", "log", "--no-graph", "--limit", "12", "-r", "visible_heads() | ancestors(@, 6)", "-T", "change_id.short() ++ '\t' ++ description.first_line() ++ '\n'"], cwd: jjRoot, timeoutMs: 5_000 });
   if (recent.code === 0) {
     for (const line of recent.stdout.split("\n")) {
       if (!line.trim()) continue;
@@ -653,11 +640,10 @@ async function loadGitBranches(path: string, fetched = false, message: string | 
   }
   const [branchesResult, remotesResult, jjRevisionsResult] = await Promise.all([
     moo.proc.run({
-      cmd: "git",
-      args: ["for-each-ref", "--format=%(HEAD)%00%(refname:short)%00%(refname)%00%(upstream:short)%00%(symref:short)", "refs/heads", "refs/remotes"],
+      cmd: ["git", "for-each-ref", "--format=%(HEAD)%00%(refname:short)%00%(refname)%00%(upstream:short)%00%(symref:short)", "refs/heads", "refs/remotes"],
       ...{ cwd: repo.gitRoot, timeoutMs: 10_000 },
     }),
-    moo.proc.run({ cmd: "git", args: ["remote"], ...{ cwd: repo.gitRoot, timeoutMs: 5_000 } }),
+    moo.proc.run({ cmd: ["git", "remote"], ...{ cwd: repo.gitRoot, timeoutMs: 5_000 } }),
     jjRepo ? loadJjRevisions(jjRepo.jjRoot) : Promise.resolve(null),
   ]);
   let currentBranch: string | null = null;
@@ -730,7 +716,7 @@ export async function fsGitPullBranchesCommand(input: Input) {
     if (!repo) return { ok: false, error: { message: "not a git repository: " + base } };
     const before = await gitHasRemote(repo.gitRoot);
     if (!before) return { ok: false, error: { message: "no git remotes configured for " + repo.gitRoot } };
-    const fetch = await moo.proc.run({ cmd: "git", args: ["fetch", "--all", "--prune"], ...{ cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 } });
+    const fetch = await moo.proc.run({ cmd: ["git", "fetch", "--all", "--prune"], ...{ cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 } });
     if (fetch.code !== 0) {
       return { ok: false, error: { message: (fetch.stderr || fetch.stdout || "git fetch failed").trim() } };
     }
@@ -806,8 +792,7 @@ async function gitFsChangeStats(basePath: string): Promise<Map<string, FsChangeS
     return null;
   }
   const rootResult = await moo.proc.run({
-    cmd: "git",
-    args: ["rev-parse", "--show-toplevel"],
+    cmd: ["git", "rev-parse", "--show-toplevel"],
     ...{ cwd: base, timeoutMs: 5_000 },
   });
   if (rootResult.code !== 0) return null;
@@ -818,7 +803,7 @@ async function gitFsChangeStats(basePath: string): Promise<Map<string, FsChangeS
   const stats = new Map<string, FsChangeStats>();
   const args = ["status", "--porcelain=v1", "--untracked-files=all"];
   if (prefix) args.push("--", prefix);
-  const status = await moo.proc.run({ cmd: "git", args, ...{ cwd: gitRoot, timeoutMs: 10_000 } });
+  const status = await moo.proc.run({ cmd: ["git", ...args], ...{ cwd: gitRoot, timeoutMs: 10_000 } });
   if (status.code !== 0) return null;
   for (const line of status.stdout.split("\n")) {
     if (line.length < 4) continue;
@@ -835,7 +820,7 @@ async function gitFsChangeStats(basePath: string): Promise<Map<string, FsChangeS
   }
   const numstatArgs = ["diff", "--numstat", "HEAD", "--"];
   if (prefix) numstatArgs.push(prefix);
-  const numstat = await moo.proc.run({ cmd: "git", args: numstatArgs, ...{ cwd: gitRoot, timeoutMs: 10_000 } });
+  const numstat = await moo.proc.run({ cmd: ["git", ...numstatArgs], ...{ cwd: gitRoot, timeoutMs: 10_000 } });
   if (numstat.code === 0) {
     for (const line of numstat.stdout.split("\n")) {
       const parts = line.split("\t");
@@ -878,7 +863,7 @@ async function jjRepoInfo(
   } catch {
     return null;
   }
-  const rootResult = await moo.proc.run({ cmd: "jj", args: ["root"], ...{ cwd: base, timeoutMs: 5_000 } });
+  const rootResult = await moo.proc.run({ cmd: ["jj", "root"], ...{ cwd: base, timeoutMs: 5_000 } });
   if (rootResult.code !== 0) return null;
   const jjRoot = rootResult.stdout.trim();
   if (!jjRoot) return null;
@@ -896,7 +881,7 @@ async function gitRepoInfo(
   } catch {
     return null;
   }
-  const rootResult = await moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], ...{ cwd: base, timeoutMs: 5_000 } });
+  const rootResult = await moo.proc.run({ cmd: ["git", "rev-parse", "--show-toplevel"], ...{ cwd: base, timeoutMs: 5_000 } });
   if (rootResult.code !== 0) return null;
   const gitRoot = rootResult.stdout.trim();
   if (!gitRoot) return null;
@@ -917,8 +902,7 @@ async function gitTrackedFileDiff(
   if (info.prefix) args.push("--relative=" + info.prefix);
   args.push("--", rel);
   const result = await moo.proc.run({
-    cmd: "git",
-    args,
+    cmd: ["git", ...args],
     ...{ cwd: info.gitRoot, timeoutMs: 10_000, maxOutputBytes: 5_000_000 },
   });
   if (result.code !== 0 || !result.stdout.trim()) return null;
@@ -937,8 +921,7 @@ async function isGitUntrackedFile(
   const rel = relativePathWithin(info.gitRoot, path);
   if (rel === null) return false;
   const result = await moo.proc.run({
-    cmd: "git",
-    args: ["ls-files", "--others", "--exclude-standard", "--", rel],
+    cmd: ["git", "ls-files", "--others", "--exclude-standard", "--", rel],
     ...{ cwd: info.gitRoot, timeoutMs: 5_000 },
   });
   if (result.code !== 0) return false;
@@ -1073,7 +1056,7 @@ const fsSearchCandidateCache = new Map<
 >();
 
 async function gitFsSearchCandidates(base: string): Promise<Map<string, { relativePath: string; kind: string }> | null> {
-  const result = await moo.proc.run({ cmd: "git", args: ["ls-files", "-co", "--exclude-standard"], ...{
+  const result = await moo.proc.run({ cmd: ["git", "ls-files", "-co", "--exclude-standard"], ...{
     cwd: base,
     timeoutMs: 10_000,
   } });
@@ -1273,7 +1256,7 @@ export async function chatNewCommand(input: Input) {
   }
   let recent: string[] = [];
   if (path) recent = await rememberChatPath(path, true);
-  return { ok: true, value: { chatId: cid, path, branch, worktreePath: await moo.chat.scratch({ chatId: cid }), recent } };
+  return { ok: true, value: { chatId: cid, path, branch, baseBranch: branch, worktreePath: await moo.chat.scratch({ chatId: cid }), recent } };
 }
 
 
@@ -1371,6 +1354,7 @@ export async function chatForkCommand(input: Input) {
     forkedFromStep: stepId,
     forkedFromAt: cutoffAt,
     path: sourcePath || null,
+    baseBranch: sourceBranch || null,
     worktreePath: await chatWorktreePath(forkChatId),
     copiedFacts,
   } };

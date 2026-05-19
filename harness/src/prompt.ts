@@ -95,7 +95,7 @@ let cliToolsCache: Promise<Set<string>> | null = null;
 function availableCliTools(): Promise<Set<string>> {
   cliToolsCache ??= (async () => {
     const script = cliTools.map((tool) => `command -v ${tool} >/dev/null 2>&1 && printf '%s\n' ${tool}`).join(";");
-    const result = await moo.proc.run({ cmd: "sh", args: ["-lc", script], timeoutMs: 2_000, maxOutputBytes: 200 });
+    const result = await moo.proc.run({ cmd: ["sh", "-lc", script], timeoutMs: 2_000, maxOutputBytes: 200 });
     return new Set(result.stdout
       .split("\n")
       .map((line) => line.trim())
@@ -127,14 +127,14 @@ async function cliToolsLine(hideJj: boolean): Promise<string> {
 async function repoInfoLine(scratch: string): Promise<{ line: string; hideJjTools: boolean }> {
   try {
     const [jjTool, gitTool] = await Promise.all([
-      moo.proc.run({ cmd: "sh", args: ["-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 }),
-      moo.proc.run({ cmd: "sh", args: ["-lc", "command -v git >/dev/null 2>&1"], timeoutMs: 2_000 }),
+      moo.proc.run({ cmd: ["sh", "-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 }),
+      moo.proc.run({ cmd: ["sh", "-lc", "command -v git >/dev/null 2>&1"], timeoutMs: 2_000 }),
     ]);
     const jjAvailable = jjTool.code === 0;
     const gitAvailable = gitTool.code === 0;
     const [jj, git] = await Promise.all([
-      jjAvailable ? moo.proc.run({ cmd: "jj", args: ["root"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
-      gitAvailable ? moo.proc.run({ cmd: "git", args: ["rev-parse", "--show-toplevel"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
+      jjAvailable ? moo.proc.run({ cmd: ["jj", "root"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
+      gitAvailable ? moo.proc.run({ cmd: ["git", "rev-parse", "--show-toplevel"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
     ]);
     const jjRoot = jj.code === 0 ? jj.stdout.trim() : "";
     const gitRoot = git.code === 0 ? git.stdout.trim() : "";
@@ -175,7 +175,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "code: TypeScript body compiled with bundled Moo type definitions; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
     "args: pass complex strings/data (patches, scripts, JSON blobs) via `args` instead of embedding/escaping them in `code`.",
     "runtime: harness V8 ES2025 only; TypeScript 6 type-checks against bundled ES2025 + Moo definitions; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
-    "runTS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside TypeScript strings.",
+    "runTS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside TypeScript strings. Backgrounded runTS returns an id; cancel with `await moo.tools.cancel({id})`",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "When asked to tweak/fix/update code or a named file/path, edit the code; do not merely remember the request or acknowledge a preference.",
     "moo.todos: optional; use `moo.todos` only for substantial multi-step work where tracking helps. Keep items terse; don't update guessed/stale IDs. Method signatures are in the moo.todos API line below.",
@@ -205,7 +205,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "  RDF terms: use exact terms returned by moo.facts.match/moo.sparql.query for delete/retract; don't add/remove quotes. Use moo.term.string({s:'x'}) for literals that look like IRIs/numbers/bools, moo.term.iri({uri:'prefix:Local'}) for uppercase/ambiguous CURIEs.",
     "moo.fs{read,partialRead,write,list,glob,stat,canonical,exists,ensureDir,patch,delete}: read({path})→Promise<string>; partialRead({path:string,ranges:[number,number][],numbered?:boolean})→Promise<string> (1-based inclusive ranges; sorted/collapsed overlaps; inserts `…` for omitted lines; numbered yields aligned `   1: text`); write({path,content})→Promise<void>; list({path})/glob({pattern})→Promise<string[]>; stat({path?})→Promise<{kind,size,mtime}|null>; canonical({path})→Promise<string>; exists({path})→Promise<boolean>; ensureDir({path})→Promise<void>; patch({path:string,diff:string})→Promise<{status:string,output?:string|null}> applies unified/context patch to existing file and throws on failure; delete({path:string})→Promise<{status:string,output?:string|null}> deletes a file; delete failures return status='failed' plus output. Relative paths resolve under scratch.",
     "edits: prefer moo.fs.patch for patch operations on existing files; patch failures throw, so retry only after inspecting context. Before brittle replacements, verify target text with `rg`/`moo.fs.partialRead`; use targeted `moo.fs.write` updates or CLI/editor commands when simpler, then reread when context may have changed.",
-    "moo.proc{run,runChecked}: run({cmd,args?,cwd?,stdin?,timeoutMs?,env?,check?,maxOutputBytes?})→Promise<{code,stdout,stderr,durationNs,timedOut,stdoutTruncated?,stderrTruncated?}>; runChecked({cmd,args?,cwd?,stdin?,timeoutMs?,env?,maxOutputBytes?})→Promise<ProcResult>. Default cwd is scratch; relative cwd resolves under scratch; runChecked throws on nonzero.",
+    "moo.proc{run,runChecked}: run({cmd,cwd?,stdin?,timeoutMs?,env?,check?,maxOutputBytes?})→Promise<{code,stdout,stderr,durationNs,timedOut,stdoutTruncated?,stderrTruncated?}> where cmd is a non-empty string[] with argv[0] as executable; runChecked({cmd,cwd?,stdin?,timeoutMs?,env?,maxOutputBytes?})→Promise<ProcResult>. Default cwd is scratch; relative cwd resolves under scratch; runChecked throws on nonzero.",
     ...repoLines,
     "moo.workspace{current}: current({chatId?,root?})→Promise<{root,fs:{read,partialRead,write,list,glob,stat,canonical,exists,ensureDir,patch,delete},proc:{run,runChecked}}>; scoped fs/proc use the workspace root.",
     "moo.http{fetch,stream}: fetch({method?,url,headers?,body?,timeoutMs?})→Promise<{status,body,headers,bodyTruncated}>; stream({method?,url,headers?,body?,timeoutMs?})→Promise<{status,headers,next():Promise<string|null>,close():Promise<void>}>.",
@@ -216,6 +216,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "moo.ui{ask,choose,say}: ask({chatId,spec:{title?,fields,submitLabel?}})→Promise<string>; choose({chatId,spec:{title?,items}})→Promise<string>; say({chatId,text})→Promise<{chatId,stepId,payloadHash}>.",
     "  moo.ui.ask/choose pause until submit; return request/step id. field type ∈ text|textarea|url|number|boolean|select|secretRef; fields/items non-empty.",
     "moo.ui.apps{register,open}: register({id?,manifest:{id,title,description?,icon?,entry?,api?},bundle:{html?,css?,js?,files?},handler?})→Promise<{uiId,ui,manifestHash,bundleHash,handlerHash,refs}>; open({chatId,uiId,instanceId?,state?})→Promise<{chatId,uiId,instanceId,stateTarget,stateRef,createdState,facts}>.",
+    "moo.tools{cancel}: cancel({id,chatId?})→Promise<{chatId,stepId,cancelled}>; id is the background runTS id/stepId shown by a detached `runTS` result; omit chatId in the current chat.",
     "moo.mcp: discover/call servers via dynamic `moo.mcp.<serverId>.<toolName>(args?)`; prefer MCP over ad-hoc HTTP/env creds; don't change server/auth config unless asked.",
     "moo.mcp{list,tools,listServers,getServer,saveServer,removeServer,login,completeLogin,logout,authStatus,listTools,callTool,request}: list()/listServers()→Promise<McpServerConfig[]>; tools(server?)/listTools(serverId?)→Promise<McpTool[]>; getServer(id)→Promise<McpServerConfig|null>; saveServer({id,title?,url,transport?,enabled?,headers?,timeoutMs?,oauth?})→Promise<McpServerConfig>; removeServer(id)→Promise<boolean>; callTool<T>(serverId,name,arguments_?)→Promise<T>; request<T>(serverId,method,params?,opts?)→Promise<T>.",
     "  moo.mcp auth: login(serverId,{origin?,redirectUri?,scope?,returnChatId?})→Promise<{serverId,authorizeUrl,state,redirectUri,expiresAt,returnChatId?}>; completeLogin(state,code)→Promise<McpOAuthStatus>; logout(serverId)→Promise<boolean>; authStatus(serverId)→Promise<McpOAuthStatus>.",

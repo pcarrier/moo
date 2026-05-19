@@ -5,13 +5,13 @@
 // per-chat lock, interruption, short V8 calls, and long-running LLM transport
 // without pinning a V8 worker.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::async_runtime::runtime;
 use crate::broadcast;
@@ -31,10 +31,40 @@ struct RunningChat {
     end_event: Option<Value>,
     ended: Arc<AtomicBool>,
     tool_cancel: Arc<AtomicBool>,
+    tool_background: Arc<AtomicBool>,
+}
+
+struct QueuedChatRun {
+    pool: Arc<Pool>,
+    bundle: Arc<String>,
+    state: Value,
+}
+
+struct PreparedChatRun {
+    chat_id: String,
+    running: RunningChat,
+    start_tx: tokio::sync::oneshot::Sender<()>,
+    lifecycle_events: Option<Value>,
+    started_at: u64,
+}
+
+struct BackgroundRunTs {
+    chat_id: String,
+    step_id: String,
+    label: Option<String>,
+    requested_by: String,
+    started_at: u64,
+    cancel: Arc<AtomicBool>,
+    abort: AbortHandle,
 }
 
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningChat>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static QUEUED: LazyLock<Mutex<HashMap<String, VecDeque<QueuedChatRun>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static BACKGROUND_RUNTS: LazyLock<Mutex<HashMap<String, BackgroundRunTs>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static DISPATCH: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 
 fn running_lock() -> MutexGuard<'static, HashMap<String, RunningChat>> {
@@ -45,6 +75,93 @@ fn running_lock() -> MutexGuard<'static, HashMap<String, RunningChat>> {
             poisoned.into_inner()
         }
     }
+}
+
+fn queued_lock() -> MutexGuard<'static, HashMap<String, VecDeque<QueuedChatRun>>> {
+    match QUEUED.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("queued chat driver registry mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn dispatch_lock() -> MutexGuard<'static, ()> {
+    match DISPATCH.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("chat dispatch mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn background_runts_lock() -> MutexGuard<'static, HashMap<String, BackgroundRunTs>> {
+    match BACKGROUND_RUNTS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("background runTS registry mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
+
+pub fn background_runts_json() -> Value {
+    let jobs = background_runts_lock()
+        .values()
+        .map(|entry| {
+            json!({
+                "chatId": entry.chat_id,
+                "stepId": entry.step_id,
+                "label": entry.label,
+                "requestedBy": entry.requested_by,
+                "startedAt": entry.started_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "jobs": jobs })
+}
+
+pub fn cancel_background_runts(chat_id: &str, step_id: Option<&str>) -> usize {
+    let cancels = background_runts_lock()
+        .values()
+        .filter(|entry| entry.chat_id == chat_id && step_id.is_none_or(|id| entry.step_id == id))
+        .map(|entry| (entry.cancel.clone(), entry.abort.clone()))
+        .collect::<Vec<_>>();
+    for (cancel, abort) in &cancels {
+        cancel.store(true, Ordering::SeqCst);
+        abort.abort();
+    }
+    cancels.len()
+}
+
+pub fn request_foreground_runts_background(chat_id: &str) -> bool {
+    let Some(running) = running_lock()
+        .get(chat_id)
+        .map(|entry| entry.tool_background.clone())
+    else {
+        return false;
+    };
+    running.store(true, Ordering::SeqCst);
+    true
+}
+
+pub fn cancel_runts(chat_id: &str, step_id: Option<&str>) -> usize {
+    let mut cancelled = cancel_background_runts(chat_id, step_id);
+    if step_id.is_none() || cancelled == 0 {
+        if let Some(running) = running_lock()
+            .get(chat_id)
+            .map(|entry| entry.tool_cancel.clone())
+        {
+            // Keep the foreground driver alive so the cancelled tool result is
+            // recorded in chat state and queued follow-ups can continue from a
+            // terminal runJS/runTS row instead of a vanished in-flight turn.
+            running.store(true, Ordering::SeqCst);
+            cancelled += 1;
+        }
+    }
+    cancelled
 }
 
 pub fn dispatch_drive(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
@@ -264,14 +381,27 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
     if chat_id.is_empty() {
         return;
     }
-    let cid = chat_id.clone();
-    if let Some(prev) = running_lock().remove(&cid) {
-        finish_running(prev);
+    let _dispatch_guard = dispatch_lock();
+    if running_lock().contains_key(&chat_id) {
+        queued_lock()
+            .entry(chat_id)
+            .or_default()
+            .push_back(QueuedChatRun { pool, bundle, state });
+        return;
     }
 
+    start_prepared_run(prepare_chat_run(pool, bundle, chat_id, state));
+}
+
+fn prepare_chat_run(
+    pool: Arc<Pool>,
+    bundle: Arc<String>,
+    chat_id: String,
+    state: Value,
+) -> PreparedChatRun {
     let run_id = NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed);
     let started_at = now_ms() as u64;
-    publish_start_event(state.get("lifecycleEvents"), started_at);
+    let lifecycle_events = state.get("lifecycleEvents").cloned();
     let end_event = state
         .get("lifecycleEvents")
         .and_then(|v| v.get("end"))
@@ -281,48 +411,104 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
     let task_ended = ended.clone();
     let tool_cancel = Arc::new(AtomicBool::new(false));
     let task_tool_cancel = tool_cancel.clone();
+    let tool_background = Arc::new(AtomicBool::new(false));
+    let task_tool_background = tool_background.clone();
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    let task_chat_id = chat_id.clone();
     let handle = runtime().spawn(async move {
         let _ = start_rx.await;
+        let lifecycle_events = state.get("lifecycleEvents").cloned();
+        let mut step_guard = StepLifecycle::new(lifecycle_events.as_ref(), task_ended);
         if let Err(e) = drive(
             pool,
             bundle,
-            chat_id.clone(),
+            task_chat_id.clone(),
             state,
-            task_ended,
             task_tool_cancel,
+            task_tool_background,
             run_id,
         )
         .await
         {
-            eprintln!("chat driver [{chat_id}]: {e}");
+            eprintln!("chat driver [{task_chat_id}]: {e}");
             publish_event_payload(&json!({
                 "kind": "driver-error",
-                "chatId": chat_id,
+                "chatId": task_chat_id,
                 "error": e,
             }));
         }
-        let mut running = running_lock();
-        if running
-            .get(&chat_id)
-            .map(|entry| entry.run_id == run_id)
-            .unwrap_or(false)
-        {
-            running.remove(&chat_id);
-        }
+        step_guard.finish();
+        finish_current_and_start_next(&task_chat_id, run_id);
     });
-    running_lock().insert(
-        cid,
-        RunningChat {
+
+    PreparedChatRun {
+        chat_id,
+        running: RunningChat {
             handle,
             run_id,
             started_at,
             end_event,
             ended,
             tool_cancel,
+            tool_background,
         },
-    );
-    let _ = start_tx.send(());
+        start_tx,
+        lifecycle_events,
+        started_at,
+    }
+}
+
+fn start_prepared_run(prepared: PreparedChatRun) {
+    publish_start_event(prepared.lifecycle_events.as_ref(), prepared.started_at);
+    running_lock().insert(prepared.chat_id, prepared.running);
+    let _ = prepared.start_tx.send(());
+}
+
+fn finish_current_and_start_next(chat_id: &str, run_id: u64) {
+    let _dispatch_guard = dispatch_lock();
+    {
+        let mut running = running_lock();
+        if running
+            .get(chat_id)
+            .map(|entry| entry.run_id == run_id)
+            .unwrap_or(false)
+        {
+            running.remove(chat_id);
+        } else {
+            return;
+        }
+    }
+    start_next_queued_run_locked(chat_id);
+}
+
+fn start_next_queued_run_locked(chat_id: &str) {
+    let next = {
+        let mut queued = queued_lock();
+        let Some(queue) = queued.get_mut(chat_id) else {
+            return;
+        };
+        let next = queue.pop_front();
+        if queue.is_empty() {
+            queued.remove(chat_id);
+        }
+        next
+    };
+    let Some(next) = next else {
+        return;
+    };
+    if running_lock().contains_key(chat_id) {
+        queued_lock()
+            .entry(chat_id.to_string())
+            .or_default()
+            .push_front(next);
+        return;
+    }
+    start_prepared_run(prepare_chat_run(
+        next.pool,
+        next.bundle,
+        chat_id.to_string(),
+        next.state,
+    ));
 }
 
 async fn drive(
@@ -330,14 +516,13 @@ async fn drive(
     bundle: Arc<String>,
     chat_id: String,
     state: Value,
-    ended: Arc<AtomicBool>,
     tool_cancel: Arc<AtomicBool>,
+    tool_background: Arc<AtomicBool>,
     run_id: u64,
 ) -> Result<(), String> {
     let lock_arc = pool.chat_lock(&format!("chat:{chat_id}"));
     let _guard = lock_arc.lock().await;
 
-    let _step_guard = StepLifecycle::new(state.get("lifecycleEvents"), ended);
     let turn_span = ChatTraceSpan::new(
         chat_trace_open(
             None,
@@ -361,6 +546,7 @@ async fn drive(
         run_id,
         turn_span.id(),
         tool_cancel,
+        tool_background,
     )
     .await;
     turn_span.finish(
@@ -416,6 +602,30 @@ pub fn apply_driver_action(action: &Value, pool: &Arc<Pool>, bundle: &Arc<String
                 return true;
             }
         }
+        Some("background-runts") => {
+            if let Some(chat_id) = action
+                .get("chatId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                request_foreground_runts_background(chat_id);
+                return true;
+            }
+        }
+        Some("cancel-runts") => {
+            if let Some(chat_id) = action
+                .get("chatId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                let step_id = action
+                    .get("stepId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                cancel_runts(chat_id, step_id);
+                return true;
+            }
+        }
         Some("interrupt") => {
             if let Some(chat_id) = action
                 .get("chatId")
@@ -432,6 +642,7 @@ pub fn apply_driver_action(action: &Value, pool: &Arc<Pool>, bundle: &Arc<String
 }
 
 pub fn interrupt(chat_id: &str) -> bool {
+    queued_lock().remove(chat_id);
     let Some(running) = running_lock().remove(chat_id) else {
         return false;
     };
@@ -480,17 +691,267 @@ impl StepLifecycle {
             ended,
         }
     }
+
+    fn finish(&mut self) {
+        if self.ended.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(end_event) = self.end_event.take() {
+            publish_event_payload(&end_event);
+        }
+    }
 }
 
 impl Drop for StepLifecycle {
     fn drop(&mut self) {
-        if self.ended.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if let Some(end_event) = &self.end_event {
-            publish_event_payload(end_event);
-        }
+        self.finish();
     }
+}
+
+fn runts_tool_step_id(value: &Value) -> String {
+    value
+        .get("runTsStepId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            value
+                .get("toolCall")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+        .map(ToString::to_string)
+        .unwrap_or_else(|| random_id("runts"))
+}
+
+fn runts_tool_call_id(value: &Value) -> String {
+    value
+        .get("toolCall")
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| runts_tool_step_id(value))
+}
+
+fn detached_runts_tool_result(value: &Value) -> Value {
+    let step_id = runts_tool_step_id(value);
+    let tool_call_id = value
+        .get("toolCall")
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&step_id)
+        .to_string();
+    json!({
+        "toolCallId": tool_call_id,
+        "stepId": step_id,
+        "runTsStepId": step_id,
+        "backgroundId": step_id,
+        "content": format!("detached: runTS continues in background; id: {step_id}; cancel with await moo.tools.cancel({{ id: \"{step_id}\" }}}})"),
+        "status": "done",
+    })
+}
+
+fn runts_tool_label(value: &Value) -> Option<String> {
+    let arguments = value
+        .get("toolCall")
+        .and_then(|v| v.get("function"))
+        .and_then(|v| v.get("arguments"))
+        .and_then(|v| v.as_str())?;
+    serde_json::from_str::<Value>(arguments).ok().and_then(|v| {
+        v.get("label")
+            .and_then(|label| label.as_str())
+            .map(ToString::to_string)
+    })
+}
+
+pub fn runts_tool_background_after_ns(value: &Value) -> Option<u64> {
+    value
+        .get("backgroundAfterNs")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            let arguments = value
+                .get("toolCall")
+                .and_then(|v| v.get("function"))
+                .and_then(|v| v.get("arguments"))
+                .and_then(|v| v.as_str())?;
+            serde_json::from_str::<Value>(arguments)
+                .ok()
+                .and_then(|v| v.get("backgroundAfterNs").and_then(|n| n.as_u64()))
+        })
+}
+
+pub fn spawn_runts_tool_command(
+    pool: Arc<Pool>,
+    bundle: Arc<String>,
+    value: Value,
+    cancelled: Arc<AtomicBool>,
+) -> JoinHandle<Value> {
+    runtime().spawn(async move { run_ts_tool_async(&pool, &bundle, &value, None, cancelled).await })
+}
+
+pub fn background_runts_command(
+    chat_id: String,
+    value: Value,
+    cancel_for_task: Arc<AtomicBool>,
+    handle: JoinHandle<Value>,
+) {
+    let step_id = runts_tool_step_id(&value);
+    let label = runts_tool_label(&value);
+    let requested_by = "api";
+    let abort = handle.abort_handle();
+    background_runts_lock().insert(
+        step_id.clone(),
+        BackgroundRunTs {
+            chat_id: chat_id.clone(),
+            step_id: step_id.clone(),
+            label: label.clone(),
+            requested_by: requested_by.to_string(),
+            started_at: now_ms() as u64,
+            cancel: cancel_for_task,
+            abort,
+        },
+    );
+    publish_runts_background_event(
+        "runts-background-start",
+        &chat_id,
+        &step_id,
+        label.as_deref(),
+        requested_by,
+    );
+    runtime().spawn(async move {
+        let _ = handle.await;
+        background_runts_lock().remove(&step_id);
+        publish_runts_background_event(
+            "runts-background-end",
+            &chat_id,
+            &step_id,
+            label.as_deref(),
+            requested_by,
+        );
+    });
+}
+
+fn publish_runts_background_event(
+    kind: &str,
+    chat_id: &str,
+    step_id: &str,
+    label: Option<&str>,
+    requested_by: &str,
+) {
+    publish_event_payload(&json!({
+        "kind": kind,
+        "chatId": chat_id,
+        "stepId": step_id,
+        "label": label,
+        "requestedBy": requested_by,
+        "at": now_ms(),
+    }));
+}
+
+fn background_runts_tool(
+    pool: Arc<Pool>,
+    bundle: Arc<String>,
+    chat_id: String,
+    value: Value,
+    parent_span: Option<String>,
+    tool_span: ChatTraceSpan,
+    requested_by: &'static str,
+) {
+    let step_id = runts_tool_step_id(&value);
+    let label = runts_tool_label(&value);
+    let cancel_for_task = Arc::new(AtomicBool::new(false));
+    let handle = spawn_runts_tool_task(
+        pool.clone(),
+        bundle.clone(),
+        value.clone(),
+        parent_span,
+        cancel_for_task.clone(),
+    );
+    background_runts_tool_handle(
+        chat_id.clone(),
+        step_id,
+        label,
+        cancel_for_task,
+        tool_span,
+        handle,
+        requested_by,
+    );
+}
+
+fn background_runts_tool_handle(
+    chat_id: String,
+    step_id: String,
+    label: Option<String>,
+    cancel_for_task: Arc<AtomicBool>,
+    tool_span: ChatTraceSpan,
+    handle: JoinHandle<Value>,
+    requested_by: &'static str,
+) {
+    let abort = handle.abort_handle();
+    background_runts_lock().insert(
+        step_id.clone(),
+        BackgroundRunTs {
+            chat_id: chat_id.clone(),
+            step_id: step_id.clone(),
+            label: label.clone(),
+            requested_by: requested_by.to_string(),
+            started_at: now_ms() as u64,
+            cancel: cancel_for_task.clone(),
+            abort,
+        },
+    );
+    publish_runts_background_event(
+        "runts-background-start",
+        &chat_id,
+        &step_id,
+        label.as_deref(),
+        requested_by,
+    );
+    let cancel_for_join = cancel_for_task.clone();
+    runtime().spawn(async move {
+        let tool_result = handle.await.unwrap_or_else(|e| {
+            let cancelled = cancel_for_join.load(Ordering::SeqCst) || e.is_cancelled();
+            json!({
+                "content": if cancelled {
+                    "cancelled: runTS cancelled".to_string()
+                } else {
+                    format!("error: runTS background task failed: {e}")
+                },
+                "status": if cancelled { "cancelled" } else { "failed" },
+            })
+        });
+        background_runts_lock().remove(&step_id);
+        publish_runts_background_event(
+            "runts-background-end",
+            &chat_id,
+            &step_id,
+            label.as_deref(),
+            requested_by,
+        );
+        let tool_ok = tool_result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s != "failed" && s != "cancelled")
+            .unwrap_or(true);
+        tool_span.finish(
+            if tool_ok { "ok" } else { "error" },
+            json!({ "result": tool_result }),
+        );
+    });
+}
+
+fn spawn_runts_tool_task(
+    pool: Arc<Pool>,
+    bundle: Arc<String>,
+    value: Value,
+    parent_span: Option<String>,
+    cancelled: Arc<AtomicBool>,
+) -> JoinHandle<Value> {
+    runtime().spawn(async move {
+        run_ts_tool_async(&pool, &bundle, &value, parent_span.as_deref(), cancelled).await
+    })
 }
 
 async fn drive_loop(
@@ -500,9 +961,18 @@ async fn drive_loop(
     chat_id: &str,
     run_id: u64,
     turn_span: Option<&str>,
-    tool_cancel: Arc<AtomicBool>,
+    _tool_cancel: Arc<AtomicBool>,
+    tool_background: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut next_input = json!({ "command": "step-next", "state": state });
+    let mut next_input = if let Some(tool_result) = state.get("__toolResult").cloned() {
+        let mut resumed = state.clone();
+        if let Some(obj) = resumed.as_object_mut() {
+            obj.remove("__toolResult");
+        }
+        json!({ "command": "step-next", "state": resumed, "toolResult": tool_result })
+    } else {
+        json!({ "command": "step-next", "state": state })
+    };
 
     loop {
         let command = next_input
@@ -659,33 +1129,189 @@ async fn drive_loop(
                     ),
                     "harness.runts_tool",
                 );
-                let tool_result =
-                    run_ts_tool_async(pool, bundle, &value, tool_span.id(), tool_cancel.clone())
-                        .await;
-                let tool_ok = tool_result
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s != "failed")
-                    .unwrap_or(true);
-                tool_span.finish(
-                    if tool_ok { "ok" } else { "error" },
-                    json!({
-                        "result": tool_result.clone(),
-                    }),
+                let background_after_ns = value.get("backgroundAfterNs").and_then(|v| v.as_u64());
+                if background_after_ns == Some(0) {
+                    let detached_result = detached_runts_tool_result(&value);
+                    background_runts_tool(
+                        pool.clone(),
+                        bundle.clone(),
+                        chat_id.to_string(),
+                        value.clone(),
+                        tool_span.id().map(ToString::to_string),
+                        tool_span,
+                        "tool",
+                    );
+                    step_span.finish(
+                        "ok",
+                        json!({
+                            "command": command,
+                            "nextKind": next_kind_value,
+                            "output": value,
+                            "backgrounded": true,
+                            "backgroundRequested": "tool",
+                        }),
+                    );
+                    next_input = json!({
+                        "command": "step-next",
+                        "state": state,
+                        "toolResult": detached_result,
+                    });
+                    continue;
+                }
+                let foreground_value = value.clone();
+                let foreground_parent_span = tool_span.id().map(ToString::to_string);
+                let run_cancel = _tool_cancel.clone();
+                let mut run = spawn_runts_tool_task(
+                    pool.clone(),
+                    bundle.clone(),
+                    foreground_value,
+                    foreground_parent_span.clone(),
+                    run_cancel.clone(),
                 );
-                next_input = json!({
-                    "command": "step-next",
-                    "state": state,
-                    "toolResult": tool_result,
-                });
-                step_span.finish(
-                    "ok",
-                    json!({
-                        "command": command,
-                        "nextKind": next_kind_value,
-                        "output": value,
-                    }),
-                );
+                let background_poll = async {
+                    loop {
+                        if tool_background.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                };
+                tokio::pin!(background_poll);
+                let auto_background = async {
+                    if let Some(ns) = background_after_ns.filter(|ns| *ns > 0) {
+                        tokio::time::sleep(std::time::Duration::from_nanos(ns)).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                tokio::pin!(auto_background);
+                let cancel_poll_flag = run_cancel.clone();
+                let cancel_poll = async move {
+                    loop {
+                        if cancel_poll_flag.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                };
+                tokio::pin!(cancel_poll);
+                tokio::select! {
+                    joined = &mut run => {
+                        let tool_result = joined.unwrap_or_else(|e| {
+                            json!({
+                                "content": format!("error: runTS task failed: {e}"),
+                                "status": "failed",
+                            })
+                        });
+                        let tool_ok = tool_result
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s != "failed" && s != "cancelled")
+                            .unwrap_or(true);
+                        tool_span.finish(
+                            if tool_ok { "ok" } else { "error" },
+                            json!({ "result": tool_result.clone() }),
+                        );
+                        next_input = json!({
+                            "command": "step-next",
+                            "state": state,
+                            "toolResult": tool_result,
+                        });
+                        step_span.finish(
+                            "ok",
+                            json!({
+                                "command": command,
+                                "nextKind": next_kind_value,
+                                "output": value,
+                                "backgrounded": false,
+                            }),
+                        );
+                    }
+                    _ = &mut cancel_poll => {
+                        run.abort();
+                        let tool_result = json!({
+                            "toolCallId": runts_tool_call_id(&value),
+                            "content": "cancelled: runTS cancelled",
+                            "status": "cancelled",
+                        });
+                        tool_span.finish("error", json!({ "result": tool_result.clone() }));
+                        next_input = json!({
+                            "command": "step-next",
+                            "state": state,
+                            "toolResult": tool_result,
+                        });
+                        step_span.finish(
+                            "cancelled",
+                            json!({
+                                "command": command,
+                                "nextKind": next_kind_value,
+                                "output": value,
+                                "backgrounded": false,
+                            }),
+                        );
+                    }
+                    _ = &mut background_poll => {
+                        let step_id = runts_tool_step_id(&value);
+                        let label = runts_tool_label(&value);
+                        let detached_result = detached_runts_tool_result(&value);
+                        background_runts_tool_handle(
+                            chat_id.to_string(),
+                            step_id,
+                            label,
+                            run_cancel,
+                            tool_span,
+                            run,
+                            "user",
+                        );
+                        step_span.finish(
+                            "ok",
+                            json!({
+                                "command": command,
+                                "nextKind": next_kind_value,
+                                "output": value,
+                                "backgrounded": true,
+                                "backgroundRequested": "user",
+                            }),
+                        );
+                        next_input = json!({
+                            "command": "step-next",
+                            "state": state,
+                            "toolResult": detached_result,
+                        });
+                        continue;
+                    }
+                    _ = &mut auto_background => {
+                        let step_id = runts_tool_step_id(&value);
+                        let label = runts_tool_label(&value);
+                        let detached_result = detached_runts_tool_result(&value);
+                        background_runts_tool_handle(
+                            chat_id.to_string(),
+                            step_id,
+                            label,
+                            run_cancel,
+                            tool_span,
+                            run,
+                            "timer",
+                        );
+                        step_span.finish(
+                            "ok",
+                            json!({
+                                "command": command,
+                                "nextKind": next_kind_value,
+                                "output": value,
+                                "backgrounded": true,
+                                "backgroundRequested": "timer",
+                                "backgroundAfterNs": background_after_ns,
+                            }),
+                        );
+                        next_input = json!({
+                            "command": "step-next",
+                            "state": state,
+                            "toolResult": detached_result,
+                        });
+                        continue;
+                    }
+                }
             }
             Some("done") | Some("wait-input") | Some("error") => {
                 step_span.finish(
@@ -726,23 +1352,21 @@ async fn run_ts_tool_async(
         .unwrap_or("")
         .to_string();
     let tool_call = value.get("toolCall").cloned().unwrap_or(Value::Null);
-    let tool_call_id = tool_call
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let tool_call_id = runts_tool_call_id(value);
     let input = json!({
         "command": "run-ts-tool",
         "chatId": chat_id,
         "state": value.get("state").cloned().unwrap_or(Value::Null),
         "toolCall": tool_call,
         "model": value.get("model").cloned().unwrap_or(Value::Null),
+        "runTsStepId": value.get("runTsStepId").cloned().unwrap_or(Value::Null),
     });
     let handler = make_agent_run_handler(pool.clone(), bundle.clone());
     let pool2 = pool.clone();
     let bundle2 = bundle.clone();
     let input_str = input.to_string();
     let parent_step_id = parent_step_id.map(ToString::to_string);
+    let cancelled_for_result = cancelled.clone();
     let raw = tokio::task::spawn_blocking(move || {
         pool2.submit_async_tool(bundle2, input_str, handler, parent_step_id, cancelled)
     })
@@ -761,11 +1385,14 @@ async fn run_ts_tool_async(
                 "status": "failed",
             }),
         },
-        Err(e) => json!({
-            "toolCallId": tool_call_id,
-            "content": format!("error: {e}"),
-            "status": "failed",
-        }),
+        Err(e) => {
+            let cancelled = cancelled_for_result.load(Ordering::SeqCst);
+            json!({
+                "toolCallId": tool_call_id,
+                "content": format!("{}: {e}", if cancelled { "cancelled" } else { "error" }),
+                "status": if cancelled { "cancelled" } else { "failed" },
+            })
+        }
     }
 }
 

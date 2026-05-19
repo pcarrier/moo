@@ -71,7 +71,6 @@ import {
   type MergedFileDiffItem,
   type MemoryGraphDiffSummary,
 } from "./diffs";
-import { TraceEventDetails } from "./TracesView";
 import {
   displayChatId,
   type Bag,
@@ -270,6 +269,21 @@ function repoFileNeedsVisibleLoading(
 function chatDirectory(path: string | null | undefined): string | null {
   const raw = String(path || "").trim();
   return raw || null;
+}
+
+function chatBaseBranch(branch: string | null | undefined): string | null {
+  const raw = String(branch || "").trim();
+  return raw || null;
+}
+
+function chatDirectoryTitle(
+  directory: string,
+  baseBranch: string | null,
+): string {
+  const collapsed = collapseHome(directory);
+  return baseBranch
+    ? "directory: " + collapsed + "\nbase branch: " + baseBranch
+    : "directory: " + collapsed;
 }
 
 function parentDirectoryPath(path: string): string {
@@ -2007,7 +2021,7 @@ export function RepoFilePreview(props: {
 
 export function RightSidebar(props: { bag: Bag }) {
   const activeTab = () => props.bag.activeRightSidebarTab();
-  const detailPanelMode = () => props.bag.view() === "traces";
+  const detailPanelMode = () => false;
   const openFileDiffs = createMemo(() =>
     mergedFileDiffs(trailSourceItemsForBag(props.bag)),
   );
@@ -2159,8 +2173,6 @@ export function RightSidebar(props: { bag: Bag }) {
                             ? "◈"
                             : tab.kind === "json"
                               ? "{}"
-                              : tab.kind === "trace"
-                                ? "⌁"
                                 : tab.kind === "app" || tab.kind === "app-code"
                                   ? tab.icon || "▣"
                                   : "□"}
@@ -2192,9 +2204,6 @@ export function RightSidebar(props: { bag: Bag }) {
             )}
           </For>
         </div>
-      </Show>
-      <Show when={detailPanelMode()}>
-        <TraceDetailHeader bag={props.bag} tab={activeTab()} />
       </Show>
       <div
         class="right-tab-panel"
@@ -2261,12 +2270,6 @@ export function RightSidebar(props: { bag: Bag }) {
                   tab={
                     tab() as Extract<RightSidebarTab, { kind: "memory-diff" }>
                   }
-                />
-              </Match>
-              <Match when={tab().kind === "trace"}>
-                <TraceSidebarTab
-                  bag={props.bag}
-                  tab={tab() as Extract<RightSidebarTab, { kind: "trace" }>}
                 />
               </Match>
               <Match when={tab().kind === "app"}>
@@ -2629,60 +2632,6 @@ function BrowserTab(props: {
   );
 }
 
-function TraceSidebarTab(props: {
-  bag: Bag;
-  tab: Extract<RightSidebarTab, { kind: "trace" }>;
-}) {
-  return (
-    <section class="trace-sidebar-detail">
-      <TraceEventDetails
-        event={props.tab.trace}
-        onOpenStore={(hash) => void props.bag.openStorePreviewInSidebar(hash)}
-      />
-    </section>
-  );
-}
-
-function TraceDetailHeader(props: { bag: Bag; tab: RightSidebarTab | null }) {
-  const title = () =>
-    props.tab
-      ? tabTitle(props.tab, props.bag.currentChatWorktreePath())
-      : "Trace details";
-  const icon = () =>
-    props.tab?.kind === "store"
-      ? "◈"
-      : props.tab?.kind === "json"
-        ? "{}"
-        : props.tab?.kind === "trace"
-          ? "⌁"
-          : props.tab?.kind === "browser"
-            ? "▤"
-            : "□";
-  return (
-    <header class="trace-sidebar-header">
-      <div class="trace-sidebar-title" title={title()}>
-        <span class="trace-sidebar-kind" aria-hidden="true">
-          {icon()}
-        </span>
-        <span>{title()}</span>
-      </div>
-      <Show when={props.tab}>
-        {(tab) => (
-          <button
-            type="button"
-            class="trace-sidebar-close"
-            title="close details"
-            aria-label={`close ${title()}`}
-            onClick={() => void props.bag.closeRightSidebarTab(tab().id)}
-          >
-            ×
-          </button>
-        )}
-      </Show>
-    </header>
-  );
-}
-
 function JsonPreviewTab(props: {
   json: JsonPreviewFile;
   onClose: () => void;
@@ -2871,22 +2820,9 @@ function tabTitle(tab: RightSidebarTab, root?: string | null): string {
   if (tab.kind === "memory-diff") return tab.graph || tab.store;
   if (tab.kind === "app") return tab.title || tab.uiId;
   if (tab.kind === "app-code") return `Code · ${tab.title}`;
-  if (tab.kind === "trace") return traceTabTitle(tab.trace);
   if (tab.kind === "diffs") return "Diff";
   if (tab.kind === "browser") return "Browser";
   return "Trails";
-}
-
-function traceTabTitle(
-  trace: Extract<RightSidebarTab, { kind: "trace" }>["trace"],
-): string {
-  const kind = String(trace.kind || "trace");
-  return (
-    kind.charAt(0).toUpperCase() +
-    kind.slice(1) +
-    " " +
-    String(trace.id || trace.traceId || "—")
-  );
 }
 
 function agentTrailSourceForBag(bag: Bag): AgentTrailSource {
@@ -2958,19 +2894,41 @@ function AgentTrailRow(props: {
     props.item.targetChatId
       ? "Open this subagent chat"
       : "Jump to this point in the timeline";
+  const visibleStatus = () =>
+    props.item.status && props.item.status !== "running"
+      ? props.item.status
+      : undefined;
   const content = () => (
     <>
       <span class="agent-trail-time">
         {relativeTime(props.item.at, props.tick)}
       </span>
       <span class="agent-trail-card">
-        <span class="agent-trail-title-line">
+        <span
+          class="agent-trail-title-line"
+          classList={{
+            "has-status": !!props.item.status,
+            "has-status-loading": props.item.status === "running",
+          }}
+        >
+          <Show when={props.item.status === "running"}>
+            <LoadingDots class="agent-trail-status-loading" label="running" />
+          </Show>
           <AgentTrailInline
             class="agent-trail-title"
             content={props.item.title}
             markdown={props.item.titleMarkdown}
             onMarkdownClick={onMarkdownClick}
           />
+          <Show when={visibleStatus()}>
+            {(status) => (
+              <span
+                class={`agent-trail-status agent-trail-status-${status()}`}
+              >
+                {status()}
+              </span>
+            )}
+          </Show>
           <Show when={props.item.stats}>
             {(stats) => (
               <ChangeStatsBadge
@@ -4502,24 +4460,10 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
   const [themeMode, setThemeMode] = createSignal<ThemeMode>(storedThemeMode());
 
   onMount(() => {
-    if (bag.traceSettingsCache()) return;
-    void api("trace-config-get", {}).then((result) => {
-      if (result.ok) bag.setCachedTraceSettings(result.value);
+    if (bag.otelSettingsCache()) return;
+    void api("otel-config-get", {}).then((result) => {
+      if (result.ok) bag.setCachedOtelSettings(result.value);
     });
-  });
-
-  const clickHouseTracingEnabled = () =>
-    bag.traceSettingsCache()?.config.enabled === true;
-
-  createEffect(() => {
-    const traceSettings = bag.traceSettingsCache();
-    if (
-      traceSettings &&
-      bag.view() === "traces" &&
-      !clickHouseTracingEnabled()
-    ) {
-      bag.showChat();
-    }
   });
 
   createEffect(() => applyAndPersistThemeMode(themeMode()));
@@ -4738,7 +4682,12 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
           }}
           title={
             chat.path
-              ? "path: " + collapseHome(chat.path) + "\ndouble-click to rename"
+              ? "path: " +
+                collapseHome(chat.path) +
+                (chatBaseBranch(chat.baseBranch)
+                  ? "\nbase branch: " + chatBaseBranch(chat.baseBranch)
+                  : "") +
+                "\ndouble-click to rename"
               : "double-click to rename"
           }
         >
@@ -4769,11 +4718,32 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
           </span>
           <Show when={chatDirectory(chat.path)}>
             {(directory) => (
-              <span
-                class="chat-directory"
-                title={"directory: " + collapseHome(directory())}
-              >
-                {collapseHome(directory())}
+              <span class="chat-repo-line">
+                <span
+                  class="chat-directory"
+                  title={chatDirectoryTitle(
+                    directory(),
+                    chatBaseBranch(chat.baseBranch),
+                  )}
+                >
+                  {collapseHome(directory())}
+                </span>
+                <Show when={chatBaseBranch(chat.baseBranch)}>
+                  {(baseBranch) => (
+                    <>
+                      <span class="chat-repo-separator" aria-hidden="true">
+                        ·
+                      </span>
+                      <span
+                        class="chat-base-branch"
+                        title={"base branch: " + baseBranch()}
+                        aria-label={"base branch: " + baseBranch()}
+                      >
+                        {baseBranch()}
+                      </span>
+                    </>
+                  )}
+                </Show>
               </span>
             )}
           </Show>
@@ -5006,18 +4976,6 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
           </span>
         </Show>
       </button>
-      <Show when={clickHouseTracingEnabled()}>
-        <button
-          type="button"
-          class="sidebar-tab"
-          classList={{ active: bag.view() === "traces" }}
-          title="open traces for current chat"
-          aria-label="open traces for current chat"
-          onClick={() => navigate(() => bag.showTraces(bag.chatId()))}
-        >
-          <span class="sidebar-tab-label">traces</span>
-        </button>
-      </Show>
       <div class="sidebar-theme">
         <button
           type="button"

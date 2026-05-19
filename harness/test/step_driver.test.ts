@@ -78,6 +78,7 @@ describe("step driver", () => {
         messages: prepared.messages,
         attempt: 2,
         retryReason: "http-529",
+        forceCompact: false,
       },
     }]);
 

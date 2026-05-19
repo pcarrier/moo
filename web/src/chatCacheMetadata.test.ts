@@ -8,6 +8,7 @@ function overview(value: Partial<DescribeOverviewValue> = {}): DescribeOverviewV
     chatId: "chat-a",
     title: "Stale title",
     path: "/old",
+    baseBranch: "old-main",
     worktreePath: "/old/worktree",
     createdAt: 1,
     lastAt: 2,
@@ -31,6 +32,7 @@ function summary(value: Partial<ChatSummary> = {}): ChatSummary {
     head: "new-head",
     title: "Current title",
     path: "/current",
+    baseBranch: "feature/base",
     worktreePath: "/current/worktree",
     status: "agent:Done",
     totalFacts: 3,
@@ -55,6 +57,7 @@ describe("chat cache metadata", () => {
 
     expect(restored.title).toBe("Current title");
     expect(restored.path).toBe("/current");
+    expect(restored.baseBranch).toBe("feature/base");
     expect(restored.worktreePath).toBe("/current/worktree");
     expect(restored.createdAt).toBe(10);
     expect(restored.lastAt).toBe(20);
