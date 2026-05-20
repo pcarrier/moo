@@ -826,7 +826,8 @@
   user-select: none;
   display: flex;
   align-items: center;
-  gap: 0.45em;
+  flex-wrap: wrap;
+  gap: 0.25em 0.45em;
 }
 
 .compaction-summary > summary::-webkit-details-marker {
@@ -847,11 +848,11 @@
 }
 
 .compaction-token-delta {
-  font-size: 0.75em;
-  color: var(--fg);
-  border: 1px solid var(--line);
-  padding: 0.05em 0.35em;
-  background: color-mix(in srgb, var(--bubble-compact) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  color: var(--muted);
+  padding: 0;
+  overflow-wrap: anywhere;
 }
 
 .compaction-summary[open] > summary::before {
@@ -1112,6 +1113,12 @@ details.runts-step > summary::-webkit-details-marker {
   flex-shrink: 0;
   margin-right: 0.1em;
   vertical-align: baseline;
+}
+
+.runts-model-group {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.72em;
 }
 
 .runts-status {
@@ -1918,13 +1925,18 @@ details.collapsible > pre {
   opacity: var(--loading-dot-opacity-dim);
   animation: loading-dot-blink var(--loading-dot-duration) infinite
     var(--loading-dot-easing);
+  animation-delay: var(--loading-dot-phase-delay, 0ms);
 }
 
 .loading-dot:nth-child(2) {
-  animation-delay: var(--loading-dot-delay-step);
+  animation-delay: calc(
+    var(--loading-dot-phase-delay, 0ms) + var(--loading-dot-delay-step)
+  );
 }
 .loading-dot:nth-child(3) {
-  animation-delay: calc(var(--loading-dot-delay-step) * 2);
+  animation-delay: calc(
+    var(--loading-dot-phase-delay, 0ms) + var(--loading-dot-delay-step) * 2
+  );
 }
 
 @keyframes loading-dot-blink {

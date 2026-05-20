@@ -1,5 +1,7 @@
 import { Effect, ok } from "./core/effect";
 import { moo, traceJsonValue } from "./moo";
+import * as host from "./host_ops";
+import { parse as parsePartialJSON } from "partial-json";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -10,6 +12,17 @@ type LlmToolCall = {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  runTsStepId?: string;
+  lastRunTSDraftAt?: number;
+  lastRunTSDraftSignature?: string;
+};
+
+type PartialRunTSArgs = {
+  label?: string;
+  description?: string;
+  code?: string;
+  args?: unknown;
+  backgroundAfterNs?: number;
 };
 
 type StreamOutputEvent = JsonObject;
@@ -20,6 +33,7 @@ type StreamHeaders = Record<string, string | string[] | undefined>;
 type StreamEventConfig = JsonObject & {
   provider?: unknown;
   model?: string | null;
+  effort?: string | null;
   estimatedPromptTokens?: number | string;
   tokenBudget?: number | string;
   tokenProgressEvent?: JsonObject & { budget?: number | string };
@@ -70,12 +84,18 @@ type LlmAccumulatorState = {
   anthropicToolBlockToCall: Record<string, number>;
   anthropicThinkingBlockIndex: number | null;
   anthropicThinkingBlockToIndex: Record<string, number>;
+  responseToolItemToCall: Record<string, number>;
+  responseToolOutputIndexToCall: Record<string, number>;
   nextSyntheticToolCallId: number;
 };
 
 function syntheticToolCallId(state: LlmAccumulatorState): string {
   state.nextSyntheticToolCallId += 1;
   return `call_moo_${state.nextSyntheticToolCallId}`;
+}
+
+function syntheticRunTsStepId(): string {
+  return host.newId("step");
 }
 
 export function llmStreamInitCommand(input: LlmStreamInitInput) {
@@ -113,6 +133,8 @@ export function llmStreamInitEffect(
             anthropicToolBlockToCall: {},
             anthropicThinkingBlockIndex: null,
             anthropicThinkingBlockToIndex: {},
+            responseToolItemToCall: {},
+            responseToolOutputIndexToCall: {},
             nextSyntheticToolCallId: 0,
           };
           const events: StreamOutputEvent[] = [];
@@ -345,6 +367,25 @@ function isLlmToolCall(value: unknown): value is LlmToolCall {
   );
 }
 
+function normalizeLlmToolCall(value: unknown): LlmToolCall | null {
+  if (!isLlmToolCall(value)) return null;
+  const out: LlmToolCall = {
+    id: value.id,
+    type: "function",
+    function: {
+      name: value.function.name,
+      arguments: value.function.arguments,
+    },
+  };
+  if (typeof value.runTsStepId === "string" && value.runTsStepId)
+    out.runTsStepId = value.runTsStepId;
+  if (Number.isFinite(Number(value.lastRunTSDraftAt)))
+    out.lastRunTSDraftAt = Number(value.lastRunTSDraftAt);
+  if (typeof value.lastRunTSDraftSignature === "string")
+    out.lastRunTSDraftSignature = value.lastRunTSDraftSignature;
+  return out;
+}
+
 function numericRecord(value: MutableJsonObject): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [key, raw] of Object.entries(value)) {
@@ -360,7 +401,9 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
       isObject(raw) && typeof raw.content === "string" ? raw.content : "",
     toolCalls:
       isObject(raw) && Array.isArray(raw.toolCalls)
-        ? raw.toolCalls.filter(isLlmToolCall)
+        ? (raw.toolCalls
+            .map(normalizeLlmToolCall)
+            .filter(Boolean) as LlmToolCall[])
         : [],
     anthropicThinkingBlocks:
       isObject(raw) && Array.isArray(raw.anthropicThinkingBlocks)
@@ -409,9 +452,190 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
       isObject(raw) && isObject(raw.anthropicThinkingBlockToIndex)
         ? numericRecord(raw.anthropicThinkingBlockToIndex)
         : {},
+    responseToolItemToCall:
+      isObject(raw) && isObject(raw.responseToolItemToCall)
+        ? numericRecord(raw.responseToolItemToCall)
+        : {},
+    responseToolOutputIndexToCall:
+      isObject(raw) && isObject(raw.responseToolOutputIndexToCall)
+        ? numericRecord(raw.responseToolOutputIndexToCall)
+        : {},
     nextSyntheticToolCallId:
       Number(isObject(raw) ? (raw.nextSyntheticToolCallId ?? 0) : 0) || 0,
   };
+}
+
+function rememberResponseToolCall(
+  state: LlmAccumulatorState,
+  item: MutableJsonObject,
+  callIndex: number,
+) {
+  const itemId = typeof item.id === "string" ? item.id : "";
+  const callId = typeof item.call_id === "string" ? item.call_id : "";
+  if (itemId) state.responseToolItemToCall[itemId] = callIndex;
+  if (callId) state.responseToolItemToCall[callId] = callIndex;
+  if (Number.isFinite(Number(item.output_index))) {
+    state.responseToolOutputIndexToCall[String(Number(item.output_index))] =
+      callIndex;
+  }
+}
+
+function responseToolCallIndex(
+  state: LlmAccumulatorState,
+  parsed: ParsedStreamEvent,
+  item: MutableJsonObject = {},
+): number | null {
+  const ids = [parsed.item_id, parsed.call_id, item.id, item.call_id];
+  for (const raw of ids) {
+    if (typeof raw !== "string" || !raw) continue;
+    const mapped = state.responseToolItemToCall[raw];
+    if (mapped != null) return mapped;
+  }
+  const outputIndex = Number.isFinite(Number(parsed.output_index))
+    ? String(Number(parsed.output_index))
+    : Number.isFinite(Number(item.output_index))
+      ? String(Number(item.output_index))
+      : null;
+  return outputIndex == null
+    ? null
+    : (state.responseToolOutputIndexToCall[outputIndex] ?? null);
+}
+
+function upsertResponseToolCall(
+  state: LlmAccumulatorState,
+  item: MutableJsonObject,
+): LlmToolCall {
+  const existingIndex = responseToolCallIndex(state, {}, item);
+  if (existingIndex != null && state.toolCalls[existingIndex]) {
+    const slot = state.toolCalls[existingIndex];
+    if (typeof item.call_id === "string" && item.call_id)
+      slot.id = item.call_id;
+    else if (typeof item.id === "string" && item.id) slot.id = item.id;
+    if (typeof item.name === "string") slot.function.name = item.name;
+    if (typeof item.arguments === "string")
+      slot.function.arguments = item.arguments;
+    rememberResponseToolCall(state, item, existingIndex);
+    return slot;
+  }
+  const toolCall: LlmToolCall = {
+    id: String(item.call_id || item.id || syntheticToolCallId(state)),
+    type: "function",
+    function: {
+      name: String(item.name || ""),
+      arguments: typeof item.arguments === "string" ? item.arguments : "",
+    },
+  };
+  state.toolCalls.push(toolCall);
+  rememberResponseToolCall(state, item, state.toolCalls.length - 1);
+  return toolCall;
+}
+
+function ensureRunTsStepId(toolCall: LlmToolCall): string {
+  if (!toolCall.runTsStepId) toolCall.runTsStepId = syntheticRunTsStepId();
+  return toolCall.runTsStepId;
+}
+
+function partialRunTSArgs(argsText: string): PartialRunTSArgs | null {
+  try {
+    const parsed = parsePartialJSON(argsText || "{}");
+    return isObject(parsed) ? (parsed as PartialRunTSArgs) : null;
+  } catch {
+    return null;
+  }
+}
+
+function completeRunTSArgs(argsText: string): boolean {
+  try {
+    const parsed = JSON.parse(argsText || "{}");
+    return isObject(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function runTSDraftSignature(args: PartialRunTSArgs): string {
+  const label = typeof args.label === "string" ? args.label.trim() : "";
+  const description =
+    typeof args.description === "string" ? args.description.trim() : "";
+  const code = typeof args.code === "string" ? args.code : "";
+  const argsLength = JSON.stringify(args.args ?? null).length;
+  return `${label}\u0000${description}\u0000${code.length}\u0000${argsLength}`;
+}
+
+function shouldAppendRunTSDraftEvent(
+  toolCall: LlmToolCall,
+  args: PartialRunTSArgs,
+  now: number,
+): boolean {
+  const signature = runTSDraftSignature(args);
+  const previous = toolCall.lastRunTSDraftSignature;
+  if (!previous) return true;
+  if (signature === previous) return false;
+  if (completeRunTSArgs(toolCall.function.arguments)) return true;
+
+  const [label, description, codeLenText, argsLenText] = signature.split("\u0000");
+  const [prevLabel, prevDescription, prevCodeLenText, prevArgsLenText] =
+    previous.split("\u0000");
+  if (label !== prevLabel || description !== prevDescription) return true;
+
+  const codeLen = Number(codeLenText) || 0;
+  const prevCodeLen = Number(prevCodeLenText) || 0;
+  if (prevCodeLen === 0 && codeLen > 0) return true;
+  if (Math.abs(codeLen - prevCodeLen) >= 256) return true;
+
+  const argsLen = Number(argsLenText) || 0;
+  const prevArgsLen = Number(prevArgsLenText) || 0;
+  if (Math.abs(argsLen - prevArgsLen) >= 256) return true;
+
+  return now - (toolCall.lastRunTSDraftAt ?? 0) >= 250;
+}
+
+function maybeAppendRunTSDraftEvent(
+  toolCall: LlmToolCall | null | undefined,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
+  if (!toolCall || toolCall.function.name !== "runTS") return;
+  const chatId =
+    typeof streamEvents.chatId === "string" ? streamEvents.chatId : "";
+  if (!chatId) return;
+  const args = partialRunTSArgs(toolCall.function.arguments);
+  if (!args) return;
+  const now = Date.now();
+  if (!shouldAppendRunTSDraftEvent(toolCall, args, now)) return;
+  const stepId = ensureRunTsStepId(toolCall);
+  const label = typeof args.label === "string" ? args.label.trim() : "";
+  const description =
+    typeof args.description === "string" ? args.description.trim() : "";
+  const code = typeof args.code === "string" ? args.code : "";
+  const hasArgs = Object.prototype.hasOwnProperty.call(args, "args");
+  const backgroundAfterNs =
+    typeof args.backgroundAfterNs === "number" &&
+    Number.isFinite(args.backgroundAfterNs)
+      ? Math.max(0, Math.floor(args.backgroundAfterNs))
+      : undefined;
+  const model =
+    typeof streamEvents.model === "string" ? streamEvents.model.trim() : "";
+  const effort =
+    typeof streamEvents.effort === "string" ? streamEvents.effort.trim() : "";
+  events.push({
+    kind: "tool-call-draft",
+    chatId,
+    stepId,
+    toolCallId: toolCall.id,
+    toolName: "runTS",
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    label,
+    description,
+    code,
+    ...(hasArgs ? { args: args.args as JsonValue } : {}),
+    hasArgs,
+    ...(backgroundAfterNs !== undefined ? { backgroundAfterNs } : {}),
+    at: now,
+  });
+  toolCall.lastRunTSDraftAt = now;
+  toolCall.lastRunTSDraftSignature = runTSDraftSignature(args);
 }
 
 function normalizeAnthropicThinkingBlock(
@@ -493,16 +717,18 @@ function accumulateLlmStreamEvent(
   }
   if (type === "content_block_start" && contentBlock.type === "tool_use") {
     const block = contentBlock;
-    state.toolCalls.push({
+    const toolCall: LlmToolCall = {
       id: String(block.id || ""),
       type: "function",
       function: { name: String(block.name || ""), arguments: "" },
-    });
+    };
+    state.toolCalls.push(toolCall);
     const callIndex = state.toolCalls.length - 1;
     state.anthropicToolIndex = callIndex;
     if (Number.isFinite(Number(parsed?.index))) {
       state.anthropicToolBlockToCall[String(Number(parsed.index))] = callIndex;
     }
+    maybeAppendRunTSDraftEvent(toolCall, streamEvents, events);
   }
   if (type === "content_block_delta") {
     const delta = isObject(parsed.delta) ? parsed.delta : {};
@@ -533,9 +759,11 @@ function accumulateLlmStreamEvent(
           ? state.anthropicToolIndex
           : state.anthropicToolBlockToCall[blockIndex];
       const slot = i == null ? null : state.toolCalls[i];
-      if (slot)
+      if (slot) {
         slot.function.arguments =
           String(slot.function.arguments || "") + delta.partial_json;
+        maybeAppendRunTSDraftEvent(slot, streamEvents, events);
+      }
     }
   }
   if (type === "content_block_stop") {
@@ -554,15 +782,44 @@ function accumulateLlmStreamEvent(
     appendLlmContentDelta(state, parsed.delta, streamEvents, events);
   }
   const item = isObject(parsed.item) ? parsed.item : {};
+  if (
+    item.type === "function_call" &&
+    Number.isFinite(Number(parsed.output_index)) &&
+    !Number.isFinite(Number(item.output_index))
+  ) {
+    item.output_index = Number(parsed.output_index);
+  }
+  if (type === "response.output_item.added" && item.type === "function_call") {
+    const toolCall = upsertResponseToolCall(state, item);
+    maybeAppendRunTSDraftEvent(toolCall, streamEvents, events);
+  }
+  if (
+    type === "response.function_call_arguments.delta" &&
+    typeof parsed.delta === "string"
+  ) {
+    const i = responseToolCallIndex(state, parsed, item);
+    const slot = i == null ? null : state.toolCalls[i];
+    if (slot) {
+      slot.function.arguments =
+        String(slot.function.arguments || "") + parsed.delta;
+      maybeAppendRunTSDraftEvent(slot, streamEvents, events);
+    }
+  }
+  if (
+    type === "response.function_call_arguments.done" &&
+    typeof parsed.arguments === "string"
+  ) {
+    const i = responseToolCallIndex(state, parsed, item);
+    const slot = i == null ? null : state.toolCalls[i];
+    if (slot) {
+      slot.function.arguments = parsed.arguments;
+      maybeAppendRunTSDraftEvent(slot, streamEvents, events);
+    }
+  }
   if (type === "response.output_item.done" && item.type === "function_call") {
-    state.toolCalls.push({
-      id: String(item.call_id || item.id || syntheticToolCallId(state)),
-      type: "function",
-      function: {
-        name: String(item.name || ""),
-        arguments: typeof item.arguments === "string" ? item.arguments : "{}",
-      },
-    });
+    const toolCall = upsertResponseToolCall(state, item);
+    if (!toolCall.function.arguments) toolCall.function.arguments = "{}";
+    maybeAppendRunTSDraftEvent(toolCall, streamEvents, events);
   }
 
   const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
@@ -604,6 +861,7 @@ function accumulateLlmStreamEvent(
       if (typeof fn.arguments === "string")
         slot.function.arguments =
           String(slot.function.arguments || "") + fn.arguments;
+      maybeAppendRunTSDraftEvent(slot, streamEvents, events);
     }
   }
 }

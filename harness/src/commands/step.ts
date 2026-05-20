@@ -48,6 +48,7 @@ import {
   buildStreamingLLMRequest,
   stripDynamicContextMessages,
   compactionProviderForRequest,
+  compactionThroughAt,
   compactionRequestTokenLimit,
   fitCompactionSummaryMessages,
   runCompaction,
@@ -1248,10 +1249,14 @@ export async function stepContinueToolCallsCommand(input: Input) {
     });
     if (tc?.function?.name === "runTS") {
       const toolArgs = parseToolArgs(tc);
-      const runTsStepId = host.newId("step");
+      const runTsStepId =
+        typeof tc.runTsStepId === "string" && tc.runTsStepId
+          ? tc.runTsStepId
+          : host.newId("step");
       await traceMark("tool.runts.deferred", {
         chatId,
         index: i,
+        runTsStepId,
         remainingToolCalls: toolCalls.length - i - 1,
         ...toolCallForTrace(tc),
       });
@@ -2162,7 +2167,7 @@ export async function stepHandleLlmCommand(input: Input) {
     };
     const now = await moo.time.nowMs({});
     const lastUserAt = await latestUserInputAt(chatId);
-    const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
+    const throughAt = compactionThroughAt("automatic", lastUserAt, now);
     await traceMark("compaction.summary.received", {
       chatId,
       chars: summary.length,

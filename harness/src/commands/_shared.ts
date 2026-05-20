@@ -16,6 +16,7 @@ export type ToolCallInput = {
   id?: string;
   type?: "function" | string;
   function?: { name?: string; arguments?: string };
+  runTsStepId?: string;
 };
 
 export type ProviderInput = LLMProvider;

@@ -1555,7 +1555,7 @@ export function llmStreamEventOptions(
   tokenProgress?: LlmStreamProgress | null,
   options: { draftKind?: LlmDraftEventKind } = {},
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = { chatId };
   if (draftId)
     out.draftEvent = { kind: options.draftKind ?? "draft", chatId, draftId };
   if (tokenProgress) {
@@ -2298,6 +2298,16 @@ function hasCompactionTranscript(messages: any[]): boolean {
 
 export type CompactionResult = "compacted" | "empty" | "failed";
 
+export function compactionThroughAt(
+  trigger: "automatic" | "manual" | null | undefined,
+  lastUserAt: number,
+  now: number,
+): number {
+  if (trigger === "automatic" && lastUserAt > 0)
+    return Math.max(0, lastUserAt - 1);
+  return now;
+}
+
 export async function runCompaction(
   chatId: string,
   provider: LLMProvider,
@@ -2350,12 +2360,6 @@ export async function runCompaction(
     requestEffort: requestProvider.effort,
     truncated: requestPromptTokens < rawPromptTokens,
   });
-
-  await reply(
-    chatId,
-    `Compaction starting: ${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
-      `(${readableTokenCount(rawPromptTokens)} / ${readableTokenCount(threshold)}).`,
-  );
 
   const draftId =
     typeof tracking.draftId === "string" && tracking.draftId
@@ -2429,7 +2433,7 @@ export async function runCompaction(
 
   const now = await moo.time.nowMs({});
   const lastUserAt = await latestUserInputAt(chatId);
-  const throughAt = lastUserAt > 0 ? Math.max(0, lastUserAt - 1) : now;
+  const throughAt = compactionThroughAt(tracking.trigger, lastUserAt, now);
   const summaryTokens = estimateCompactionSummaryTokens(summary);
   const compactionHash = await persistCompactionLayer(chatId, {
     summary,

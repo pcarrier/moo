@@ -26,7 +26,8 @@ describe("loading dot animation", () => {
 
     expect(timeline).toContain('<LoadingDots class="thinking-dots" label="loading chat" />');
     expect(timeline).toContain('class="thinking-dots"');
-    expect(timeline).toContain('label={bag.compacting() ? "compacting" : "thinking"}');
+    expect(timeline).toContain('label="thinking"');
+    expect(timeline).toContain('<LoadingDots class="compaction-dots" label="compacting" />');
     expect(timeline).toContain('<LoadingDots class="runts-loading" label="running" />');
     expect(timeline.match(/<LoadingDots class="runts-loading" label="running" \/>/g)).toHaveLength(2);
 
@@ -51,11 +52,17 @@ describe("loading dot animation", () => {
   });
 
   test("keeps staggered dots in phase across indicators", () => {
+    expect(loadingDots).toContain("Date.now() % 1200");
+    expect(loadingDots).toContain('style={{ "--loading-dot-phase-delay": phaseDelay }}');
+
+    expect(cssRuleBody(".loading-dot")).toContain(
+      "animation-delay: var(--loading-dot-phase-delay, 0ms)",
+    );
     expect(cssRuleBody(".loading-dot:nth-child(2)")).toContain(
-      "animation-delay: var(--loading-dot-delay-step)",
+      "var(--loading-dot-phase-delay, 0ms) + var(--loading-dot-delay-step)",
     );
     expect(cssRuleBody(".loading-dot:nth-child(3)")).toContain(
-      "animation-delay: calc(var(--loading-dot-delay-step) * 2)",
+      "var(--loading-dot-phase-delay, 0ms) + var(--loading-dot-delay-step) * 2",
     );
   });
 

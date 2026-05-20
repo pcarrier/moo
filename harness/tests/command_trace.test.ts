@@ -457,6 +457,15 @@ describe("LLM stream provider details", () => {
     ).toBe(false);
   });
 
+  test("includes chat id in stream event options for tool-call drafts", async () => {
+    const { llmStreamEventOptions } = await import("../src/agent");
+
+    expect(llmStreamEventOptions("chat1", "draft1")).toMatchObject({
+      chatId: "chat1",
+      draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" },
+    });
+  });
+
   test("strips DeepSeek non-think closing marker", async () => {
     const accumulated = await dispatch({
       command: "llm-stream-accumulate",
@@ -478,6 +487,7 @@ describe("LLM stream provider details", () => {
       command: "llm-stream-accumulate",
       chatId: "chat1",
       state: {},
+      streamEvents: { chatId: "chat1" },
       events: [
         JSON.stringify({
           choices: [
@@ -514,6 +524,25 @@ describe("LLM stream provider details", () => {
     expect((accumulated.value as any).state.reasoningContent).toBe(
       "think more",
     );
+    const draftEvents = (accumulated.value as any).events.filter(
+      (event: any) => event.kind === "tool-call-draft",
+    );
+    expect(draftEvents.length).toBe(2);
+    expect(draftEvents[0]).toMatchObject({
+      chatId: "chat1",
+      toolCallId: "call_1",
+      label: "",
+      code: "",
+    });
+    expect(draftEvents[1]).toMatchObject({
+      chatId: "chat1",
+      stepId: draftEvents[0].stepId,
+      toolCallId: "call_1",
+      code: "return 1",
+    });
+    expect((accumulated.value as any).state.toolCalls[0].runTsStepId).toBe(
+      draftEvents[0].stepId,
+    );
     expect(
       (accumulated.value as any).state.toolCalls[0].function.arguments,
     ).toBe('{"code":"return 1"}');
@@ -526,5 +555,77 @@ describe("LLM stream provider details", () => {
     } as any);
     expect(finalized.ok).toBe(true);
     expect((finalized.value as any).reasoningContent).toBe("think more");
+  });
+
+  test("streams partial runTS title description and code from Responses events", async () => {
+    const first = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: { chatId: "chat1", model: "gpt-5", effort: "medium" },
+      events: [
+        JSON.stringify({
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            id: "fc_1",
+            call_id: "call_1",
+            type: "function_call",
+            name: "runTS",
+          },
+        }),
+        JSON.stringify({
+          type: "response.function_call_arguments.delta",
+          output_index: 0,
+          delta: '{"label":"Read',
+        }),
+        JSON.stringify({
+          type: "response.function_call_arguments.delta",
+          output_index: 0,
+          delta: ' files","description":"Inspect target","code":"const x = 1',
+        }),
+      ],
+    } as any);
+
+    expect(first.ok).toBe(true);
+    const events = (first.value as any).events.filter(
+      (event: any) => event.kind === "tool-call-draft",
+    );
+    expect(events.at(-1)).toMatchObject({
+      chatId: "chat1",
+      toolCallId: "call_1",
+      model: "gpt-5",
+      effort: "medium",
+      label: "Read files",
+      description: "Inspect target",
+      code: "const x = 1",
+    });
+
+    const state = (first.value as any).state;
+    expect(state.toolCalls[0].runTsStepId).toBe(events.at(-1).stepId);
+
+    const second = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state,
+      streamEvents: { chatId: "chat1" },
+      events: [
+        JSON.stringify({
+          type: "response.function_call_arguments.done",
+          output_index: 0,
+          arguments:
+            '{"label":"Read files","description":"Inspect target","code":"const x = 123"}',
+        }),
+      ],
+    } as any);
+
+    expect(second.ok).toBe(true);
+    const doneDraft = (second.value as any).events.find(
+      (event: any) => event.kind === "tool-call-draft",
+    );
+    expect(doneDraft).toMatchObject({
+      stepId: events.at(-1).stepId,
+      code: "const x = 123",
+    });
   });
 });

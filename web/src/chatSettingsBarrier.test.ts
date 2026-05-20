@@ -135,7 +135,7 @@ describe("chat settings write integration", () => {
     );
     const queuedStepRpc = stateSource.indexOf(
       `const r = await api("step", {
-          chatId: head.chatId,`,
+      chatId: head.chatId,`,
     );
     expect(queuedStepWait).toBeGreaterThanOrEqual(0);
     expect(queuedStepRpc).toBeGreaterThan(queuedStepWait);

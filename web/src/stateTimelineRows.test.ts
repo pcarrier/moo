@@ -114,6 +114,54 @@ describe("timeline row helpers", () => {
     expect(merged.map((item) => item.type === "step" ? item.step : item.type)).toEqual(["real-other", "opt-local"]);
   });
 
+  test("merges full pages while preserving a live queued RunTS draft", () => {
+    const serverReply = step({ step: "s1", kind: "agent:Reply", text: "done", at: 10 });
+    const streamedRunTS = step({
+      step: "step:draft-runts",
+      kind: "agent:RunTS",
+      status: "agent:Queued",
+      text: "",
+      at: 20,
+      runts: { label: "Read files", description: "Inspect target", code: "return 1" },
+    });
+
+    const merged = mergeTimelineRows([serverReply], [streamedRunTS], {
+      limit: 10,
+      liveSlack: 0,
+    });
+
+    expect(merged.map((item) => item.type === "step" ? item.step : item.type)).toEqual([
+      "s1",
+      "step:draft-runts",
+    ]);
+  });
+
+  test("server RunTS rows replace matching live queued RunTS drafts", () => {
+    const streamedRunTS = step({
+      step: "step:runts",
+      kind: "agent:RunTS",
+      status: "agent:Queued",
+      text: "",
+      at: 20,
+      runts: { label: "Draft label", description: "Draft desc", code: "return 1" },
+    });
+    const serverRunTS = step({
+      step: "step:runts",
+      kind: "agent:RunTS",
+      status: "agent:Running",
+      text: "",
+      at: 20,
+      runts: { label: "Server label", description: "Server desc", code: "return 2" },
+    });
+
+    const merged = mergeTimelineRows([serverRunTS], [streamedRunTS], {
+      limit: 10,
+      liveSlack: 0,
+    });
+
+    expect(merged).toEqual([serverRunTS]);
+  });
+
   test("incremental updates dedupe by key and reuse unchanged server rows", () => {
     const existing = step({ step: "s1", kind: "agent:Reply", text: "done", at: 10, resultHash: "h1" });
     const sameFromServer = { ...existing };

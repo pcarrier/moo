@@ -237,10 +237,11 @@ function HeaderAppList(props: {
 }
 
 type RunTSBlockLightbox = {
+  sourceId: string;
   label: string;
-  content: string;
-  language?: string;
-  meta?: string;
+  content: () => string;
+  language?: () => string | undefined;
+  meta?: () => string;
 };
 
 const RUNTS_BLOCK_PREVIEW_LINES = 10;
@@ -263,10 +264,14 @@ export function Timeline(props: {
     setRunTSBlockCopied(false);
     setRunTSBlockLightbox(block);
   };
+  const updateRunTSBlockLightbox = (block: RunTSBlockLightbox) => {
+    const current = runTSBlockLightbox();
+    if (current?.sourceId === block.sourceId) setRunTSBlockLightbox(block);
+  };
   const copyRunTSBlockLightbox = async () => {
     const block = runTSBlockLightbox();
     if (!block) return;
-    await writeClipboardText(block.content);
+    await writeClipboardText(block.content());
     setRunTSBlockCopied(true);
     window.setTimeout(() => setRunTSBlockCopied(false), COPY_FEEDBACK_MS);
   };
@@ -341,20 +346,7 @@ export function Timeline(props: {
       ? "0:00"
       : formatThinkingElapsed(thinkingNow() - startedAt);
   });
-  const activeWaitLabel = () =>
-    bag.compacting() ? "Compacting…" : "Thinking…";
-  const compactingTokenPrompt = () => {
-    if (!bag.compacting()) return null;
-    const current = bag.tokens();
-    if (!current) return null;
-    const available = Math.max(
-      0,
-      Math.trunc(
-        Number(current.availableTokens ?? current.threshold - current.used) || 0,
-      ),
-    );
-    return `${formatTokenCount(available)} tokens before compaction`;
-  };
+  const activeWaitLabel = () => "Thinking…";
 
   // Keep the scroll position stable across timeline refreshes. If the user is
   // at the bottom, new content sticks to the bottom. If they have scrolled up,
@@ -828,7 +820,8 @@ export function Timeline(props: {
       (bag.draftReply()?.content || bag.draftReply()?.reasoningContent),
     );
   const showStandaloneThinking = () =>
-    (bag.thinking() || bag.compacting()) &&
+    bag.thinking() &&
+    !bag.compacting() &&
     !activeTurnSettled() &&
     !hasStreamingReply() &&
     !hasRunningTimelineRow();
@@ -951,6 +944,7 @@ export function Timeline(props: {
                         bag={bag}
                         onOpenImage={openLightbox}
                         onOpenRunTSBlock={openRunTSBlockLightbox}
+                        onUpdateRunTSBlock={updateRunTSBlockLightbox}
                       />
                     ) : entry.kind === "thought" ? (
                       <ThoughtBox
@@ -963,6 +957,7 @@ export function Timeline(props: {
                         bag={bag}
                         onOpenImage={openLightbox}
                         onOpenRunTSBlock={openRunTSBlockLightbox}
+                        onUpdateRunTSBlock={updateRunTSBlockLightbox}
                       />
                     )
                   }
@@ -971,14 +966,9 @@ export function Timeline(props: {
                   <div class="step thinking" data-timeline-key="thinking">
                     <LoadingDots
                       class="thinking-dots"
-                      label={bag.compacting() ? "compacting" : "thinking"}
+                      label="thinking"
                     />
-                    <div class="meta">
-                      {activeWaitLabel()} {thinkingElapsed()}
-                      <Show when={compactingTokenPrompt()}>
-                        {(text) => <> · {text()}</>}
-                      </Show>
-                    </div>
+                    <div class="meta">{activeWaitLabel()} {thinkingElapsed()}</div>
                   </div>
                 </Show>
                 <Show
@@ -1047,8 +1037,8 @@ export function Timeline(props: {
                     <div id="runts-lightbox-title" class="runts-lightbox-title">
                       {block().label}
                     </div>
-                    <Show when={block().meta}>
-                      <div class="runts-lightbox-meta">{block().meta}</div>
+                    <Show when={block().meta?.()}>
+                      <div class="runts-lightbox-meta">{block().meta?.()}</div>
                     </Show>
                   </div>
                   <button
@@ -1071,8 +1061,8 @@ export function Timeline(props: {
                   ref={(el) => (runTSBlockLightboxContentEl = el)}
                   class="runts-lightbox-content"
                   tabIndex={0}
-                  content={block().content}
-                  language={block().language}
+                  content={block().content()}
+                  language={block().language?.()}
                 />
               </div>
             </div>
@@ -2204,6 +2194,7 @@ function DismissedBlock(props: {
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
   onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
+  onUpdateRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => props.group.id;
@@ -2251,6 +2242,7 @@ function DismissedBlock(props: {
                   bag={props.bag}
                   onOpenImage={props.onOpenImage}
                   onOpenRunTSBlock={props.onOpenRunTSBlock}
+                  onUpdateRunTSBlock={props.onUpdateRunTSBlock}
                 />
               </>
             )
@@ -2266,6 +2258,7 @@ function Item(props: {
   bag: Bag;
   onOpenImage: (attachment: ImageAttachment) => void;
   onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
+  onUpdateRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const expansion = () => props.bag.expansionStore();
   const key = () => timelineAnchorKey(props.item);
@@ -2296,6 +2289,7 @@ function Item(props: {
                           timelineKey={key()}
                           onOpenImage={props.onOpenImage}
                           onOpenRunTSBlock={props.onOpenRunTSBlock}
+                          onUpdateRunTSBlock={props.onUpdateRunTSBlock}
                         />
                       }
                     >
@@ -2651,6 +2645,7 @@ function Step(props: {
   timelineKey: string;
   onOpenImage: (attachment: ImageAttachment) => void;
   onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
+  onUpdateRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   const cls = createMemo(() => stepClass(props.item));
   const showStandardMeta = () => showStandardStepMeta(props.item);
@@ -2718,6 +2713,7 @@ function Step(props: {
             bag={props.bag}
             expansion={props.expansion}
             onOpenRunTSBlock={props.onOpenRunTSBlock}
+            onUpdateRunTSBlock={props.onUpdateRunTSBlock}
           />
         </Show>
         <Show when={props.item.kind === "agent:Subagent"}>
@@ -2915,23 +2911,20 @@ function compactionTokenDelta(item: StepItem): string {
   const before = Number(item.compaction?.promptTokens ?? 0) || 0;
   const postPressure = Number(item.compaction?.postPromptTokens ?? 0) || 0;
   const summaryTokens = Number(item.compaction?.summaryTokens ?? 0) || 0;
-  const available = Number(item.compaction?.availableTokens ?? 0) || 0;
   const streak = Number(item.compaction?.compactionsInARow ?? 0) || 0;
-  const parts = [];
-  if (before) parts.push(`${formatTokenCount(before)} summarized`);
-  if (summaryTokens) parts.push(`${formatTokenCount(summaryTokens)} summary`);
-  if (postPressure) {
-    const saved = before > postPressure ? before - postPressure : 0;
-    parts.push(
-      saved
-        ? `${formatTokenCount(
-            postPressure,
-          )} next-compaction pressure (${formatTokenCount(saved)} lower)`
-        : `${formatTokenCount(postPressure)} next-compaction pressure`,
-    );
+  const parts: string[] = [];
+  if (before) {
+    const label = postPressure
+      ? `${formatTokenCount(before)} → ${formatTokenCount(postPressure)}`
+      : `${formatTokenCount(before)} compacted`;
+    parts.push(label);
+  } else if (postPressure) {
+    parts.push(`${formatTokenCount(postPressure)} after`);
   }
-  if (available) parts.push(`${formatTokenCount(available)} before threshold`);
-  if (streak) parts.push(`${streak} in a row`);
+  const detailParts: string[] = [];
+  if (summaryTokens) detailParts.push(`summary ${formatTokenCount(summaryTokens)}`);
+  if (streak > 1) detailParts.push(`streak ${streak}`);
+  if (detailParts.length) parts.push(detailParts.join(" · "));
   return parts.join(" · ");
 }
 
@@ -3282,6 +3275,7 @@ function RunTSBody(props: {
   bag: Bag;
   expansion: TimelineExpansionStore;
   onOpenRunTSBlock: (block: RunTSBlockLightbox) => void;
+  onUpdateRunTSBlock: (block: RunTSBlockLightbox) => void;
 }) {
   // Prefer structured runTS data from the timeline API. parseRunTS is only
   // retained for historical timeline entries and older exported payloads.
@@ -3363,6 +3357,10 @@ function RunTSBody(props: {
       : parseRunTS(props.item.text),
   );
   const backgrounded = () => props.bag.isRunTSBackgrounded?.(props.item.step) === true;
+  const model = () => props.item.model || "";
+  const effort = () => props.item.effort || "";
+  const showStreamingModelMeta = () =>
+    !isTerminalStepStatus(props.item.status) && !!(model() || effort());
 
   const key = () => timelineExpansionKey(props.item);
   const open = () => props.expansion.isOpen(key());
@@ -3384,6 +3382,9 @@ function RunTSBody(props: {
         <Show when={props.item.status === "agent:Running"}>
           <LoadingDots class="runts-loading" label="running" />
         </Show>
+        <Show when={props.item.status === "agent:Queued"}>
+          <LoadingDots class="runts-loading" label="streaming tool call" />
+        </Show>
         <Show when={props.item.status === "agent:Cancelled"}>
           <span class="runts-status runts-status-cancelled">Cancelled</span>
         </Show>
@@ -3402,6 +3403,20 @@ function RunTSBody(props: {
               content={parsed().description}
               inline
             />
+          </span>
+        </Show>
+        <Show when={showStreamingModelMeta()}>
+          <span class="runts-model-group step-model-group">
+            <Show when={model()}>
+              <span class="step-model" title={model()}>
+                {model()}
+              </span>
+            </Show>
+            <Show when={effort()}>
+              <span class="step-effort" title="reasoning effort">
+                ({effort()})
+              </span>
+            </Show>
           </span>
         </Show>
         <Show
@@ -3476,22 +3491,26 @@ function RunTSBody(props: {
           </Show>
           <Show when={parsed().code}>
             <RunTSBlock
+                sourceId={`${props.item.step}:code`}
               label="Code"
               klass="runts-code"
               content={parsed().code}
               language="ts"
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
+                onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={parsed().hasArgs}>
             <RunTSBlock
+                sourceId={`${props.item.step}:args`}
               label="Args"
               klass="runts-args"
               content={parsed().args}
               language="hjson"
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
+                onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show
@@ -3512,29 +3531,35 @@ function RunTSBody(props: {
           </Show>
           <Show when={parsed().hasResult}>
             <RunTSBlock
+                sourceId={`${props.item.step}:result`}
               label="Result"
               klass="runts-out"
               content={parsed().result}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
+                onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={parsed().error}>
             <RunTSBlock
+                sourceId={`${props.item.step}:error`}
               label="Error"
               klass="runts-out runts-error"
               content={parsed().error}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
+                onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={hydrateError()}>
             <RunTSBlock
+                sourceId={`${props.item.step}:hydrate-error`}
               label="Error"
               klass="runts-out runts-error"
               content={hydrateError()!}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
+                onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
         </div>
@@ -3614,12 +3639,14 @@ function runTSBlockMeta(content: string, language?: string): string {
 }
 
 function RunTSBlock(props: {
+  sourceId?: string;
   label: string;
   klass: string;
   content: string;
   language?: string;
   maxPreviewLines?: number;
   onOpenFull?: (block: RunTSBlockLightbox) => void;
+  onUpdateFull?: (block: RunTSBlockLightbox) => void;
 }) {
   let previewEl: HTMLDivElement | undefined;
   const [truncated, setTruncated] = createSignal(false);
@@ -3646,13 +3673,20 @@ function RunTSBlock(props: {
     window.addEventListener("resize", measureOverflow);
   });
   onCleanup(() => window.removeEventListener("resize", measureOverflow));
-  const openFull = () =>
-    props.onOpenFull?.({
-      label: props.label,
-      content: props.content,
-      language: language(),
-      meta: meta(),
-    });
+  const lightboxBlock = (): RunTSBlockLightbox => ({
+    sourceId: props.sourceId ?? `${props.label}:${props.klass}`,
+    label: props.label,
+    content: () => props.content,
+    language,
+    meta,
+  });
+  createEffect(() => {
+    props.content;
+    props.label;
+    props.sourceId;
+    if (props.sourceId) props.onUpdateFull?.(lightboxBlock());
+  });
+  const openFull = () => props.onOpenFull?.(lightboxBlock());
   const openFullFromPointer = (ev: MouseEvent) => {
     if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;
     openFull();

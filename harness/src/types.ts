@@ -545,7 +545,7 @@ export type ProcRunArgs = {
 };
 
 export type LineRange = [from: number, to: number];
-export type PartialReadArgs = { path: string; ranges: LineRange[]; numbered?: boolean };
+export type PartialReadArgs = { path: string; lineRanges: LineRange[]; numbered?: boolean };
 
 export type WorkspaceScope = {
   root: string;

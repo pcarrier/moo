@@ -23,11 +23,34 @@ describe("timeline runTS state merging", () => {
     expect(state).not.toContain('} else if (hasRunningTimelineStep(timeline())) {');
   });
 
-  test("handles explicit runTS completion events", () => {
+  test("handles explicit runTS completion events without changing expansion", () => {
     expect(state).toContain('ev.kind === "runts-step-finished"');
     expect(state).toContain('item.step !== ev.stepId');
     expect(state).toContain('status: ev.status || (ev.error ? "agent:Failed" : "agent:Done")');
     expect(state).toContain('refreshTimelineIncrementalSoon();');
+    expect(state).not.toContain('expansionStore.setOpen(`step:${ev.stepId}`, false);');
+    expect(state).not.toContain('function collapseRunTSRowsFinishedBetween(');
+    expect(state).not.toContain('expansionStore.setOpen(`step:${item.step}`, false);');
+  });
+
+
+  test("keeps streamed tool calls collapsed unless manually expanded", () => {
+    const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+    expect(state).not.toContain('expansionStore.setOpen(`step:${stepId}`, true);');
+    expect(timeline).not.toContain("const [wasLive, setWasLive]");
+    expect(timeline).not.toContain("props.expansion.setOpen(key(), false);");
+    expect(timeline).toContain("const open = () => props.expansion.isOpen(key());");
+  });
+
+  test("shows streamed runTS model and effort while queued", () => {
+    expect(state).toContain('typeof ev.model === "string"');
+    expect(state).toContain('typeof ev.effort === "string"');
+    const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+    expect(timeline).toContain("const showStreamingModelMeta = () =>");
+    expect(timeline).toContain('class="runts-model-group step-model-group"');
+    expect(timeline).toContain("!isTerminalStepStatus(props.item.status)");
+    const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
+    expect(css).toContain(".runts-model-group");
   });
 });
 
@@ -133,8 +156,8 @@ test("runTS block previews render highlighted HTML imperatively", () => {
   expect(timeline).toContain("class={props.klass}");
   expect(timeline).toContain("content={props.content}");
   expect(timeline).toContain("language={language()}");
-  expect(timeline).toContain('content={block().content}');
-  expect(timeline).toContain('language={block().language}');
+  expect(timeline).toContain('content={block().content()}');
+  expect(timeline).toContain('language={block().language?.()}');
   expect(timeline).toContain('if (el) el.innerHTML = html();');
   expect(timeline).not.toContain('<pre class={props.klass}>{props.content}</pre>');
   expect(timeline).not.toContain('textContent={props.content}');

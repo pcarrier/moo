@@ -78,8 +78,17 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain("content={parsed().args}");
     expect(timeline).toContain("onOpenFull={props.onOpenRunTSBlock}");
     expect(timeline).toContain('class="runts-lightbox-backdrop"');
-    expect(timeline).toContain("content={block().content}");
-    expect(timeline).toContain("language={block().language}");
+    expect(timeline).toContain("content={block().content()}");
+    expect(timeline).toContain("language={block().language?.()}");
+    expect(timeline).toContain("await writeClipboardText(block.content());");
+    expect(timeline).toContain("sourceId: string;");
+    expect(timeline).toContain("current?.sourceId === block.sourceId");
+    expect(timeline).toContain('sourceId={`${props.item.step}:args`}');
+    expect(timeline).toContain("onUpdateFull={props.onUpdateRunTSBlock}");
+    expect(timeline).toContain("props.onUpdateFull?.(lightboxBlock());");
+    expect(timeline).toContain("content: () => props.content");
+    expect(timeline).toContain("language,");
+    expect(timeline).toContain("meta,");
     expect(timeline).toContain('role="button"');
     expect(timeline).toContain('"runts-block-preview": true');
     expect(timeline).toContain("language={language()}");
@@ -88,8 +97,9 @@ describe("timeline runTS result rendering", () => {
       "if (isNestedInteractiveTarget(ev.target, ev.currentTarget)) return;",
     );
     expect(timeline).toContain('class="runts-block-fade"');
+    expect(timeline).toContain("style={{");
     expect(timeline).toContain(
-      'style={{ "--runts-preview-max-height": `${previewLineLimit() * 1.3}em` }}',
+      '"--runts-preview-max-height": `${previewLineLimit() * 1.3}em`',
     );
     expect(timelineCss).toContain(
       "max-block-size: var(--runts-preview-max-height);",

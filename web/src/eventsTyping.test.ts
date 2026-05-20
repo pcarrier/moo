@@ -38,6 +38,28 @@ describe("typed WS events", () => {
     expect(runts.resultHash).toBe("hash1");
     expect(runts.durationNs).toBe(42);
 
+    const toolDraft = parseWsFrame({
+      kind: "tool-call-draft",
+      chatId: "chat1",
+      stepId: "step2",
+      toolCallId: "call_1",
+      toolName: "runTS",
+      model: "gpt-5",
+      effort: "high",
+      label: "Inspect files",
+      description: "Read target files",
+      code: "return 1",
+      at: 44,
+    });
+    expect(toolDraft?.kind).toBe("tool-call-draft");
+    if (toolDraft?.kind !== "tool-call-draft") throw new Error("tool-call draft did not parse");
+    expect(toolDraft.stepId).toBe("step2");
+    expect(toolDraft.model).toBe("gpt-5");
+    expect(toolDraft.effort).toBe("high");
+    expect(toolDraft.label).toBe("Inspect files");
+    expect(toolDraft.description).toBe("Read target files");
+    expect(toolDraft.code).toBe("return 1");
+
     const tokens = parseWsFrame({
       kind: "tokens",
       chatId: "chat1",
@@ -120,6 +142,7 @@ describe("typed WS events", () => {
     expect(eventsSource).not.toContain("this.emit({ kind: \"offline\" } as any)");
     expect(eventsSource).not.toContain("this.emit({ kind: \"reconnect\" } as any)");
     expect(stateSource).toContain("events.on((ev: WsEvent) =>");
+    expect(stateSource).toContain('ev.kind === "tool-call-draft"');
     expect(stateSource).not.toContain("events.on((ev: any) =>");
     expect(stateSource).not.toContain('ev.kind === "runts-step-finished" || ev.kind === "runts-step-finished"');
   });

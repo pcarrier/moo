@@ -14,8 +14,8 @@ describe("TODO prompt", () => {
 
 describe("filesystem editing prompt", () => {
   test("documents partialRead and patch guidance", () => {
-    expect(prompt).toContain("partialRead({path:string,ranges:[number,number][],numbered?:boolean})");
-    expect(prompt).toContain("1-based inclusive ranges; sorted/collapsed overlaps");
+    expect(prompt).toContain("partialRead({path:string,lineRanges:[number,number][],numbered?:boolean})");
+    expect(prompt).toContain("1-based inclusive line ranges; sorted/collapsed overlaps");
     expect(prompt).toContain("patch({path:string,diff:string})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("delete({path:string})→Promise<{status:string,output?:string|null}>");
     expect(prompt).toContain("applies unified/context patch to existing file and throws on failure");

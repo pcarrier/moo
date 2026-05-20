@@ -118,6 +118,22 @@ export type Event =
       at?: number;
     }
   | {
+      kind: "tool-call-draft";
+      chatId: string;
+      stepId: string;
+      toolCallId?: string;
+      toolName?: string;
+      model?: string;
+      effort?: string;
+      label?: string;
+      description?: string;
+      code?: string;
+      args?: unknown;
+      hasArgs?: boolean;
+      backgroundAfterNs?: number;
+      at?: number;
+    }
+  | {
       kind: "runts-background-start" | "runts-background-end";
       chatId: string;
       stepId: string;
@@ -166,6 +182,7 @@ const EVENT_KINDS = new Set<string>([
   "draft-end",
   "llm-auth-required",
   "runts-step-finished",
+  "tool-call-draft",
   "runts-background-start",
   "runts-background-end",
   "driver-error",
@@ -575,6 +592,29 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
           resultHash: optionalString(frame, "resultHash"),
           error: optionalString(frame, "error"),
           durationNs: optionalNumber(frame, "durationNs"),
+        },
+        frame,
+      );
+    }
+    case "tool-call-draft": {
+      const chatId = stringField(frame, "chatId");
+      const stepId = stringField(frame, "stepId");
+      if (!chatId || !stepId) return null;
+      return withOptionalAt(
+        {
+          kind: "tool-call-draft",
+          chatId,
+          stepId,
+          toolCallId: optionalString(frame, "toolCallId"),
+          toolName: optionalString(frame, "toolName"),
+          model: optionalString(frame, "model"),
+          effort: optionalString(frame, "effort"),
+          label: optionalString(frame, "label"),
+          description: optionalString(frame, "description"),
+          code: optionalString(frame, "code"),
+          args: frame.args,
+          hasArgs: optionalBoolean(frame, "hasArgs"),
+          backgroundAfterNs: optionalNumber(frame, "backgroundAfterNs"),
         },
         frame,
       );

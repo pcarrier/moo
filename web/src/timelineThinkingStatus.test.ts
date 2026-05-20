@@ -107,21 +107,21 @@ describe("timeline thinking status", () => {
     );
   });
 
-  test("labels active compaction as Compacting", () => {
+  test("keeps active compaction in the compaction row", () => {
     expect(timeline).toContain("const activeWaitLabel = () =>");
-    expect(timeline).toContain(
-      'bag.compacting() ? "Compacting…" : "Thinking…"',
-    );
+    expect(timeline).toContain('const activeWaitLabel = () => "Thinking…";');
+    expect(timeline).toContain("bag.thinking() &&");
+    expect(timeline).toContain("!bag.compacting() &&");
     expect(timeline).toContain("{activeWaitLabel()} {thinkingElapsed()}");
-    expect(timeline).toContain(
-      'label={bag.compacting() ? "compacting" : "thinking"}',
-    );
-    expect(timeline).toContain("const compactingTokenPrompt = () =>");
-    expect(timeline).toContain("tokens before compaction");
-    expect(timeline).toContain("compactions in a row");
+    expect(timeline).toContain('label="thinking"');
+    expect(timeline).not.toContain("const compactingTokenPrompt = () =>");
+    expect(timeline).not.toContain("tokens before compaction");
+    expect(timeline).toContain("compactionTokenDelta");
     expect(timeline).toContain("summaryTokens");
-    expect(timeline).toContain("next-compaction pressure");
-    expect(timeline).toContain("summarized");
+    expect(timeline).toContain('summary ${formatTokenCount(summaryTokens)}');
+    expect(timeline).toContain('streak ${streak}');
+    expect(timeline).not.toContain("next-compaction pressure");
+    expect(timeline).not.toContain('${formatTokenCount(before)} summarized');
   });
 
   test("renders streamed compaction drafts", () => {

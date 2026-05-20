@@ -153,6 +153,14 @@ function isOptimisticStep(item: TimelineItem): item is StepTimelineItem {
   return item.type === "step" && item.step.startsWith("opt-");
 }
 
+function isLiveClientOnlyStep(item: TimelineItem): item is StepTimelineItem {
+  return (
+    item.type === "step" &&
+    item.status === "agent:Queued" &&
+    (item.kind === "agent:RunTS" || item.kind === "agent:RunJS")
+  );
+}
+
 export function withoutConfirmedOptimisticRows(
   server: TimelineItem[],
   current: TimelineItem[],
@@ -192,8 +200,15 @@ export function mergeTimelineRows(
   options: TimelineRowCompactionOptions,
 ): TimelineItem[] {
   const stableServer = preserveTimelineItems(server, current);
+  const stableServerKeys = new Set(stableServer.map(timelineItemKey));
+  const liveClientOnly = current.filter(
+    (item) =>
+      isLiveClientOnlyStep(item) &&
+      !stableServerKeys.has(timelineItemKey(item)),
+  );
   const opts = current.filter(isOptimisticStep);
-  if (opts.length === 0) return compactTimelineRows(stableServer, options);
+  if (opts.length === 0 && liveClientOnly.length === 0)
+    return compactTimelineRows(stableServer, options);
   const remaining = new Map<string, number>();
   for (const it of stableServer) {
     if (isUserInputStep(it)) {
@@ -209,9 +224,11 @@ export function mergeTimelineRows(
       survivors.push(opt);
     }
   }
-  if (survivors.length === 0) return compactTimelineRows(stableServer, options);
+  const clientOnly = [...liveClientOnly, ...survivors];
+  if (clientOnly.length === 0)
+    return compactTimelineRows(stableServer, options);
   return compactTimelineRows(
-    sortTimelineItems([...stableServer, ...survivors]),
+    sortTimelineItems([...stableServer, ...clientOnly]),
     options,
   );
 }

@@ -56,10 +56,11 @@ describe("background runTS cancellation wiring", () => {
     expect(compiled.diagnostics).toEqual([]);
   });
 
-  test("step command preassigns a runTS step id and reuses it", () => {
+  test("step command preassigns or reuses a runTS step id", () => {
     const source = readFileSync(new URL("./commands/step.ts", import.meta.url), "utf8");
 
-    expect(source).toContain('const runTsStepId = host.newId("step")');
+    expect(source).toContain('typeof tc.runTsStepId === "string" && tc.runTsStepId');
+    expect(source).toContain('host.newId("step")');
     expect(source).toContain("runTsStepId,");
     expect(source).toContain('typeof input.runTsStepId === "string" ? input.runTsStepId : null');
   });

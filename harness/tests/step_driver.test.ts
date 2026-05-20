@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { buildStreamingLLMRequest } from "../src/agent";
+import { buildStreamingLLMRequest, compactionThroughAt } from "../src/agent";
 import { reduceStepDriverState } from "../src/driver/step";
 import { llmStreamAccumulateEffect, llmStreamFinalizeEffect } from "../src/llm_stream";
 
 const g = globalThis as any;
+let testIdSeq = 0;
+g.__op_id ??= (prefix: string) => `${prefix}:${++testIdSeq}`;
 g.__op_trace_current ??= () => null;
 g.__op_trace_insert ??= () => null;
 g.__op_trace_finish ??= () => "true";
@@ -41,6 +43,11 @@ describe("step driver compaction", () => {
     expect(source).not.toContain("nothing to compact yet");
     expect(source).toContain('if (result === "failed")');
     expect(source).toContain('"compaction failed; see the error above"');
+  });
+
+  test("manual compaction covers the current transcript", () => {
+    expect(compactionThroughAt("manual", 2_000, 3_000)).toBe(3_000);
+    expect(compactionThroughAt("automatic", 2_000, 3_000)).toBe(1_999);
   });
 });
 
@@ -99,6 +106,44 @@ describe("step driver tool result ids", () => {
       },
       { type: "function_call_output", call_id: finalized.toolCalls[0].id, output: "ok" },
     ]);
+  });
+
+  test("reuses streamed runTS draft step ids for execution", async () => {
+    const accumulated = await llmStreamAccumulateEffect({
+      state: {},
+      streamEvents: { chatId: "chat-1", model: "gpt-5", effort: "high" },
+      events: [
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "runTS", arguments: '{"code":"return 1"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ],
+    }).runPromise();
+
+    const stepId = (accumulated.state.toolCalls[0] as any).runTsStepId;
+    expect(stepId).toMatch(/^step:/);
+    expect(accumulated.events[0]).toMatchObject({
+      kind: "tool-call-draft",
+      stepId,
+      model: "gpt-5",
+      effort: "high",
+      code: "return 1",
+    });
+
+    const source = readFileSync(new URL("../src/commands/step.ts", import.meta.url), "utf8");
+    expect(source).toContain('typeof tc.runTsStepId === "string" && tc.runTsStepId');
   });
 });
 

@@ -960,7 +960,7 @@ type ProcRunArgs = {
 type LineRange = [from: number, to: number];
 type PartialReadArgs = {
     path: string;
-    ranges: LineRange[];
+    lineRanges: LineRange[];
     numbered?: boolean;
 };
 type WorkspaceScope = {

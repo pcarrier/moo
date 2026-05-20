@@ -1220,16 +1220,16 @@ function splitReadableLines(text: string): string[] {
   return lines;
 }
 
-function normalizeLineRanges(ranges: [number, number][]): NormalizedLineRange[] {
-  if (!Array.isArray(ranges)) throw new MooApiError("invalid_argument", "moo.fs.partialRead ranges must be an array", { ranges });
-  const sorted = ranges.map((range, index) => {
+function normalizeLineRanges(lineRanges: [number, number][]): NormalizedLineRange[] {
+  if (!Array.isArray(lineRanges)) throw new MooApiError("invalid_argument", "moo.fs.partialRead lineRanges must be an array", { lineRanges });
+  const sorted = lineRanges.map((range, index) => {
     if (!Array.isArray(range) || range.length !== 2) {
       throw new MooApiError("invalid_argument", "moo.fs.partialRead range must be [from, to]", { index, range });
     }
     const from = Number(range[0]);
     const to = Number(range[1]);
     if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1 || from > to) {
-      throw new MooApiError("invalid_argument", "moo.fs.partialRead ranges must use 1-based inclusive line numbers with from <= to", { index, range });
+      throw new MooApiError("invalid_argument", "moo.fs.partialRead lineRanges must use 1-based inclusive line numbers with from <= to", { index, range });
     }
     return { from, to };
   }).sort((a, b) => a.from - b.from || a.to - b.to);
@@ -1246,8 +1246,8 @@ function normalizeLineRanges(ranges: [number, number][]): NormalizedLineRange[] 
   return normalized;
 }
 
-function formatPartialRead(text: string, ranges: [number, number][], numbered = false): string {
-  const normalizedRanges = normalizeLineRanges(ranges);
+function formatPartialRead(text: string, lineRanges: [number, number][], numbered = false): string {
+  const normalizedRanges = normalizeLineRanges(lineRanges);
   if (!normalizedRanges.length) return "";
   const lines = splitReadableLines(text);
   if (!lines.length) return "";
@@ -1382,9 +1382,9 @@ const fs: Moo["fs"] = {
     const resolved = await resolveActivePath(path);
     return await traceObserved("moo.fs.read", { path, resolved }, () => host.readFile(resolved), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
-  async partialRead({ path, ranges, numbered = false }) {
+  async partialRead({ path, lineRanges, numbered = false }) {
     const content = await fs.read({ path });
-    return await traceObserved("moo.fs.partialRead", { path, ranges, numbered: !!numbered }, () => formatPartialRead(content, ranges, !!numbered), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
+    return await traceObserved("moo.fs.partialRead", { path, lineRanges, numbered: !!numbered }, () => formatPartialRead(content, lineRanges, !!numbered), (value) => ({ chars: value.length, bytes: stringBytes(value) }));
   },
   async write({ path, content }) {
     const resolved = await resolveActivePath(path);
@@ -1522,7 +1522,7 @@ const workspace: Moo["workspace"] = {
       root,
       fs: {
         read: ({ path }) => fs.read({ path: resolveWorkspacePath(root, path) }),
-        partialRead: ({ path, ranges, numbered }) => fs.partialRead({ path: resolveWorkspacePath(root, path), ranges, numbered }),
+        partialRead: ({ path, lineRanges, numbered }) => fs.partialRead({ path: resolveWorkspacePath(root, path), lineRanges, numbered }),
         write: ({ path, content }) => fs.write({ path: resolveWorkspacePath(root, path), content }),
         list: (args = {}) => fs.list({ path: resolveWorkspacePath(root, args.path ?? ".") }),
         glob: ({ pattern }) => fs.glob({ pattern: resolveWorkspacePath(root, pattern) }),

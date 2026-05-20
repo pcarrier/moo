@@ -1011,9 +1011,9 @@ export function createState() {
   // reconciled from chat-list status). Only this server-confirmed state drives
   // the visible "thinking" UI.
   const [activeChats, setActiveChats] = createSignal<Set<string>>(new Set());
-  // Chat IDs currently inside the automatic compaction LLM call. This refines
-  // the active-chat state so the same running row can say "Compacting…" while
-  // a summary is being generated, then go back to "Thinking…" for the real turn.
+  // Chat IDs currently inside the compaction LLM call. This refines the
+  // active-chat state so compaction renders as its own streamed row instead of
+  // the generic standalone Thinking status.
   const [compactingChats, setCompactingChats] = createSignal<Set<string>>(
     new Set(),
   );
@@ -1056,8 +1056,28 @@ export function createState() {
     Set<string>
   >(new Set());
   const setHas = (set: Set<string>, id: string) => set.has(id);
+  const isTerminalStepStatus = (status: string | undefined) =>
+    status === "agent:Done" ||
+    status === "agent:Failed" ||
+    status === "agent:Cancelled";
+  const hasRunningTimelineRowForChat = (id: string) =>
+    chatId() === id &&
+    timeline().some(
+      (item) =>
+        item.type === "step" &&
+        !isTerminalStepStatus(item.status) &&
+        !(item.runts && isRunTSBackgrounded(item.step, id)) &&
+        !(item.runjs && isRunTSBackgrounded(item.step, id)),
+    );
+  const chatHasServerRun = (id: string) =>
+    setHas(activeChats(), id) ||
+    chats().some(
+      (chat) => chat.chatId === id && chat.status === "agent:Running",
+    );
+  const chatHasInFlightTurn = (id: string) =>
+    chatHasServerRun(id) || hasRunningTimelineRowForChat(id);
   const chatBusy = (id: string) =>
-    (setHas(activeChats(), id) && !setHas(runTSQueueUnblockedChats(), id)) ||
+    (chatHasInFlightTurn(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
     setHas(dispatchingChats(), id) ||
     setHas(interruptingChats(), id);
   function addToSet(
@@ -3673,6 +3693,7 @@ export function createState() {
   }
 
   const pendingChatCreations = new Map<string, Promise<boolean>>();
+  const locallyCreatedChats = new Set<string>();
 
   async function waitForChatCreation(chat: string): Promise<boolean> {
     const pendingCreation = pendingChatCreations.get(chat);
@@ -3700,6 +3721,7 @@ export function createState() {
     // path normalization, or branch checks. Pick the ID client-side, render the
     // empty chat immediately, then ask the backend to create that exact chat.
     const requestedChatId = optimisticChatId();
+    locallyCreatedChats.add(requestedChatId);
     forgetChatCache(requestedChatId);
     forgetTokensForChat(requestedChatId);
     forgetTodosForChat(requestedChatId);
@@ -3743,6 +3765,7 @@ export function createState() {
       });
       if (!r.ok) {
         reportError("new chat", r.error);
+        locallyCreatedChats.delete(requestedChatId);
         setChats((current) =>
           current.filter((c) => c.chatId !== requestedChatId),
         );
@@ -3755,6 +3778,7 @@ export function createState() {
         }
         return false;
       }
+      locallyCreatedChats.add(r.value.chatId);
       setChats((current) =>
         current.map((c) =>
           c.chatId === requestedChatId
@@ -3813,6 +3837,7 @@ export function createState() {
     const previousChatId = chatId();
     const wasSelected = previousChatId === id;
     const nextChats = previousChats.filter((chat) => chat.chatId !== id);
+    locallyCreatedChats.delete(id);
 
     // Delete should feel instantaneous even for a chat that is currently
     // thinking. Drop all local activity state and remove the sidebar row before
@@ -4074,9 +4099,19 @@ export function createState() {
       return;
     }
     suppressPendingSave = true;
-    setPending(r.value.messages);
+    const local = pending();
+    const localIds = new Set(local.map((message) => message.id));
+    setPending([
+      ...r.value.messages.filter((message) => !localIds.has(message.id)),
+      ...local,
+    ]);
     suppressPendingSave = false;
     pendingLoaded = true;
+    if (local.length > 0) {
+      void api("pending-messages-save", { messages: pending() }).then((save) => {
+        if (!save.ok) reportError("save pending messages", save.error);
+      });
+    }
     drainSoon();
   }
 
@@ -4139,18 +4174,34 @@ export function createState() {
     return text.trim().toLowerCase() === "mcp setup";
   }
 
+  function newPendingMessageId() {
+    return `${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  function shouldSendImmediately(chat: string) {
+    return (
+      (pendingLoaded || locallyCreatedChats.has(chat)) &&
+      !chatBusy(chat) &&
+      !pending().some((message) => message.chatId === chat)
+    );
+  }
+
   function enqueueMessage(text: string, attachments: ImageAttachment[] = []) {
     const cid = chatId();
     if (!cid) {
       reportError("send message", "Start a new chat first.");
       return;
     }
-    const id = `${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 6)}`;
+    deleteFromSet(setInterruptedChats, interruptedChats, cid);
+    const id = newPendingMessageId();
+    if (shouldSendImmediately(cid)) {
+      dispatchQueuedMessage({ id, text, chatId: cid, attachments });
+      return;
+    }
     setPending([
       ...pending(),
       { id, text, chatId: cid, ...(attachments.length ? { attachments } : {}) },
     ]);
-    deleteFromSet(setInterruptedChats, interruptedChats, cid);
     drainSoon();
   }
 
@@ -4260,7 +4311,7 @@ export function createState() {
     attachments: ImageAttachment[] = [],
     label = "step",
   ) {
-    const id = `${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 6)}`;
+    const id = newPendingMessageId();
     appendOptimisticUserInput(chat, id, text, attachments);
     if (!(await waitForChatCreation(chat))) return;
     await waitForChatSettingsWrites(chat);
@@ -4270,6 +4321,47 @@ export function createState() {
       ...(attachments.length ? { attachments } : {}),
     });
     if (!r.ok) reportError(`${label} ${chat}`, r.error);
+  }
+
+  async function dispatchQueuedMessage(head: {
+    id: string;
+    text: string;
+    chatId: string;
+    attachments?: ImageAttachment[];
+  }) {
+    clearRunTSQueueUnblock(head.chatId);
+    const attachments = head.attachments || [];
+    if (isMcpSetupMessage(head.text)) {
+      deleteFromSet(setInterruptedChats, interruptedChats, head.chatId);
+      void dispatchMessageNow(head.chatId, head.text, attachments, "MCP setup");
+      return;
+    }
+
+    // Lock local dispatch before /api/run returns so another queued item
+    // for the same chat cannot be picked before the step-start WS event.
+    // Do not mark the chat active here: the visible thinking state should
+    // wait for the server-confirmed step-start event or running status.
+    addToSet(setDispatchingChats, dispatchingChats, head.chatId);
+
+    appendOptimisticUserInput(head.chatId, head.id, head.text, attachments);
+    // /api/run now returns immediately; the chat driver runs the agent
+    // loop in the background. Keep the local dispatch lock until
+    // step-start/step-end (or an error) so follow-up messages remain
+    // queued/editable without showing the thinking indicator early.
+    if (!(await waitForChatCreation(head.chatId))) {
+      deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
+      return;
+    }
+    await waitForChatSettingsWrites(head.chatId);
+    const r = await api("step", {
+      chatId: head.chatId,
+      message: head.text,
+      ...(attachments.length ? { attachments } : {}),
+    });
+    if (!r.ok) {
+      reportError(`step ${head.chatId}`, r.error);
+      deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
+    }
   }
 
   async function drain() {
@@ -4296,51 +4388,7 @@ export function createState() {
         if (idx < 0) break;
         const head = pen[idx]!;
         setPending([...pen.slice(0, idx), ...pen.slice(idx + 1)]);
-        clearRunTSQueueUnblock(head.chatId);
-
-        if (isMcpSetupMessage(head.text)) {
-          deleteFromSet(setInterruptedChats, interruptedChats, head.chatId);
-          void dispatchMessageNow(
-            head.chatId,
-            head.text,
-            head.attachments || [],
-            "MCP setup",
-          );
-          continue;
-        }
-
-        // Lock local dispatch before /api/run returns so another queued item
-        // for the same chat cannot be picked before the step-start WS event.
-        // Do not mark the chat active here: the visible thinking state should
-        // wait for the server-confirmed step-start event or running status.
-        addToSet(setDispatchingChats, dispatchingChats, head.chatId);
-
-        appendOptimisticUserInput(
-          head.chatId,
-          head.id,
-          head.text,
-          head.attachments || [],
-        );
-        // /api/run now returns immediately; the chat driver runs the agent
-        // loop in the background. Keep the local dispatch lock until
-        // step-start/step-end (or an error) so follow-up messages remain
-        // queued/editable without showing the thinking indicator early.
-        if (!(await waitForChatCreation(head.chatId))) {
-          deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
-          continue;
-        }
-        await waitForChatSettingsWrites(head.chatId);
-        const r = await api("step", {
-          chatId: head.chatId,
-          message: head.text,
-          ...(head.attachments && head.attachments.length
-            ? { attachments: head.attachments }
-            : {}),
-        });
-        if (!r.ok) {
-          reportError(`step ${head.chatId}`, r.error);
-          deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
-        }
+        await dispatchQueuedMessage(head);
       }
     } finally {
       draining = false;
@@ -5281,6 +5329,91 @@ export function createState() {
       return;
     }
 
+    if (ev.kind === "tool-call-draft") {
+      const cid = chatId();
+      if (cid && ev.chatId === cid && ev.stepId) {
+        const stepId = String(ev.stepId);
+        const at = Number(ev.at) || Date.now();
+        const hasArgs = ev.hasArgs === true || typeof ev.args === "string";
+        let streamedArgs: unknown = ev.args ?? "";
+        if (typeof ev.args === "string") {
+          try {
+            streamedArgs = JSON.parse(ev.args);
+          } catch {
+            streamedArgs = ev.args;
+          }
+        }
+        setTimeline((items) => {
+          const existingIndex = items.findIndex(
+            (item) => item.type === "step" && item.step === stepId,
+          );
+          const existing = existingIndex >= 0 ? items[existingIndex] : undefined;
+          const existingRunts =
+            existing?.type === "step" ? (existing.runts ?? existing.runjs) : null;
+          const runts = {
+            ...(existingRunts ?? {}),
+            label:
+              typeof ev.label === "string"
+                ? ev.label
+                : (existingRunts?.label ?? null),
+            description:
+              typeof ev.description === "string"
+                ? ev.description
+                : (existingRunts?.description ?? null),
+            ...(hasArgs ? { args: streamedArgs } : {}),
+            code:
+              typeof ev.code === "string"
+                ? ev.code
+                : (existingRunts?.code ?? null),
+            backgroundAfterNs:
+              typeof ev.backgroundAfterNs === "number"
+                ? ev.backgroundAfterNs
+                : existingRunts?.backgroundAfterNs,
+          };
+          const model =
+            typeof ev.model === "string"
+              ? ev.model
+              : existing?.type === "step"
+                ? existing.model
+                : undefined;
+          const effort =
+            typeof ev.effort === "string"
+              ? ev.effort
+              : existing?.type === "step"
+                ? existing.effort
+                : undefined;
+          const nextItem = {
+            type: "step",
+            step: stepId,
+            kind: "agent:RunTS",
+            status:
+              existing?.type === "step" && existing.status !== "agent:Queued"
+                ? existing.status
+                : "agent:Queued",
+            at: existing?.type === "step" ? existing.at : at,
+            updatedAt: at,
+            text: existing?.type === "step" ? existing.text : "",
+            runts,
+            ...(existing?.type === "step" && existing.resultHash
+              ? { resultHash: existing.resultHash }
+              : {}),
+            ...(existing?.type === "step" && existing.lazyRuntsResult
+              ? { lazyRuntsResult: existing.lazyRuntsResult }
+              : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          } as TimelineItem;
+          if (existingIndex >= 0) {
+            const next = items.slice();
+            next[existingIndex] = nextItem;
+            return next;
+          }
+          return compactTimelineRows(sortTimelineItems([...items, nextItem]));
+        });
+      }
+      return;
+    }
+
     if (ev.kind === "runts-background-start") {
       setBackgroundRunTS((jobs) => {
         const stepId = String(ev.stepId || "");
@@ -6168,7 +6301,7 @@ export function createState() {
     submitForm: async (requestId: string, values: Record<string, unknown>) => {
       const r = await api("submit", { chatId: chatId()!, requestId, values });
       if (!r.ok) reportError("submit form", r.error);
-      await refreshTimeline();
+      await Promise.all([refreshTimeline(), refreshChats()]);
     },
     cancelForm: async (requestId: string) => {
       const r = await api("submit", {
@@ -6177,7 +6310,7 @@ export function createState() {
         cancelled: true,
       });
       if (!r.ok) reportError("cancel form", r.error);
-      await refreshTimeline();
+      await Promise.all([refreshTimeline(), refreshChats()]);
     },
     toasts,
     dismissToast,
