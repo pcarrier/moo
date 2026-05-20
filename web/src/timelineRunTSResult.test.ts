@@ -62,15 +62,29 @@ describe("timeline runTS result rendering", () => {
     );
     expect(timeline).toContain("function runTSBlockLanguageForContent(");
     expect(timeline).toContain("function highlightRunTSBlock(");
-    expect(timeline).toContain("highlightMarkdownCode(content, language)");
+    expect(timeline).toContain(
+      "const RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES = 64 * 1024;",
+    );
+    expect(timeline).toContain(
+      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return escapeHtml(content);",
+    );
+    expect(timeline).toContain(
+      "highlightMarkdownCode(content, language, RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)",
+    );
     expect(timeline).toContain("highlightAuto(content)");
     expect(timeline).toContain("function HighlightedPre(props: {");
-    expect(timeline).toContain("if (el) el.innerHTML = html();");
+    expect(timeline).toContain("el.textContent = props.content;");
+    expect(timeline).toContain("el.innerHTML = html();");
     expect(timeline).toContain("content: string,");
     expect(timeline).toContain("language?: string,");
     expect(timeline).toContain(
-      'if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";',
+      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return undefined;",
     );
+    expect(timeline).toContain(
+      'maybeFormatHjsonTextForView(trimmed) !== null',
+    );
+    expect(timeline).toContain("function runTSBlockLineCount(content: string): number");
+    expect(timeline).toContain("const lineCount = runTSBlockLineCount(content);");
     expect(timeline).toContain(
       'if (looksLikeMarkdownText(trimmed)) return "markdown";',
     );

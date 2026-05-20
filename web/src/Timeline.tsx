@@ -19,10 +19,9 @@ import {
   repoFilePathFromHref,
 } from "./markdown";
 import {
+  escapeHtml,
   highlightAuto,
   highlightMarkdownCode,
-  formatHjson,
-  formatHjsonTextForView,
   isHjsonCodeLanguage,
   looksLikeMarkdownText,
   maybeFormatHjsonTextForView,
@@ -246,6 +245,7 @@ type RunTSBlockLightbox = {
 };
 
 const RUNTS_BLOCK_PREVIEW_LINES = 10;
+const RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES = 64 * 1024;
 
 export function Timeline(props: {
   bag: Bag;
@@ -732,6 +732,7 @@ export function Timeline(props: {
   });
 
   const draftStepProxies = new Map<string, StepItem>();
+  const liveRunTSStepProxies = new Map<string, StepItem>();
   const draftProxyFor = (draftId: string): StepItem => {
     let item = draftStepProxies.get(draftId);
     if (!item) {
@@ -750,23 +751,55 @@ export function Timeline(props: {
     return item;
   };
 
+  const runTSProxyKey = (item: StepItem): string =>
+    `${bag.chatId() || ""}:${item.step}`;
+
+  const liveRunTSProxyFor = (item: StepItem): StepItem => {
+    const proxyKey = runTSProxyKey(item);
+    let proxy = liveRunTSStepProxies.get(proxyKey);
+    if (!proxy) {
+      proxy = createMutable<StepItem>({ ...item });
+      liveRunTSStepProxies.set(proxyKey, proxy);
+    }
+    syncStepItem(proxy, item);
+    return proxy;
+  };
+
   const visibleTimeline = createMemo(() => {
     const draft = bag.draftReply();
+    const liveRunTSStepKeys = new Set<string>();
     const rows = bag
       .timeline()
       .filter((item) => item.type !== "trail")
       .map((item) => {
         if (
-          item.type !== "step" ||
-          (item.kind !== "agent:Reply" && item.kind !== "agent:Compaction") ||
-          !item.draftId
-        )
-          return item;
-        const proxy = draftStepProxies.get(item.draftId);
-        if (!proxy) return item;
-        syncStepItem(proxy, item);
-        return proxy;
+          item.type === "step" &&
+          (item.kind === "agent:Reply" || item.kind === "agent:Compaction") &&
+          item.draftId
+        ) {
+          const proxy = draftStepProxies.get(item.draftId);
+          if (proxy) {
+            syncStepItem(proxy, item);
+            return proxy;
+          }
+        }
+        if (
+          item.type === "step" &&
+          (item.kind === "agent:RunTS" || item.kind === "agent:RunJS")
+        ) {
+          const proxyKey = runTSProxyKey(item);
+          const existing = liveRunTSStepProxies.get(proxyKey);
+          if (!existing && isTerminalStepStatus(item.status)) return item;
+          liveRunTSStepKeys.add(proxyKey);
+          return liveRunTSProxyFor(item);
+        }
+        return item;
       });
+    for (const proxyKey of liveRunTSStepProxies.keys()) {
+      if (!liveRunTSStepKeys.has(proxyKey)) {
+        liveRunTSStepProxies.delete(proxyKey);
+      }
+    }
     if (
       !draft ||
       draft.chatId !== bag.chatId() ||
@@ -3601,8 +3634,9 @@ function RunTSMarkdown(props: {
 }
 
 function highlightRunTSBlock(content: string, language?: string): string {
+  if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return escapeHtml(content);
   return language
-    ? highlightMarkdownCode(content, language)
+    ? highlightMarkdownCode(content, language, RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)
     : highlightAuto(content);
 }
 
@@ -3620,7 +3654,12 @@ function HighlightedPre(props: {
     props.ref?.(node);
   };
   createEffect(() => {
-    if (el) el.innerHTML = html();
+    if (!el) return;
+    if (props.content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) {
+      el.textContent = props.content;
+      return;
+    }
+    el.innerHTML = html();
   });
   return <pre ref={setEl} class={props.class} tabIndex={props.tabIndex} />;
 }
@@ -3630,14 +3669,24 @@ function runTSBlockLanguageForContent(
   language?: string,
 ): string | undefined {
   if (language) return language;
+  if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return undefined;
   const trimmed = content.trim();
-  if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";
+  if (maybeFormatHjsonTextForView(trimmed) !== null)
+    return "hjson";
   if (looksLikeMarkdownText(trimmed)) return "markdown";
   return undefined;
 }
 
+function runTSBlockLineCount(content: string): number {
+  let lines = 1;
+  for (let i = 0; i < content.length; i += 1) {
+    if (content.charCodeAt(i) === 10) lines += 1;
+  }
+  return lines;
+}
+
 function runTSBlockMeta(content: string, language?: string): string {
-  const lineCount = content.split("\n").length;
+  const lineCount = runTSBlockLineCount(content);
   const parts = [
     `${lineCount} ${lineCount === 1 ? "line" : "lines"}`,
     `${content.length} chars`,

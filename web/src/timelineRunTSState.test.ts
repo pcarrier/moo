@@ -42,6 +42,16 @@ describe("timeline runTS state merging", () => {
     expect(timeline).toContain("const open = () => props.expansion.isOpen(key());");
   });
 
+  test("keeps streaming runTS rows mounted across draft updates", () => {
+    const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+    expect(timeline).toContain("const liveRunTSStepProxies = new Map<string, StepItem>();");
+    expect(timeline).toContain("const liveRunTSProxyFor = (item: StepItem): StepItem => {");
+    expect(timeline).toContain("proxy = createMutable<StepItem>({ ...item });");
+    expect(timeline).toContain("syncStepItem(proxy, item);");
+    expect(timeline).toContain("if (!existing && isTerminalStepStatus(item.status)) return item;");
+    expect(timeline).toContain("return liveRunTSProxyFor(item);");
+  });
+
   test("shows streamed runTS model and effort while queued", () => {
     expect(state).toContain('typeof ev.model === "string"');
     expect(state).toContain('typeof ev.effort === "string"');
@@ -158,9 +168,9 @@ test("runTS block previews render highlighted HTML imperatively", () => {
   expect(timeline).toContain("language={language()}");
   expect(timeline).toContain('content={block().content()}');
   expect(timeline).toContain('language={block().language?.()}');
-  expect(timeline).toContain('if (el) el.innerHTML = html();');
+  expect(timeline).toContain('el.innerHTML = html();');
+  expect(timeline).toContain('el.textContent = props.content;');
   expect(timeline).not.toContain('<pre class={props.klass}>{props.content}</pre>');
-  expect(timeline).not.toContain('textContent={props.content}');
 });
 
 
