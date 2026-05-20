@@ -69,6 +69,29 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("!activeTurnSettled()");
   });
 
+  test("hides bottom refresh dots whenever active-turn UI is expected", () => {
+    expect(timeline).toContain("const activeTurnIndicatorExpected = () =>");
+    expect(timeline).toContain("bag.thinking() ||");
+    expect(timeline).toContain("bag.compacting() ||");
+    expect(timeline).toContain(
+      'bag.currentChatSummary()?.status === "agent:Running" ||',
+    );
+    expect(timeline).toContain("hasStreamingReply() ||");
+    expect(timeline).toContain("hasRunningTimelineRow();");
+    expect(timeline).toContain("const showTimelineRefreshingIndicator = () =>");
+    expect(timeline).toContain(
+      "bag.timelineRefreshing() && !activeTurnIndicatorExpected();",
+    );
+    expect(timeline).toContain(
+      '<Show when={showTimelineRefreshingIndicator()}>',
+    );
+    expect(timeline).not.toContain("timelineRefreshingIndicatorTimer");
+    expect(timeline).not.toContain("setShowTimelineRefreshingIndicator");
+    expect(timeline).not.toContain(
+      "when={bag.timelineRefreshing() && !showStandaloneThinking()}",
+    );
+  });
+
   test("labels manual compaction failures distinctly", () => {
     expect(timeline).toContain("function compactionTrigger(");
     expect(timeline).toContain('): "manual" | "automatic" {');

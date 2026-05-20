@@ -825,6 +825,14 @@ export function Timeline(props: {
     !activeTurnSettled() &&
     !hasStreamingReply() &&
     !hasRunningTimelineRow();
+  const activeTurnIndicatorExpected = () =>
+    bag.thinking() ||
+    bag.compacting() ||
+    bag.currentChatSummary()?.status === "agent:Running" ||
+    hasStreamingReply() ||
+    hasRunningTimelineRow();
+  const showTimelineRefreshingIndicator = () =>
+    bag.timelineRefreshing() && !activeTurnIndicatorExpected();
   const currentChat = () => bag.currentChatSummary();
   const emptyTitle = () =>
     (
@@ -971,9 +979,7 @@ export function Timeline(props: {
                     <div class="meta">{activeWaitLabel()} {thinkingElapsed()}</div>
                   </div>
                 </Show>
-                <Show
-                  when={bag.timelineRefreshing() && !showStandaloneThinking()}
-                >
+                <Show when={showTimelineRefreshingIndicator()}>
                   <div class="history-loading history-loading-bottom">
                     <LoadingDots
                       class="history-loading-dots"
