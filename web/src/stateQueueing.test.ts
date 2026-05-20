@@ -19,6 +19,23 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain("!(item.runts && isRunTSBackgrounded(item.step, id))");
   });
 
+  test("settles queued visible rows on step-end before draining follow-ups", () => {
+    const settleRows = stateSource.slice(
+      stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
+      stateSource.indexOf("function settleTimelineStep"),
+    );
+    const stepEnd = stateSource.slice(
+      stateSource.indexOf('if (ev.kind === "step-end")'),
+      stateSource.indexOf('if (ev.kind === "driver-error")'),
+    );
+
+    expect(settleRows).toContain("isTerminalStepStatus(item.status)");
+    expect(settleRows).toContain('return { ...item, status: "agent:Done" } as TimelineItem;');
+    expect(stepEnd.indexOf("settleRunningTimelineRows(ev.chatId);")).toBeLessThan(
+      stepEnd.indexOf("drainSoon();"),
+    );
+  });
+
   test("does not treat optimistic chat creation as an active agent run", () => {
     expect(stateSource).toContain("const locallyCreatedChats = new Set<string>()");
     expect(stateSource).toContain("locallyCreatedChats.add(requestedChatId)");

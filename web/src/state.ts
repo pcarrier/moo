@@ -3129,9 +3129,13 @@ export function createState() {
     setTimeline((items) => {
       let changed = false;
       const next = items.map((item) => {
+        // Streaming-only rows such as RunTS drafts can still be agent:Queued
+        // when the driver publishes step-end before the describe refresh lands.
+        // Settle every nonterminal visible agent row here so chatBusy() stops
+        // seeing a stale active turn and queued follow-ups can drain immediately.
         if (
           item.type !== "step" ||
-          item.status !== "agent:Running" ||
+          isTerminalStepStatus(item.status) ||
           item.kind === "agent:UserInput"
         )
           return item;

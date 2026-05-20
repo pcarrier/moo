@@ -226,7 +226,7 @@ describe("timeline thinking status", () => {
     expect(state).toContain("function clearActiveChatRuntime(id: string)");
     expect(state).toContain("clearActiveChatRuntime(id);");
     expect(state).toContain("function settleRunningTimelineRows(id: string)");
-    expect(state).toContain('item.status !== "agent:Running"');
+    expect(state).toContain("isTerminalStepStatus(item.status)");
     expect(state).toContain(
       'return { ...item, status: "agent:Done" } as TimelineItem;',
     );
