@@ -42,4 +42,13 @@ describe("terminal layout", () => {
     expect(resizer).toContain("position: absolute;");
     expect(resizer).toContain("cursor: row-resize;");
   });
+
+  test("keeps the add-terminal button left edge visible when it is first", () => {
+    const firstTabOrAction = cssRuleBody(
+      ".chat-terminal-tab:first-child,\n.chat-terminal-action:first-child",
+    );
+    expect(firstTabOrAction).toContain(
+      "border-inline-start: 1px solid var(--line);",
+    );
+  });
 });

@@ -303,6 +303,11 @@ pre,
   cursor: default;
 }
 
+.chat-terminal-tab:first-child,
+.chat-terminal-action:first-child {
+  border-inline-start: 1px solid var(--line);
+}
+
 .chat-terminal-tab {
   max-inline-size: 8rem;
   min-inline-size: 0;
