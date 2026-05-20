@@ -1,0 +1,274 @@
+#!/usr/bin/env bun
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const flakeFile = "flake.nix";
+const fakeHashExpr = "lib.fakeHash";
+const nix = process.env.NIX ?? "nix";
+const buildFlags = (process.env.NIX_BUILD_FLAGS ?? "")
+  .split(/\s+/)
+  .filter(Boolean);
+
+let updateRustyV8 = true;
+let allSystems = false;
+const requestedSystems = [];
+
+function usage() {
+  console.log(`Usage: bin/update-nix-hashes [--system SYSTEM ...] [--all-systems] [--skip-rusty-v8]
+
+Recomputes fixed-output hashes in flake.nix:
+  - all rusty_v8 archive hashes, by prefetching their release URLs
+  - harnessDepsHash, by temporarily forcing lib.fakeHash and reading Nix's got hash
+  - webDepsHashes for selected systems, the same way
+
+By default, webDepsHashes is updated for builtins.currentSystem. Use --all-systems
+or repeat --system when remote builders are available for other systems.
+Extra flags for nix build can be passed through NIX_BUILD_FLAGS.`);
+}
+
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg === "--help" || arg === "-h") {
+    usage();
+    process.exit(0);
+  } else if (arg === "--all-systems") {
+    allSystems = true;
+  } else if (arg === "--skip-rusty-v8") {
+    updateRustyV8 = false;
+  } else if (arg === "--system") {
+    const system = process.argv[++i];
+    if (!system) die("--system requires a value");
+    requestedSystems.push(system);
+  } else {
+    die(`unknown argument: ${arg}`);
+  }
+}
+
+function die(message) {
+  console.error(`error: ${message}`);
+  process.exit(1);
+}
+
+function flakeText() {
+  return readFileSync(flakeFile, "utf8");
+}
+
+function writeFlake(text) {
+  writeFileSync(flakeFile, text);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function scalarString(name) {
+  const match = flakeText().match(new RegExp(`\\b${escapeRegExp(name)}\\s*=\\s*"([^"]+)"\\s*;`));
+  if (!match) die(`could not find string scalar ${name} in ${flakeFile}`);
+  return match[1];
+}
+
+function replaceScalarExpr(name, expr) {
+  const text = flakeText();
+  const pattern = new RegExp(`(\\b${escapeRegExp(name)}\\s*=\\s*)(?:"[^"]+"|lib\\.fakeHash)(\\s*;)`);
+  if (!pattern.test(text)) die(`could not replace scalar ${name} in ${flakeFile}`);
+  writeFlake(text.replace(pattern, `$1${expr}$2`));
+}
+
+function replaceScalarHash(name, hash) {
+  replaceScalarExpr(name, JSON.stringify(hash));
+}
+
+function mapBlock(name) {
+  const text = flakeText();
+  const match = text.match(new RegExp(`\\b${escapeRegExp(name)}\\s*=\\s*\\{[\\s\\S]*?\\n\\s*\\};`));
+  if (!match) die(`could not find map ${name} in ${flakeFile}`);
+  return match[0];
+}
+
+function mapStrings(name) {
+  const block = mapBlock(name);
+  const values = new Map();
+  const line = /^\s*"([^"]+)"\s*=\s*"([^"]+)"\s*;/gm;
+  for (const match of block.matchAll(line)) values.set(match[1], match[2]);
+  if (values.size === 0) die(`map ${name} has no string entries`);
+  return values;
+}
+
+function replaceMapExpr(name, key, expr) {
+  const text = flakeText();
+  const block = mapBlock(name);
+  const pattern = new RegExp(`("${escapeRegExp(key)}"\\s*=\\s*)(?:"[^"]+"|lib\\.fakeHash)(\\s*;)`);
+  if (!pattern.test(block)) die(`could not replace ${name}.${key} in ${flakeFile}`);
+  const nextBlock = block.replace(pattern, `$1${expr}$2`);
+  writeFlake(text.replace(block, nextBlock));
+}
+
+function replaceMapHash(name, key, hash) {
+  replaceMapExpr(name, key, JSON.stringify(hash));
+}
+
+function run(command, runArgs, options = {}) {
+  const result = spawnSync(command, runArgs, {
+    cwd: ".",
+    encoding: "utf8",
+    maxBuffer: 100 * 1024 * 1024,
+    env: process.env,
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  if (options.echoOnFailure && result.status !== 0) {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+  }
+  return {
+    status: result.status ?? 1,
+    signal: result.signal,
+    stdout,
+    stderr,
+    output: `${stdout}\n${stderr}`,
+  };
+}
+
+function runChecked(command, runArgs) {
+  const result = run(command, runArgs, { echoOnFailure: true });
+  if (result.status !== 0) die(`${command} ${runArgs.join(" ")} failed with exit ${result.status}`);
+  return result;
+}
+
+function currentSystem() {
+  const result = runChecked(nix, ["eval", "--raw", "--impure", "--expr", "builtins.currentSystem"]);
+  return result.stdout.trim();
+}
+
+function jsonFromNixStdout(stdout) {
+  const trimmed = stdout.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end < start) die(`expected JSON from nix, got: ${trimmed}`);
+  return JSON.parse(trimmed.slice(start, end + 1));
+}
+
+function hashFromMismatch(output, derivationName) {
+  const lines = output.split(/\r?\n/);
+  let inMatchingBlock = false;
+  for (const line of lines) {
+    const derivation = line.match(/hash mismatch in fixed-output derivation '([^']+)'/);
+    if (derivation) {
+      inMatchingBlock = derivation[1].includes(derivationName);
+      continue;
+    }
+    if (!inMatchingBlock) continue;
+    const got = line.match(/got:\s+(sha256-[A-Za-z0-9+/=]+)/);
+    if (got) return got[1];
+  }
+  return null;
+}
+
+function unsupportedSystemFailure(output) {
+  return /required system features|is required, but there is no machine|a ['"][^'"]+['"](?: with features [^ ]+)? is required|does not provide package/.test(output);
+}
+
+const changed = [];
+const unchanged = [];
+
+function noteChange(label, oldHash, newHash) {
+  if (oldHash === newHash) {
+    unchanged.push(label);
+    console.log(`${label}: unchanged`);
+  } else {
+    changed.push(`${label}: ${oldHash} -> ${newHash}`);
+    console.log(`${label}: updated`);
+  }
+}
+
+function updateRustyV8Hashes() {
+  const version = scalarString("rustyV8Version");
+  const targets = mapStrings("rustyV8Targets");
+  const hashes = mapStrings("rustyV8Hashes");
+  for (const [system, target] of targets) {
+    const oldHash = hashes.get(system);
+    if (!oldHash) die(`rustyV8Hashes is missing ${system}`);
+    const url = `https://github.com/denoland/rusty_v8/releases/download/v${version}/librusty_v8_release_${target}.a.gz`;
+    console.log(`prefetch rusty_v8 ${system}`);
+    const result = runChecked(nix, ["store", "prefetch-file", "--json", "--hash-type", "sha256", url]);
+    const newHash = jsonFromNixStdout(result.stdout).hash;
+    if (!/^sha256-[A-Za-z0-9+/=]+$/.test(newHash)) die(`unexpected hash for ${url}: ${newHash}`);
+    replaceMapHash("rustyV8Hashes", system, newHash);
+    noteChange(`rustyV8Hashes.${system}`, oldHash, newHash);
+  }
+}
+
+function buildForSystem(system) {
+  const attr = `.#packages.${system}.moo`;
+  return run(nix, ["build", attr, "--no-link", "--keep-going", ...buildFlags]);
+}
+
+function updateHarnessDepsHash(system) {
+  const oldHash = scalarString("harnessDepsHash");
+  console.log(`recompute harnessDepsHash via ${system}`);
+  replaceScalarExpr("harnessDepsHash", fakeHashExpr);
+  const result = buildForSystem(system);
+  const newHash = hashFromMismatch(result.output, "moo-harness-node-modules");
+  if (!newHash) {
+    replaceScalarHash("harnessDepsHash", oldHash);
+    if (result.status === 0) die("nix build unexpectedly succeeded while harnessDepsHash was lib.fakeHash");
+    if (unsupportedSystemFailure(result.output)) die(`cannot build ${system}; pass a buildable --system for harnessDepsHash`);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    die("could not find got hash for moo-harness-node-modules");
+  }
+  replaceScalarHash("harnessDepsHash", newHash);
+  noteChange("harnessDepsHash", oldHash, newHash);
+}
+
+function updateWebDepsHash(system) {
+  const hashes = mapStrings("webDepsHashes");
+  const oldHash = hashes.get(system);
+  if (!oldHash) die(`webDepsHashes is missing ${system}`);
+  console.log(`recompute webDepsHashes.${system}`);
+  replaceMapExpr("webDepsHashes", system, fakeHashExpr);
+  const result = buildForSystem(system);
+  const newHash = hashFromMismatch(result.output, "moo-web-node-modules");
+  if (!newHash) {
+    replaceMapHash("webDepsHashes", system, oldHash);
+    if (result.status === 0) die(`nix build unexpectedly succeeded while webDepsHashes.${system} was lib.fakeHash`);
+    if (unsupportedSystemFailure(result.output)) die(`cannot build ${system}; configure a builder or omit this system`);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    die(`could not find got hash for moo-web-node-modules on ${system}`);
+  }
+  replaceMapHash("webDepsHashes", system, newHash);
+  noteChange(`webDepsHashes.${system}`, oldHash, newHash);
+}
+
+const systems = [...mapStrings("rustyV8Targets").keys()];
+let systemsToBuild;
+if (allSystems) {
+  systemsToBuild = systems;
+} else if (requestedSystems.length > 0) {
+  systemsToBuild = requestedSystems;
+} else {
+  systemsToBuild = [currentSystem()];
+}
+for (const system of systemsToBuild) {
+  if (!systems.includes(system)) die(`unknown system ${system}; expected one of ${systems.join(", ")}`);
+}
+
+try {
+  if (updateRustyV8) updateRustyV8Hashes();
+  updateHarnessDepsHash(systemsToBuild[0]);
+  for (const system of systemsToBuild) updateWebDepsHash(system);
+} finally {
+  if (flakeText().includes(fakeHashExpr)) {
+    die(`${flakeFile} still contains ${fakeHashExpr}; refusing to leave a fake hash behind`);
+  }
+}
+
+console.log("");
+if (changed.length === 0) {
+  console.log(`No hash changes (${unchanged.length} checked).`);
+} else {
+  console.log("Updated hashes:");
+  for (const line of changed) console.log(`  ${line}`);
+  if (unchanged.length > 0) console.log(`Unchanged hashes: ${unchanged.length}`);
+}
