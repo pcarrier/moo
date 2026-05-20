@@ -34,7 +34,7 @@
         "aarch64-darwin" = "sha256-fnR0DD7woOj8DiaKJYYSPpg0D+lDVmjNwSiPrvtzYq4=";
       };
 
-      harnessDepsHash = "sha256-e5ZoiYp3I/eGe/SqtipTzyueQDKrOqSgaIJbFS7u33w=";
+      harnessDepsHash = "sha256-xoBnkymeYXkKb7QYMaoVFQ3meDUpv/9nPEYREyrk97A=";
 
       webDepsHashes = {
         "x86_64-linux" = "sha256-yw/kSgoX6ge5kydwnJfbHIfaWrU5+OFyje1zfSINvvU=";
