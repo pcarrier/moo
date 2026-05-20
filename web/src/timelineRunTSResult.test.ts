@@ -13,6 +13,8 @@ const timelineCss = readFileSync(
   new URL("./styles/timeline.css", import.meta.url),
   "utf8",
 );
+const runtsLightboxBackdropRule =
+  timelineCss.match(/\.runts-lightbox-backdrop\s*\{[^}]+\}/)?.[0] ?? "";
 
 describe("timeline runTS result rendering", () => {
   test("renders a Result row even when the runTS result is empty", () => {
@@ -77,6 +79,8 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain('language="hjson"');
     expect(timeline).toContain("content={parsed().args}");
     expect(timeline).toContain("onOpenFull={props.onOpenRunTSBlock}");
+    expect(timeline).toContain('import { Portal } from "solid-js/web";');
+    expect(timeline).toContain("<Portal mount={document.body}>");
     expect(timeline).toContain('class="runts-lightbox-backdrop"');
     expect(timeline).toContain("content={block().content()}");
     expect(timeline).toContain("language={block().language?.()}");
@@ -104,6 +108,8 @@ describe("timeline runTS result rendering", () => {
     expect(timelineCss).toContain(
       "max-block-size: var(--runts-preview-max-height);",
     );
+    expect(runtsLightboxBackdropRule).toContain("z-index: 1000;");
+    expect(runtsLightboxBackdropRule).not.toContain("z-index: 90;");
     expect(timeline).not.toContain('class="runts-block-open"');
     expect(timeline).not.toContain('class="runts-block-more"');
   });

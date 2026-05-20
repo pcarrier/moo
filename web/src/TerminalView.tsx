@@ -23,6 +23,7 @@ import { WebSocketTransport } from "@blit-sh/core/transports";
 import { BlitTerminal, BlitWorkspaceProvider } from "@blit-sh/solid";
 import { getPsk } from "./auth";
 import initBlitWasm from "./blitWasm";
+import { hasOpenModalDialog } from "./modal";
 
 const CONNECTION_ID = "local";
 const PASSPHRASE = "moo-blit-local";
@@ -597,6 +598,7 @@ export function ChatTerminals(props: {
     rootRef?.addEventListener("keydown", onLocalKeyDown);
 
     const onGlobalKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || hasOpenModalDialog()) return;
       const focusedTerminal = focusedInsideTerminal(event.target);
       const session = selectedSession();
       if (

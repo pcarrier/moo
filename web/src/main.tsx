@@ -11,7 +11,8 @@ applyStoredThemeMode();
 
 const mount = document.getElementById("app");
 if (!mount) throw new Error("missing #app element");
-mount.remove();
+const root = document.createElement("div");
+mount.replaceWith(root);
 
 // Wrap createState in a Solid component so its createSignal/createEffect/
 // onCleanup calls have a reactive owner.
@@ -20,4 +21,4 @@ function Root() {
   return <App bag={bag} />;
 }
 
-render(() => <Root />, document.body);
+render(() => <Root />, root);

@@ -65,6 +65,7 @@ import {
 } from "./state/layout";
 import { normalizeEffort } from "./state/effort";
 import { hasRestartableConversationState } from "./state/resume";
+import { hasOpenModalDialog } from "./modal";
 import {
   expectedChatWorktreePath,
   withExpectedChatWorktreePath,
@@ -5854,6 +5855,7 @@ export function createState() {
   // isComposing or are intercepted by the browser before we see them.
   const escHandler = (e: KeyboardEvent) => {
     if (e.key !== "Escape") return;
+    if (e.defaultPrevented || hasOpenModalDialog()) return;
     if (e.isComposing) return;
     const id = chatId();
     if (!id || !activeChats().has(id)) return;

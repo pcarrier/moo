@@ -9,6 +9,7 @@ import {
   onMount,
   untrack,
 } from "solid-js";
+import { Portal } from "solid-js/web";
 import { createMutable } from "solid-js/store";
 import {
   anchorFromEventTarget,
@@ -991,89 +992,91 @@ export function Timeline(props: {
             </Show>
           </Show>
         </main>
-        <Show when={lightboxImage()}>
-          {(att) => (
-            <div
-              class="image-lightbox-backdrop"
-              role="dialog"
-              aria-modal="true"
-              aria-label={
-                att().name ? `Image preview: ${att().name}` : "Image preview"
-              }
-              onClick={closeLightbox}
-            >
-              <button
-                type="button"
-                class="image-lightbox-close"
-                aria-label="close image preview"
+        <OngoingTodos todos={bag.todos()} />
+        <Portal mount={document.body}>
+          <Show when={lightboxImage()}>
+            {(att) => (
+              <div
+                class="image-lightbox-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-label={
+                  att().name ? `Image preview: ${att().name}` : "Image preview"
+                }
                 onClick={closeLightbox}
               >
-                ×
-              </button>
-              <img
-                class="image-lightbox-image"
-                src={att().dataUrl}
-                alt={att().name || "image"}
-                onClick={(e) => e.stopPropagation()}
-              />
-              <Show when={att().name}>
-                <div
-                  class="image-lightbox-caption"
-                  onClick={(e) => e.stopPropagation()}
+                <button
+                  type="button"
+                  class="image-lightbox-close"
+                  aria-label="close image preview"
+                  onClick={closeLightbox}
                 >
-                  {att().name}
-                </div>
-              </Show>
-            </div>
-          )}
-        </Show>
-        <OngoingTodos todos={bag.todos()} />
-        <Show when={runTSBlockLightbox()}>
-          {(block) => (
-            <div
-              class="runts-lightbox-backdrop"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="runts-lightbox-title"
-              onClick={closeLightbox}
-            >
-              <div class="runts-lightbox" onClick={(e) => e.stopPropagation()}>
-                <div class="runts-lightbox-header">
-                  <div class="runts-lightbox-title-wrap">
-                    <div id="runts-lightbox-title" class="runts-lightbox-title">
-                      {block().label}
-                    </div>
-                    <Show when={block().meta?.()}>
-                      <div class="runts-lightbox-meta">{block().meta?.()}</div>
-                    </Show>
-                  </div>
-                  <button
-                    type="button"
-                    class="runts-lightbox-copy"
-                    onClick={copyRunTSBlockLightbox}
-                  >
-                    {runTSBlockCopied() ? "Copied" : "Copy"}
-                  </button>
-                  <button
-                    type="button"
-                    class="runts-lightbox-close"
-                    aria-label="close runTS preview"
-                    onClick={closeLightbox}
-                  >
-                    ×
-                  </button>
-                </div>
-                <HighlightedPre
-                  ref={(el) => (runTSBlockLightboxContentEl = el)}
-                  class="runts-lightbox-content"
-                  tabIndex={0}
-                  content={block().content()}
-                  language={block().language?.()}
+                  ×
+                </button>
+                <img
+                  class="image-lightbox-image"
+                  src={att().dataUrl}
+                  alt={att().name || "image"}
+                  onClick={(e) => e.stopPropagation()}
                 />
+                <Show when={att().name}>
+                  <div
+                    class="image-lightbox-caption"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {att().name}
+                  </div>
+                </Show>
               </div>
-            </div>
-          )}
-        </Show>
+            )}
+          </Show>
+          <Show when={runTSBlockLightbox()}>
+            {(block) => (
+              <div
+                class="runts-lightbox-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="runts-lightbox-title"
+                onClick={closeLightbox}
+              >
+                <div class="runts-lightbox" onClick={(e) => e.stopPropagation()}>
+                  <div class="runts-lightbox-header">
+                    <div class="runts-lightbox-title-wrap">
+                      <div id="runts-lightbox-title" class="runts-lightbox-title">
+                        {block().label}
+                      </div>
+                      <Show when={block().meta?.()}>
+                        <div class="runts-lightbox-meta">{block().meta?.()}</div>
+                      </Show>
+                    </div>
+                    <button
+                      type="button"
+                      class="runts-lightbox-copy"
+                      onClick={copyRunTSBlockLightbox}
+                    >
+                      {runTSBlockCopied() ? "Copied" : "Copy"}
+                    </button>
+                    <button
+                      type="button"
+                      class="runts-lightbox-close"
+                      aria-label="close runTS preview"
+                      onClick={closeLightbox}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <HighlightedPre
+                    ref={(el) => (runTSBlockLightboxContentEl = el)}
+                    class="runts-lightbox-content"
+                    tabIndex={0}
+                    content={block().content()}
+                    language={block().language?.()}
+                  />
+                </div>
+              </div>
+            )}
+          </Show>
+        </Portal>
         <BackgroundRunTSPanel bag={bag} />
         <PendingList bag={bag} onOpenImage={openLightbox} />
         <InputBar bag={bag} onOpenImage={openLightbox} />
