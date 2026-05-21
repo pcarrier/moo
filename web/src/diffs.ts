@@ -228,14 +228,17 @@ export function mergeFileDiffItems(items: FileDiffItem[]): MergedFileDiffItem {
   const afterSize = typeof after === "string" ? after.length : 0;
   const tooLargeForSynthetic = beforeSize + afterSize > SYNTHETIC_DIFF_MAX_BYTES;
   const concatenated = concatenateDiffs(ordered);
+  const netDeletedNewFile = before === null && after === null;
   // Some recorded patch text has historically carried a deletion header
   // (`+++ /dev/null`) even though the hydrated payload still has a real
   // post-change snapshot. Trust the snapshots once both ends are present so a
   // lightly modified file is not rendered as a complete deletion in the
-  // sidebar.
+  // sidebar. Also trust explicit null/null snapshots for files that only
+  // existed transiently in the chat; their total diff is one no-op lifecycle,
+  // not separate creation and deletion patches.
   const shouldPreferSynthetic = hasBeforeSnapshot && hasAfterSnapshot
     && !tooLargeForSynthetic
-    && (after !== null || !looksLikeDeletionDiff(concatenated));
+    && (after !== null || netDeletedNewFile || !looksLikeDeletionDiff(concatenated));
   const synthetic = shouldPreferSynthetic
     ? unifiedDiff(path, before ?? null, after ?? "", after !== null)
     : null;

@@ -3,6 +3,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from
 import { api } from "./api";
 import type { Bag } from "./state";
 import { CloseIcon, MaximizeIcon, RestoreIcon } from "./icons";
+import { installPointerResize } from "./resizeDrag";
 
 export function ChatAppLauncher(props: { bag: Bag }) {
   const { bag } = props;
@@ -36,7 +37,9 @@ export function ChatAppLauncher(props: { bag: Bag }) {
 export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   const { bag } = props;
   const storedPanelWidth = Number(localStorage.getItem("moo.uiPanelWidth"));
-  const defaultPanelWidth = Math.round(window.innerWidth * 0.42);
+  const defaultPanelWidth = Math.round(
+    window.innerWidth <= 900 ? window.innerWidth : window.innerWidth * 0.42,
+  );
   const activeAppTab = createMemo(() => {
     const tab = bag.activeRightSidebarTab();
     return tab?.kind === "app" ? tab : null;
@@ -58,51 +61,39 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   let frame: HTMLIFrameElement | undefined;
   let pendingFrame: HTMLIFrameElement | undefined;
   let frameStack: HTMLDivElement | undefined;
-  let dragging = false;
   let startX = 0;
   let startWidth = 0;
 
   const clampPanelWidth = (width: number) => {
     const shellWidth = frame?.closest(".chat-shell")?.getBoundingClientRect().width || window.innerWidth;
+    if (shellWidth <= 900) {
+      const max = Math.max(1, shellWidth);
+      const min = Math.min(240, max);
+      return Math.round(Math.max(min, Math.min(max, width)));
+    }
     const min = Math.max(240, Math.min(352, shellWidth - 80));
     const max = Math.max(min, Math.min(shellWidth - 160, shellWidth * 0.85));
     return Math.round(Math.max(min, Math.min(max, width)));
   };
 
-  const stopResize = () => {
-    if (!dragging) return;
-    dragging = false;
-    setResizing(false);
-    document.body.style.userSelect = "";
-    document.body.style.cursor = "";
-  };
-
-  const onResizeMove = (ev: MouseEvent) => {
-    if (!dragging) return;
-    setPanelWidth(clampPanelWidth(startWidth + startX - ev.clientX));
-  };
-
-  const startResize = (ev: MouseEvent) => {
-    if (props.embedded || maximized()) return;
-    ev.preventDefault();
-    dragging = true;
-    setResizing(true);
-    startX = ev.clientX;
-    startWidth = panelWidth();
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "col-resize";
+  const installPanelResizer = (handle: HTMLDivElement) => {
+    installPointerResize(handle, {
+      cursor: "col-resize",
+      onStart: (event) => {
+        if (props.embedded || maximized()) return false;
+        setResizing(true);
+        startX = event.clientX;
+        startWidth = panelWidth();
+      },
+      onMove: (event) => {
+        setPanelWidth(clampPanelWidth(startWidth + startX - event.clientX));
+      },
+      onEnd: () => setResizing(false),
+    });
   };
 
   createEffect(() => {
     localStorage.setItem("moo.uiPanelWidth", String(clampPanelWidth(panelWidth())));
-  });
-
-  window.addEventListener("mousemove", onResizeMove);
-  window.addEventListener("mouseup", stopResize);
-  onCleanup(() => {
-    window.removeEventListener("mousemove", onResizeMove);
-    window.removeEventListener("mouseup", stopResize);
-    stopResize();
   });
 
   const showFrameDoc = (appKey: string | null, doc: string) => {
@@ -216,7 +207,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
         <div
           class="ui-panel-resizer"
           title="resize app panel"
-          onMouseDown={startResize}
+          ref={(e) => installPanelResizer(e)}
           onDblClick={() => setMaximized(true)}
         />
       </Show>

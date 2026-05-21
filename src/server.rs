@@ -15,6 +15,34 @@ use crate::ws;
 
 pub type BundleProvider = Arc<dyn Fn() -> Arc<String> + Send + Sync>;
 
+struct StaticAsset {
+    path: &'static str,
+    content_type: &'static str,
+    body: &'static [u8],
+}
+
+const PWA_MANIFEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pwa_manifest.webmanifest"));
+const PWA_SW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pwa_sw.js"));
+const PWA_ICON_SVG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pwa_icon_moo.svg"));
+
+const PWA_ASSETS: &[StaticAsset] = &[
+    StaticAsset {
+        path: "/manifest.webmanifest",
+        content_type: "application/manifest+json; charset=utf-8",
+        body: PWA_MANIFEST,
+    },
+    StaticAsset {
+        path: "/sw.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: PWA_SW,
+    },
+    StaticAsset {
+        path: "/icons/moo.svg",
+        content_type: "image/svg+xml",
+        body: PWA_ICON_SVG,
+    },
+];
+
 pub fn normalize_base_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -211,6 +239,12 @@ fn handle_request(
         && (path_only.starts_with("/api/fs/raw/") || path_only.starts_with("/api/fs/raw64/"))
     {
         return serve_raw_file(&mut stream, path_only, db);
+    }
+
+    if method == "GET"
+        && let Some(asset) = pwa_asset_for_path(path_only)
+    {
+        return write_response(&mut stream, "200 OK", asset.content_type, asset.body);
     }
 
     if method == "GET" && serves_ui_route(&path) {
@@ -594,6 +628,10 @@ fn serves_ui_route(path: &str) -> bool {
     path.starts_with('/') && !path.starts_with("/api/")
 }
 
+fn pwa_asset_for_path(path: &str) -> Option<&'static StaticAsset> {
+    PWA_ASSETS.iter().find(|asset| asset.path == path)
+}
+
 fn accepts_encoding(value: &str, coding: &str) -> bool {
     value.split(',').any(|part| {
         let mut pieces = part.trim().split(';');
@@ -805,6 +843,39 @@ mod tests {
         assert!(serves_ui_route("/chat/abc"));
         assert!(!serves_ui_route("/api/ws"));
         assert!(!serves_ui_route("/api/fs/raw/tmp/site/-/index.html"));
+    }
+
+    #[test]
+    fn pwa_assets_are_explicit_static_routes() {
+        let manifest = pwa_asset_for_path("/manifest.webmanifest").unwrap();
+        assert_eq!(
+            manifest.content_type,
+            "application/manifest+json; charset=utf-8"
+        );
+        assert!(
+            std::str::from_utf8(manifest.body)
+                .unwrap()
+                .contains(r#""display": "standalone""#)
+        );
+
+        let worker = pwa_asset_for_path("/sw.js").unwrap();
+        assert_eq!(worker.content_type, "text/javascript; charset=utf-8");
+        assert!(
+            std::str::from_utf8(worker.body)
+                .unwrap()
+                .contains(r#"self.addEventListener("fetch""#)
+        );
+
+        let icon = pwa_asset_for_path("/icons/moo.svg").unwrap();
+        assert_eq!(icon.content_type, "image/svg+xml");
+        assert!(
+            std::str::from_utf8(icon.body)
+                .unwrap()
+                .contains("🐮")
+        );
+
+        assert!(pwa_asset_for_path("/chat/abc").is_none());
+        assert!(pwa_asset_for_path("/api/ws").is_none());
     }
 
     #[test]

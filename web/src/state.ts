@@ -215,6 +215,11 @@ export function createState() {
     return id ? displayChatId(id) : null;
   };
   const [chatFocusRequest, setChatFocusRequest] = createSignal(0);
+  const requestChatComposerFocus = () =>
+    setChatFocusRequest((request) => request + 1);
+  const clearChatFocusRequest = (request: number) => {
+    setChatFocusRequest((current) => (current === request ? 0 : current));
+  };
   const [resumeOfferRequest, setResumeOfferRequest] = createSignal(0);
   const [timeline, setTimeline] = createSignal<TimelineItem[]>([]);
   const [timelineJumpRequest, setTimelineJumpRequest] = createSignal<{
@@ -739,9 +744,11 @@ export function createState() {
       if (matchingReplyLanded || terminalNonReplyLanded) {
         endedDraftReplyIds.delete(currentDraft.draftId);
         setDraftReply(null);
-        if (currentDraft.kind !== "compaction") clearActiveChatRuntime(id);
+        if (currentDraft.kind !== "compaction") releaseSettledChatRuntime(id);
       }
     }
+    if (timelineRowsSettleActiveTurn(id, mergedTimeline))
+      releaseSettledChatRuntime(id);
 
     return mergedTimeline;
   }
@@ -1200,6 +1207,8 @@ export function createState() {
     content: string;
     reasoningContent?: string;
     reasoningStreaming?: boolean;
+    model?: string;
+    effort?: string;
     at: number;
   } | null>(null);
   const endedDraftReplyIds = new Map<string, number>();
@@ -2929,7 +2938,16 @@ export function createState() {
         for (const id of live) if (current.has(id)) next.add(id);
         return next;
       });
-      if (chatId() && pending().some((p) => !live.has(p.chatId)))
+      const currentChatId = chatId();
+      if (
+        currentChatId &&
+        !live.has(currentChatId) &&
+        hasRunningTimelineRowForChat(currentChatId)
+      )
+        await refreshBackgroundRunTS();
+      if (currentChatId && !live.has(currentChatId))
+        releaseSettledChatRuntime(currentChatId);
+      if (pending().some((p) => !live.has(p.chatId)))
         drainSoon();
     } else {
       setChatsLoaded(true);
@@ -3124,6 +3142,44 @@ export function createState() {
     );
   }
 
+  function isBackgroundedRunTSTimelineItem(
+    item: TimelineItem,
+    id: string,
+  ): boolean {
+    return (
+      item.type === "step" &&
+      !!(item.runts || item.runjs) &&
+      isRunTSBackgrounded(item.step, id)
+    );
+  }
+
+  function isManualCompactionStep(
+    item: Extract<TimelineItem, { type: "step" }>,
+  ): boolean {
+    return (
+      item.kind === "agent:Compaction" &&
+      /^manual compaction(?:\n|$)/.test(item.text || "")
+    );
+  }
+
+  function timelineRowsSettleActiveTurn(
+    id: string,
+    items: TimelineItem[],
+  ): boolean {
+    if (chatId() !== id) return false;
+    const startedAt = Number(activeChatStartedAt().get(id));
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+    const latest = items[items.length - 1];
+    return (
+      latest?.type === "step" &&
+      (latest.kind === "agent:Reply" ||
+        latest.kind === "agent:Error" ||
+        isManualCompactionStep(latest)) &&
+      isTerminalStepStatus(latest.status) &&
+      Number(latest.at) >= startedAt
+    );
+  }
+
   function settleRunningTimelineRows(id: string) {
     if (chatId() !== id) return;
     setTimeline((items) => {
@@ -3136,7 +3192,8 @@ export function createState() {
         if (
           item.type !== "step" ||
           isTerminalStepStatus(item.status) ||
-          item.kind === "agent:UserInput"
+          item.kind === "agent:UserInput" ||
+          isBackgroundedRunTSTimelineItem(item, id)
         )
           return item;
         changed = true;
@@ -3158,6 +3215,13 @@ export function createState() {
       });
       return changed ? compactTimelineRows(next) : items;
     });
+  }
+
+  function releaseSettledChatRuntime(id: string) {
+    clearActiveChatRuntime(id);
+    settleRunningTimelineRows(id);
+    unblockRunTSQueue(id);
+    if (pending().some((p) => p.chatId === id)) drainSoon();
   }
 
   function mergeTimelineUpdateRows(
@@ -3560,7 +3624,7 @@ export function createState() {
   async function selectChat(
     id: string,
     replace = false,
-    opts?: { hydrate?: boolean },
+    opts?: { hydrate?: boolean; focusComposer?: boolean },
   ) {
     setChatId(id);
     showTokensForChat(id);
@@ -3608,7 +3672,7 @@ export function createState() {
       setUiInstances([]);
     }
     loadWipText(id);
-    setChatFocusRequest((n) => n + 1);
+    if (opts?.focusComposer) requestChatComposerFocus();
     if (replace) replaceUrl();
     else pushUrl();
     // Load the heavy conversation payload immediately unless the caller has
@@ -3825,7 +3889,10 @@ export function createState() {
       setUiInstances([]);
       loadWipText(requestedChatId);
     } else {
-      await selectChat(requestedChatId, false, { hydrate: false });
+      await selectChat(requestedChatId, false, {
+        hydrate: false,
+        focusComposer: true,
+      });
       queueMicrotask(() => {
         refreshChatModel();
         refreshChatUis();
@@ -5538,6 +5605,10 @@ export function createState() {
           content: ev.content ?? previous?.content ?? "",
           reasoningContent: ev.reasoningContent ?? "",
           reasoningStreaming: true,
+          model:
+            typeof ev.model === "string" ? ev.model : previous?.model,
+          effort:
+            typeof ev.effort === "string" ? ev.effort : previous?.effort,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -5578,6 +5649,10 @@ export function createState() {
           reasoningContent:
             ev.reasoningContent ?? previous?.reasoningContent ?? "",
           reasoningStreaming: false,
+          model:
+            typeof ev.model === "string" ? ev.model : previous?.model,
+          effort:
+            typeof ev.effort === "string" ? ev.effort : previous?.effort,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -6102,6 +6177,7 @@ export function createState() {
     currentChatWorktreePath,
     currentChatParent,
     chatFocusRequest,
+    clearChatFocusRequest,
     resumeOfferRequest,
     timeline,
     trail,

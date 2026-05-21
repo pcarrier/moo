@@ -798,9 +798,10 @@
 
 .ui-panel-resizer {
   position: absolute;
-  inset: 0 auto 0 -0.35rem;
-  width: 0.7rem;
+  inset: 0 auto 0 -0.5rem;
+  width: 1rem;
   cursor: col-resize;
+  touch-action: none;
   z-index: 2;
 }
 

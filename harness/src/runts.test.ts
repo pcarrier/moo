@@ -85,7 +85,10 @@ describe("background runTS cancellation wiring", () => {
 
     expect(source).toContain("struct QueuedChatRun");
     expect(source).toContain("static QUEUED");
-    expect(source).toContain("push_back(QueuedChatRun { pool, bundle, state })");
+    expect(source).toContain(".push_back(QueuedChatRun");
+    expect(source).toContain("pool,");
+    expect(source).toContain("bundle,");
+    expect(source).toContain("state,");
     expect(source).toContain("finish_current_and_start_next(&task_chat_id, run_id);");
     expect(source).toContain("requested_by: String");
     expect(source).toContain('"requestedBy": requested_by');
@@ -100,5 +103,18 @@ describe("background runTS cancellation wiring", () => {
     expect(driver).toContain('"toolCallId": runts_tool_call_id(&value)');
     expect(ws).toContain("if tool_call_id.is_empty()");
     expect(ws).toContain("tool_call_id = step_id.clone();");
+  });
+
+  test("Rust foreground runTS cancellation is scoped to the active step", () => {
+    const driver = readFileSync(new URL("../../src/driver.rs", import.meta.url), "utf8");
+    const ws = readFileSync(new URL("../../src/ws.rs", import.meta.url), "utf8");
+
+    expect(driver).toContain("struct ForegroundRunTs");
+    expect(driver).toContain("step_id: String");
+    expect(driver).toContain("active_foreground_runts(&entry.foreground_runts, step_id)");
+    expect(driver).toContain("let run_cancel = Arc::new(AtomicBool::new(false));");
+    expect(driver).toContain("clear_active_foreground_runts(&foreground_runts, &foreground_step_id);");
+    expect(driver).not.toContain("tool_cancel: Arc<AtomicBool>");
+    expect(ws).toContain("request_foreground_runts_background(chat_id, step_id)");
   });
 });

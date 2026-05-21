@@ -266,7 +266,7 @@ export function Timeline(props: {
     setRunTSBlockLightbox(block);
   };
   const updateRunTSBlockLightbox = (block: RunTSBlockLightbox) => {
-    const current = runTSBlockLightbox();
+    const current = untrack(runTSBlockLightbox);
     if (current?.sourceId === block.sourceId) setRunTSBlockLightbox(block);
   };
   const copyRunTSBlockLightbox = async () => {
@@ -347,7 +347,19 @@ export function Timeline(props: {
       ? "0:00"
       : formatThinkingElapsed(thinkingNow() - startedAt);
   });
-  const activeWaitLabel = () => "Thinking…";
+  const activeWaitLabel = () => {
+    const modelInfo = bag.chatModel();
+    const summary = bag.currentChatSummary();
+    const chatId = bag.chatId();
+    const memoryEffort = chatId ? bag.chatMemory()[chatId]?.effort : null;
+    return activeThinkingLabel(
+      modelInfo?.effectiveModel ??
+        modelInfo?.selectedModel ??
+        summary?.selectedModel ??
+        summary?.model,
+      modelInfo?.effectiveEffort ?? modelInfo?.selectedEffort ?? memoryEffort,
+    );
+  };
 
   // Keep the scroll position stable across timeline refreshes. If the user is
   // at the bottom, new content sticks to the bottom. If they have scrolled up,
@@ -2047,8 +2059,10 @@ function InputBar(props: {
   });
 
   createEffect(() => {
-    bag.chatFocusRequest();
+    const request = bag.chatFocusRequest();
+    if (!request) return;
     if (bag.view() !== "chat") return;
+    bag.clearChatFocusRequest(request);
     queueMicrotask(focusMessageInput);
   });
   const disabled = () => !bag.chatId();
@@ -2573,6 +2587,25 @@ function displayStepKind(kind: string): string {
   if (kind === "agent:Subagent") return "Subagent";
   if (kind === "agent:RunTS") return "RunTS";
   return kind.replace(/^agent:/, "");
+}
+
+function displayModelName(value: string | null | undefined): string {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  const colon = trimmed.indexOf(":");
+  return colon > 0 ? trimmed.slice(colon + 1).trim() : trimmed;
+}
+
+function activeThinkingLabel(
+  model: string | null | undefined,
+  effort: string | null | undefined,
+): string {
+  const displayModel = displayModelName(model);
+  const displayEffort = String(effort ?? "").trim();
+  if (displayModel && displayEffort)
+    return `${displayModel} ${displayEffort} thinking…`;
+  if (displayModel) return `${displayModel} thinking…`;
+  return "Thinking…";
 }
 
 function activeReplyStatusLabel(item: StepItem, compacting: boolean): string {
@@ -3399,11 +3432,6 @@ function RunTSBody(props: {
       : parseRunTS(props.item.text),
   );
   const backgrounded = () => props.bag.isRunTSBackgrounded?.(props.item.step) === true;
-  const model = () => props.item.model || "";
-  const effort = () => props.item.effort || "";
-  const showStreamingModelMeta = () =>
-    !isTerminalStepStatus(props.item.status) && !!(model() || effort());
-
   const key = () => timelineExpansionKey(props.item);
   const open = () => props.expansion.isOpen(key());
   const setOpen = (next: boolean) => {
@@ -3445,20 +3473,6 @@ function RunTSBody(props: {
               content={parsed().description}
               inline
             />
-          </span>
-        </Show>
-        <Show when={showStreamingModelMeta()}>
-          <span class="runts-model-group step-model-group">
-            <Show when={model()}>
-              <span class="step-model" title={model()}>
-                {model()}
-              </span>
-            </Show>
-            <Show when={effort()}>
-              <span class="step-effort" title="reasoning effort">
-                ({effort()})
-              </span>
-            </Show>
           </span>
         </Show>
         <Show

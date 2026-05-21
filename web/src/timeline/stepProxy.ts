@@ -6,6 +6,8 @@ export type TimelineDraft = {
   content: string;
   reasoningContent?: string;
   reasoningStreaming?: boolean;
+  model?: string;
+  effort?: string;
   at: number;
 };
 
@@ -51,6 +53,8 @@ export function draftStepItem(draft: TimelineDraft): StepItem {
       : {
           reasoningContent: draft.reasoningContent,
           reasoningStreaming: draft.reasoningStreaming,
+          model: draft.model,
+          effort: draft.effort,
         }),
   };
 }

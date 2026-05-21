@@ -62,6 +62,22 @@ describe("header control icons", () => {
     expect(menuRule).not.toContain("border: 1px solid var(--line);");
   });
 
+  test("mobile chat actions are visible and tappable", () => {
+    const responsiveRule = css.slice(css.indexOf("@media (max-width: 48rem)"));
+    expect(sidebar).toContain("const toggleChatMenu = (chatId: string) => {");
+    expect(sidebar).toContain(
+      "const handleChatMenuPointerDown = (e: PointerEvent, chatId: string) => {",
+    );
+    expect(sidebar).toContain("onPointerDown={(e) => handleChatMenuPointerDown(e, chat.chatId)}");
+    expect(sidebar).toContain("onClick={(e) => handleChatMenuClick(e, chat.chatId)}");
+    expect(responsiveRule).toContain(".chat-row .chat-actions {");
+    expect(responsiveRule).toContain("opacity: 0.75;");
+    expect(responsiveRule).toContain("pointer-events: auto;");
+    expect(responsiveRule).toContain(".chat-action-menu {");
+    expect(responsiveRule).toContain("min-width: 11rem;");
+    expect(responsiveRule).not.toContain(".chat-menu-popover");
+  });
+
   test("agent-opened apps materialize as right-sidebar app tabs", () => {
     const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 

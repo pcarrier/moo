@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import {
   hasAfterSnapshot,
   htmlPreviewSrcDoc,
+  preferredOpenRepoFileDiff,
 } from "./Sidebar";
 import type { FileDiffItem } from "./api";
+import type { OpenRepoFile } from "./state";
 
 const sidebar = readFileSync(new URL("./Sidebar.tsx", import.meta.url), "utf8");
 
@@ -16,6 +18,20 @@ function diffItem(partial: Partial<FileDiffItem>): FileDiffItem {
     path: "page.html",
     diff: "--- a/page.html\n+++ b/page.html\n@@ -1 +1 @@\n-old\n+new",
     at: 1,
+    ...partial,
+  };
+}
+
+function openRepoFile(partial: Partial<OpenRepoFile>): OpenRepoFile {
+  return {
+    requestedPath: "src/page.html",
+    path: "/repo/src/page.html",
+    content: "new",
+    size: 3,
+    mtime: 1,
+    kind: "file",
+    loading: false,
+    error: null,
     ...partial,
   };
 }
@@ -65,4 +81,41 @@ describe("HTML diff previews", () => {
       '<html><head><base href="/custom/"></head><body>Hi</body></html>',
     );
   });
+  test("keeps browser diffs visible during same-file background refreshes", () => {
+    const currentDiff = diffItem({
+      id: "current",
+      path: "src/page.html",
+      diff: "--- a/src/page.html\n+++ b/src/page.html\n@@ -1 +1 @@\n-old\n+new",
+      after: "new",
+    });
+
+    expect(
+      preferredOpenRepoFileDiff(
+        openRepoFile({ loading: true }),
+        "/repo",
+        null,
+        currentDiff,
+      ),
+    ).toBe(currentDiff);
+
+    expect(
+      preferredOpenRepoFileDiff(
+        openRepoFile({ requestedPath: "src/other.html", loading: true }),
+        "/repo",
+        null,
+        currentDiff,
+      ),
+    ).toBeNull();
+  });
+
+  test("browser and file previews keep current diffs while timeline snapshots hydrate", () => {
+    expect(sidebar).toContain("keepSamePathHydratedDiff(");
+    expect(sidebar).toContain("setHydratedTimelineDiff((previous) =>");
+    expect(sidebar).toContain("setHydratedBrowserTimelineDiff((previous) =>");
+    expect(sidebar).toContain("if (timelineDiffHydrating() && !currentDiff) return null;");
+    expect(sidebar).toContain("if (browserTimelineDiffHydrating() && !currentDiff) return null;");
+    expect(sidebar).not.toContain("if (timelineDiffHydrating()) return null;");
+    expect(sidebar).not.toContain("if (browserTimelineDiffHydrating()) return null;");
+  });
+
 });

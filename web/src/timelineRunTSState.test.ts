@@ -52,15 +52,16 @@ describe("timeline runTS state merging", () => {
     expect(timeline).toContain("return liveRunTSProxyFor(item);");
   });
 
-  test("shows streamed runTS model and effort while queued", () => {
+  test("keeps streamed runTS model and effort in expanded footer only", () => {
     expect(state).toContain('typeof ev.model === "string"');
     expect(state).toContain('typeof ev.effort === "string"');
     const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
-    expect(timeline).toContain("const showStreamingModelMeta = () =>");
-    expect(timeline).toContain('class="runts-model-group step-model-group"');
-    expect(timeline).toContain("!isTerminalStepStatus(props.item.status)");
+    expect(timeline).toContain('<StepFooter\n        item={props.item}');
+    expect(timeline).toContain('<Show when={step()?.model}>');
+    expect(timeline).not.toContain("const showStreamingModelMeta = () =>");
+    expect(timeline).not.toContain('class="runts-model-group step-model-group"');
     const css = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
-    expect(css).toContain(".runts-model-group");
+    expect(css).not.toContain(".runts-model-group");
   });
 });
 

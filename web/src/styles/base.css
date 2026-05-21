@@ -400,10 +400,11 @@ pre,
 
 .chat-terminal-resizer {
   position: absolute;
-  inset: auto 0 -0.25rem;
+  inset: auto 0 -0.5rem;
   z-index: 3;
-  block-size: 0.5rem;
+  block-size: 1rem;
   cursor: row-resize;
+  touch-action: none;
   background: transparent;
 }
 
@@ -611,10 +612,11 @@ pre,
 
 .resizer {
   position: absolute;
-  inset: 0 auto 0 calc(var(--sidebar-used-w) - 0.25rem);
+  inset: 0 auto 0 calc(var(--sidebar-used-w) - 0.5rem);
   z-index: 3;
-  width: 0.5rem;
+  width: 1rem;
   cursor: col-resize;
+  touch-action: none;
   background: transparent;
 }
 
@@ -913,10 +915,11 @@ pre,
 
 .right-sidebar-resizer {
   position: absolute;
-  inset: 0 auto 0 -0.25rem;
+  inset: 0 auto 0 -0.5rem;
   z-index: 3;
-  width: 0.5rem;
+  width: 1rem;
   cursor: col-resize;
+  touch-action: none;
   background: transparent;
 }
 

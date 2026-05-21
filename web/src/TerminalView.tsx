@@ -24,6 +24,7 @@ import { BlitTerminal, BlitWorkspaceProvider } from "@blit-sh/solid";
 import { getPsk } from "./auth";
 import initBlitWasm from "./blitWasm";
 import { hasOpenModalDialog } from "./modal";
+import { installPointerResize } from "./resizeDrag";
 
 const CONNECTION_ID = "local";
 const PASSPHRASE = "moo-blit-local";
@@ -496,41 +497,24 @@ export function ChatTerminals(props: {
   };
 
   const installTerminalResizer = (handle: HTMLDivElement) => {
-    let dragging = false;
     let startY = 0;
     let startH = 0;
     let viewportH = 0;
-    const onMove = (event: MouseEvent) => {
-      if (!dragging || viewportH <= 0) return;
-      setTerminalHeightPx(startH + (event.clientY - startY));
-    };
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
-    };
-    const onDown = (event: MouseEvent) => {
-      if (event.button !== 0) return;
-      const panel = rootRef?.querySelector(
-        ".chat-terminal-panel",
-      ) as HTMLElement | null;
-      setTerminalCellHeight(terminalCellHeightPx());
-      dragging = true;
-      startY = event.clientY;
-      startH = panel?.getBoundingClientRect().height ?? 0;
-      viewportH = viewportHeightPx();
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "row-resize";
-      event.preventDefault();
-    };
-    handle.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    onCleanup(() => {
-      handle.removeEventListener("mousedown", onDown);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+    installPointerResize(handle, {
+      cursor: "row-resize",
+      onStart: (event) => {
+        const panel = rootRef?.querySelector(
+          ".chat-terminal-panel",
+        ) as HTMLElement | null;
+        setTerminalCellHeight(terminalCellHeightPx());
+        startY = event.clientY;
+        startH = panel?.getBoundingClientRect().height ?? 0;
+        viewportH = viewportHeightPx();
+      },
+      onMove: (event) => {
+        if (viewportH <= 0) return;
+        setTerminalHeightPx(startH + (event.clientY - startY));
+      },
     });
   };
 

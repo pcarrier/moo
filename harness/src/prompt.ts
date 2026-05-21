@@ -88,7 +88,7 @@ async function agentsMdLines(scratch: string): Promise<string[]> {
   }
 }
 
-const cliTools = ["git", "jj", "gh", "nix", "bun", "deno", "node", "python3", "ruby", "awk", "jq", "sed", "curl", "fd", "find", "rg", "sqlite3"];
+const cliTools = ["git", "jj", "gh", "nix", "bun", "deno", "node", "python3", "ruby", "awk", "grep", "jq", "sed", "curl", "fd", "find", "rg", "sqlite3"];
 const unavailableProcResult: ProcResult = { code: 127, stdout: "", stderr: "", durationNs: 0, timedOut: false };
 let cliToolsCache: Promise<Set<string>> | null = null;
 
@@ -104,27 +104,24 @@ function availableCliTools(): Promise<Set<string>> {
   return cliToolsCache;
 }
 
-function formatCliToolsLine(availableSet: Set<string>, hideJj: boolean): string {
-  const tools = hideJj ? cliTools.filter((tool) => tool !== "jj") : cliTools;
-  const available = tools.filter((tool) => availableSet.has(tool));
-  const unavailable = tools.filter((tool) => !availableSet.has(tool));
+function formatCliToolsLine(availableSet: Set<string>): string {
+  const available = cliTools.filter((tool) => availableSet.has(tool));
+  const unavailable = cliTools.filter((tool) => !availableSet.has(tool));
   const status = [`git=${availableSet.has("git") ? "available" : "unavailable"}`];
-  if (!hideJj) status.push(`jj=${availableSet.has("jj") ? "available" : "unavailable"}`);
   const availableLine = available.length ? `available: ${available.join(", ")}` : "available: none";
   const unavailableLine = unavailable.length ? `unavailable: ${unavailable.join(", ")}` : "unavailable: none";
   return `CLI tools — ${status.join("; ")}; ${availableLine}; ${unavailableLine}`;
 }
 
-async function cliToolsLine(hideJj: boolean): Promise<string> {
+async function cliToolsLine(): Promise<string> {
   try {
-    return formatCliToolsLine(await availableCliTools(), hideJj);
+    return formatCliToolsLine(await availableCliTools());
   } catch {
-    const tools = hideJj ? cliTools.filter((tool) => tool !== "jj") : cliTools;
-    return `CLI tools: availability check failed for ${tools.join(", ")}`;
+    return `CLI tools: availability check failed for ${cliTools.join(", ")}`;
   }
 }
 
-async function repoInfoLine(scratch: string): Promise<{ line: string; hideJjTools: boolean }> {
+async function repoInfoLine(scratch: string): Promise<string> {
   try {
     const [jjTool, gitTool] = await Promise.all([
       moo.proc.run({ cmd: ["sh", "-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 }),
@@ -141,11 +138,11 @@ async function repoInfoLine(scratch: string): Promise<{ line: string; hideJjTool
     const gitToolStatus = `git=${gitAvailable ? "available" : "unavailable"}`;
     const jjToolStatus = `jj=${jjAvailable ? "available" : "unavailable"}`;
     const toolSuffix = `; tools: ${gitToolStatus}, ${jjToolStatus}`;
-    if (jjRoot) return { line: `repo type: jj; root=${JSON.stringify(jjRoot)}${gitRoot ? `; git backing root=${JSON.stringify(gitRoot)}` : ""}${toolSuffix}`, hideJjTools: false };
-    if (gitRoot) return { line: `repo type: git; root=${JSON.stringify(gitRoot)}; tools: ${gitToolStatus}`, hideJjTools: true };
-    return { line: `repo type: none${toolSuffix}`, hideJjTools: false };
+    if (jjRoot) return `repo type: jj; root=${JSON.stringify(jjRoot)}${gitRoot ? `; git backing root=${JSON.stringify(gitRoot)}` : ""}${toolSuffix}`;
+    if (gitRoot) return `repo type: git; root=${JSON.stringify(gitRoot)}; tools: ${gitToolStatus}`;
+    return `repo type: none${toolSuffix}`;
   } catch {
-    return { line: "repo type: unknown", hideJjTools: false };
+    return "repo type: unknown";
   }
 }
 
@@ -157,7 +154,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
   const repoLines = repo ? repoWorktreeLines : repoLessWorktreeLines;
   const agentsLines = await agentsMdLines(scratch);
   const repoInfo = await repoInfoLine(scratch);
-  const cliLine = await cliToolsLine(repoInfo.hideJjTools);
+  const cliLine = await cliToolsLine();
   const traceLines = host.tracingEnabled() ? [
     "moo.traces{current,get,events,tree,recent,search,failed,summary,diagnose,errorOf,errors,mark,span}: every runTS has a durable SQLite trace; current({})→Promise<{traceId?,id,rootId?,stepId?,parentId}|null>; get/events/tree accept {traceId?,stepId?,limit?}; recent/search/failed accept {limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?,includeEvents?}; summary({traceId?,stepId?,includeEvents?})→Promise<TraceSummary|null>; diagnose({limit?,chatId?,includeEvents?,examplesPerGroup?})→Promise<TraceDiagnosis>; errorOf({row})→string|null; errors({traceId?,stepId?,limit?})→Promise<TraceErrorInfo[]>; mark({message,data?})→Promise<string|null>; span({name,data?,fn}) nests work. For failure review use moo.traces.failed/summary; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runTS.",
   ] : [];

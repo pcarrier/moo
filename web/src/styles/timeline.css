@@ -1115,12 +1115,6 @@ details.runts-step > summary::-webkit-details-marker {
   vertical-align: baseline;
 }
 
-.runts-model-group {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-size: 0.72em;
-}
-
 .runts-status {
   flex: 0 0 auto;
   font-size: 0.78rem;
@@ -1908,6 +1902,12 @@ details.collapsible > pre {
   align-items: center;
   gap: 0.5em;
   padding: 0.4em 0.85em;
+}
+
+.step.thinking .meta {
+  margin-bottom: 0;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .loading-dots {

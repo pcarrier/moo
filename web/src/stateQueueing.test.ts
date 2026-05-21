@@ -36,6 +36,42 @@ describe("chat message queueing", () => {
     );
   });
 
+  test("wakes queued messages when refresh proves the active turn is settled", () => {
+    const applyRows = stateSource.slice(
+      stateSource.indexOf("function applyTimelineRows("),
+      stateSource.indexOf("function applyOverviewValue"),
+    );
+    const release = stateSource.slice(
+      stateSource.indexOf("function releaseSettledChatRuntime(id: string)"),
+      stateSource.indexOf("function mergeTimelineUpdateRows"),
+    );
+    const refreshChats = stateSource.slice(
+      stateSource.indexOf("async function refreshChats()"),
+      stateSource.indexOf("async function refreshTimeline"),
+    );
+
+    expect(applyRows).toContain("timelineRowsSettleActiveTurn(id, mergedTimeline)");
+    expect(applyRows).toContain("releaseSettledChatRuntime(id);");
+    expect(release).toContain("clearActiveChatRuntime(id);");
+    expect(release).toContain("settleRunningTimelineRows(id);");
+    expect(release).toContain("unblockRunTSQueue(id);");
+    expect(release).toContain("pending().some((p) => p.chatId === id)");
+    expect(release).toContain("drainSoon();");
+    expect(refreshChats).toContain("const currentChatId = chatId();");
+    expect(refreshChats).toContain("await refreshBackgroundRunTS();");
+    expect(refreshChats).toContain("releaseSettledChatRuntime(currentChatId);");
+  });
+
+  test("does not settle backgrounded RunTS rows while unblocking queued chat sends", () => {
+    const settleRows = stateSource.slice(
+      stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
+      stateSource.indexOf("function settleTimelineStep"),
+    );
+    expect(stateSource).toContain("function isBackgroundedRunTSTimelineItem(");
+    expect(stateSource).toContain("isRunTSBackgrounded(item.step, id)");
+    expect(settleRows).toContain("isBackgroundedRunTSTimelineItem(item, id)");
+  });
+
   test("does not treat optimistic chat creation as an active agent run", () => {
     expect(stateSource).toContain("const locallyCreatedChats = new Set<string>()");
     expect(stateSource).toContain("locallyCreatedChats.add(requestedChatId)");

@@ -101,6 +101,7 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain("await writeClipboardText(block.content());");
     expect(timeline).toContain("sourceId: string;");
     expect(timeline).toContain("current?.sourceId === block.sourceId");
+    expect(timeline).toContain("const current = untrack(runTSBlockLightbox);");
     expect(timeline).toContain('sourceId={`${props.item.step}:args`}');
     expect(timeline).toContain("onUpdateFull={props.onUpdateRunTSBlock}");
     expect(timeline).toContain("props.onUpdateFull?.(lightboxBlock());");

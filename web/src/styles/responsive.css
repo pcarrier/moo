@@ -31,7 +31,7 @@
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 40;
-    width: min(20rem, calc(100vw - 3.25rem));
+    width: min(var(--sidebar-mobile-w, 20rem), calc(100vw - 3.25rem));
     max-width: 88vw;
     background: var(--bg);
     box-shadow: none;
@@ -81,11 +81,21 @@
     display: none;
   }
 
+  #app[data-mobile-nav-open="true"] .resizer,
+  #app.mobile-nav-open .resizer {
+    display: block;
+    position: fixed;
+    inset: 0 auto 0 min(var(--sidebar-mobile-w, 20rem), calc(100vw - 3.25rem));
+    z-index: 45;
+    width: 1.5rem;
+    transform: translateX(-0.75rem);
+  }
+
   .right-sidebar {
     position: fixed;
     inset: 0 0 0 auto;
     z-index: 40;
-    width: min(24rem, calc(100vw - 2rem));
+    width: min(var(--right-sidebar-mobile-w, 24rem), calc(100vw - 2rem));
     max-width: calc(100vw - 2rem);
     border-left: 1px solid var(--line-strong);
     box-shadow: -1rem 0 3rem rgba(0, 0, 0, 0.28);
@@ -109,7 +119,9 @@
   }
 
   .right-sidebar-resizer {
-    display: none;
+    display: block;
+    inset-inline-start: -0.75rem;
+    width: 1.5rem;
   }
 
   .collapse-btn,
@@ -187,11 +199,24 @@
     min-height: 2.75rem;
   }
 
+  .chat-row .chat-select {
+    padding-right: 3rem;
+  }
+
+  .chat-row .chat-actions {
+    opacity: 0.75;
+    pointer-events: auto;
+  }
+
+  .chat-row .chat-actions.open {
+    opacity: 1;
+  }
+
   .chat-actions .chat-menu {
     width: 2.75rem;
   }
 
-  .chat-menu-popover {
+  .chat-action-menu {
     right: 0.25rem;
     min-width: 11rem;
   }
@@ -412,16 +437,24 @@
   .ui-panel,
   .ui-panel.maximized {
     position: absolute;
-    inset: 0;
+    inset: 0 0 0 auto;
     z-index: 20;
-    width: auto;
+    width: min(var(--ui-panel-w, 100vw), 100vw);
     min-width: 0;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
+    border-left: 1px solid var(--line-strong);
+  }
+
+  .ui-panel.maximized {
+    inset: 0;
+    width: auto;
     border-left: 0;
   }
 
   .ui-panel-resizer {
-    display: none;
+    display: block;
+    inset-inline-start: -0.75rem;
+    width: 1.5rem;
   }
 
   .toasts {

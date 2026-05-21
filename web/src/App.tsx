@@ -41,6 +41,7 @@ import { SettingsView } from "./SettingsView";
 import { type Bag } from "./state";
 import { startMermaidRenderer } from "./mermaid";
 import { startHjsonCollapsible } from "./hjsonCollapsible";
+import { installPointerResize } from "./resizeDrag";
 
 export function App(props: { bag: Bag }) {
   const { bag } = props;
@@ -178,45 +179,33 @@ export function App(props: { bag: Bag }) {
   });
 
   const installLeftResizer = (handle: HTMLDivElement) => {
-    let dragging = false;
     let startX = 0;
     let startW = 0;
     let viewportW = 0;
-    const onMove = (e: MouseEvent) => {
-      if (!dragging || viewportW <= 0) return;
-      bag.setSidebarW(((startW + (e.clientX - startX)) / viewportW) * 100);
-    };
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
-    };
-    const onDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      startX = e.clientX;
-      const sidebarEl = appRoot?.querySelector(
-        ".sidebar",
-      ) as HTMLElement | null;
-      startW = sidebarEl?.getBoundingClientRect().width ?? 0;
-      viewportW =
-        document.documentElement?.clientWidth || window.innerWidth || 0;
-      bag.setCollapsed(false);
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
-      e.preventDefault();
-    };
+    installPointerResize(handle, {
+      cursor: "col-resize",
+      onStart: (event) => {
+        startX = event.clientX;
+        const sidebarEl = appRoot?.querySelector(
+          ".sidebar",
+        ) as HTMLElement | null;
+        startW = sidebarEl?.getBoundingClientRect().width ?? 0;
+        viewportW =
+          document.documentElement?.clientWidth || window.innerWidth || 0;
+        appRoot?.style.setProperty("--sidebar-mobile-w", String(startW) + "px");
+        bag.setCollapsed(false);
+      },
+      onMove: (event) => {
+        if (viewportW <= 0) return;
+        const nextW = Math.max(0, startW + (event.clientX - startX));
+        appRoot?.style.setProperty("--sidebar-mobile-w", String(nextW) + "px");
+        bag.setSidebarW((nextW / viewportW) * 100);
+      },
+    });
     const onDoubleClick = () => bag.setCollapsed(!bag.collapsed());
-    handle.addEventListener("mousedown", onDown);
     handle.addEventListener("dblclick", onDoubleClick);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
     onCleanup(() => {
-      handle.removeEventListener("mousedown", onDown);
       handle.removeEventListener("dblclick", onDoubleClick);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
     });
   };
 

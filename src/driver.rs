@@ -30,8 +30,16 @@ struct RunningChat {
     started_at: u64,
     end_event: Option<Value>,
     ended: Arc<AtomicBool>,
-    tool_cancel: Arc<AtomicBool>,
-    tool_background: Arc<AtomicBool>,
+    foreground_runts: ForegroundRunTsState,
+}
+
+type ForegroundRunTsState = Arc<Mutex<Option<ForegroundRunTs>>>;
+
+#[derive(Clone)]
+struct ForegroundRunTs {
+    step_id: String,
+    cancel: Arc<AtomicBool>,
+    background: Arc<AtomicBool>,
 }
 
 struct QueuedChatRun {
@@ -136,32 +144,74 @@ pub fn cancel_background_runts(chat_id: &str, step_id: Option<&str>) -> usize {
     cancels.len()
 }
 
-pub fn request_foreground_runts_background(chat_id: &str) -> bool {
-    let Some(running) = running_lock()
+pub fn request_foreground_runts_background(chat_id: &str, step_id: Option<&str>) -> bool {
+    let Some(foreground) = running_lock()
         .get(chat_id)
-        .map(|entry| entry.tool_background.clone())
+        .and_then(|entry| active_foreground_runts(&entry.foreground_runts, step_id))
     else {
         return false;
     };
-    running.store(true, Ordering::SeqCst);
+    foreground.background.store(true, Ordering::SeqCst);
     true
 }
 
 pub fn cancel_runts(chat_id: &str, step_id: Option<&str>) -> usize {
     let mut cancelled = cancel_background_runts(chat_id, step_id);
-    if step_id.is_none() || cancelled == 0 {
-        if let Some(running) = running_lock()
-            .get(chat_id)
-            .map(|entry| entry.tool_cancel.clone())
-        {
+    if let Some(foreground) = running_lock()
+        .get(chat_id)
+        .and_then(|entry| active_foreground_runts(&entry.foreground_runts, step_id))
+    {
+        if !foreground.cancel.swap(true, Ordering::SeqCst) {
             // Keep the foreground driver alive so the cancelled tool result is
             // recorded in chat state and queued follow-ups can continue from a
             // terminal runJS/runTS row instead of a vanished in-flight turn.
-            running.store(true, Ordering::SeqCst);
             cancelled += 1;
         }
     }
     cancelled
+}
+
+fn active_foreground_runts(
+    state: &ForegroundRunTsState,
+    step_id: Option<&str>,
+) -> Option<ForegroundRunTs> {
+    let entry = match state.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => {
+            eprintln!("foreground runTS registry mutex poisoned; recovering inner value");
+            poisoned.into_inner().clone()
+        }
+    };
+    entry.filter(|entry| step_id.is_none_or(|id| entry.step_id == id))
+}
+
+fn set_active_foreground_runts(state: &ForegroundRunTsState, entry: ForegroundRunTs) {
+    match state.lock() {
+        Ok(mut guard) => {
+            *guard = Some(entry);
+        }
+        Err(poisoned) => {
+            eprintln!("foreground runTS registry mutex poisoned; recovering inner value");
+            *poisoned.into_inner() = Some(entry);
+        }
+    }
+}
+
+fn clear_active_foreground_runts(state: &ForegroundRunTsState, step_id: &str) {
+    match state.lock() {
+        Ok(mut guard) => {
+            if guard.as_ref().is_some_and(|entry| entry.step_id == step_id) {
+                *guard = None;
+            }
+        }
+        Err(poisoned) => {
+            eprintln!("foreground runTS registry mutex poisoned; recovering inner value");
+            let mut guard = poisoned.into_inner();
+            if guard.as_ref().is_some_and(|entry| entry.step_id == step_id) {
+                *guard = None;
+            }
+        }
+    }
 }
 
 pub fn dispatch_drive(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
@@ -386,7 +436,11 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
         queued_lock()
             .entry(chat_id)
             .or_default()
-            .push_back(QueuedChatRun { pool, bundle, state });
+            .push_back(QueuedChatRun {
+                pool,
+                bundle,
+                state,
+            });
         return;
     }
 
@@ -409,10 +463,8 @@ fn prepare_chat_run(
         .cloned();
     let ended = Arc::new(AtomicBool::new(false));
     let task_ended = ended.clone();
-    let tool_cancel = Arc::new(AtomicBool::new(false));
-    let task_tool_cancel = tool_cancel.clone();
-    let tool_background = Arc::new(AtomicBool::new(false));
-    let task_tool_background = tool_background.clone();
+    let foreground_runts = Arc::new(Mutex::new(None));
+    let task_foreground_runts = foreground_runts.clone();
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
     let task_chat_id = chat_id.clone();
     let handle = runtime().spawn(async move {
@@ -424,8 +476,7 @@ fn prepare_chat_run(
             bundle,
             task_chat_id.clone(),
             state,
-            task_tool_cancel,
-            task_tool_background,
+            task_foreground_runts,
             run_id,
         )
         .await
@@ -449,8 +500,7 @@ fn prepare_chat_run(
             started_at,
             end_event,
             ended,
-            tool_cancel,
-            tool_background,
+            foreground_runts,
         },
         start_tx,
         lifecycle_events,
@@ -516,8 +566,7 @@ async fn drive(
     bundle: Arc<String>,
     chat_id: String,
     state: Value,
-    tool_cancel: Arc<AtomicBool>,
-    tool_background: Arc<AtomicBool>,
+    foreground_runts: ForegroundRunTsState,
     run_id: u64,
 ) -> Result<(), String> {
     let lock_arc = pool.chat_lock(&format!("chat:{chat_id}"));
@@ -545,8 +594,7 @@ async fn drive(
         &chat_id,
         run_id,
         turn_span.id(),
-        tool_cancel,
-        tool_background,
+        foreground_runts,
     )
     .await;
     turn_span.finish(
@@ -608,7 +656,11 @@ pub fn apply_driver_action(action: &Value, pool: &Arc<Pool>, bundle: &Arc<String
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                request_foreground_runts_background(chat_id);
+                let step_id = action
+                    .get("stepId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                request_foreground_runts_background(chat_id, step_id);
                 return true;
             }
         }
@@ -662,7 +714,9 @@ pub fn running_started_at() -> HashMap<String, u64> {
 }
 
 fn finish_running(running: RunningChat) {
-    running.tool_cancel.store(true, Ordering::SeqCst);
+    if let Some(foreground) = active_foreground_runts(&running.foreground_runts, None) {
+        foreground.cancel.store(true, Ordering::SeqCst);
+    }
     running.handle.abort();
     // Publish step-end synchronously rather than waiting for the aborted
     // task's StepLifecycle::Drop, which may be parked inside spawn_blocking
@@ -961,8 +1015,7 @@ async fn drive_loop(
     chat_id: &str,
     run_id: u64,
     turn_span: Option<&str>,
-    _tool_cancel: Arc<AtomicBool>,
-    tool_background: Arc<AtomicBool>,
+    foreground_runts: ForegroundRunTsState,
 ) -> Result<(), String> {
     let mut next_input = if let Some(tool_result) = state.get("__toolResult").cloned() {
         let mut resumed = state.clone();
@@ -1160,7 +1213,17 @@ async fn drive_loop(
                 }
                 let foreground_value = value.clone();
                 let foreground_parent_span = tool_span.id().map(ToString::to_string);
-                let run_cancel = _tool_cancel.clone();
+                let foreground_step_id = runts_tool_step_id(&value);
+                let run_cancel = Arc::new(AtomicBool::new(false));
+                let tool_background = Arc::new(AtomicBool::new(false));
+                set_active_foreground_runts(
+                    &foreground_runts,
+                    ForegroundRunTs {
+                        step_id: foreground_step_id.clone(),
+                        cancel: run_cancel.clone(),
+                        background: tool_background.clone(),
+                    },
+                );
                 let mut run = spawn_runts_tool_task(
                     pool.clone(),
                     bundle.clone(),
@@ -1226,6 +1289,7 @@ async fn drive_loop(
                                 "backgrounded": false,
                             }),
                         );
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                     }
                     _ = &mut cancel_poll => {
                         run.abort();
@@ -1249,9 +1313,11 @@ async fn drive_loop(
                                 "backgrounded": false,
                             }),
                         );
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                     }
                     _ = &mut background_poll => {
-                        let step_id = runts_tool_step_id(&value);
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
+                        let step_id = foreground_step_id.clone();
                         let label = runts_tool_label(&value);
                         let detached_result = detached_runts_tool_result(&value);
                         background_runts_tool_handle(
@@ -1281,7 +1347,8 @@ async fn drive_loop(
                         continue;
                     }
                     _ = &mut auto_background => {
-                        let step_id = runts_tool_step_id(&value);
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
+                        let step_id = foreground_step_id.clone();
                         let label = runts_tool_label(&value);
                         let detached_result = detached_runts_tool_result(&value);
                         background_runts_tool_handle(
@@ -1724,11 +1791,72 @@ fn publish_event_payload_at(payload: &Value, at: u64) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn running_registry_lock_recovers_from_poison() {
         let source = include_str!("driver.rs");
         assert!(source.contains("fn running_lock"));
         assert!(!source.contains(concat!("RUNNING", ".lock().unwrap()")));
         assert!(!source.contains(concat!("RUNNING", ".lock().expect")));
+    }
+
+    #[test]
+    fn foreground_runts_lookup_is_step_scoped() {
+        let chat_id = format!("test-chat-{}", now_ns());
+        let state = Arc::new(Mutex::new(None));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let background = Arc::new(AtomicBool::new(false));
+        set_active_foreground_runts(
+            &state,
+            ForegroundRunTs {
+                step_id: "step:active".to_string(),
+                cancel: cancel.clone(),
+                background: background.clone(),
+            },
+        );
+
+        let handle = runtime().spawn(async {});
+        running_lock().insert(
+            chat_id.clone(),
+            RunningChat {
+                handle,
+                run_id: 0,
+                started_at: 0,
+                end_event: None,
+                ended: Arc::new(AtomicBool::new(false)),
+                foreground_runts: state.clone(),
+            },
+        );
+
+        assert!(active_foreground_runts(&state, Some("step:other")).is_none());
+        assert!(!request_foreground_runts_background(
+            &chat_id,
+            Some("step:other")
+        ));
+        assert_eq!(cancel_runts(&chat_id, Some("step:other")), 0);
+        assert!(!cancel.load(Ordering::SeqCst));
+        assert!(!background.load(Ordering::SeqCst));
+
+        assert!(request_foreground_runts_background(
+            &chat_id,
+            Some("step:active")
+        ));
+        assert!(background.load(Ordering::SeqCst));
+
+        let active = active_foreground_runts(&state, Some("step:active")).unwrap();
+        assert_eq!(cancel_runts(&chat_id, Some("step:active")), 1);
+        assert!(cancel.load(Ordering::SeqCst));
+        assert_eq!(cancel_runts(&chat_id, Some("step:active")), 0);
+
+        clear_active_foreground_runts(&state, "step:other");
+        assert!(active_foreground_runts(&state, None).is_some());
+        clear_active_foreground_runts(&state, "step:active");
+        assert!(active_foreground_runts(&state, None).is_none());
+
+        if let Some(running) = running_lock().remove(&chat_id) {
+            running.handle.abort();
+        }
+        drop(active);
     }
 }

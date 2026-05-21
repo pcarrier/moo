@@ -1556,10 +1556,18 @@ export function llmStreamEventOptions(
   options: { draftKind?: LlmDraftEventKind } = {},
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { chatId };
+  if (tokenProgress) Object.assign(out, tokenProgress);
+  const model = typeof out.model === "string" ? out.model.trim() : "";
+  const effort = typeof out.effort === "string" ? out.effort.trim() : "";
   if (draftId)
-    out.draftEvent = { kind: options.draftKind ?? "draft", chatId, draftId };
+    out.draftEvent = {
+      kind: options.draftKind ?? "draft",
+      chatId,
+      draftId,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    };
   if (tokenProgress) {
-    Object.assign(out, tokenProgress);
     out.tokenProgressEvent = {
       kind: "tokens",
       chatId,

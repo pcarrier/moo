@@ -3,11 +3,14 @@ import { render } from "solid-js/web";
 
 import { App } from "./App";
 import { captureFragmentPsk } from "./auth";
+import { registerServiceWorker } from "./pwa";
 import { createState } from "./state";
-import { applyStoredThemeMode } from "./theme";
+import { applyStoredThemeMode, startThemeColorSync } from "./theme";
 
 captureFragmentPsk();
 applyStoredThemeMode();
+startThemeColorSync();
+registerServiceWorker();
 
 const mount = document.getElementById("app");
 if (!mount) throw new Error("missing #app element");

@@ -132,7 +132,9 @@ describe("timeline thinking status", () => {
 
   test("keeps active compaction in the compaction row", () => {
     expect(timeline).toContain("const activeWaitLabel = () =>");
-    expect(timeline).toContain('const activeWaitLabel = () => "Thinking…";');
+    expect(timeline).toContain("function activeThinkingLabel(");
+    expect(timeline).toContain('return `${displayModel} ${displayEffort} thinking…`;');
+    expect(timeline).toContain('return "Thinking…";');
     expect(timeline).toContain("bag.thinking() &&");
     expect(timeline).toContain("!bag.compacting() &&");
     expect(timeline).toContain("{activeWaitLabel()} {thinkingElapsed()}");
@@ -266,6 +268,8 @@ describe("timeline thinking status", () => {
     expect(state).toContain("reasoningContent: ev.reasoningContent");
     expect(state).toContain("reasoningStreaming: true");
     expect(state).toContain("reasoningStreaming: false");
+    expect(state).toContain('typeof ev.model === "string" ? ev.model : previous?.model');
+    expect(state).toContain('typeof ev.effort === "string" ? ev.effort : previous?.effort');
     expect(state).toContain(
       "setDraftReply({ ...cur, reasoningStreaming: false });",
     );

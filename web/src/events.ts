@@ -20,6 +20,8 @@ type StreamDraftEvent = {
   content: string;
   reasoningContent?: string;
   delta?: string;
+  model?: string;
+  effort?: string;
   at?: number;
 };
 
@@ -541,6 +543,8 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
           content,
           reasoningContent: optionalString(frame, "reasoningContent"),
           delta: optionalString(frame, "delta"),
+          model: optionalString(frame, "model"),
+          effort: optionalString(frame, "effort"),
         },
         frame,
       );

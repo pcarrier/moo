@@ -460,9 +460,22 @@ describe("LLM stream provider details", () => {
   test("includes chat id in stream event options for tool-call drafts", async () => {
     const { llmStreamEventOptions } = await import("../src/agent");
 
-    expect(llmStreamEventOptions("chat1", "draft1")).toMatchObject({
+    expect(
+      llmStreamEventOptions("chat1", "draft1", {
+        model: "gpt-5.5",
+        effort: "xhigh",
+      }),
+    ).toMatchObject({
       chatId: "chat1",
-      draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" },
+      model: "gpt-5.5",
+      effort: "xhigh",
+      draftEvent: {
+        kind: "draft",
+        chatId: "chat1",
+        draftId: "draft1",
+        model: "gpt-5.5",
+        effort: "xhigh",
+      },
     });
   });
 

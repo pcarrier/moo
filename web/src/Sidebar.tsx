@@ -30,6 +30,7 @@ import { DiffView, MemoryDiffView, type DiffExpansionStore } from "./DiffView";
 import { LoadingDots } from "./LoadingDots";
 import { CloseIcon, MaximizeIcon, MenuIcon, PlusIcon, RestoreIcon } from "./icons";
 import { LeftSidebarToggle } from "./HeaderControls";
+import { installPointerResize } from "./resizeDrag";
 
 import {
   api,
@@ -737,7 +738,11 @@ export function preferredOpenRepoFileDiff(
   currentDiff: FileDiffItem | null | undefined,
 ): FileDiffItem | null {
   if (file.kind !== "file") return null;
-  if (file.loading) return null;
+  // Background refreshes keep the previous file payload in place while the
+  // spinner is active. Keep rendering its diff as long as the resolved path
+  // still matches the requested path; only hide stale diffs for visibly loading
+  // navigations to a different file.
+  if (file.loading && repoFileNeedsVisibleLoading(file, root)) return null;
   if (!timelineDiff) return currentDiff ?? null;
 
   const content = file.content || "";
@@ -751,6 +756,17 @@ export function preferredOpenRepoFileDiff(
   const synthetic = synthesizeOpenRepoFileDiff(file, root, timelineDiff);
   if (synthetic) return synthetic;
   return currentDiff ?? timelineDiff;
+}
+
+function keepSamePathHydratedDiff(
+  current: FileDiffItem | null | undefined,
+  previous: FileDiffItem | null,
+  root: string | null | undefined,
+): FileDiffItem | null {
+  if (!current || !previous) return null;
+  return sameDiffPathInRoot(current.path, previous.path, root)
+    ? previous
+    : null;
 }
 
 
@@ -1817,7 +1833,13 @@ export function RepoFilePreview(props: {
           setHydratedTimelineDiff(current);
           return;
         }
-        setHydratedTimelineDiff(null);
+        setHydratedTimelineDiff((previous) =>
+          keepSamePathHydratedDiff(
+            current,
+            previous,
+            props.assetRootPath ?? null,
+          ),
+        );
         const next = await hydrateMergedFileDiff(current);
         if (request === hydrateTimelineDiffRequest)
           setHydratedTimelineDiff(next);
@@ -1831,12 +1853,12 @@ export function RepoFilePreview(props: {
       !hydratedTimelineDiff(),
     );
   const currentFileDiff = createMemo(() => {
-    if (timelineDiffHydrating()) return null;
     const currentDiff = openRepoFileCurrentDiff(
       props.file,
       props.assetRootPath ?? null,
       "repo-file-current",
     );
+    if (timelineDiffHydrating() && !currentDiff) return null;
     return preferredOpenRepoFileDiff(
       props.file,
       props.assetRootPath ?? null,
@@ -2055,46 +2077,33 @@ export function RightSidebar(props: { bag: Bag }) {
     });
   };
   const installRightResizer = (handle: HTMLDivElement) => {
-    let dragging = false;
     let startX = 0;
     let startW = 0;
     let viewportW = 0;
-    const onMove = (e: MouseEvent) => {
-      if (!dragging || viewportW <= 0) return;
-      props.bag.setRightSidebarW(
-        ((startW + (startX - e.clientX)) / viewportW) * 100,
-      );
-    };
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
-    };
-    const onDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const sidebarEl = handle.closest(".right-sidebar") as HTMLElement | null;
-      const rect = sidebarEl?.getBoundingClientRect();
-      dragging = true;
-      startX = e.clientX;
-      startW = rect?.width ?? 0;
-      viewportW =
-        document.documentElement?.clientWidth || window.innerWidth || 0;
-      props.bag.setRightSidebarCollapsed(false);
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "col-resize";
-      e.preventDefault();
-    };
+    let sidebarEl: HTMLElement | null = null;
+    installPointerResize(handle, {
+      cursor: "col-resize",
+      onStart: (event) => {
+        sidebarEl = handle.closest(".right-sidebar") as HTMLElement | null;
+        const rect = sidebarEl?.getBoundingClientRect();
+        startX = event.clientX;
+        startW = rect?.width ?? 0;
+        viewportW =
+          document.documentElement?.clientWidth || window.innerWidth || 0;
+        sidebarEl?.style.setProperty("--right-sidebar-mobile-w", String(startW) + "px");
+        props.bag.setRightSidebarCollapsed(false);
+      },
+      onMove: (event) => {
+        if (viewportW <= 0) return;
+        const nextW = Math.max(0, startW + (startX - event.clientX));
+        sidebarEl?.style.setProperty("--right-sidebar-mobile-w", String(nextW) + "px");
+        props.bag.setRightSidebarW((nextW / viewportW) * 100);
+      },
+    });
     const onDoubleClick = () => props.bag.toggleRightSidebarCollapsed();
-    handle.addEventListener("mousedown", onDown);
     handle.addEventListener("dblclick", onDoubleClick);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
     onCleanup(() => {
-      handle.removeEventListener("mousedown", onDown);
       handle.removeEventListener("dblclick", onDoubleClick);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
     });
   };
   return (
@@ -2381,7 +2390,9 @@ function BrowserTab(props: {
           setHydratedBrowserTimelineDiff(current);
           return;
         }
-        setHydratedBrowserTimelineDiff(null);
+        setHydratedBrowserTimelineDiff((previous) =>
+          keepSamePathHydratedDiff(current, previous, rootPath()),
+        );
         const next = await hydrateMergedFileDiff(current);
         if (request === hydrateBrowserTimelineDiffRequest)
           setHydratedBrowserTimelineDiff(next);
@@ -2395,13 +2406,13 @@ function BrowserTab(props: {
       !hydratedBrowserTimelineDiff(),
     );
   const browserFileDiff = createMemo(() => {
-    if (browserTimelineDiffHydrating()) return null;
     const current = file();
     const currentDiff = openRepoFileCurrentDiff(
       current,
       rootPath(),
       "browser-current",
     );
+    if (browserTimelineDiffHydrating() && !currentDiff) return null;
     return preferredOpenRepoFileDiff(
       current,
       rootPath(),
@@ -4486,6 +4497,22 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
   });
 
   const closeChatMenu = () => setOpenChatMenu(null);
+  const toggleChatMenu = (chatId: string) => {
+    setOpenChatMenu(openChatMenu() === chatId ? null : chatId);
+  };
+  const handleChatMenuPointerDown = (e: PointerEvent, chatId: string) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleChatMenu(chatId);
+  };
+  const handleChatMenuClick = (e: MouseEvent, chatId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.detail === 0 || typeof PointerEvent === "undefined") {
+      toggleChatMenu(chatId);
+    }
+  };
   const handleDocumentClick = (e: MouseEvent) => {
     if ((e.target as Element | null)?.closest(".chat-actions")) return;
     closeChatMenu();
@@ -4772,11 +4799,8 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
             aria-label={"chat actions " + chat.chatId}
             aria-haspopup="menu"
             aria-expanded={openChatMenu() === chat.chatId}
-            onClick={() =>
-              setOpenChatMenu(
-                openChatMenu() === chat.chatId ? null : chat.chatId,
-              )
-            }
+            onPointerDown={(e) => handleChatMenuPointerDown(e, chat.chatId)}
+            onClick={(e) => handleChatMenuClick(e, chat.chatId)}
           >
             <MenuIcon />
           </button>

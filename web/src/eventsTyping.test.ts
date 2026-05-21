@@ -60,6 +60,21 @@ describe("typed WS events", () => {
     expect(toolDraft.description).toBe("Read target files");
     expect(toolDraft.code).toBe("return 1");
 
+    const replyDraft = parseWsFrame({
+      kind: "reasoning-draft",
+      chatId: "chat1",
+      draftId: "draft1",
+      content: "",
+      reasoningContent: "thinking",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      at: 45,
+    });
+    expect(replyDraft?.kind).toBe("reasoning-draft");
+    if (replyDraft?.kind !== "reasoning-draft") throw new Error("reasoning draft did not parse");
+    expect(replyDraft.model).toBe("gpt-5.5");
+    expect(replyDraft.effort).toBe("xhigh");
+
     const tokens = parseWsFrame({
       kind: "tokens",
       chatId: "chat1",

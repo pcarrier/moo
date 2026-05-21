@@ -286,7 +286,11 @@ fn run_ts_background_command(payload: &Value) -> Value {
     else {
         return json!({ "ok": false, "error": { "message": "run-ts-background requires chatId" } });
     };
-    let requested = crate::driver::request_foreground_runts_background(chat_id);
+    let step_id = payload
+        .get("stepId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let requested = crate::driver::request_foreground_runts_background(chat_id, step_id);
     json!({
         "ok": true,
         "value": {

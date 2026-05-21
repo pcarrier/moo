@@ -17,6 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=web/tsconfig.json");
     println!("cargo:rerun-if-changed=web/vite.config.ts");
     println!("cargo:rerun-if-changed=web/index.html");
+    emit_rerun_if_changed(Path::new("web/public"));
     emit_rerun_if_changed(Path::new("web/src"));
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
@@ -120,6 +121,26 @@ fn build_ui(out_dir: &Path) {
         brotli_compress(html.as_bytes()),
     )
     .unwrap_or_else(|err| panic!("failed to write embedded UI Brotli html: {err}"));
+    copy_pwa_assets(out_dir, &dist);
+}
+
+const PWA_ASSETS: &[(&str, &str)] = &[
+    ("manifest.webmanifest", "pwa_manifest.webmanifest"),
+    ("sw.js", "pwa_sw.js"),
+    ("icons/moo.svg", "pwa_icon_moo.svg"),
+];
+
+fn copy_pwa_assets(out_dir: &Path, dist: &Path) {
+    for (source, target) in PWA_ASSETS {
+        let source_path = dist.join(source);
+        fs::copy(&source_path, out_dir.join(target)).unwrap_or_else(|err| {
+            panic!(
+                "failed to copy PWA asset {} to {}: {err}",
+                source_path.display(),
+                target
+            )
+        });
+    }
 }
 
 fn brotli_compress(input: &[u8]) -> Vec<u8> {

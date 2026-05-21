@@ -157,6 +157,41 @@ describe("mergeFileDiffItems", () => {
     expect(merged.after).toBeNull();
   });
 
+  test("collapses a create-then-delete lifecycle into one net diff", () => {
+    const merged = mergeFileDiffItems([
+      item({
+        id: "create",
+        at: 1,
+        before: null,
+        after: "temporary\n",
+        diff: "--- /dev/null\n+++ b/src/example.ts\n@@ -0,0 +1 @@\n+temporary",
+        stats: { added: 1, removed: 0, lines: 4 },
+      }),
+      item({
+        id: "delete",
+        at: 2,
+        before: "temporary\n",
+        after: null,
+        diff: "--- a/src/example.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-temporary",
+        stats: { added: 0, removed: 1, lines: 4 },
+      }),
+    ]);
+
+    expect(merged.items?.map((source) => source.id)).toEqual([
+      "create",
+      "delete",
+    ]);
+    expect(merged.before).toBeNull();
+    expect(merged.after).toBeNull();
+    expect(merged.stats?.added).toBe(0);
+    expect(merged.stats?.removed).toBe(0);
+    expect(merged.diff.match(/^--- /gm)?.length).toBe(1);
+    expect(merged.diff).toContain("--- /dev/null");
+    expect(merged.diff).toContain("+++ /dev/null");
+    expect(merged.diff).not.toContain("+temporary");
+    expect(merged.diff).not.toContain("-temporary");
+  });
+
 });
 
 
@@ -270,5 +305,36 @@ describe("diff path matching", () => {
       "harness/src/commands/chats.ts",
       "src/commands/chats.ts",
     ]);
+  });
+
+  test("groups create and delete patches for the same path", () => {
+    const groups = mergedFileDiffs([
+      item({
+        id: "create",
+        path: "src/example.ts",
+        at: 1,
+        before: null,
+        after: "temporary\n",
+        diff: "--- /dev/null\n+++ b/src/example.ts\n@@ -0,0 +1 @@\n+temporary",
+      }),
+      item({
+        id: "delete",
+        path: "./src/example.ts",
+        at: 2,
+        before: "temporary\n",
+        after: null,
+        diff: "--- a/src/example.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-temporary",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    const group = groups[0]!;
+    expect(group.path).toBe("./src/example.ts");
+    expect(group.items?.map((source) => source.id)).toEqual([
+      "create",
+      "delete",
+    ]);
+    expect(group.stats?.added).toBe(0);
+    expect(group.stats?.removed).toBe(0);
   });
 });
