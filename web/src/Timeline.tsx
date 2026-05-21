@@ -3451,7 +3451,7 @@ function RunTSBody(props: {
       onToggle={(ev) => setOpen(ev.currentTarget.open)}
     >
       <summary>
-        <Show when={props.item.status === "agent:Running"}>
+        <Show when={props.item.status === "agent:Running" || backgrounded()}>
           <LoadingDots class="runts-loading" label="running" />
         </Show>
         <Show when={props.item.status === "agent:Queued"}>

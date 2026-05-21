@@ -126,6 +126,14 @@ test("background runTS jobs stay compact below the timeline", () => {
   expect(css).toContain('color: inherit;');
 });
 
+test("backgrounded runTS rows keep animated loading dots", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  expect(timeline).toContain(
+    'props.item.status === "agent:Running" || backgrounded()',
+  );
+  expect(timeline).toContain('<LoadingDots class="runts-loading" label="running" />');
+});
+
 test("backgrounded runTS rows do not offer background again", () => {
   const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
   const controls = timeline.slice(
