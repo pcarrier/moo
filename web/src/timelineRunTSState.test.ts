@@ -146,6 +146,37 @@ test("backgrounded runTS rows do not offer background again", () => {
   expect(controls).toContain('aria-label="run in background"');
 });
 
+test("backgrounded runTS timeline rows remain cancellable", () => {
+  const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+  const summaryStart = timeline.indexOf("const backgrounded = ()");
+  const firstGuard = timeline.indexOf(
+    'props.item.status === "agent:Running" || backgrounded()',
+    summaryStart,
+  );
+  const controlsStart = timeline.indexOf(
+    'props.item.status === "agent:Running" || backgrounded()',
+    firstGuard + 1,
+  );
+  const controls = timeline.slice(
+    controlsStart,
+    timeline.indexOf("</summary>", controlsStart),
+  );
+
+  expect(controls).toContain('class="runts-control runts-cancel"');
+  expect(controls).toContain("props.bag.cancelRunTSStep(props.item.step);");
+  expect(controls).toContain('props.item.status !== "agent:Cancelled"');
+});
+
+test("tool cancellation receipts are explicit for the LLM", () => {
+  const mooSource = readFileSync(new URL("../../harness/src/moo.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../../harness/src/types.ts", import.meta.url), "utf8");
+
+  expect(types).toContain('status: "cancelled" | "not-found";');
+  expect(types).toContain("message: string;");
+  expect(mooSource).toContain('status: cancelled > 0 ? "cancelled" : "not-found"');
+  expect(mooSource).toContain("no cancellable runTS step found");
+});
+
 test("background runTS queue state unblocks follow-up draining", () => {
   expect(state).toContain("const [backgroundRequestedRunTS, setBackgroundRequestedRunTS]");
   expect(state).toContain("function isRunTSBackgrounded(");

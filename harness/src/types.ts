@@ -743,7 +743,13 @@ export type Moo = {
       id?: string | null;
       stepId?: string | null;
       chatId?: string | null;
-    }): Promise<{ chatId: string; stepId: string | null; cancelled: number }>;
+    }): Promise<{
+      chatId: string;
+      stepId: string | null;
+      cancelled: number;
+      status: "cancelled" | "not-found";
+      message: string;
+    }>;
   };
   agent: {
     claim(args: { store: string; graph: string; runId: string | null; leaseMs?: number }): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;

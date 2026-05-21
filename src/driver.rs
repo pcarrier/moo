@@ -903,6 +903,28 @@ fn publish_runts_background_event(
     }));
 }
 
+fn publish_runts_step_finished_event(
+    chat_id: &str,
+    step_id: &str,
+    tool_result: &Value,
+    status: &str,
+) {
+    publish_event_payload(&json!({
+        "kind": "runts-step-finished",
+        "chatId": chat_id,
+        "stepId": step_id,
+        "status": match status {
+            "cancelled" => "agent:Cancelled",
+            "error" => "agent:Failed",
+            _ => "agent:Done",
+        },
+        "error": tool_result
+            .get("content")
+            .and_then(|v| v.as_str())
+            .filter(|_| status != "ok"),
+    }));
+}
+
 fn background_runts_tool(
     pool: Arc<Pool>,
     bundle: Arc<String>,
@@ -983,6 +1005,16 @@ fn background_runts_tool_handle(
             label.as_deref(),
             requested_by,
         );
+        let result_status = tool_result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("done");
+        let finish_status = match result_status {
+            "cancelled" => "cancelled",
+            "failed" => "error",
+            _ => "ok",
+        };
+        publish_runts_step_finished_event(&chat_id, &step_id, &tool_result, finish_status);
         let tool_ok = tool_result
             .get("status")
             .and_then(|v| v.as_str())

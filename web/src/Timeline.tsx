@@ -3490,7 +3490,7 @@ function RunTSBody(props: {
             )}
           />
         </Show>
-        <Show when={props.item.status === "agent:Running"}>
+        <Show when={props.item.status === "agent:Running" || backgrounded()}>
           <span
             class="runts-controls"
             onPointerDown={(ev) => ev.stopPropagation()}
@@ -3519,23 +3519,25 @@ function RunTSBody(props: {
                 <BackgroundIcon class="runts-control-icon" />
               </button>
             </Show>
-            <button
-              type="button"
-              class="runts-control runts-cancel"
-              title="cancel runTS"
-              aria-label="cancel runTS"
-              onPointerDown={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                props.bag.cancelRunTSStep(props.item.step);
-              }}
-              onClick={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-              }}
-            >
-              <CrossIcon class="runts-control-icon" />
-            </button>
+            <Show when={props.item.status !== "agent:Cancelled"}>
+              <button
+                type="button"
+                class="runts-control runts-cancel"
+                title="cancel runTS"
+                aria-label="cancel runTS"
+                onPointerDown={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  props.bag.cancelRunTSStep(props.item.step);
+                }}
+                onClick={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                }}
+              >
+                <CrossIcon class="runts-control-icon" />
+              </button>
+            </Show>
           </span>
         </Show>
       </summary>

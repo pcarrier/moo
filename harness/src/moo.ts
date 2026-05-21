@@ -3569,10 +3569,17 @@ const tools: Moo["tools"] = {
       stepId?: string | null;
       cancelled?: number;
     };
+    const cancelled = Number(parsed.cancelled ?? 0);
+    const resolvedStepId = parsed.stepId ?? (targetStepId || null);
     return {
       chatId: parsed.chatId ?? targetChatId,
-      stepId: parsed.stepId ?? (targetStepId || null),
-      cancelled: Number(parsed.cancelled ?? 0),
+      stepId: resolvedStepId,
+      cancelled,
+      status: cancelled > 0 ? "cancelled" : "not-found",
+      message:
+        cancelled > 0
+          ? `cancelled ${cancelled} runTS step${cancelled === 1 ? "" : "s"}${resolvedStepId ? ` (${resolvedStepId})` : ""}`
+          : `no cancellable runTS step found${resolvedStepId ? ` (${resolvedStepId})` : ""}`,
     };
   },
 };
