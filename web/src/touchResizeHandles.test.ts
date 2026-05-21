@@ -59,6 +59,14 @@ describe("touch resize handles", () => {
     expect(panelResizer).toContain("touch-action: none;");
   });
 
+  test("right sidebar resizer hover paints across the panel boundary", () => {
+    const rightSidebar = cssRuleBody(".right-sidebar");
+    expect(rightSidebar).toContain("overflow: visible;");
+
+    const rightPanel = cssRuleBody(".right-tab-panel");
+    expect(rightPanel).toContain("overflow: hidden;");
+  });
+
   test("mobile overlays keep resize handles enabled and width-backed", () => {
     expect(css).toContain(
       "width: min(var(--sidebar-mobile-w, 20rem), calc(100vw - 3.25rem));",
