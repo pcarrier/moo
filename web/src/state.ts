@@ -1031,6 +1031,9 @@ export function createState() {
   const [activeChatStartedAt, setActiveChatStartedAt] = createSignal<
     Map<string, number>
   >(new Map());
+  const [activeChatModel, setActiveChatModel] = createSignal<
+    Map<string, { model?: string | null; effort?: string | null }>
+  >(new Map());
   const [backgroundRunTS, setBackgroundRunTS] = createSignal<
     Array<{
       chatId: string;
@@ -1118,10 +1121,33 @@ export function createState() {
     const id = chatId();
     return id ? (activeChatStartedAt().get(id) ?? null) : null;
   };
+  const runningModel = () => {
+    const id = chatId();
+    return id ? (activeChatModel().get(id) ?? null) : null;
+  };
+  function setActiveChatRuntimeModel(
+    id: string,
+    model?: string | null,
+    effort?: string | null,
+  ) {
+    const cleanModel = typeof model === "string" ? model.trim() : "";
+    const cleanEffort = typeof effort === "string" ? effort.trim() : "";
+    if (!cleanModel && !cleanEffort) return;
+    const next = new Map(activeChatModel());
+    const previous = next.get(id) ?? {};
+    next.set(id, {
+      model: cleanModel || previous.model || null,
+      effort: cleanEffort || previous.effort || null,
+    });
+    setActiveChatModel(next);
+  }
   function clearActiveChatRuntime(id: string) {
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setCompactingChats, compactingChats, id);
     deleteChatStartedAt(id);
+    const nextActiveModels = new Map(activeChatModel());
+    nextActiveModels.delete(id);
+    setActiveChatModel(nextActiveModels);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
   }
@@ -5631,6 +5657,7 @@ export function createState() {
         }
         endedDraftReplyIds.delete(ev.draftId);
         const previous = draftReply();
+        setActiveChatRuntimeModel(ev.chatId, ev.model, ev.effort);
         setDraftReply({
           kind: "reply",
           chatId: cid,
@@ -5674,6 +5701,7 @@ export function createState() {
         }
         endedDraftReplyIds.delete(ev.draftId);
         const previous = draftReply();
+        setActiveChatRuntimeModel(ev.chatId, ev.model, ev.effort);
         setDraftReply({
           kind: "reply",
           chatId: cid,
@@ -5738,6 +5766,17 @@ export function createState() {
     }
     if (ev.kind === "step-start") {
       addToSet(setActiveChats, activeChats, ev.chatId);
+      const currentModel = chatModel();
+      if (currentModel?.chatId === ev.chatId) {
+        setActiveChatRuntimeModel(
+          ev.chatId,
+          currentModel.effectiveModelId ?? currentModel.effectiveModel,
+          currentModel.effectiveEffort,
+        );
+      } else {
+        const summary = chats().find((chat) => chat.chatId === ev.chatId);
+        setActiveChatRuntimeModel(ev.chatId, summary?.model ?? null, null);
+      }
       if (ev.compacting === true) {
         addToSet(setCompactingChats, compactingChats, ev.chatId);
       }
@@ -6267,6 +6306,7 @@ export function createState() {
     compacting,
     canResumeAgent,
     thinkingStartedAt,
+    runningModel,
     isChatActive: (id: string) => activeChats().has(id),
     connected,
     pskRequired,

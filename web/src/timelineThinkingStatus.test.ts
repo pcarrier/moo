@@ -132,6 +132,11 @@ describe("timeline thinking status", () => {
 
   test("keeps active compaction in the compaction row", () => {
     expect(timeline).toContain("const activeWaitLabel = () =>");
+    expect(timeline).toContain("const runningModel = bag.runningModel();");
+    expect(timeline).toContain("runningModel?.model ??");
+    expect(timeline).toContain("runningModel?.effort ??");
+    expect(state).toContain("const runningModel = () =>");
+    expect(state).toContain("setActiveChatRuntimeModel(");
     expect(timeline).toContain("function activeThinkingLabel(");
     expect(timeline).toContain('return `${displayModel} ${displayEffort} thinking…`;');
     expect(timeline).toContain('return "Thinking…";');

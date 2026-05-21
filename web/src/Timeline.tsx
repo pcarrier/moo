@@ -348,16 +348,21 @@ export function Timeline(props: {
       : formatThinkingElapsed(thinkingNow() - startedAt);
   });
   const activeWaitLabel = () => {
+    const runningModel = bag.runningModel();
     const modelInfo = bag.chatModel();
     const summary = bag.currentChatSummary();
     const chatId = bag.chatId();
     const memoryEffort = chatId ? bag.chatMemory()[chatId]?.effort : null;
     return activeThinkingLabel(
-      modelInfo?.effectiveModel ??
+      runningModel?.model ??
+        modelInfo?.effectiveModel ??
+        summary?.model ??
         modelInfo?.selectedModel ??
-        summary?.selectedModel ??
-        summary?.model,
-      modelInfo?.effectiveEffort ?? modelInfo?.selectedEffort ?? memoryEffort,
+        summary?.selectedModel,
+      runningModel?.effort ??
+        modelInfo?.effectiveEffort ??
+        modelInfo?.selectedEffort ??
+        memoryEffort,
     );
   };
 
