@@ -349,21 +349,7 @@ export function Timeline(props: {
   });
   const activeWaitLabel = () => {
     const runningModel = bag.runningModel();
-    const modelInfo = bag.chatModel();
-    const summary = bag.currentChatSummary();
-    const chatId = bag.chatId();
-    const memoryEffort = chatId ? bag.chatMemory()[chatId]?.effort : null;
-    return activeThinkingLabel(
-      runningModel?.model ??
-        modelInfo?.effectiveModel ??
-        summary?.model ??
-        modelInfo?.selectedModel ??
-        summary?.selectedModel,
-      runningModel?.effort ??
-        modelInfo?.effectiveEffort ??
-        modelInfo?.selectedEffort ??
-        memoryEffort,
-    );
+    return activeThinkingLabel(runningModel?.model, runningModel?.effort);
   };
 
   // Keep the scroll position stable across timeline refreshes. If the user is
