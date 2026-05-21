@@ -162,9 +162,6 @@ pub fn cancel_runts(chat_id: &str, step_id: Option<&str>) -> usize {
         .and_then(|entry| active_foreground_runts(&entry.foreground_runts, step_id))
         && !foreground.cancel.swap(true, Ordering::SeqCst)
     {
-        // Keep the foreground driver alive so the cancelled tool result is
-        // recorded in chat state and queued follow-ups can continue from a
-        // terminal runJS/runTS row instead of a vanished in-flight turn.
         cancelled += 1;
     }
     cancelled

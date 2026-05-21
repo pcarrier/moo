@@ -3043,7 +3043,7 @@ async function startRunTSStep(
   });
 }
 
-async function finishRunTSStep(
+export async function finishRunTSStep(
   chatId: string,
   stepId: string,
   result: { value: string } | null,

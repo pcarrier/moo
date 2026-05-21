@@ -212,6 +212,12 @@ fn run_command(
         crate::driver::cancel_runts(chat_id, None);
     }
 
+    if command == "run-ts-cancel" {
+        let result = run_ts_cancel_command(&pool, &bundle, &payload, &db);
+        send_run_result(&writer_tx, &id, result);
+        return;
+    }
+
     // Some builtins do not need per-request host/db setup. Return them before
     // host initialization so UI observability calls do not contend with normal
     // command setup.
@@ -270,7 +276,6 @@ fn builtin_command_result(command: &str, db: &str, payload: &Value) -> Option<Va
         "llm-auth-get" => llm_auth_get(db),
         "llm-auth-save" => llm_auth_save(db, payload),
         "run-ts-background" => run_ts_background_command(payload),
-        "run-ts-cancel" => run_ts_cancel_command(payload),
         "run-ts-backgrounds" => crate::driver::background_runts_json(),
         "pointers" => pointers_command(db, payload),
         "graph-summaries" => graph_summaries_command(db, payload),
@@ -301,24 +306,57 @@ fn run_ts_background_command(payload: &Value) -> Value {
     })
 }
 
-fn run_ts_cancel_command(payload: &Value) -> Value {
-    let Some(chat_id) = payload
+fn run_ts_cancel_command(
+    pool: &Arc<Pool>,
+    bundle: &BundleProvider,
+    payload: &Value,
+    db: &str,
+) -> Value {
+    let chat_id = match payload
         .get("chatId")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-    else {
-        return json!({ "ok": false, "error": { "message": "run-ts-cancel requires chatId" } });
+    {
+        Some(s) => s.to_string(),
+        None => return json!({ "ok": false, "error": { "message": "run-ts-cancel requires chatId" } }),
     };
     let step_id = payload
         .get("stepId")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    let cancelled = crate::driver::cancel_runts(chat_id, step_id);
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let cancelled = crate::driver::cancel_runts(&chat_id, step_id.as_deref());
+    if cancelled > 0 {
+        if let Some(sid) = &step_id {
+            crate::broadcast::publish(
+                json!({
+                    "kind": "runts-step-finished",
+                    "chatId": chat_id,
+                    "stepId": sid,
+                    "status": "agent:Cancelled",
+                    "error": "runTS cancelled",
+                    "at": crate::util::now_ms(),
+                })
+                .to_string(),
+            );
+            let pool = pool.clone();
+            let bundle = bundle();
+            let db = db.to_string();
+            let chat_id = chat_id.clone();
+            let sid = sid.clone();
+            std::thread::spawn(move || {
+                if host::install(&db).is_ok() {
+                    let input = json!({ "command": "run-ts-cancel", "chatId": chat_id, "stepId": sid });
+                    let _ = pool.submit(bundle, input.to_string());
+                }
+            });
+        }
+    }
     json!({
         "ok": true,
         "value": {
             "chatId": chat_id,
-            "stepId": payload.get("stepId").cloned().unwrap_or(Value::Null),
+            "stepId": step_id,
             "cancelled": cancelled,
         },
     })
@@ -649,7 +687,7 @@ fn otel_config_get(db: &str) -> Value {
 }
 
 fn no_host_builtin_command(command: &str) -> bool {
-    matches!(command, "v8-stats" | "run-ts-background" | "run-ts-cancel")
+    matches!(command, "v8-stats" | "run-ts-background")
 }
 
 fn inline_builtin_command(command: &str) -> bool {

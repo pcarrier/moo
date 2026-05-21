@@ -5112,6 +5112,7 @@ export function createState() {
     if (!r.value.cancelled && targetStep)
       clearRunTSBackgroundRequest(id, targetStep);
     if (r.value.cancelled && id === chatId()) {
+      if (targetStep) clearRunTSBackgroundRequest(id, targetStep);
       clearActiveChatRuntime(id);
       unblockRunTSQueue(id);
       updateChatSummary(id, {

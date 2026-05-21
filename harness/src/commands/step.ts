@@ -53,6 +53,7 @@ import {
   fitCompactionSummaryMessages,
   runCompaction,
   estimateCompactionSummaryTokens,
+  finishRunTSStep,
   TOOLS,
 } from "../agent";
 import type {
@@ -1378,11 +1379,24 @@ export async function runTsCancelCommand(input: Input) {
   const stepId = String(input.stepId ?? input.step ?? "").trim();
   if (!chatId)
     return { ok: false, error: { message: "run-ts-cancel requires chatId" } };
+  if (stepId) {
+    moo.events.publish({
+      payload: {
+        kind: "runts-step-finished",
+        chatId,
+        stepId,
+        status: "agent:Cancelled",
+        error: "runTS cancelled",
+      },
+    });
+    await finishRunTSStep(chatId, stepId, null, "runTS cancelled", undefined, "agent:Cancelled");
+  }
   return {
     ok: true,
     value: {
       chatId,
       stepId: stepId || null,
+      cancelled: !!stepId,
       driver: { action: "cancel-runts", chatId, stepId: stepId || null },
     },
   };
