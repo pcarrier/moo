@@ -189,7 +189,10 @@ mod tests {
             headers: vec![],
         };
         let normalized_blank = normalize_trace_config(blank);
-        assert_eq!(normalized_blank.otel_endpoint, default_trace_otel_endpoint());
+        assert_eq!(
+            normalized_blank.otel_endpoint,
+            default_trace_otel_endpoint()
+        );
         assert_eq!(normalized_blank.service_name, default_trace_service_name());
         assert!(normalized_blank.headers.is_empty());
     }

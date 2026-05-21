@@ -68,10 +68,7 @@ impl OtelTraceExporter {
     }
 
     fn export(&self, rows: &[TraceRow]) -> Result<(), String> {
-        let spans = rows
-            .iter()
-            .filter_map(|row| otel_span_json(row))
-            .collect::<Vec<_>>();
+        let spans = rows.iter().filter_map(otel_span_json).collect::<Vec<_>>();
         if spans.is_empty() {
             return Ok(());
         }

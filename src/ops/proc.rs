@@ -236,7 +236,9 @@ fn read_limited(mut pipe: impl Read, limit: Option<usize>) -> CapturedOutput {
         if let Some(max) = limit {
             let remaining = max.saturating_sub(captured.bytes.len());
             if remaining > 0 {
-                captured.bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+                captured
+                    .bytes
+                    .extend_from_slice(&chunk[..read.min(remaining)]);
             }
             if read > remaining {
                 captured.truncated = true;

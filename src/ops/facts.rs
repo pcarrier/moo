@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, Transaction};
+use rusqlite::{Connection, Transaction, params, params_from_iter};
 use rusty_v8 as v8;
 
 use crate::broadcast;

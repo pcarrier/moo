@@ -191,7 +191,11 @@ impl CdpHandle {
         async_agent_run: Option<AgentRunHandler>,
     ) -> Option<Result<String, String>> {
         let chat_id = chat_id_from_input(input)?;
-        let attached = self.active_target.lock().expect("active_target lock").clone();
+        let attached = self
+            .active_target
+            .lock()
+            .expect("active_target lock")
+            .clone();
         if attached
             .as_ref()
             .and_then(|target| target.chat_id.as_deref())
@@ -480,17 +484,24 @@ fn run_session(
     *session.shared.in_rx.borrow_mut() = Some(pending.in_rx);
     let session_box: Box<V8InspectorSession> = Box::new(inspector_session);
     let session_ptr =
-        NonNull::new(Box::as_ref(&session_box) as *const V8InspectorSession as *mut _).expect("NonNull V8InspectorSession from Box");
+        NonNull::new(Box::as_ref(&session_box) as *const V8InspectorSession as *mut _)
+            .expect("NonNull V8InspectorSession from Box");
     session.shared.session.set(Some(session_ptr));
     session.shared.paused.set(false);
 
-    *session.active_target.lock().expect("active_target lock for session start") = Some(target.clone());
+    *session
+        .active_target
+        .lock()
+        .expect("active_target lock for session start") = Some(target.clone());
     pump_messages(
         session.shared_ptr,
         session.inspect_rx,
         target.chat_id.as_deref(),
     );
-    *session.active_target.lock().expect("active_target lock for session end") = None;
+    *session
+        .active_target
+        .lock()
+        .expect("active_target lock for session end") = None;
 
     session.shared.session.set(None);
     session.shared.paused.set(false);
@@ -991,11 +1002,7 @@ fn finish_tracing(shared: *const Shared, profile: Option<Value>) {
 
 fn trace_events(shared: *const Shared, profile: Option<Value>) -> Value {
     let start_ts = unsafe { (*shared).tracing_start_ts.get() };
-    let ts = if start_ts == 0 {
-        now_nanos()
-    } else {
-        start_ts
-    };
+    let ts = if start_ts == 0 { now_nanos() } else { start_ts };
     let end_ts = now_nanos();
     let mut events = vec![
         json!({"name":"process_name","ph":"M","pid":1,"tid":1,"ts":ts,"args":{"name":"moo"}}),
@@ -1390,7 +1397,10 @@ fn json_list(
     active_target: &Arc<Mutex<Option<TargetSpec>>>,
     target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> String {
-    let active = active_target.lock().expect("active_target lock for JSON list").clone();
+    let active = active_target
+        .lock()
+        .expect("active_target lock for JSON list")
+        .clone();
     if active.is_none()
         && let Some(json) = cached_json_list(advertised_host, db_path, target_cache)
     {
@@ -1425,7 +1435,9 @@ fn cached_json_list(
     target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> Option<String> {
     let now = Instant::now();
-    let mut cache = target_cache.lock().expect("target_cache lock for JSON list");
+    let mut cache = target_cache
+        .lock()
+        .expect("target_cache lock for JSON list");
     if cache
         .as_ref()
         .map(|cached| now.duration_since(cached.refreshed_at) >= JSON_LIST_CACHE_TTL)
@@ -1486,7 +1498,9 @@ fn cached_chat_targets(
     target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> Vec<TargetSpec> {
     let now = Instant::now();
-    let mut cache = target_cache.lock().expect("target_cache lock for chat targets");
+    let mut cache = target_cache
+        .lock()
+        .expect("target_cache lock for chat targets");
     if let Some(cached) = cache.as_ref()
         && now.duration_since(cached.refreshed_at) < JSON_LIST_CACHE_TTL
     {

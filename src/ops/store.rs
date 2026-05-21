@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use std::collections::HashMap;
 
 use rusqlite::params_from_iter;

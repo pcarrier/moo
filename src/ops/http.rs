@@ -102,7 +102,8 @@ fn op_http_fetch(
         Ok(mut resp) => {
             let status = resp.status().as_u16();
             let response_headers = headers_to_json(resp.headers());
-            let body_capture = read_limited_body(resp.body_mut().as_reader(), HTTP_FETCH_BODY_LIMIT_BYTES);
+            let body_capture =
+                read_limited_body(resp.body_mut().as_reader(), HTTP_FETCH_BODY_LIMIT_BYTES);
             (status, response_headers, body_capture)
         }
         Err(e) => {
@@ -159,7 +160,9 @@ fn read_limited_body(mut reader: impl Read, limit: usize) -> CapturedBody {
         };
         let remaining = limit.saturating_sub(captured.bytes.len());
         if remaining > 0 {
-            captured.bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+            captured
+                .bytes
+                .extend_from_slice(&chunk[..read.min(remaining)]);
         }
         if read > remaining {
             captured.truncated = true;
@@ -302,7 +305,8 @@ fn op_http_stream_next(
         .unwrap_or(0);
 
     let mut buf = [0u8; 4096];
-    let result: Result<usize, std::io::Error> = STREAMS.with(|s| read_stream_chunk(&mut s.borrow_mut(), handle, &mut buf));
+    let result: Result<usize, std::io::Error> =
+        STREAMS.with(|s| read_stream_chunk(&mut s.borrow_mut(), handle, &mut buf));
 
     match result {
         Ok(0) => rv.set(v8::null(scope).into()),
@@ -334,15 +338,15 @@ fn op_http_stream_close(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_limited_body, read_stream_chunk, StreamReader};
+    use super::{StreamReader, read_limited_body, read_stream_chunk};
     use std::collections::HashMap;
-    use std::io::{Cursor, Error, ErrorKind, Read};
+    use std::io::{Cursor, Error, Read};
 
     struct FailingReader;
 
     impl Read for FailingReader {
         fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Error> {
-            Err(Error::new(ErrorKind::Other, "boom"))
+            Err(Error::other("boom"))
         }
     }
 

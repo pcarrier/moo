@@ -206,10 +206,10 @@ fn run_command(
     base_url: Option<String>,
 ) {
     let command = command_from_payload(&payload).to_string();
-    if command == "interrupt" {
-        if let Some(chat_id) = payload.get("chatId").and_then(|v| v.as_str()) {
-            crate::driver::cancel_runts(chat_id, None);
-        }
+    if command == "interrupt"
+        && let Some(chat_id) = payload.get("chatId").and_then(|v| v.as_str())
+    {
+        crate::driver::cancel_runts(chat_id, None);
     }
 
     // Some builtins do not need per-request host/db setup. Return them before
@@ -249,10 +249,10 @@ fn run_command(
     let source = bundle();
     let effective_base_url = effective_server_base_url(&db, base_url.as_deref());
     let payload = payload_with_base_url(payload, effective_base_url.as_deref());
-    if command == "run-ts-tool" {
-        if handle_run_ts_tool_command(&pool, source.clone(), payload.clone(), &writer_tx, &id) {
-            return;
-        }
+    if command == "run-ts-tool"
+        && handle_run_ts_tool_command(&pool, source.clone(), payload.clone(), &writer_tx, &id)
+    {
+        return;
     }
     let result_value = submit_to_pool(&pool, source.clone(), payload.to_string());
     apply_driver_actions(&result_value, &pool, source);
@@ -1145,13 +1145,11 @@ fn ensure_runts_step_id(mut payload: Value) -> Value {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .is_some();
-    if !has_step_id {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert(
-                "runTsStepId".to_string(),
-                Value::String(util::random_id("step")),
-            );
-        }
+    if !has_step_id && let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "runTsStepId".to_string(),
+            Value::String(util::random_id("step")),
+        );
     }
     payload
 }
