@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -156,77 +156,14 @@ fn op_proc_run(
     let stdout_thread = thread::spawn(move || read_limited(stdout_pipe, stdout_limit));
     let stderr_thread = thread::spawn(move || read_limited(stderr_pipe, stderr_limit));
 
-    let cancel_token = current_cancel_token();
-    let mut timed_out = false;
-    let mut cancelled = false;
-    let status = match timeout_ms {
-        Some(ms) => {
-            let deadline = Instant::now() + Duration::from_millis(ms);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(s)) => break s,
-                    Ok(None) => {
-                        if cancel_token
-                            .as_ref()
-                            .is_some_and(|token| token.load(std::sync::atomic::Ordering::SeqCst))
-                        {
-                            terminate_process_tree(&mut child);
-                            cancelled = true;
-                            match child.wait() {
-                                Ok(s) => break s,
-                                Err(e) => {
-                                    throw(scope, &format!("proc_run wait after cancel: {e}"));
-                                    return;
-                                }
-                            }
-                        }
-                        if Instant::now() >= deadline {
-                            terminate_process_tree(&mut child);
-                            timed_out = true;
-                            match child.wait() {
-                                Ok(s) => break s,
-                                Err(e) => {
-                                    throw(scope, &format!("proc_run wait after kill: {e}"));
-                                    return;
-                                }
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(e) => {
-                        throw(scope, &format!("proc_run try_wait: {e}"));
-                        return;
-                    }
-                }
+    let (status, timed_out, cancelled) =
+        match wait_for_child(&mut child, timeout_ms, current_cancel_token()) {
+            Ok(result) => result,
+            Err(e) => {
+                throw(scope, &e);
+                return;
             }
-        }
-        None => loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break s,
-                Ok(None) => {
-                    if cancel_token
-                        .as_ref()
-                        .is_some_and(|token| token.load(std::sync::atomic::Ordering::SeqCst))
-                    {
-                        terminate_process_tree(&mut child);
-                        cancelled = true;
-                        match child.wait() {
-                            Ok(s) => break s,
-                            Err(e) => {
-                                throw(scope, &format!("proc_run wait after cancel: {e}"));
-                                return;
-                            }
-                        }
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => {
-                    throw(scope, &format!("proc_run try_wait: {e}"));
-                    return;
-                }
-            }
-        },
-    };
+        };
 
     let stdout_capture = stdout_thread.join().unwrap_or_default();
     let stderr_capture = stderr_thread.join().unwrap_or_default();
@@ -288,6 +225,44 @@ fn read_limited(mut pipe: impl Read, limit: Option<usize>) -> CapturedOutput {
     captured
 }
 
+fn wait_for_child(
+    child: &mut Child,
+    timeout_ms: Option<u64>,
+    cancel_token: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(ExitStatus, bool, bool), String> {
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let mut timed_out = false;
+    let mut cancelled = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok((status, timed_out, cancelled)),
+            Ok(None) => {
+                if cancel_token
+                    .as_ref()
+                    .is_some_and(|token| token.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    terminate_process_tree(child);
+                    cancelled = true;
+                    return child
+                        .wait()
+                        .map(|status| (status, timed_out, cancelled))
+                        .map_err(|e| format!("proc_run wait after cancel: {e}"));
+                }
+                if deadline.is_some_and(|at| Instant::now() >= at) {
+                    terminate_process_tree(child);
+                    timed_out = true;
+                    return child
+                        .wait()
+                        .map(|status| (status, timed_out, cancelled))
+                        .map_err(|e| format!("proc_run wait after kill: {e}"));
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("proc_run try_wait: {e}")),
+        }
+    }
+}
+
 #[cfg(unix)]
 fn configure_process_group(command: &mut Command) {
     command.process_group(0);
@@ -310,7 +285,7 @@ fn terminate_process_tree(child: &mut Child) {
 
 #[cfg(test)]
 mod tests {
-    use super::read_limited;
+    use super::{read_limited, wait_for_child};
     use std::io::Cursor;
 
     #[cfg(unix)]
@@ -319,6 +294,9 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     #[cfg(unix)]
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -341,6 +319,65 @@ mod tests {
         let captured = read_limited(Cursor::new(vec![b'y'; 32]), None);
         assert_eq!(captured.bytes, vec![b'y'; 32]);
         assert!(!captured.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_child_cancel_kills_process_tree() {
+        let marker = std::env::temp_dir().join(format!(
+            "moo-proc-cancel-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let script = format!("sleep 30 & echo $! > {}; wait", marker.to_string_lossy());
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut command);
+        let mut child = command.spawn().expect("spawn shell");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_thread = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(120));
+            cancel_for_thread.store(true, Ordering::SeqCst);
+        });
+
+        let (_status, timed_out, cancelled) =
+            wait_for_child(&mut child, None, Some(cancel)).expect("wait after cancel");
+
+        assert!(!timed_out);
+        assert!(cancelled);
+        assert_child_pid_gone(&marker);
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    fn assert_child_pid_gone(marker: &std::path::Path) {
+        let mut child_pid = None;
+        for _ in 0..100 {
+            if let Ok(text) = fs::read_to_string(marker)
+                && let Ok(pid) = text.trim().parse::<i32>()
+            {
+                child_pid = Some(pid);
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let pid = child_pid.expect("child pid recorded");
+        for _ in 0..100 {
+            let alive = unsafe { libc::kill(pid, 0) == 0 };
+            if !alive {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("child process {pid} still alive");
     }
 
     #[cfg(unix)]

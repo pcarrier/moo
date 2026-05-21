@@ -1801,6 +1801,63 @@ mod tests {
     }
 
     #[test]
+    fn background_runts_cancel_is_chat_and_step_scoped() {
+        let chat_id = format!("test-chat-{}", now_ns());
+        let other_chat_id = format!("test-chat-other-{}", now_ns());
+        let step_id = format!("step:test-{}", now_ns());
+        let other_step_id = format!("step:other-{}", now_ns());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let other_cancel = Arc::new(AtomicBool::new(false));
+        let handle = runtime().spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let other_handle = runtime().spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let abort = handle.abort_handle();
+        let other_abort = other_handle.abort_handle();
+
+        background_runts_lock().insert(
+            step_id.clone(),
+            BackgroundRunTs {
+                chat_id: chat_id.clone(),
+                step_id: step_id.clone(),
+                label: Some("test".to_string()),
+                requested_by: "test".to_string(),
+                started_at: now_ms() as u64,
+                cancel: cancel.clone(),
+                abort,
+            },
+        );
+        background_runts_lock().insert(
+            other_step_id.clone(),
+            BackgroundRunTs {
+                chat_id: other_chat_id.clone(),
+                step_id: other_step_id.clone(),
+                label: Some("other".to_string()),
+                requested_by: "test".to_string(),
+                started_at: now_ms() as u64,
+                cancel: other_cancel.clone(),
+                abort: other_abort,
+            },
+        );
+
+        assert_eq!(cancel_runts(&chat_id, Some("missing")), 0);
+        assert!(!cancel.load(Ordering::SeqCst));
+        assert_eq!(cancel_runts(&chat_id, Some(&step_id)), 1);
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(!other_cancel.load(Ordering::SeqCst));
+        assert_eq!(cancel_runts(&chat_id, Some(&step_id)), 1);
+        assert_eq!(cancel_runts(&other_chat_id, None), 1);
+        assert!(other_cancel.load(Ordering::SeqCst));
+
+        background_runts_lock().remove(&step_id);
+        background_runts_lock().remove(&other_step_id);
+        handle.abort();
+        other_handle.abort();
+    }
+
+    #[test]
     fn foreground_runts_lookup_is_step_scoped() {
         let chat_id = format!("test-chat-{}", now_ns());
         let state = Arc::new(Mutex::new(None));
