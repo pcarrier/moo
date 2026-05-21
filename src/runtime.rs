@@ -20,6 +20,33 @@ use crate::util::{now_ns, random_id};
 
 static INIT_V8: Once = Once::new();
 
+thread_local! {
+    static CURRENT_CANCEL_TOKEN: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+pub fn current_cancel_token() -> Option<Arc<AtomicBool>> {
+    CURRENT_CANCEL_TOKEN.with(|slot| slot.borrow().clone())
+}
+
+struct CancelTokenScope;
+
+impl CancelTokenScope {
+    fn enter(cancelled: Arc<AtomicBool>) -> Self {
+        CURRENT_CANCEL_TOKEN.with(|slot| {
+            *slot.borrow_mut() = Some(cancelled);
+        });
+        Self
+    }
+}
+
+impl Drop for CancelTokenScope {
+    fn drop(&mut self) {
+        CURRENT_CANCEL_TOKEN.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+}
+
 pub struct RunReport {
     pub result: Result<String, String>,
     pub unhandled_exception: bool,
@@ -588,6 +615,7 @@ fn call_main_json_async(
     completion_rx: Receiver<AsyncOpCompletion>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(String, bool), String> {
+    let _cancel_token_scope = CancelTokenScope::enter(cancelled.clone());
     let _cancel_watchdog = AsyncCancelWatchdog::start(scope, cancelled.clone());
     v8::tc_scope!(let tc, scope);
     let input = parse_input_json(tc, input_json)?;
@@ -606,6 +634,7 @@ fn call_cached_main_json_async(
     completion_rx: Receiver<AsyncOpCompletion>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(String, bool), String> {
+    let _cancel_token_scope = CancelTokenScope::enter(cancelled.clone());
     let _cancel_watchdog = AsyncCancelWatchdog::start(scope, cancelled.clone());
     v8::tc_scope!(let tc, scope);
     let input = parse_input_json(tc, input_json)?;

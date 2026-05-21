@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use rusty_v8 as v8;
 
 use crate::ops::v8util::{required_args, set_object_str, set_object_value};
-use crate::runtime::{install_fn, throw};
+use crate::runtime::{current_cancel_token, install_fn, throw};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -156,7 +156,9 @@ fn op_proc_run(
     let stdout_thread = thread::spawn(move || read_limited(stdout_pipe, stdout_limit));
     let stderr_thread = thread::spawn(move || read_limited(stderr_pipe, stderr_limit));
 
+    let cancel_token = current_cancel_token();
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = match timeout_ms {
         Some(ms) => {
             let deadline = Instant::now() + Duration::from_millis(ms);
@@ -164,6 +166,20 @@ fn op_proc_run(
                 match child.try_wait() {
                     Ok(Some(s)) => break s,
                     Ok(None) => {
+                        if cancel_token
+                            .as_ref()
+                            .is_some_and(|token| token.load(std::sync::atomic::Ordering::SeqCst))
+                        {
+                            terminate_process_tree(&mut child);
+                            cancelled = true;
+                            match child.wait() {
+                                Ok(s) => break s,
+                                Err(e) => {
+                                    throw(scope, &format!("proc_run wait after cancel: {e}"));
+                                    return;
+                                }
+                            }
+                        }
                         if Instant::now() >= deadline {
                             terminate_process_tree(&mut child);
                             timed_out = true;
@@ -184,11 +200,30 @@ fn op_proc_run(
                 }
             }
         }
-        None => match child.wait() {
-            Ok(s) => s,
-            Err(e) => {
-                throw(scope, &format!("proc_run wait: {e}"));
-                return;
+        None => loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {
+                    if cancel_token
+                        .as_ref()
+                        .is_some_and(|token| token.load(std::sync::atomic::Ordering::SeqCst))
+                    {
+                        terminate_process_tree(&mut child);
+                        cancelled = true;
+                        match child.wait() {
+                            Ok(s) => break s,
+                            Err(e) => {
+                                throw(scope, &format!("proc_run wait after cancel: {e}"));
+                                return;
+                            }
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => {
+                    throw(scope, &format!("proc_run try_wait: {e}"));
+                    return;
+                }
             }
         },
     };
@@ -211,6 +246,9 @@ fn op_proc_run(
     set_object_value(scope, obj, "durationNs", elapsed_value.into());
     let timed_out_value = v8::Boolean::new(scope, timed_out);
     set_object_value(scope, obj, "timedOut", timed_out_value.into());
+    if cancelled {
+        set_object_str(scope, obj, "stderr", "proc_run cancelled");
+    }
     let stdout_truncated_value = v8::Boolean::new(scope, stdout_truncated);
     set_object_value(scope, obj, "stdoutTruncated", stdout_truncated_value.into());
     let stderr_truncated_value = v8::Boolean::new(scope, stderr_truncated);
