@@ -1684,11 +1684,16 @@ pre,
 
 .agent-trail-title-line.has-status,
 .agent-trail-title-line.has-status-loading {
-  grid-template-columns: max-content minmax(0, max-content) max-content minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, max-content) max-content minmax(
+      0,
+      1fr
+    );
 }
 
 .agent-trail-title-line.has-status:not(.has-status-loading) {
-  grid-template-columns: minmax(0, max-content) max-content minmax(0, 1fr) max-content;
+  grid-template-columns:
+    minmax(0, max-content) max-content minmax(0, 1fr)
+    max-content;
 }
 
 .agent-trail-status-loading {

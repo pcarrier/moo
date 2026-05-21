@@ -2,31 +2,82 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, interactive-widget=resizes-content"
+    />
     <meta name="description" content="Local Moo agent harness." />
     <meta name="application-name" content="Moo" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Moo" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta
+      name="theme-color"
+      content="#fafafa"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#141414"
+      media="(prefers-color-scheme: dark)"
+    />
     <title>Moo</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/moo.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/moo.svg" />
     <style>
-      :root { color-scheme: light dark; }
-      body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #fafafa; color: #1a1a1a; }
-      .boot-loading { position: fixed; inset: 0; display: grid; place-items: center; padding: 2rem; background: #fafafa; }
-      .boot-loading-cow { display: inline-grid; place-items: center; width: 8rem; height: 8rem; font-size: 6.5rem; line-height: 1; transform-origin: center; filter: drop-shadow(0 0.75rem 1rem rgba(0, 0, 0, 0.2)); }
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        background: #fafafa;
+        color: #1a1a1a;
+      }
+      .boot-loading {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+        background: #fafafa;
+      }
+      .boot-loading-cow {
+        display: inline-grid;
+        place-items: center;
+        width: 8rem;
+        height: 8rem;
+        font-size: 6.5rem;
+        line-height: 1;
+        transform-origin: center;
+        filter: drop-shadow(0 0.75rem 1rem rgba(0, 0, 0, 0.2));
+      }
       @media (prefers-color-scheme: dark) {
-        body, .boot-loading { background: #141414; color: #e8e8e8; }
+        body,
+        .boot-loading {
+          background: #141414;
+          color: #e8e8e8;
+        }
       }
     </style>
   </head>
   <body>
-    <div id="app" class="boot-loading" role="status" aria-label="Loading" aria-busy="true">
+    <div
+      id="app"
+      class="boot-loading"
+      role="status"
+      aria-label="Loading"
+      aria-busy="true"
+    >
       <span class="boot-loading-cow" aria-hidden="true">🐮</span>
     </div>
     <script type="module" src="/src/main.tsx"></script>

@@ -1131,8 +1131,10 @@ export function createState() {
   function clearRunTSQueueUnblock(id: string) {
     deleteFromSet(setRunTSQueueUnblockedChats, runTSQueueUnblockedChats, id);
   }
-  const runTSBackgroundKey = (chat: string, stepId: string | null | undefined) =>
-    JSON.stringify([chat, stepId || ""]);
+  const runTSBackgroundKey = (
+    chat: string,
+    stepId: string | null | undefined,
+  ) => JSON.stringify([chat, stepId || ""]);
   function runTSBackgroundKeyParts(key: string): [string, string] | null {
     try {
       const parsed = JSON.parse(key);
@@ -1161,13 +1163,18 @@ export function createState() {
       return next;
     });
   }
-  function isRunTSBackgrounded(stepId?: string | null, targetChatId?: string | null) {
+  function isRunTSBackgrounded(
+    stepId?: string | null,
+    targetChatId?: string | null,
+  ) {
     const id = targetChatId || chatId();
     if (!id || !stepId) return false;
     const key = runTSBackgroundKey(id, stepId);
     return (
       backgroundRequestedRunTS().has(key) ||
-      backgroundRunTS().some((job) => job.chatId === id && job.stepId === stepId)
+      backgroundRunTS().some(
+        (job) => job.chatId === id && job.stepId === stepId,
+      )
     );
   }
   function setChatStartedAt(id: string, at: unknown) {
@@ -2668,23 +2675,13 @@ export function createState() {
   );
 
   function pushUrl() {
-    const path = buildPath(
-      view(),
-      chatId(),
-      focusedSubject(),
-      focusedGraph(),
-    );
+    const path = buildPath(view(), chatId(), focusedSubject(), focusedGraph());
     if (location.pathname + location.search + location.hash !== path) {
       history.pushState(null, "", path);
     }
   }
   function replaceUrl() {
-    const path = buildPath(
-      view(),
-      chatId(),
-      focusedSubject(),
-      focusedGraph(),
-    );
+    const path = buildPath(view(), chatId(), focusedSubject(), focusedGraph());
     history.replaceState(null, "", path);
   }
 
@@ -2947,8 +2944,7 @@ export function createState() {
         await refreshBackgroundRunTS();
       if (currentChatId && !live.has(currentChatId))
         releaseSettledChatRuntime(currentChatId);
-      if (pending().some((p) => !live.has(p.chatId)))
-        drainSoon();
+      if (pending().some((p) => !live.has(p.chatId))) drainSoon();
     } else {
       setChatsLoaded(true);
       reportError("chats", r.error);
@@ -3208,7 +3204,11 @@ export function createState() {
     setTimeline((items) => {
       let changed = false;
       const next = items.map((item) => {
-        if (item.type !== "step" || item.step !== stepId || item.status !== "agent:Running")
+        if (
+          item.type !== "step" ||
+          item.step !== stepId ||
+          item.status !== "agent:Running"
+        )
           return item;
         changed = true;
         return { ...item, status } as TimelineItem;
@@ -3855,7 +3855,8 @@ export function createState() {
                 ...c,
                 chatId: r.value.chatId,
                 path: r.value.path ?? c.path,
-                baseBranch: r.value.baseBranch ?? r.value.branch ?? c.baseBranch,
+                baseBranch:
+                  r.value.baseBranch ?? r.value.branch ?? c.baseBranch,
                 worktreePath: r.value.worktreePath ?? c.worktreePath,
               }
             : c,
@@ -4180,9 +4181,11 @@ export function createState() {
     suppressPendingSave = false;
     pendingLoaded = true;
     if (local.length > 0) {
-      void api("pending-messages-save", { messages: pending() }).then((save) => {
-        if (!save.ok) reportError("save pending messages", save.error);
-      });
+      void api("pending-messages-save", { messages: pending() }).then(
+        (save) => {
+          if (!save.ok) reportError("save pending messages", save.error);
+        },
+      );
     }
     drainSoon();
   }
@@ -4328,13 +4331,13 @@ export function createState() {
       const previousChatId = chatId();
       if (previousChatId !== item.chatId) setChatId(item.chatId);
       await interruptAgent({ resumeQueued: false, offerResume: false });
-      if (previousChatId && previousChatId !== item.chatId) setChatId(previousChatId);
+      if (previousChatId && previousChatId !== item.chatId)
+        setChatId(previousChatId);
     }
     deleteFromSet(setInterruptedChats, interruptedChats, item.chatId);
     setPending([item, ...pending()]);
     drainSoon();
   }
-
 
   function beginPendingEdit(id: string) {
     setEditingPendingIds((current) => {
@@ -5050,27 +5053,38 @@ export function createState() {
     // delayed by host/db setup or transport backpressure, but the user's intent
     // is clear and queued follow-ups should become dispatchable immediately.
     releaseRunTSForeground(id, targetStep);
-    const r = await api("run-ts-background", { chatId: id, stepId: targetStep || null });
+    const r = await api("run-ts-background", {
+      chatId: id,
+      stepId: targetStep || null,
+    });
     if (!r.ok) {
       clearRunTSBackgroundRequest(id, targetStep);
       reportError("background runTS", r.error);
       return;
     }
-    if (r.value.requested === false) clearRunTSBackgroundRequest(id, targetStep);
+    if (r.value.requested === false)
+      clearRunTSBackgroundRequest(id, targetStep);
   }
 
-  async function cancelRunTSStep(stepId?: string | null, targetChatId?: string | null) {
+  async function cancelRunTSStep(
+    stepId?: string | null,
+    targetChatId?: string | null,
+  ) {
     const id = targetChatId || chatId();
     if (!id) return;
     const targetStep = stepId || currentRunningRunTSStepId();
     if (targetStep) requestRunTSBackground(id, targetStep);
-    const r = await api("run-ts-cancel", { chatId: id, stepId: targetStep || null });
+    const r = await api("run-ts-cancel", {
+      chatId: id,
+      stepId: targetStep || null,
+    });
     if (!r.ok) {
       if (targetStep) clearRunTSBackgroundRequest(id, targetStep);
       reportError("cancel runTS", r.error);
       return;
     }
-    if (!r.value.cancelled && targetStep) clearRunTSBackgroundRequest(id, targetStep);
+    if (!r.value.cancelled && targetStep)
+      clearRunTSBackgroundRequest(id, targetStep);
     if (r.value.cancelled && id === chatId()) {
       clearActiveChatRuntime(id);
       unblockRunTSQueue(id);
@@ -5094,7 +5108,9 @@ export function createState() {
           const parts = runTSBackgroundKeyParts(key);
           if (
             parts &&
-            jobs.some((job) => job.chatId === parts[0] && job.stepId === parts[1])
+            jobs.some(
+              (job) => job.chatId === parts[0] && job.stepId === parts[1],
+            )
           )
             next.add(key);
         }
@@ -5186,8 +5202,14 @@ export function createState() {
       return;
     }
     if (ev.kind === "otel-export-error") {
-      const rows = typeof ev.rows === "number" ? ` · ${ev.rows} row${ev.rows === 1 ? "" : "s"}` : "";
-      const detail = typeof ev.endpoint === "string" && ev.endpoint ? `${ev.endpoint}${rows}` : rows || undefined;
+      const rows =
+        typeof ev.rows === "number"
+          ? ` · ${ev.rows} row${ev.rows === 1 ? "" : "s"}`
+          : "";
+      const detail =
+        typeof ev.endpoint === "string" && ev.endpoint
+          ? `${ev.endpoint}${rows}`
+          : rows || undefined;
       notify("otel", ev.message || "OTEL export failed", detail);
       return;
     }
@@ -5419,9 +5441,12 @@ export function createState() {
           const existingIndex = items.findIndex(
             (item) => item.type === "step" && item.step === stepId,
           );
-          const existing = existingIndex >= 0 ? items[existingIndex] : undefined;
+          const existing =
+            existingIndex >= 0 ? items[existingIndex] : undefined;
           const existingRunts =
-            existing?.type === "step" ? (existing.runts ?? existing.runjs) : null;
+            existing?.type === "step"
+              ? (existing.runts ?? existing.runjs)
+              : null;
           const runts = {
             ...(existingRunts ?? {}),
             label:
@@ -5493,10 +5518,16 @@ export function createState() {
           chatId: ev.chatId,
           stepId,
           label: typeof ev.label === "string" ? ev.label : null,
-          requestedBy: typeof ev.requestedBy === "string" ? ev.requestedBy : null,
+          requestedBy:
+            typeof ev.requestedBy === "string" ? ev.requestedBy : null,
           startedAt: Number(ev.at) || Date.now(),
         };
-        return [...jobs.filter((j) => !(j.chatId === job.chatId && j.stepId === stepId)), job];
+        return [
+          ...jobs.filter(
+            (j) => !(j.chatId === job.chatId && j.stepId === stepId),
+          ),
+          job,
+        ];
       });
       requestRunTSBackground(ev.chatId, ev.stepId);
       clearActiveChatRuntime(ev.chatId);
@@ -5510,7 +5541,9 @@ export function createState() {
     }
     if (ev.kind === "runts-background-end") {
       setBackgroundRunTS((jobs) =>
-        jobs.filter((job) => !(job.chatId === ev.chatId && job.stepId === ev.stepId)),
+        jobs.filter(
+          (job) => !(job.chatId === ev.chatId && job.stepId === ev.stepId),
+        ),
       );
       clearRunTSBackgroundRequest(ev.chatId, ev.stepId);
       drainSoon();

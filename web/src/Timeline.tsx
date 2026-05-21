@@ -1018,11 +1018,10 @@ export function Timeline(props: {
                 </For>
                 <Show when={showStandaloneThinking()}>
                   <div class="step thinking" data-timeline-key="thinking">
-                    <LoadingDots
-                      class="thinking-dots"
-                      label="thinking"
-                    />
-                    <div class="meta">{activeWaitLabel()} {thinkingElapsed()}</div>
+                    <LoadingDots class="thinking-dots" label="thinking" />
+                    <div class="meta">
+                      {activeWaitLabel()} {thinkingElapsed()}
+                    </div>
                   </div>
                 </Show>
                 <Show when={showTimelineRefreshingIndicator()}>
@@ -1084,14 +1083,22 @@ export function Timeline(props: {
                 aria-labelledby="runts-lightbox-title"
                 onClick={closeLightbox}
               >
-                <div class="runts-lightbox" onClick={(e) => e.stopPropagation()}>
+                <div
+                  class="runts-lightbox"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <div class="runts-lightbox-header">
                     <div class="runts-lightbox-title-wrap">
-                      <div id="runts-lightbox-title" class="runts-lightbox-title">
+                      <div
+                        id="runts-lightbox-title"
+                        class="runts-lightbox-title"
+                      >
                         {block().label}
                       </div>
                       <Show when={block().meta?.()}>
-                        <div class="runts-lightbox-meta">{block().meta?.()}</div>
+                        <div class="runts-lightbox-meta">
+                          {block().meta?.()}
+                        </div>
                       </Show>
                     </div>
                     <button
@@ -1264,7 +1271,9 @@ function BackgroundRunTSPanel(props: { bag: Bag }) {
                 class="background-runts-cancel"
                 title={`cancel ${job.label || "runTS"}`}
                 aria-label={`cancel ${job.label || "runTS"}`}
-                onClick={() => props.bag.cancelRunTSStep(job.stepId, job.chatId)}
+                onClick={() =>
+                  props.bag.cancelRunTSStep(job.stepId, job.chatId)
+                }
               >
                 <CrossIcon class="runts-control-icon" />
               </button>
@@ -2997,7 +3006,8 @@ function compactionTokenDelta(item: StepItem): string {
     parts.push(`${formatTokenCount(postPressure)} after`);
   }
   const detailParts: string[] = [];
-  if (summaryTokens) detailParts.push(`summary ${formatTokenCount(summaryTokens)}`);
+  if (summaryTokens)
+    detailParts.push(`summary ${formatTokenCount(summaryTokens)}`);
   if (streak > 1) detailParts.push(`streak ${streak}`);
   if (detailParts.length) parts.push(detailParts.join(" · "));
   return parts.join(" · ");
@@ -3431,7 +3441,8 @@ function RunTSBody(props: {
       ? normalizeRunTS(currentRunTS()!)
       : parseRunTS(props.item.text),
   );
-  const backgrounded = () => props.bag.isRunTSBackgrounded?.(props.item.step) === true;
+  const backgrounded = () =>
+    props.bag.isRunTSBackgrounded?.(props.item.step) === true;
   const key = () => timelineExpansionKey(props.item);
   const open = () => props.expansion.isOpen(key());
   const setOpen = (next: boolean) => {
@@ -3547,26 +3558,26 @@ function RunTSBody(props: {
           </Show>
           <Show when={parsed().code}>
             <RunTSBlock
-                sourceId={`${props.item.step}:code`}
+              sourceId={`${props.item.step}:code`}
               label="Code"
               klass="runts-code"
               content={parsed().code}
               language="ts"
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
-                onUpdateFull={props.onUpdateRunTSBlock}
+              onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={parsed().hasArgs}>
             <RunTSBlock
-                sourceId={`${props.item.step}:args`}
+              sourceId={`${props.item.step}:args`}
               label="Args"
               klass="runts-args"
               content={parsed().args}
               language="hjson"
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
-                onUpdateFull={props.onUpdateRunTSBlock}
+              onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show
@@ -3587,35 +3598,35 @@ function RunTSBody(props: {
           </Show>
           <Show when={parsed().hasResult}>
             <RunTSBlock
-                sourceId={`${props.item.step}:result`}
+              sourceId={`${props.item.step}:result`}
               label="Result"
               klass="runts-out"
               content={parsed().result}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
-                onUpdateFull={props.onUpdateRunTSBlock}
+              onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={parsed().error}>
             <RunTSBlock
-                sourceId={`${props.item.step}:error`}
+              sourceId={`${props.item.step}:error`}
               label="Error"
               klass="runts-out runts-error"
               content={parsed().error}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
-                onUpdateFull={props.onUpdateRunTSBlock}
+              onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
           <Show when={hydrateError()}>
             <RunTSBlock
-                sourceId={`${props.item.step}:hydrate-error`}
+              sourceId={`${props.item.step}:hydrate-error`}
               label="Error"
               klass="runts-out runts-error"
               content={hydrateError()!}
               maxPreviewLines={RUNTS_BLOCK_PREVIEW_LINES}
               onOpenFull={props.onOpenRunTSBlock}
-                onUpdateFull={props.onUpdateRunTSBlock}
+              onUpdateFull={props.onUpdateRunTSBlock}
             />
           </Show>
         </div>
@@ -3648,7 +3659,8 @@ function RunTSMarkdown(props: {
 }
 
 function highlightRunTSBlock(content: string, language?: string): string {
-  if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return escapeHtml(content);
+  if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)
+    return escapeHtml(content);
   return language
     ? highlightMarkdownCode(content, language, RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)
     : highlightAuto(content);
@@ -3685,8 +3697,7 @@ function runTSBlockLanguageForContent(
   if (language) return language;
   if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return undefined;
   const trimmed = content.trim();
-  if (maybeFormatHjsonTextForView(trimmed) !== null)
-    return "hjson";
+  if (maybeFormatHjsonTextForView(trimmed) !== null) return "hjson";
   if (looksLikeMarkdownText(trimmed)) return "markdown";
   return undefined;
 }
@@ -3785,7 +3796,9 @@ function RunTSBlock(props: {
           "runts-block-preview": true,
           "is-truncated": truncated(),
         }}
-        style={{ "--runts-preview-max-height": `${previewLineLimit() * 1.3}em` }}
+        style={{
+          "--runts-preview-max-height": `${previewLineLimit() * 1.3}em`,
+        }}
         onClick={openFullFromPointer}
         onKeyDown={openFullFromKeyboard}
         title={`Open full ${props.label}`}

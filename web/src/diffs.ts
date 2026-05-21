@@ -1,4 +1,10 @@
-import type { DiffStats, FileDiffItem, MemoryDiffItem, MemoryFactChange, TimelineItem } from "./api";
+import type {
+  DiffStats,
+  FileDiffItem,
+  MemoryDiffItem,
+  MemoryFactChange,
+  TimelineItem,
+} from "./api";
 
 export function normalizeDiffPath(path: string): string {
   const raw = String(path || "").trim();
@@ -7,7 +13,10 @@ export function normalizeDiffPath(path: string): string {
   return normalized === "." ? "" : normalized;
 }
 
-export function sameDiffPath(a: string | null | undefined, b: string | null | undefined): boolean {
+export function sameDiffPath(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
   const left = normalizeDiffPath(a || "");
   const right = normalizeDiffPath(b || "");
   if (!left || !right) return false;
@@ -33,7 +42,10 @@ export function sameDiffPathInRoot(
   return false;
 }
 
-function diffPathKeys(path: string | null | undefined, root: string): Set<string> {
+function diffPathKeys(
+  path: string | null | undefined,
+  root: string,
+): Set<string> {
   const normalized = normalizeDiffPath(String(path || ""));
   const keys = new Set<string>();
   if (!normalized) return keys;
@@ -51,7 +63,9 @@ function diffPathKeys(path: string | null | undefined, root: string): Set<string
   return keys;
 }
 
-function normalizedOptionalDiffPath(path: string | null | undefined): string | null {
+function normalizedOptionalDiffPath(
+  path: string | null | undefined,
+): string | null {
   const normalized = normalizeDiffPath(String(path || ""));
   return normalized || null;
 }
@@ -63,7 +77,10 @@ function isAbsoluteDiffPath(path: string): boolean {
 function pathWithinRoot(path: string, root: string): boolean {
   const normalizedRoot = normalizeDiffPath(root).replace(/\/+$/, "") || "/";
   const normalizedPath = normalizeDiffPath(path).replace(/\/+$/, "") || "/";
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot.replace(/\/+$/, "") + "/");
+  return (
+    normalizedPath === normalizedRoot ||
+    normalizedPath.startsWith(normalizedRoot.replace(/\/+$/, "") + "/")
+  );
 }
 
 function relativePathWithinRoot(root: string, path: string): string {
@@ -76,7 +93,6 @@ function relativePathWithinRoot(root: string, path: string): string {
 function joinPath(base: string, child: string): string {
   return base.replace(/\/+$/, "") + "/" + child.replace(/^\/+/, "");
 }
-
 
 export type MemoryGraphDiffSummary = {
   type: "memory-graph-diff";
@@ -96,7 +112,9 @@ export type MemoryGraphDiffSummary = {
   at: number;
 };
 
-export function mergedMemoryDiffs(items: TimelineItem[] | MemoryDiffItem[]): MemoryGraphDiffSummary[] {
+export function mergedMemoryDiffs(
+  items: TimelineItem[] | MemoryDiffItem[],
+): MemoryGraphDiffSummary[] {
   const groups = new Map<string, MemoryDiffItem[]>();
   for (const item of items) {
     if (item.type !== "memory-diff") continue;
@@ -113,9 +131,14 @@ export function mergedMemoryDiffs(items: TimelineItem[] | MemoryDiffItem[]): Mem
   return [...groups.values()].map(mergeMemoryDiffItems);
 }
 
-export function mergeMemoryDiffItems(items: MemoryDiffItem[]): MemoryGraphDiffSummary {
-  if (items.length === 0) throw new Error("cannot merge an empty memory diff list");
-  const ordered = [...items].sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+export function mergeMemoryDiffItems(
+  items: MemoryDiffItem[],
+): MemoryGraphDiffSummary {
+  if (items.length === 0)
+    throw new Error("cannot merge an empty memory diff list");
+  const ordered = [...items].sort(
+    (a, b) => Number(a.at || 0) - Number(b.at || 0),
+  );
   const first = ordered[0]!;
   const last = ordered[ordered.length - 1]!;
   const store = last.store || first.store || "memory/facts";
@@ -124,7 +147,9 @@ export function mergeMemoryDiffItems(items: MemoryDiffItem[]): MemoryGraphDiffSu
   let addedFacts = 0;
   let removedFacts = 0;
   for (const item of ordered) {
-    const count = Number.isFinite(Number(item.count)) ? Math.max(0, Number(item.count)) : diffFactCount(item);
+    const count = Number.isFinite(Number(item.count))
+      ? Math.max(0, Number(item.count))
+      : diffFactCount(item);
     if (item.action === "retract") removedFacts += count;
     else if (item.action === "assert") addedFacts += count;
     else {
@@ -134,7 +159,9 @@ export function mergeMemoryDiffItems(items: MemoryDiffItem[]): MemoryGraphDiffSu
     }
   }
   const diff = concatenateMemoryDiffs(ordered);
-  const changes = ordered.flatMap((item) => (item.changes || []).map((change) => ({ ...change, action: item.action })));
+  const changes = ordered.flatMap((item) =>
+    (item.changes || []).map((change) => ({ ...change, action: item.action })),
+  );
   return {
     type: "memory-graph-diff",
     id: "memory-merged:" + store + ":" + graph,
@@ -163,17 +190,24 @@ function diffFactCount(item: MemoryDiffItem): number {
 }
 
 function concatenateMemoryDiffs(items: MemoryDiffItem[]): string {
-  return items.map((item) => item.diff.trimEnd()).filter(Boolean).join("\n");
+  return items
+    .map((item) => item.diff.trimEnd())
+    .filter(Boolean)
+    .join("\n");
 }
 
 export type MergedFileDiffItem = FileDiffItem & { items?: FileDiffItem[] };
 
 export function hasFileDiffBeforeSnapshot(item: FileDiffItem): boolean {
-  return Object.prototype.hasOwnProperty.call(item, "before")
-    && (typeof item.before === "string" || item.before === null);
+  return (
+    Object.prototype.hasOwnProperty.call(item, "before") &&
+    (typeof item.before === "string" || item.before === null)
+  );
 }
 
-export function mergedFileDiffs(items: TimelineItem[] | FileDiffItem[]): MergedFileDiffItem[] {
+export function mergedFileDiffs(
+  items: TimelineItem[] | FileDiffItem[],
+): MergedFileDiffItem[] {
   // Group by normalized path in O(N) using a Map. The previous implementation
   // scanned existing groups for each item via sameDiffPath, making the
   // "Total diff" panel O(N^2) over the number of file diffs in the timeline
@@ -191,7 +225,9 @@ export function mergedFileDiffs(items: TimelineItem[] | FileDiffItem[]): MergedF
       // Rare path: nonempty but unnormalizable, or paths that only match
       // via the tail-suffix rule. Fall back to the O(groups) scan but only
       // when the exact-key lookup misses, so the common case stays O(N).
-      group = groups.find((candidate) => sameDiffPath(candidate[0]?.path, item.path));
+      group = groups.find((candidate) =>
+        sameDiffPath(candidate[0]?.path, item.path),
+      );
       if (group) {
         if (key) byKey.set(key, group);
       } else {
@@ -215,18 +251,22 @@ const SYNTHETIC_DIFF_MAX_BYTES = 1 << 20;
 export function mergeFileDiffItems(items: FileDiffItem[]): MergedFileDiffItem {
   if (items.length === 0) throw new Error("cannot merge an empty diff list");
 
-  const ordered = [...items].sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+  const ordered = [...items].sort(
+    (a, b) => Number(a.at || 0) - Number(b.at || 0),
+  );
   const first = ordered[0]!;
   const last = ordered[ordered.length - 1]!;
   const path = last.path || first.path;
   const before = first.before;
   const after = last.after;
   const hasBeforeSnapshot = hasFileDiffBeforeSnapshot(first);
-  const hasAfterSnapshot = Object.prototype.hasOwnProperty.call(last, "after")
-    && (typeof after === "string" || after === null);
+  const hasAfterSnapshot =
+    Object.prototype.hasOwnProperty.call(last, "after") &&
+    (typeof after === "string" || after === null);
   const beforeSize = typeof before === "string" ? before.length : 0;
   const afterSize = typeof after === "string" ? after.length : 0;
-  const tooLargeForSynthetic = beforeSize + afterSize > SYNTHETIC_DIFF_MAX_BYTES;
+  const tooLargeForSynthetic =
+    beforeSize + afterSize > SYNTHETIC_DIFF_MAX_BYTES;
   const concatenated = concatenateDiffs(ordered);
   const netDeletedNewFile = before === null && after === null;
   // Some recorded patch text has historically carried a deletion header
@@ -236,9 +276,13 @@ export function mergeFileDiffItems(items: FileDiffItem[]): MergedFileDiffItem {
   // sidebar. Also trust explicit null/null snapshots for files that only
   // existed transiently in the chat; their total diff is one no-op lifecycle,
   // not separate creation and deletion patches.
-  const shouldPreferSynthetic = hasBeforeSnapshot && hasAfterSnapshot
-    && !tooLargeForSynthetic
-    && (after !== null || netDeletedNewFile || !looksLikeDeletionDiff(concatenated));
+  const shouldPreferSynthetic =
+    hasBeforeSnapshot &&
+    hasAfterSnapshot &&
+    !tooLargeForSynthetic &&
+    (after !== null ||
+      netDeletedNewFile ||
+      !looksLikeDeletionDiff(concatenated));
   const synthetic = shouldPreferSynthetic
     ? unifiedDiff(path, before ?? null, after ?? "", after !== null)
     : null;
@@ -259,7 +303,10 @@ export function mergeFileDiffItems(items: FileDiffItem[]): MergedFileDiffItem {
 }
 
 function concatenateDiffs(items: FileDiffItem[]): string {
-  return items.map((item) => item.diff.trimEnd()).filter(Boolean).join("\n");
+  return items
+    .map((item) => item.diff.trimEnd())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function looksLikeDeletionDiff(diff: string): boolean {
@@ -278,11 +325,20 @@ export function diffStats(diff: string): DiffStats {
   return { added, removed, lines };
 }
 
-export function unifiedFileDiff(path: string, before: string | null, after: string): string {
+export function unifiedFileDiff(
+  path: string,
+  before: string | null,
+  after: string,
+): string {
   return unifiedDiff(path, before, after);
 }
 
-function unifiedDiff(path: string, before: string | null, after: string, afterExists = true): string {
+function unifiedDiff(
+  path: string,
+  before: string | null,
+  after: string,
+  afterExists = true,
+): string {
   const oldLines = splitContentLines(before ?? "");
   const newLines = splitContentLines(after);
   const ops = patienceLineDiff(oldLines, newLines);
@@ -307,12 +363,25 @@ const MAX_EXACT_DIFF_CELLS = 2_000_000;
 
 type LineOp = { kind: "equal" | "insert" | "delete"; line: string };
 type DiffAnchor = { oldIndex: number; newIndex: number };
-type UniqueLineInfo = { oldCount: number; oldIndex: number; newCount: number; newIndex: number };
+type UniqueLineInfo = {
+  oldCount: number;
+  oldIndex: number;
+  newCount: number;
+  newIndex: number;
+};
 type UnifiedDiffBody = { lines: string[]; added: number; removed: number };
 
 function patienceLineDiff(oldLines: string[], newLines: string[]): LineOp[] {
   const ops: LineOp[] = [];
-  appendPatienceDiff(oldLines, newLines, 0, oldLines.length, 0, newLines.length, ops);
+  appendPatienceDiff(
+    oldLines,
+    newLines,
+    0,
+    oldLines.length,
+    0,
+    newLines.length,
+    ops,
+  );
   return ops;
 }
 
@@ -325,50 +394,92 @@ function appendPatienceDiff(
   newEnd: number,
   out: LineOp[],
 ): void {
-  while (oldStart < oldEnd && newStart < newEnd && oldLines[oldStart] === newLines[newStart]) {
+  while (
+    oldStart < oldEnd &&
+    newStart < newEnd &&
+    oldLines[oldStart] === newLines[newStart]
+  ) {
     out.push({ kind: "equal", line: oldLines[oldStart]! });
     oldStart++;
     newStart++;
   }
 
   const commonSuffix: string[] = [];
-  while (oldStart < oldEnd && newStart < newEnd && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+  while (
+    oldStart < oldEnd &&
+    newStart < newEnd &&
+    oldLines[oldEnd - 1] === newLines[newEnd - 1]
+  ) {
     commonSuffix.push(oldLines[oldEnd - 1]!);
     oldEnd--;
     newEnd--;
   }
 
   if (oldStart === oldEnd) {
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
+    for (let j = newStart; j < newEnd; j++)
+      out.push({ kind: "insert", line: newLines[j]! });
     appendCommonSuffix(commonSuffix, out);
     return;
   }
   if (newStart === newEnd) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
+    for (let i = oldStart; i < oldEnd; i++)
+      out.push({ kind: "delete", line: oldLines[i]! });
     appendCommonSuffix(commonSuffix, out);
     return;
   }
 
-  const anchors = patienceAnchors(oldLines, newLines, oldStart, oldEnd, newStart, newEnd);
+  const anchors = patienceAnchors(
+    oldLines,
+    newLines,
+    oldStart,
+    oldEnd,
+    newStart,
+    newEnd,
+  );
   if (anchors.length === 0) {
-    appendFallbackLineDiff(oldLines, newLines, oldStart, oldEnd, newStart, newEnd, out);
+    appendFallbackLineDiff(
+      oldLines,
+      newLines,
+      oldStart,
+      oldEnd,
+      newStart,
+      newEnd,
+      out,
+    );
   } else {
     let oldCursor = oldStart;
     let newCursor = newStart;
     for (const anchor of anchors) {
-      appendPatienceDiff(oldLines, newLines, oldCursor, anchor.oldIndex, newCursor, anchor.newIndex, out);
+      appendPatienceDiff(
+        oldLines,
+        newLines,
+        oldCursor,
+        anchor.oldIndex,
+        newCursor,
+        anchor.newIndex,
+        out,
+      );
       out.push({ kind: "equal", line: oldLines[anchor.oldIndex]! });
       oldCursor = anchor.oldIndex + 1;
       newCursor = anchor.newIndex + 1;
     }
-    appendPatienceDiff(oldLines, newLines, oldCursor, oldEnd, newCursor, newEnd, out);
+    appendPatienceDiff(
+      oldLines,
+      newLines,
+      oldCursor,
+      oldEnd,
+      newCursor,
+      newEnd,
+      out,
+    );
   }
 
   appendCommonSuffix(commonSuffix, out);
 }
 
 function appendCommonSuffix(commonSuffix: string[], out: LineOp[]): void {
-  for (let i = commonSuffix.length - 1; i >= 0; i--) out.push({ kind: "equal", line: commonSuffix[i]! });
+  for (let i = commonSuffix.length - 1; i >= 0; i--)
+    out.push({ kind: "equal", line: commonSuffix[i]! });
 }
 
 function patienceAnchors(
@@ -405,13 +516,16 @@ function patienceAnchors(
 
   const candidates: DiffAnchor[] = [];
   for (const info of counts.values()) {
-    if (info.oldCount === 1 && info.newCount === 1) candidates.push({ oldIndex: info.oldIndex, newIndex: info.newIndex });
+    if (info.oldCount === 1 && info.newCount === 1)
+      candidates.push({ oldIndex: info.oldIndex, newIndex: info.newIndex });
   }
   candidates.sort((a, b) => a.oldIndex - b.oldIndex);
   return longestIncreasingNewIndexSubsequence(candidates);
 }
 
-function longestIncreasingNewIndexSubsequence(candidates: DiffAnchor[]): DiffAnchor[] {
+function longestIncreasingNewIndexSubsequence(
+  candidates: DiffAnchor[],
+): DiffAnchor[] {
   if (candidates.length <= 1) return candidates;
 
   const tails: number[] = [];
@@ -452,18 +566,22 @@ function appendFallbackLineDiff(
   const newCount = newEnd - newStart;
 
   if (oldCount === 0) {
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
+    for (let j = newStart; j < newEnd; j++)
+      out.push({ kind: "insert", line: newLines[j]! });
     return;
   }
   if (newCount === 0) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
+    for (let i = oldStart; i < oldEnd; i++)
+      out.push({ kind: "delete", line: oldLines[i]! });
     return;
   }
 
   const cells = (oldCount + 1) * (newCount + 1);
   if (cells > MAX_EXACT_DIFF_CELLS) {
-    for (let i = oldStart; i < oldEnd; i++) out.push({ kind: "delete", line: oldLines[i]! });
-    for (let j = newStart; j < newEnd; j++) out.push({ kind: "insert", line: newLines[j]! });
+    for (let i = oldStart; i < oldEnd; i++)
+      out.push({ kind: "delete", line: oldLines[i]! });
+    for (let j = newStart; j < newEnd; j++)
+      out.push({ kind: "insert", line: newLines[j]! });
     return;
   }
 
@@ -471,9 +589,10 @@ function appendFallbackLineDiff(
   const dp = new Uint32Array(cells);
   for (let i = oldCount - 1; i >= 0; i--) {
     for (let j = newCount - 1; j >= 0; j--) {
-      dp[i * width + j] = oldLines[oldStart + i] === newLines[newStart + j]
-        ? dp[(i + 1) * width + j + 1] + 1
-        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
+      dp[i * width + j] =
+        oldLines[oldStart + i] === newLines[newStart + j]
+          ? dp[(i + 1) * width + j + 1] + 1
+          : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
     }
   }
 
@@ -492,8 +611,10 @@ function appendFallbackLineDiff(
       j++;
     }
   }
-  while (i < oldCount) out.push({ kind: "delete", line: oldLines[oldStart + i++]! });
-  while (j < newCount) out.push({ kind: "insert", line: newLines[newStart + j++]! });
+  while (i < oldCount)
+    out.push({ kind: "delete", line: oldLines[oldStart + i++]! });
+  while (j < newCount)
+    out.push({ kind: "insert", line: newLines[newStart + j++]! });
 }
 
 function unifiedDiffBody(ops: LineOp[], contextLines: number): UnifiedDiffBody {
@@ -511,8 +632,14 @@ function unifiedDiffBody(ops: LineOp[], contextLines: number): UnifiedDiffBody {
     else if (op.kind === "delete") removed++;
     if (op.kind !== "equal") changeIndexes.push(index);
 
-    oldPrefixCounts.push(oldPrefixCounts[oldPrefixCounts.length - 1]! + (op.kind === "insert" ? 0 : 1));
-    newPrefixCounts.push(newPrefixCounts[newPrefixCounts.length - 1]! + (op.kind === "delete" ? 0 : 1));
+    oldPrefixCounts.push(
+      oldPrefixCounts[oldPrefixCounts.length - 1]! +
+        (op.kind === "insert" ? 0 : 1),
+    );
+    newPrefixCounts.push(
+      newPrefixCounts[newPrefixCounts.length - 1]! +
+        (op.kind === "delete" ? 0 : 1),
+    );
   }
 
   if (changeIndexes.length === 0) return { lines: [], added, removed };
@@ -528,10 +655,17 @@ function unifiedDiffBody(ops: LineOp[], contextLines: number): UnifiedDiffBody {
     const newLength = newPrefixCounts[end]! - newBefore;
     const oldStart = oldLength === 0 ? oldBefore : oldBefore + 1;
     const newStart = newLength === 0 ? newBefore : newBefore + 1;
-    hunkLines.push("@@ -" + rangeHeader(oldStart, oldLength) + " +" + rangeHeader(newStart, newLength) + " @@");
+    hunkLines.push(
+      "@@ -" +
+        rangeHeader(oldStart, oldLength) +
+        " +" +
+        rangeHeader(newStart, newLength) +
+        " @@",
+    );
     for (let i = start; i < end; i++) {
       const line = lines[i]!;
-      const prefix = line.kind === "insert" ? "+" : line.kind === "delete" ? "-" : " ";
+      const prefix =
+        line.kind === "insert" ? "+" : line.kind === "delete" ? "-" : " ";
       hunkLines.push(prefix + line.line);
     }
   };
@@ -573,7 +707,10 @@ type DisplayHunkHeader = { newStart: number; newLength: number };
 const DIFF_DISPLAY_CONTEXT_KEEP = 3;
 const DIFF_DISPLAY_COLLAPSE_MIN = 14;
 
-export function diffDisplaySections(diff: string, snapshot?: string | null): DiffDisplaySection[] {
+export function diffDisplaySections(
+  diff: string,
+  snapshot?: string | null,
+): DiffDisplaySection[] {
   const lines = diff.split("\n");
   if (typeof snapshot === "string" && isSingleUnifiedFilePatch(lines)) {
     const sections = diffDisplaySectionsWithSnapshotContext(lines, snapshot);
@@ -591,10 +728,15 @@ function isSingleUnifiedFilePatch(lines: string[]): boolean {
     else if (line.startsWith("--- ")) oldPathHeaderCount++;
     else if (line.startsWith("+++ ")) newPathHeaderCount++;
   }
-  return fileHeaderCount <= 1 && oldPathHeaderCount <= 1 && newPathHeaderCount <= 1;
+  return (
+    fileHeaderCount <= 1 && oldPathHeaderCount <= 1 && newPathHeaderCount <= 1
+  );
 }
 
-function diffDisplaySectionsWithSnapshotContext(lines: string[], after: string): DiffDisplaySection[] | null {
+function diffDisplaySectionsWithSnapshotContext(
+  lines: string[],
+  after: string,
+): DiffDisplaySection[] | null {
   const afterLines = splitSnapshotLines(after);
   const sections: DiffDisplaySection[] = [];
   let pending: string[] = [];
@@ -607,7 +749,7 @@ function diffDisplaySectionsWithSnapshotContext(lines: string[], after: string):
     pending = [];
   };
 
-  for (let i = 0; i < lines.length;) {
+  for (let i = 0; i < lines.length; ) {
     const hunk = parseDisplayHunkHeader(lines[i]!);
     if (!hunk) {
       pending.push(lines[i]!);
@@ -627,28 +769,35 @@ function diffDisplaySectionsWithSnapshotContext(lines: string[], after: string):
     const hiddenStart = clampLineIndex(lastNewEnd, afterLines.length);
     const hiddenEnd = clampLineIndex(newBefore, afterLines.length);
     if (hiddenEnd > hiddenStart) {
-      sections.push(collapsedSnapshotSection(afterLines.slice(hiddenStart, hiddenEnd), {
-        expandFrom: "end",
-        controlsPosition: "before",
-        location: "above",
-      }));
+      sections.push(
+        collapsedSnapshotSection(afterLines.slice(hiddenStart, hiddenEnd), {
+          expandFrom: "end",
+          controlsPosition: "before",
+          location: "above",
+        }),
+      );
     }
 
     const bodyStart = i;
     while (i < lines.length && !parseDisplayHunkHeader(lines[i]!)) i++;
     sections.push(...collapsedDiffLineSections(lines.slice(bodyStart, i)));
-    lastNewEnd = Math.max(lastNewEnd, clampLineIndex(newBefore + hunk.newLength, afterLines.length));
+    lastNewEnd = Math.max(
+      lastNewEnd,
+      clampLineIndex(newBefore + hunk.newLength, afterLines.length),
+    );
   }
 
   flushPending();
   if (!sawHunk) return null;
 
   if (lastNewEnd < afterLines.length) {
-    sections.push(collapsedSnapshotSection(afterLines.slice(lastNewEnd), {
-      expandFrom: "start",
-      controlsPosition: "after",
-      location: "below",
-    }));
+    sections.push(
+      collapsedSnapshotSection(afterLines.slice(lastNewEnd), {
+        expandFrom: "start",
+        controlsPosition: "after",
+        location: "below",
+      }),
+    );
   }
   return sections;
 }
@@ -661,7 +810,7 @@ function collapsedDiffLineSections(lines: string[]): DiffDisplaySection[] {
     sections.push({ kind: "lines", lines: pending });
     pending = [];
   };
-  for (let i = 0; i < lines.length;) {
+  for (let i = 0; i < lines.length; ) {
     if (!isCollapsibleContextLine(lines[i]!)) {
       pending.push(lines[i]!);
       i++;
@@ -676,17 +825,37 @@ function collapsedDiffLineSections(lines: string[]): DiffDisplaySection[] {
     }
     pending.push(...run.slice(0, DIFF_DISPLAY_CONTEXT_KEEP));
     flushLines();
-    const hidden = run.slice(DIFF_DISPLAY_CONTEXT_KEEP, run.length - DIFF_DISPLAY_CONTEXT_KEEP);
-    sections.push({ kind: "collapsed", lines: hidden, total: hidden.length, expandFrom: "start", controlsPosition: "after" });
+    const hidden = run.slice(
+      DIFF_DISPLAY_CONTEXT_KEEP,
+      run.length - DIFF_DISPLAY_CONTEXT_KEEP,
+    );
+    sections.push({
+      kind: "collapsed",
+      lines: hidden,
+      total: hidden.length,
+      expandFrom: "start",
+      controlsPosition: "after",
+    });
     pending.push(...run.slice(run.length - DIFF_DISPLAY_CONTEXT_KEEP));
   }
   flushLines();
   return sections;
 }
 
-function collapsedSnapshotSection(lines: string[], options: Pick<Extract<DiffDisplaySection, { kind: "collapsed" }>, "expandFrom" | "controlsPosition" | "location">): DiffDisplaySection {
+function collapsedSnapshotSection(
+  lines: string[],
+  options: Pick<
+    Extract<DiffDisplaySection, { kind: "collapsed" }>,
+    "expandFrom" | "controlsPosition" | "location"
+  >,
+): DiffDisplaySection {
   const contextLines = lines.map((line) => " " + line);
-  return { kind: "collapsed", lines: contextLines, total: contextLines.length, ...options };
+  return {
+    kind: "collapsed",
+    lines: contextLines,
+    total: contextLines.length,
+    ...options,
+  };
 }
 
 function splitSnapshotLines(content: string): string[] {
@@ -718,7 +887,6 @@ function clampLineIndex(index: number, lineCount: number): number {
 function isCollapsibleContextLine(line: string): boolean {
   return line.startsWith(" ") || line === "";
 }
-
 
 function normalizePathSegments(path: string): string {
   const normalized = path.replace(/\\/g, "/");

@@ -14,14 +14,17 @@ function cssRuleBody(selector: string) {
   return css.slice(bodyStart, end);
 }
 
-
 describe("page header layout", () => {
   test("keeps page sidebar toggles the same compact size as chat headers", () => {
-    const chatToggle = cssRuleBody(".conv-header .header-icon-button,\n.conv-header .right-sidebar-toggle");
+    const chatToggle = cssRuleBody(
+      ".conv-header .header-icon-button,\n.conv-header .right-sidebar-toggle",
+    );
     expect(chatToggle).toContain("inline-size: 22px");
     expect(chatToggle).toContain("block-size: 22px");
 
-    const pageToggle = cssRuleBody(".page-header > .header-icon-button:first-child");
+    const pageToggle = cssRuleBody(
+      ".page-header > .header-icon-button:first-child",
+    );
     expect(pageToggle).toContain("inline-size: 22px");
     expect(pageToggle).toContain("block-size: 22px");
     expect(pageToggle).toContain("flex-basis: 22px");
@@ -29,9 +32,15 @@ describe("page header layout", () => {
   });
 
   test("uses shared page chrome on memory, mcp, and settings routes", () => {
-    const memory = readFileSync(new URL("./MemoryView.tsx", import.meta.url), "utf8");
+    const memory = readFileSync(
+      new URL("./MemoryView.tsx", import.meta.url),
+      "utf8",
+    );
     const mcp = readFileSync(new URL("./McpView.tsx", import.meta.url), "utf8");
-    const settings = readFileSync(new URL("./SettingsView.tsx", import.meta.url), "utf8");
+    const settings = readFileSync(
+      new URL("./SettingsView.tsx", import.meta.url),
+      "utf8",
+    );
 
     expect(memory).toContain("<PageHeader");
     expect(mcp).toContain("<PageHeader");
@@ -39,26 +48,36 @@ describe("page header layout", () => {
   });
 });
 
-
 describe("shared header controls", () => {
   test("page chrome delegates sidebar controls to shared components", () => {
-    const pageChrome = readFileSync(new URL("./PageChrome.tsx", import.meta.url), "utf8");
-    expect(pageChrome).toContain('import { HeaderIconButton, LeftSidebarToggle, RightSidebarToggle, joinClasses } from "./HeaderControls";');
-    expect(pageChrome).toContain("<LeftSidebarToggle onToggleSidebar={props.onToggleSidebar} />");
+    const pageChrome = readFileSync(
+      new URL("./PageChrome.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(pageChrome).toContain(
+      'import { HeaderIconButton, LeftSidebarToggle, RightSidebarToggle, joinClasses } from "./HeaderControls";',
+    );
+    expect(pageChrome).toContain(
+      "<LeftSidebarToggle onToggleSidebar={props.onToggleSidebar} />",
+    );
     expect(pageChrome).not.toContain("<MenuIcon />");
   });
 
   test("shared controls own sidebar toggle icons and button sizing class", () => {
-    const controls = readFileSync(new URL("./HeaderControls.tsx", import.meta.url), "utf8");
+    const controls = readFileSync(
+      new URL("./HeaderControls.tsx", import.meta.url),
+      "utf8",
+    );
     expect(controls).toContain("export function HeaderIconButton");
     expect(controls).toContain("export function LeftSidebarToggle");
     expect(controls).toContain("export function RightSidebarToggle");
-    expect(controls).toContain('class={joinClasses("header-icon-button", local.class)}');
+    expect(controls).toContain(
+      'class={joinClasses("header-icon-button", local.class)}',
+    );
     expect(controls).toContain("<MenuIcon />");
     expect(controls).toContain("<PanelIcon />");
   });
 });
-
 
 describe("path ellipsis", () => {
   test("keeps left-side ellipsis without reordering path separators", () => {
@@ -77,9 +96,13 @@ describe("path ellipsis", () => {
     expect(trailPathRule).toContain("direction: rtl;");
     expect(trailPathRule).toContain("unicode-bidi: isolate;");
 
-    const sidebar = readFileSync(new URL("./Sidebar.tsx", import.meta.url), "utf8");
-    expect(sidebar).toContain('class="diff-file-jump-path"><span class="path-ellipsis-text"');
-    expect(sidebar).toContain('class="right-diff-path"><span class="path-ellipsis-text"');
-    expect(sidebar).toContain('<strong title={props.displayPath}><span class="path-ellipsis-text"');
+    const sidebar = readFileSync(
+      new URL("./Sidebar.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(sidebar).toContain('class="diff-file-jump-path"');
+    expect(sidebar).toContain('class="path-ellipsis-text"');
+    expect(sidebar).toContain('class="right-diff-path"');
+    expect(sidebar).toContain("<strong title={props.displayPath}>");
   });
 });

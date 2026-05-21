@@ -15,7 +15,10 @@ export const COMPACTION_CONTINUATION_INSTRUCTION =
 export const COMPACTION_CONTINUATION_USER_PROMPT =
   "Act on the `Next action:` from the summary now. Use tools if useful. If all work is already complete, report the result. Do not acknowledge or wait.";
 
-export function compactionContinuationSystemMessage(summary: string, currentTodos?: string | null): string {
+export function compactionContinuationSystemMessage(
+  summary: string,
+  currentTodos?: string | null,
+): string {
   const parts = [
     COMPACTION_CONTINUATION_INSTRUCTION,
     "",
@@ -45,15 +48,18 @@ async function mcpNamesLine(): Promise<string> {
       .map((s) => s.id)
       .filter(Boolean)
       .sort();
-    return ids.length ? `moo.mcp servers: ${ids.join(", ")}` : "moo.mcp servers: none enabled";
+    return ids.length
+      ? `moo.mcp servers: ${ids.join(", ")}`
+      : "moo.mcp servers: none enabled";
   } catch {
     return "moo.mcp servers: unavailable";
   }
 }
 
-
 function compactSkillFrontmatter(frontmatter: Record<string, unknown>): string {
-  const entries = Object.entries(frontmatter || {}).filter(([key]) => key !== "name" && key !== "title");
+  const entries = Object.entries(frontmatter || {}).filter(
+    ([key]) => key !== "name" && key !== "title",
+  );
   if (!entries.length) return "{}";
   const obj = Object.fromEntries(entries.slice(0, 10));
   const json = JSON.stringify(obj);
@@ -64,11 +70,16 @@ async function skillLines(root?: string | null): Promise<string[]> {
   try {
     const skills = await moo.skills.list({ enabled: true, root });
     if (!skills.length) return ["skills: none enabled"];
-    const lines = ["moo.skills enabled metadata only; call `moo.skills.load(idOrName)` for full content when relevant."];
+    const lines = [
+      "moo.skills enabled metadata only; call `moo.skills.load(idOrName)` for full content when relevant.",
+    ];
     for (const skill of skills.slice(0, 24)) {
-      lines.push(`  - ${skill.name} (${skill.id}) frontmatter=${compactSkillFrontmatter(skill.frontmatter)}`);
+      lines.push(
+        `  - ${skill.name} (${skill.id}) frontmatter=${compactSkillFrontmatter(skill.frontmatter)}`,
+      );
     }
-    if (skills.length > 24) lines.push(`  - … ${skills.length - 24} more enabled skills`);
+    if (skills.length > 24)
+      lines.push(`  - … ${skills.length - 24} more enabled skills`);
     return lines;
   } catch {
     return ["skills: unavailable"];
@@ -88,18 +99,53 @@ async function agentsMdLines(scratch: string): Promise<string[]> {
   }
 }
 
-const cliTools = ["git", "jj", "gh", "nix", "bun", "deno", "node", "python3", "ruby", "awk", "grep", "jq", "sed", "curl", "fd", "find", "rg", "sqlite3"];
-const unavailableProcResult: ProcResult = { code: 127, stdout: "", stderr: "", durationNs: 0, timedOut: false };
+const cliTools = [
+  "git",
+  "jj",
+  "gh",
+  "nix",
+  "bun",
+  "deno",
+  "node",
+  "python3",
+  "ruby",
+  "awk",
+  "grep",
+  "jq",
+  "sed",
+  "curl",
+  "fd",
+  "find",
+  "rg",
+  "sqlite3",
+];
+const unavailableProcResult: ProcResult = {
+  code: 127,
+  stdout: "",
+  stderr: "",
+  durationNs: 0,
+  timedOut: false,
+};
 let cliToolsCache: Promise<Set<string>> | null = null;
 
 function availableCliTools(): Promise<Set<string>> {
   cliToolsCache ??= (async () => {
-    const script = cliTools.map((tool) => `command -v ${tool} >/dev/null 2>&1 && printf '%s\n' ${tool}`).join(";");
-    const result = await moo.proc.run({ cmd: ["sh", "-lc", script], timeoutMs: 2_000, maxOutputBytes: 200 });
-    return new Set(result.stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((tool) => cliTools.includes(tool)));
+    const script = cliTools
+      .map(
+        (tool) => `command -v ${tool} >/dev/null 2>&1 && printf '%s\n' ${tool}`,
+      )
+      .join(";");
+    const result = await moo.proc.run({
+      cmd: ["sh", "-lc", script],
+      timeoutMs: 2_000,
+      maxOutputBytes: 200,
+    });
+    return new Set(
+      result.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((tool) => cliTools.includes(tool)),
+    );
   })();
   return cliToolsCache;
 }
@@ -107,9 +153,15 @@ function availableCliTools(): Promise<Set<string>> {
 function formatCliToolsLine(availableSet: Set<string>): string {
   const available = cliTools.filter((tool) => availableSet.has(tool));
   const unavailable = cliTools.filter((tool) => !availableSet.has(tool));
-  const status = [`git=${availableSet.has("git") ? "available" : "unavailable"}`];
-  const availableLine = available.length ? `available: ${available.join(", ")}` : "available: none";
-  const unavailableLine = unavailable.length ? `unavailable: ${unavailable.join(", ")}` : "unavailable: none";
+  const status = [
+    `git=${availableSet.has("git") ? "available" : "unavailable"}`,
+  ];
+  const availableLine = available.length
+    ? `available: ${available.join(", ")}`
+    : "available: none";
+  const unavailableLine = unavailable.length
+    ? `unavailable: ${unavailable.join(", ")}`
+    : "unavailable: none";
   return `CLI tools — ${status.join("; ")}; ${availableLine}; ${unavailableLine}`;
 }
 
@@ -124,22 +176,44 @@ async function cliToolsLine(): Promise<string> {
 async function repoInfoLine(scratch: string): Promise<string> {
   try {
     const [jjTool, gitTool] = await Promise.all([
-      moo.proc.run({ cmd: ["sh", "-lc", "command -v jj >/dev/null 2>&1"], timeoutMs: 2_000 }),
-      moo.proc.run({ cmd: ["sh", "-lc", "command -v git >/dev/null 2>&1"], timeoutMs: 2_000 }),
+      moo.proc.run({
+        cmd: ["sh", "-lc", "command -v jj >/dev/null 2>&1"],
+        timeoutMs: 2_000,
+      }),
+      moo.proc.run({
+        cmd: ["sh", "-lc", "command -v git >/dev/null 2>&1"],
+        timeoutMs: 2_000,
+      }),
     ]);
     const jjAvailable = jjTool.code === 0;
     const gitAvailable = gitTool.code === 0;
     const [jj, git] = await Promise.all([
-      jjAvailable ? moo.proc.run({ cmd: ["jj", "root"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
-      gitAvailable ? moo.proc.run({ cmd: ["git", "rev-parse", "--show-toplevel"], cwd: scratch, timeoutMs: 2_000, maxOutputBytes: 2_000 }) : Promise.resolve(unavailableProcResult),
+      jjAvailable
+        ? moo.proc.run({
+            cmd: ["jj", "root"],
+            cwd: scratch,
+            timeoutMs: 2_000,
+            maxOutputBytes: 2_000,
+          })
+        : Promise.resolve(unavailableProcResult),
+      gitAvailable
+        ? moo.proc.run({
+            cmd: ["git", "rev-parse", "--show-toplevel"],
+            cwd: scratch,
+            timeoutMs: 2_000,
+            maxOutputBytes: 2_000,
+          })
+        : Promise.resolve(unavailableProcResult),
     ]);
     const jjRoot = jj.code === 0 ? jj.stdout.trim() : "";
     const gitRoot = git.code === 0 ? git.stdout.trim() : "";
     const gitToolStatus = `git=${gitAvailable ? "available" : "unavailable"}`;
     const jjToolStatus = `jj=${jjAvailable ? "available" : "unavailable"}`;
     const toolSuffix = `; tools: ${gitToolStatus}, ${jjToolStatus}`;
-    if (jjRoot) return `repo type: jj; root=${JSON.stringify(jjRoot)}${gitRoot ? `; git backing root=${JSON.stringify(gitRoot)}` : ""}${toolSuffix}`;
-    if (gitRoot) return `repo type: git; root=${JSON.stringify(gitRoot)}; tools: ${gitToolStatus}`;
+    if (jjRoot)
+      return `repo type: jj; root=${JSON.stringify(jjRoot)}${gitRoot ? `; git backing root=${JSON.stringify(gitRoot)}` : ""}${toolSuffix}`;
+    if (gitRoot)
+      return `repo type: git; root=${JSON.stringify(gitRoot)}; tools: ${gitToolStatus}`;
     return `repo type: none${toolSuffix}`;
   } catch {
     return "repo type: unknown";
@@ -155,17 +229,25 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
   const agentsLines = await agentsMdLines(scratch);
   const repoInfo = await repoInfoLine(scratch);
   const cliLine = await cliToolsLine();
-  const traceLines = host.tracingEnabled() ? [
-    "moo.traces{current,get,events,tree,recent,search,failed,summary,diagnose,errorOf,errors,mark,span}: every runTS has a durable SQLite trace; current({})→Promise<{traceId?,id,rootId?,stepId?,parentId}|null>; get/events/tree accept {traceId?,stepId?,limit?}; recent/search/failed accept {limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?,includeEvents?}; summary({traceId?,stepId?,includeEvents?})→Promise<TraceSummary|null>; diagnose({limit?,chatId?,includeEvents?,examplesPerGroup?})→Promise<TraceDiagnosis>; errorOf({row})→string|null; errors({traceId?,stepId?,limit?})→Promise<TraceErrorInfo[]>; mark({message,data?})→Promise<string|null>; span({name,data?,fn}) nests work. For failure review use moo.traces.failed/summary; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runTS.",
-  ] : [];
-  const subagentSpecHash = await moo.pointers.get({ name: `chat/${chatId}/subagent-spec` });
-  const subagentSpec = subagentSpecHash ? (await moo.objects.getJSON<any>({ hash: subagentSpecHash }))?.value : null;
-  const subagentLines = subagentSpec ? [
-    "",
-    "SUBAGENT MODE: bounded child agent delegated by a parent.",
-    "Complete only the assigned task; don't ask the user; return concise final report with evidence/links and uncertainty.",
-    "Don't call moo.agent.run unless explicitly enabled; default depth limit 1.",
-  ] : [];
+  const traceLines = host.tracingEnabled()
+    ? [
+        "moo.traces{current,get,events,tree,recent,search,failed,summary,diagnose,errorOf,errors,mark,span}: every runTS has a durable SQLite trace; current({})→Promise<{traceId?,id,rootId?,stepId?,parentId}|null>; get/events/tree accept {traceId?,stepId?,limit?}; recent/search/failed accept {limit?,includeChat?,chatId?,status?,kind?,name?,text?,hasError?,includeEvents?}; summary({traceId?,stepId?,includeEvents?})→Promise<TraceSummary|null>; diagnose({limit?,chatId?,includeEvents?,examplesPerGroup?})→Promise<TraceDiagnosis>; errorOf({row})→string|null; errors({traceId?,stepId?,limit?})→Promise<TraceErrorInfo[]>; mark({message,data?})→Promise<string|null>; span({name,data?,fn}) nests work. For failure review use moo.traces.failed/summary; don't JSON-keyword scan for error text. Omitted ids mean current trace inside runTS.",
+      ]
+    : [];
+  const subagentSpecHash = await moo.pointers.get({
+    name: `chat/${chatId}/subagent-spec`,
+  });
+  const subagentSpec = subagentSpecHash
+    ? (await moo.objects.getJSON<any>({ hash: subagentSpecHash }))?.value
+    : null;
+  const subagentLines = subagentSpec
+    ? [
+        "",
+        "SUBAGENT MODE: bounded child agent delegated by a parent.",
+        "Complete only the assigned task; don't ask the user; return concise final report with evidence/links and uncertainty.",
+        "Don't call moo.agent.run unless explicitly enabled; default depth limit 1.",
+      ]
+    : [];
   return [
     "agent=moo. tool=runTS({label,description,code,args?}) → TypeScript 6 + ES2025 async body; `moo`, `chatId`, `repo`, `scratch` & optional `args` in scope.",
     "label+description: Markdown for the tool-call row. label ≤6 words, imperative, sentence case. description: one concrete sentence (paths/predicates/why); use links/code when useful.",

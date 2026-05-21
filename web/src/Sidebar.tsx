@@ -28,7 +28,13 @@ import {
 } from "./syntax";
 import { DiffView, MemoryDiffView, type DiffExpansionStore } from "./DiffView";
 import { LoadingDots } from "./LoadingDots";
-import { CloseIcon, MaximizeIcon, MenuIcon, PlusIcon, RestoreIcon } from "./icons";
+import {
+  CloseIcon,
+  MaximizeIcon,
+  MenuIcon,
+  PlusIcon,
+  RestoreIcon,
+} from "./icons";
 import { LeftSidebarToggle } from "./HeaderControls";
 import { installPointerResize } from "./resizeDrag";
 
@@ -317,8 +323,6 @@ function directoryEntriesWithParent(
         ...(entries ?? []),
       ];
 }
-
-
 
 type BrowserDiffStats = {
   changed: boolean;
@@ -769,11 +773,6 @@ function keepSamePathHydratedDiff(
     : null;
 }
 
-
-
-
-
-
 function sameFsEntry(a: FsEntry, b: FsEntry): boolean {
   return (
     a.name === b.name &&
@@ -878,7 +877,9 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     Record<string, GitBranchesValue["repoKind"]>
   >({});
   const [recentPathsLoaded, setRecentPathsLoaded] = createSignal(false);
-  const [pendingProjectPath, setPendingProjectPath] = createSignal<string | null>(null);
+  const [pendingProjectPath, setPendingProjectPath] = createSignal<
+    string | null
+  >(null);
   const [branchPath, setBranchPath] = createSignal<string | null>(null);
   const [branches, setBranches] = createSignal<GitBranchItem[]>([]);
   const [selectedBranch, setSelectedBranch] = createSignal<string | null>(null);
@@ -965,16 +966,22 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     );
   }
 
-  function repoKindLabel(kind: GitBranchesValue["repoKind"] | undefined): string {
+  function repoKindLabel(
+    kind: GitBranchesValue["repoKind"] | undefined,
+  ): string {
     if (kind === "jj") return "JJ";
     if (kind === "git") return "Git";
     if (kind === null) return "No VCS";
     return "…";
   }
 
-  function recentRepoKind(path: string): GitBranchesValue["repoKind"] | undefined {
+  function recentRepoKind(
+    path: string,
+  ): GitBranchesValue["repoKind"] | undefined {
     const kinds = recentRepoKinds();
-    return Object.prototype.hasOwnProperty.call(kinds, path) ? kinds[path] : undefined;
+    return Object.prototype.hasOwnProperty.call(kinds, path)
+      ? kinds[path]
+      : undefined;
   }
 
   function branchStartValue(path = explorerPath()): string | null {
@@ -1163,7 +1170,9 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       delete next[path];
       return next;
     });
-    const result = await api("chat-remove-recent-path", { path: expandHome(path) });
+    const result = await api("chat-remove-recent-path", {
+      path: expandHome(path),
+    });
     if (!result.ok) {
       setRecentPaths(previous);
       setExplorerError(result.error.message);
@@ -1189,7 +1198,9 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       </header>
       <main class="new-chat-route" aria-label="start a new chat">
         <section class="new-chat-panel" aria-label="New chat options">
-          <Show when={pendingProjectPath()} fallback={
+          <Show
+            when={pendingProjectPath()}
+            fallback={
               <section
                 class="fs-explorer fs-explorer-main"
                 aria-label="project directory"
@@ -1216,7 +1227,9 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                             class="fs-recent-project"
                             title={path}
                             onClick={() => chooseRecentPath(path)}
-                            disabled={creatingProjectChat() || branchesLoading()}
+                            disabled={
+                              creatingProjectChat() || branchesLoading()
+                            }
                           >
                             <span class="fs-folder">📁</span>
                             <span class="fs-recent-path">{path}</span>
@@ -1226,7 +1239,8 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                                 "is-git": recentRepoKind(path) === "git",
                                 "is-jj": recentRepoKind(path) === "jj",
                                 "is-none": recentRepoKind(path) === null,
-                                "is-loading": recentRepoKind(path) === undefined,
+                                "is-loading":
+                                  recentRepoKind(path) === undefined,
                               }}
                             >
                               {repoKindLabel(recentRepoKind(path))}
@@ -1238,7 +1252,9 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                             title={`remove ${path}`}
                             aria-label={`remove ${path} from recent projects`}
                             onClick={(event) => removeRecentPath(path, event)}
-                            disabled={creatingProjectChat() || branchesLoading()}
+                            disabled={
+                              creatingProjectChat() || branchesLoading()
+                            }
                           >
                             <CloseIcon />
                           </button>
@@ -1381,7 +1397,12 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   ←
                 </button>
                 <div class="fs-branch-title-block">
-                  <h2 class="fs-branch-project" title={pendingProjectPath() || ""}>{pendingProjectPath()}</h2>
+                  <h2
+                    class="fs-branch-project"
+                    title={pendingProjectPath() || ""}
+                  >
+                    {pendingProjectPath()}
+                  </h2>
                   <div class="fs-repo-kind">{repoKindLabel(repoKind())}</div>
                 </div>
                 <button
@@ -1442,7 +1463,12 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                         type="button"
                         class="fs-branch-pull"
                         onClick={pullBranches}
-                        disabled={!isGitRepo() || !hasBranchRemote() || branchesLoading() || branchesPulling()}
+                        disabled={
+                          !isGitRepo() ||
+                          !hasBranchRemote() ||
+                          branchesLoading() ||
+                          branchesPulling()
+                        }
                         title="Fetch remote branches"
                       >
                         {branchesPulling() ? "Pulling…" : "Pull branches"}
@@ -1681,7 +1707,9 @@ function FileDiffPanel(props: {
     >
       <header class="repo-file-header right-diff-header">
         <div class="right-diff-title-row">
-          <strong title={props.displayPath}><span class="path-ellipsis-text">{props.displayPath}</span></strong>
+          <strong title={props.displayPath}>
+            <span class="path-ellipsis-text">{props.displayPath}</span>
+          </strong>
           <Show when={props.showScopeLabel ?? true}>
             <span class="right-diff-scope-label">{props.scopeLabel}</span>
           </Show>
@@ -2090,13 +2118,19 @@ export function RightSidebar(props: { bag: Bag }) {
         startW = rect?.width ?? 0;
         viewportW =
           document.documentElement?.clientWidth || window.innerWidth || 0;
-        sidebarEl?.style.setProperty("--right-sidebar-mobile-w", String(startW) + "px");
+        sidebarEl?.style.setProperty(
+          "--right-sidebar-mobile-w",
+          String(startW) + "px",
+        );
         props.bag.setRightSidebarCollapsed(false);
       },
       onMove: (event) => {
         if (viewportW <= 0) return;
         const nextW = Math.max(0, startW + (startX - event.clientX));
-        sidebarEl?.style.setProperty("--right-sidebar-mobile-w", String(nextW) + "px");
+        sidebarEl?.style.setProperty(
+          "--right-sidebar-mobile-w",
+          String(nextW) + "px",
+        );
         props.bag.setRightSidebarW((nextW / viewportW) * 100);
       },
     });
@@ -2135,7 +2169,11 @@ export function RightSidebar(props: { bag: Bag }) {
           aria-pressed={props.bag.rightSidebarMaximized()}
           onClick={() => props.bag.toggleRightSidebarMaximized()}
         >
-          {props.bag.rightSidebarMaximized() ? <RestoreIcon /> : <MaximizeIcon />}
+          {props.bag.rightSidebarMaximized() ? (
+            <RestoreIcon />
+          ) : (
+            <MaximizeIcon />
+          )}
         </button>
       </div>
       <Show when={!detailPanelMode()}>
@@ -2182,9 +2220,9 @@ export function RightSidebar(props: { bag: Bag }) {
                             ? "◈"
                             : tab.kind === "json"
                               ? "{}"
-                                : tab.kind === "app" || tab.kind === "app-code"
-                                  ? tab.icon || "▣"
-                                  : "□"}
+                              : tab.kind === "app" || tab.kind === "app-code"
+                                ? tab.icon || "▣"
+                                : "□"}
                 </span>
                 <span class="right-tab-title">
                   {tabTitle(tab, props.bag.currentChatWorktreePath())}
@@ -2500,44 +2538,49 @@ function BrowserTab(props: {
       };
     });
     const root = rootPath();
-    const revision = fileSizeRevisionForPath(path, trailSourceItemsForBag(props.bag));
-    void api("fs-read", { path, basePath: root, includeDiff: true }).then((r) => {
-      if (seq !== readSeq) return;
-      if (!r.ok) {
-        setFile((prev) => ({
-          ...prev,
+    const revision = fileSizeRevisionForPath(
+      path,
+      trailSourceItemsForBag(props.bag),
+    );
+    void api("fs-read", { path, basePath: root, includeDiff: true }).then(
+      (r) => {
+        if (seq !== readSeq) return;
+        if (!r.ok) {
+          setFile((prev) => ({
+            ...prev,
+            requestedPath: path,
+            content: prev.content,
+            size: prev.size,
+            mtime: prev.mtime,
+            kind: prev.kind || "dir",
+            entries: prev.entries,
+            loading: false,
+            error: r.error.message,
+          }));
+          return;
+        }
+        const nextFile = {
           requestedPath: path,
-          content: prev.content,
-          size: prev.size,
-          mtime: prev.mtime,
-          kind: prev.kind || "dir",
-          entries: prev.entries,
+          path: r.value.path,
+          content: r.value.content,
+          size: r.value.size,
+          mtime: r.value.mtime,
+          kind: r.value.kind,
+          entries: r.value.entries,
+          changed: r.value.changed,
+          additions: r.value.additions,
+          deletions: r.value.deletions,
+          diff: r.value.diff,
+          diffStats: r.value.diffStats,
           loading: false,
-          error: r.error.message,
-        }));
-        return;
-      }
-      const nextFile = {
-        requestedPath: path,
-        path: r.value.path,
-        content: r.value.content,
-        size: r.value.size,
-        mtime: r.value.mtime,
-        kind: r.value.kind,
-        entries: r.value.entries,
-        changed: r.value.changed,
-        additions: r.value.additions,
-        deletions: r.value.deletions,
-        diff: r.value.diff,
-        diffStats: r.value.diffStats,
-        loading: false,
-        error: null,
-      };
-      browserFileCache.set(cacheKey(path), nextFile);
-      rememberFileSizeBytes(path, root, r.value.size, revision);
-      rememberFileSizeBytes(r.value.path, root, r.value.size, revision);
-      setOpenRepoFileIfChanged(setFile, nextFile);
-    });
+          error: null,
+        };
+        browserFileCache.set(cacheKey(path), nextFile);
+        rememberFileSizeBytes(path, root, r.value.size, revision);
+        rememberFileSizeBytes(r.value.path, root, r.value.size, revision);
+        setOpenRepoFileIfChanged(setFile, nextFile);
+      },
+    );
   });
 
   return (
@@ -2933,9 +2976,7 @@ function AgentTrailRow(props: {
           />
           <Show when={visibleStatus()}>
             {(status) => (
-              <span
-                class={`agent-trail-status agent-trail-status-${status()}`}
-              >
+              <span class={`agent-trail-status agent-trail-status-${status()}`}>
                 {status()}
               </span>
             )}
@@ -3157,7 +3198,9 @@ function FactsDiffList(props: { bag: Bag; diffs: MemoryGraphDiffSummary[] }) {
 function DiffListSection(props: { bag: Bag }) {
   const expanded = () => props.bag.rightSidebarDiffListExpanded();
   const setExpanded = props.bag.setRightSidebarDiffListExpanded;
-  const diffs = createMemo(() => mergedFileDiffs(trailSourceItemsForBag(props.bag)));
+  const diffs = createMemo(() =>
+    mergedFileDiffs(trailSourceItemsForBag(props.bag)),
+  );
   const factDiffs = createMemo(() =>
     mergedMemoryDiffs(trailSourceItemsForBag(props.bag)),
   );
@@ -3230,9 +3273,11 @@ function FileDiffList(props: { bag: Bag; diffs: FileDiffItem[] }) {
               title={collapseHome(item.path)}
             >
               <span class="trail-history-diff-dot" aria-hidden="true" />
-              <span class="right-diff-path"><span class="path-ellipsis-text">
-                {collapseHome(item.path)}
-              </span></span>
+              <span class="right-diff-path">
+                <span class="path-ellipsis-text">
+                  {collapseHome(item.path)}
+                </span>
+              </span>
               <ChangeStatsBadge
                 stats={() => stats}
                 label={() => diffStatLabel(item)}
@@ -3426,7 +3471,9 @@ function DiffFileJump(props: {
                       onMouseEnter={() => setActive(i())}
                       onClick={() => choose(option)}
                     >
-                      <span class="diff-file-jump-path"><span class="path-ellipsis-text">{option.label}</span></span>
+                      <span class="diff-file-jump-path">
+                        <span class="path-ellipsis-text">{option.label}</span>
+                      </span>
                       <ChangeStatsBadge
                         stats={() => stats}
                         label={() => diffStatLabel(option.item)}
@@ -3472,7 +3519,10 @@ function ExpandedFileDiffCard(props: {
   const displayPath = () => collapseHome(displayItem().path);
   const recordedAfterContent = () => displayItem().after;
   const sizeRevision = () =>
-    fileSizeRevisionForPath(displayItem().path, trailSourceItemsForBag(props.bag));
+    fileSizeRevisionForPath(
+      displayItem().path,
+      trailSourceItemsForBag(props.bag),
+    );
   const [loadedSource, setLoadedSource] = createSignal<{
     path: string;
     basePath: string | null;
@@ -3852,8 +3902,13 @@ function DiffDetailTab(props: {
           source.path === nextPath &&
           source.basePath === normalizedBasePath &&
           source.revision === revision;
-        const forceRefreshSource = Boolean(props.tab.sourceRevision) && wantsSource;
-        if (!forceRefreshSource && cached !== null && cachedRevision === revision) {
+        const forceRefreshSource =
+          Boolean(props.tab.sourceRevision) && wantsSource;
+        if (
+          !forceRefreshSource &&
+          cached !== null &&
+          cachedRevision === revision
+        ) {
           if (!wantsSource || hasLoadedSource) return;
         } else if (!forceRefreshSource && wantsSource && hasLoadedSource) {
           setSourceLoading(false);
@@ -4219,7 +4274,10 @@ function RenderedFilePreview(props: {
   );
 }
 
-export function htmlPreviewSrcDoc(content: string, baseHref: string | null): string {
+export function htmlPreviewSrcDoc(
+  content: string,
+  baseHref: string | null,
+): string {
   if (!baseHref || /<base\b[^>]*\bhref\s*=/i.test(content)) return content;
   const base = `<base href="${escapeHtmlAttribute(baseHref)}">`;
   const headOpen = /<head(?:\s[^>]*)?>/i;
@@ -4233,7 +4291,9 @@ export function htmlPreviewSrcDoc(content: string, baseHref: string | null): str
   const doctype = content.match(/^\s*<!doctype[^>]*>/i);
   if (doctype) {
     const index = doctype[0].length;
-    return content.slice(0, index) + `<head>${base}</head>` + content.slice(index);
+    return (
+      content.slice(0, index) + `<head>${base}</head>` + content.slice(index)
+    );
   }
   return `<head>${base}</head>` + content;
 }

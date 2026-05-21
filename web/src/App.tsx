@@ -368,8 +368,12 @@ function Toasts(props: { bag: Bag }) {
     e.stopPropagation();
     closeDetails();
   };
-  onMount(() => window.addEventListener("keydown", handleLightboxKeyDown, true));
-  onCleanup(() => window.removeEventListener("keydown", handleLightboxKeyDown, true));
+  onMount(() =>
+    window.addEventListener("keydown", handleLightboxKeyDown, true),
+  );
+  onCleanup(() =>
+    window.removeEventListener("keydown", handleLightboxKeyDown, true),
+  );
   return (
     <>
       <Show when={bag.toasts().length > 0}>

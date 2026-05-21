@@ -868,11 +868,7 @@ mod tests {
 
         let icon = pwa_asset_for_path("/icons/moo.svg").unwrap();
         assert_eq!(icon.content_type, "image/svg+xml");
-        assert!(
-            std::str::from_utf8(icon.body)
-                .unwrap()
-                .contains("🐮")
-        );
+        assert!(std::str::from_utf8(icon.body).unwrap().contains("🐮"));
 
         assert!(pwa_asset_for_path("/chat/abc").is_none());
         assert!(pwa_asset_for_path("/api/ws").is_none());

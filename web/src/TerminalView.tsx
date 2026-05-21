@@ -148,7 +148,8 @@ function parseTerminalRows(
   enforceMin = false,
 ): number | undefined {
   if (typeof height === "number") {
-    const px = numberUnit === "vh" ? (viewportHeightPx() * height) / 100 : height;
+    const px =
+      numberUnit === "vh" ? (viewportHeightPx() * height) / 100 : height;
     return terminalRowsFromPx(px, cellH, enforceMin);
   }
   const raw = String(height ?? "").trim();
@@ -173,7 +174,12 @@ function parseTerminalRows(
     if (px <= 0 && !enforceMin) return undefined;
     return parseTerminalRows(px, cellH, "px", enforceMin);
   }
-  return parseTerminalRows(Number.parseFloat(raw), cellH, numberUnit, enforceMin);
+  return parseTerminalRows(
+    Number.parseFloat(raw),
+    cellH,
+    numberUnit,
+    enforceMin,
+  );
 }
 
 function sessionLabel(session: BlitSession) {
@@ -216,21 +222,29 @@ export function ChatTerminals(props: {
   const [open, setOpen] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
-  const [queuedCreateChatId, setQueuedCreateChatId] = createSignal<string | null>(null);
+  const [queuedCreateChatId, setQueuedCreateChatId] = createSignal<
+    string | null
+  >(null);
   const [terminalCellHeight, setTerminalCellHeight] = createSignal(
     terminalCellHeightPx(),
   );
   const [terminalRows, setTerminalRows_] = createSignal(
-    parseTerminalRows(localStorage.getItem(TERMINAL_HEIGHT_KEY), terminalCellHeight()) ??
-      defaultTerminalRows(terminalCellHeight()),
+    parseTerminalRows(
+      localStorage.getItem(TERMINAL_HEIGHT_KEY),
+      terminalCellHeight(),
+    ) ?? defaultTerminalRows(terminalCellHeight()),
   );
-  const terminalHeight = createMemo(() => `${terminalRows() * terminalCellHeight()}px`);
+  const terminalHeight = createMemo(
+    () => `${terminalRows() * terminalCellHeight()}px`,
+  );
   let rootRef: HTMLElement | undefined;
   const [terminalTheme, setTerminalTheme] = createSignal<"light" | "dark">(
     effectiveTerminalTheme(),
   );
   const terminalPalette = createMemo<TerminalPalette>(() =>
-    terminalTheme() === "light" ? LIGHT_TERMINAL_PALETTE : DARK_TERMINAL_PALETTE,
+    terminalTheme() === "light"
+      ? LIGHT_TERMINAL_PALETTE
+      : DARK_TERMINAL_PALETTE,
   );
 
   const connection = createMemo(
@@ -543,7 +557,10 @@ export function ChatTerminals(props: {
       media?.removeEventListener?.("change", syncTerminalTheme);
       observer.disconnect();
       window.removeEventListener("resize", refreshTerminalCellSize);
-      document.fonts?.removeEventListener("loadingdone", refreshTerminalCellSize);
+      document.fonts?.removeEventListener(
+        "loadingdone",
+        refreshTerminalCellSize,
+      );
     });
   });
 
@@ -694,7 +711,9 @@ export function ChatTerminals(props: {
           onClick={() => void createShell()}
           onMouseDown={preventPointerFocus}
           disabled={!props.chatId || creating()}
-          title={terminalReady() ? "new terminal" : "start terminal when connected"}
+          title={
+            terminalReady() ? "new terminal" : "start terminal when connected"
+          }
         >
           {creating() ? "starting…" : "+"}
         </button>
@@ -712,9 +731,7 @@ export function ChatTerminals(props: {
       <Show when={open()}>
         <div class="chat-terminal-panel">
           {!selectedSession() && !error() && !terminalReady() ? (
-            <div class="terminal-empty">
-              Connecting…
-            </div>
+            <div class="terminal-empty">Connecting…</div>
           ) : null}
           <Show when={selectedSession()}>
             {(session) => (

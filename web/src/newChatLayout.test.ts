@@ -58,20 +58,30 @@ describe("new chat layout", () => {
       sidebar,
       "onClick={() => chooseRecentPath(path)}",
     );
-    expect(recentStart).toContain("disabled={creatingProjectChat() || branchesLoading()}");
+    expect(recentStart).toContain("disabled={");
+    expect(recentStart).toContain("creatingProjectChat() || branchesLoading()");
 
     const pathStart = snippetAfter(sidebar, "onClick={createChatInExplorer}");
-    expect(pathStart).toContain("disabled={creatingProjectChat() || branchesLoading()}");
+    expect(pathStart).toContain(
+      "disabled={creatingProjectChat() || branchesLoading()}",
+    );
   });
 
   it("offers git branch selection as a second step", () => {
     expect(sidebar).toContain('api("fs-git-branches"');
     expect(sidebar).toContain('api("fs-git-pull-branches"');
-    expect(sidebar).toContain("const [pendingProjectPath, setPendingProjectPath] = createSignal<string | null>(null);");
-    expect(sidebar).toContain("<Show when={pendingProjectPath()} fallback=");
-    const fallbackStart = sidebar.indexOf("<Show when={pendingProjectPath()} fallback=");
+    expect(sidebar).toContain(
+      "const [pendingProjectPath, setPendingProjectPath] =",
+    );
+    expect(sidebar).toContain("createSignal<string | null>(null);");
+    expect(sidebar).toContain("<Show");
+    expect(sidebar).toContain("when={pendingProjectPath()}");
+    expect(sidebar).toContain("fallback=");
+    const fallbackStart = sidebar.indexOf("when={pendingProjectPath()}");
     const branchStart = sidebar.indexOf('class="fs-branch-step"');
-    const scratchStart = sidebar.indexOf('class="fs-pick-toggle fs-scratch-toggle"');
+    const scratchStart = sidebar.indexOf(
+      'class="fs-pick-toggle fs-scratch-toggle"',
+    );
     expect(scratchStart).toBeGreaterThan(fallbackStart);
     expect(scratchStart).toBeLessThan(branchStart);
     expect(sidebar).toContain('class="fs-branch-step-topline"');
@@ -79,25 +89,42 @@ describe("new chat layout", () => {
     expect(sidebar).toContain('class="fs-start-action fs-branch-start"');
     expect(sidebar).not.toContain('class="fs-branch-actions"');
     expect(sidebar).toContain('aria-label="Back to project selection"');
-    expect(sidebar).toContain('←');
+    expect(sidebar).toContain("←");
     expect(sidebar).toContain('class="fs-branch-title-block"');
     expect(sidebar).not.toContain('class="fs-step-kicker"');
-    expect(sidebar).not.toContain('Step 2');
-    const branchMarkup = sidebar.slice(branchStart, sidebar.indexOf('</section>', branchStart));
-    expect(branchMarkup).not.toContain('>Back</button>');
-    expect(branchMarkup).toContain('←');
-    expect(sidebar).toContain('<h2 class="fs-branch-project" title={pendingProjectPath() || ""}>{pendingProjectPath()}</h2>');
+    expect(sidebar).not.toContain("Step 2");
+    const branchMarkup = sidebar.slice(
+      branchStart,
+      sidebar.indexOf("</section>", branchStart),
+    );
+    expect(branchMarkup).not.toContain(">Back</button>");
+    expect(branchMarkup).toContain("←");
+    expect(sidebar).toContain('class="fs-branch-project"');
+    expect(sidebar).toContain('title={pendingProjectPath() || ""}');
+    expect(sidebar).toContain("{pendingProjectPath()}");
     expect(sidebar).not.toContain('<p class="fs-branch-project"');
     expect(sidebar).toContain("resetBranchChoice(path);");
     expect(sidebar).toContain("if (!loadedBranches.isRepo)");
-    expect(sidebar).toContain("await createChatAtPath(collapseHome(loadedBranches.path || path));");
-    expect(sidebar).toContain("setPendingProjectPath(collapseHome(loadedBranches.path || path));");
-    expect(sidebar).toContain("<Show when={isGitRepo()}>");
-    expect(sidebar).toContain('<Show when={repoKind() === "jj"}>');
+    expect(sidebar).toContain(
+      "await createChatAtPath(collapseHome(loadedBranches.path || path));",
+    );
+    expect(sidebar).toContain(
+      "setPendingProjectPath(collapseHome(loadedBranches.path || path));",
+    );
+    expect(sidebar).toContain("when={isGitRepo()}");
+    expect(sidebar).toContain('when={repoKind() === "jj"}');
     expect(sidebar).toContain('id="new-chat-jj-revision"');
-    expect(sidebar).toContain("await bag.createChat(expandHome(path), { branch });");
-    expect(sidebar).toContain('if (repoKind() === "jj") return selectedJjRevision();');
-    expect(sidebar).toContain("disabled={!isGitRepo() || !hasBranchRemote() || branchesLoading() || branchesPulling()}");
+    expect(sidebar).toContain(
+      "await bag.createChat(expandHome(path), { branch });",
+    );
+    expect(sidebar).toContain(
+      'if (repoKind() === "jj") return selectedJjRevision();',
+    );
+    expect(sidebar).toContain("disabled={");
+    expect(sidebar).toContain("!isGitRepo() ||");
+    expect(sidebar).toContain("!hasBranchRemote() ||");
+    expect(sidebar).toContain("branchesLoading() ||");
+    expect(sidebar).toContain("branchesPulling()");
 
     const branchStep = cssBlock(".fs-branch-step");
     expect(branchStep).not.toContain("border-top");
@@ -117,7 +144,10 @@ describe("new chat layout", () => {
     const branchCard = cssBlock(".fs-branch-card");
     expect(branchCard).toContain("display: flex");
 
-    const branchActions = cssBlock(".fs-branch-pull", css.indexOf(".fs-branch-header"));
+    const branchActions = cssBlock(
+      ".fs-branch-pull",
+      css.indexOf(".fs-branch-header"),
+    );
     expect(branchActions).toContain("white-space: nowrap");
     expect(sidebar).not.toContain("fs-branch-upgrade");
   });
@@ -125,9 +155,15 @@ describe("new chat layout", () => {
   it("uses each project row as the action without duplicate labels", () => {
     expect(sidebar).not.toContain("fs-scratch-action");
     expect(sidebar).not.toContain("fs-recent-action");
-    const scratchStart = snippetAfter(sidebar, 'class="fs-pick-toggle fs-scratch-toggle"');
+    const scratchStart = snippetAfter(
+      sidebar,
+      'class="fs-pick-toggle fs-scratch-toggle"',
+    );
     expect(scratchStart).not.toContain("fs-start-action");
-    const recentStart = snippetAfter(sidebar, "onClick={() => chooseRecentPath(path)}");
+    const recentStart = snippetAfter(
+      sidebar,
+      "onClick={() => chooseRecentPath(path)}",
+    );
     expect(recentStart).not.toContain("fs-start-action");
 
     const panel = cssBlock(".new-chat-panel");
@@ -140,7 +176,9 @@ describe("new chat layout", () => {
     );
 
     const recent = cssBlock(".fs-recent-project");
-    expect(recent).toContain("grid-template-columns: 1.5rem minmax(0, 1fr) auto");
+    expect(recent).toContain(
+      "grid-template-columns: 1.5rem minmax(0, 1fr) auto",
+    );
     expect(recent).toContain("padding: 0.35rem var(--fs-row-inline-padding)");
     const remove = cssBlock(".fs-recent-remove");
     expect(remove).toContain("width: 2rem");
@@ -158,7 +196,9 @@ describe("new chat layout", () => {
     );
 
     const pathRow = cssBlock(".fs-path-row");
-    expect(pathRow).toContain("grid-template-columns: minmax(0, 1fr) var(--fs-start-action-width)");
+    expect(pathRow).toContain(
+      "grid-template-columns: minmax(0, 1fr) var(--fs-start-action-width)",
+    );
   });
 
   it("lets the route and panel use the available width", () => {
@@ -197,11 +237,17 @@ describe("new chat layout", () => {
   });
 });
 
-
 describe("new chat shared header controls", () => {
   it("new chat header uses the shared left sidebar toggle", () => {
-    const sidebar = readFileSync(new URL("./Sidebar.tsx", import.meta.url), "utf8");
-    expect(sidebar).toContain('import { LeftSidebarToggle } from "./HeaderControls";');
-    expect(sidebar).toContain("<LeftSidebarToggle onToggleSidebar={props.onToggleSidebar} />");
+    const sidebar = readFileSync(
+      new URL("./Sidebar.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(sidebar).toContain(
+      'import { LeftSidebarToggle } from "./HeaderControls";',
+    );
+    expect(sidebar).toContain(
+      "<LeftSidebarToggle onToggleSidebar={props.onToggleSidebar} />",
+    );
   });
 });

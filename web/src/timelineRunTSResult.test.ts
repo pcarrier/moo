@@ -66,8 +66,9 @@ describe("timeline runTS result rendering", () => {
       "const RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES = 64 * 1024;",
     );
     expect(timeline).toContain(
-      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return escapeHtml(content);",
+      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)",
     );
+    expect(timeline).toContain("return escapeHtml(content);");
     expect(timeline).toContain(
       "highlightMarkdownCode(content, language, RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)",
     );
@@ -78,13 +79,16 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain("content: string,");
     expect(timeline).toContain("language?: string,");
     expect(timeline).toContain(
-      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES) return undefined;",
+      "if (content.length > RUNTS_BLOCK_HIGHLIGHT_MAX_BYTES)",
+    );
+    expect(timeline).toContain("return undefined;");
+    expect(timeline).toContain("maybeFormatHjsonTextForView(trimmed) !== null");
+    expect(timeline).toContain(
+      "function runTSBlockLineCount(content: string): number",
     );
     expect(timeline).toContain(
-      'maybeFormatHjsonTextForView(trimmed) !== null',
+      "const lineCount = runTSBlockLineCount(content);",
     );
-    expect(timeline).toContain("function runTSBlockLineCount(content: string): number");
-    expect(timeline).toContain("const lineCount = runTSBlockLineCount(content);");
     expect(timeline).toContain(
       'if (looksLikeMarkdownText(trimmed)) return "markdown";',
     );
@@ -102,7 +106,7 @@ describe("timeline runTS result rendering", () => {
     expect(timeline).toContain("sourceId: string;");
     expect(timeline).toContain("current?.sourceId === block.sourceId");
     expect(timeline).toContain("const current = untrack(runTSBlockLightbox);");
-    expect(timeline).toContain('sourceId={`${props.item.step}:args`}');
+    expect(timeline).toContain("sourceId={`${props.item.step}:args`}");
     expect(timeline).toContain("onUpdateFull={props.onUpdateRunTSBlock}");
     expect(timeline).toContain("props.onUpdateFull?.(lightboxBlock());");
     expect(timeline).toContain("content: () => props.content");

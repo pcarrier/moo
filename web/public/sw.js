@@ -1,9 +1,5 @@
 const CACHE_NAME = "moo-shell-v1";
-const SHELL_URLS = [
-  "/",
-  "/manifest.webmanifest",
-  "/icons/moo.svg",
-];
+const SHELL_URLS = ["/", "/manifest.webmanifest", "/icons/moo.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

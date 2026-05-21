@@ -1,4 +1,12 @@
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+} from "solid-js";
 
 import { api } from "./api";
 import type { Bag } from "./state";
@@ -21,7 +29,7 @@ export function ChatAppLauncher(props: { bag: Bag }) {
             <button
               type="button"
               class="chat-app-launcher-button"
-              title={app.description || ("Open " + (app.title || app.id))}
+              title={app.description || "Open " + (app.title || app.id)}
               onClick={() => bag.openUi(app.id)}
             >
               <span class="app-icon">{app.icon || "▣"}</span>
@@ -45,11 +53,21 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     return tab?.kind === "app" ? tab : null;
   });
   const activeUiId = () => activeAppTab()?.uiId ?? bag.openUiId();
-  const activeInstanceId = () => activeAppTab()?.instanceId ?? bag.openUiInstanceId();
-  const activeAppKey = () => activeUiId() ? `${activeUiId()}::${activeInstanceId() ?? ""}` : null;
+  const activeInstanceId = () =>
+    activeAppTab()?.instanceId ?? bag.openUiInstanceId();
+  const activeAppKey = () =>
+    activeUiId() ? `${activeUiId()}::${activeInstanceId() ?? ""}` : null;
   const [title, setTitle] = createSignal<string>("app");
-  const [visibleFrameDoc, setVisibleFrameDoc] = createSignal<{ key: number; appKey: string | null; doc: string } | null>(null);
-  const [pendingFrameDoc, setPendingFrameDoc] = createSignal<{ key: number; appKey: string | null; doc: string } | null>(null);
+  const [visibleFrameDoc, setVisibleFrameDoc] = createSignal<{
+    key: number;
+    appKey: string | null;
+    doc: string;
+  } | null>(null);
+  const [pendingFrameDoc, setPendingFrameDoc] = createSignal<{
+    key: number;
+    appKey: string | null;
+    doc: string;
+  } | null>(null);
   let nextFrameKey = 0;
   const [panelWidth, setPanelWidth] = createSignal(
     Number.isFinite(storedPanelWidth) && storedPanelWidth > 0
@@ -65,7 +83,9 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   let startWidth = 0;
 
   const clampPanelWidth = (width: number) => {
-    const shellWidth = frame?.closest(".chat-shell")?.getBoundingClientRect().width || window.innerWidth;
+    const shellWidth =
+      frame?.closest(".chat-shell")?.getBoundingClientRect().width ||
+      window.innerWidth;
     if (shellWidth <= 900) {
       const max = Math.max(1, shellWidth);
       const min = Math.min(240, max);
@@ -93,19 +113,25 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   };
 
   createEffect(() => {
-    localStorage.setItem("moo.uiPanelWidth", String(clampPanelWidth(panelWidth())));
+    localStorage.setItem(
+      "moo.uiPanelWidth",
+      String(clampPanelWidth(panelWidth())),
+    );
   });
 
   const showFrameDoc = (appKey: string | null, doc: string) => {
     const visible = visibleFrameDoc();
     const pending = pendingFrameDoc();
-    if ((visible?.appKey === appKey && visible.doc === doc) || (pending?.appKey === appKey && pending.doc === doc)) return;
+    if (
+      (visible?.appKey === appKey && visible.doc === doc) ||
+      (pending?.appKey === appKey && pending.doc === doc)
+    )
+      return;
     setPendingFrameDoc({ key: ++nextFrameKey, appKey, doc });
   };
 
-  createEffect(on(
-    activeAppKey,
-    async (appKey) => {
+  createEffect(
+    on(activeAppKey, async (appKey) => {
       const uiId = activeUiId();
       if (!uiId) {
         setTitle("app");
@@ -116,21 +142,29 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
       const r = await api("ui-bundle", { uiId });
       if (activeAppKey() !== appKey) return;
       if (!r.ok) {
-        showFrameDoc(appKey, buildUiSrcdoc(`<p>${escapeHtml(r.error.message)}</p>`, "", ""));
+        showFrameDoc(
+          appKey,
+          buildUiSrcdoc(`<p>${escapeHtml(r.error.message)}</p>`, "", ""),
+        );
         return;
       }
       setTitle(r.value.manifest.title || uiId);
       const b = r.value.bundle;
-      const html = b.html ?? b.files?.[r.value.manifest.entry || "index.html"] ?? "";
+      const html =
+        b.html ?? b.files?.[r.value.manifest.entry || "index.html"] ?? "";
       const css = b.css ?? b.files?.["style.css"] ?? "";
       const js = b.js ?? b.files?.["client.js"] ?? "";
       showFrameDoc(appKey, buildUiSrcdoc(html, css, js));
-    },
-  ));
+    }),
+  );
 
   const isUiFrameSource = (source: MessageEventSource | null) => {
     if (!source) return false;
-    if (source === frame?.contentWindow || source === pendingFrame?.contentWindow) return true;
+    if (
+      source === frame?.contentWindow ||
+      source === pendingFrame?.contentWindow
+    )
+      return true;
     const iframes = frameStack?.querySelectorAll("iframe") ?? [];
     for (const iframe of Array.from(iframes)) {
       if (source === iframe.contentWindow) return true;
@@ -142,8 +176,10 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     if (!isUiFrameSource(ev.source)) return;
     const source = ev.source as Window | null;
     const msg = ev.data || {};
-    if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id) return;
-    const reply = (payload: Record<string, unknown>) => source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
+    if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id)
+      return;
+    const reply = (payload: Record<string, unknown>) =>
+      source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
     try {
       if (msg.method === "state:get") {
         const inst = activeInstanceId();
@@ -154,44 +190,73 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
       } else if (msg.method === "state:set") {
         const inst = activeInstanceId();
         if (!inst) throw new Error("no UI instance is open");
-        const r = await api("ui-state-set", { instanceId: inst, state: msg.state ?? {} });
+        const r = await api("ui-state-set", {
+          instanceId: inst,
+          state: msg.state ?? {},
+        });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "call") {
         const uiId = activeUiId();
         if (!uiId) throw new Error("no UI is open");
-        const r = await api("ui-call", { uiId, instanceId: activeInstanceId(), chatId: bag.chatId(), name: String(msg.name || "default"), input: msg.input ?? {} });
+        const r = await api("ui-call", {
+          uiId,
+          instanceId: activeInstanceId(),
+          chatId: bag.chatId(),
+          name: String(msg.name || "default"),
+          input: msg.input ?? {},
+        });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:query") {
-        const r = await api("memory-query", { patterns: msg.patterns ?? [], ...(msg.opts ?? {}) });
+        const r = await api("memory-query", {
+          patterns: msg.patterns ?? [],
+          ...(msg.opts ?? {}),
+        });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:triples") {
         const r = await api("triples", {
           subject: typeof msg.subject === "string" ? msg.subject : undefined,
-          predicate: typeof msg.predicate === "string" ? msg.predicate : undefined,
+          predicate:
+            typeof msg.predicate === "string" ? msg.predicate : undefined,
           object: typeof msg.object === "string" ? msg.object : undefined,
-          ...((msg.opts && typeof msg.opts === "object") ? msg.opts : {}),
+          ...(msg.opts && typeof msg.opts === "object" ? msg.opts : {}),
         });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:assert") {
-        const r = await api("assert", { subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
+        const r = await api("assert", {
+          subject: String(msg.subject ?? ""),
+          predicate: String(msg.predicate ?? ""),
+          object: String(msg.object ?? ""),
+          ...(msg.opts ?? {}),
+        });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "memory:retract") {
-        const r = await api("retract", { subject: String(msg.subject ?? ""), predicate: String(msg.predicate ?? ""), object: String(msg.object ?? ""), ...(msg.opts ?? {}) });
+        const r = await api("retract", {
+          subject: String(msg.subject ?? ""),
+          predicate: String(msg.predicate ?? ""),
+          object: String(msg.object ?? ""),
+          ...(msg.opts ?? {}),
+        });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value });
       } else if (msg.method === "open") {
-        bag.openUi(String(msg.uiId), msg.instanceId ? String(msg.instanceId) : undefined);
+        bag.openUi(
+          String(msg.uiId),
+          msg.instanceId ? String(msg.instanceId) : undefined,
+        );
         reply({ ok: true, value: null });
       } else {
         throw new Error(`unknown UI method: ${msg.method}`);
       }
     } catch (err) {
-      reply({ ok: false, error: { message: err instanceof Error ? err.message : String(err) } });
+      reply({
+        ok: false,
+        error: { message: err instanceof Error ? err.message : String(err) },
+      });
     }
   };
   window.addEventListener("message", onMessage);
@@ -200,7 +265,11 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   return (
     <aside
       class="ui-panel"
-      classList={{ maximized: !props.embedded && maximized(), resizing: resizing(), embedded: props.embedded }}
+      classList={{
+        maximized: !props.embedded && maximized(),
+        resizing: resizing(),
+        embedded: props.embedded,
+      }}
       style={{ "--ui-panel-w": `${clampPanelWidth(panelWidth())}px` }}
     >
       <Show when={!props.embedded && !maximized()}>
@@ -218,14 +287,22 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
             class="header-icon-button right-sidebar-size-toggle"
             classList={{ maximized: maximized() }}
             title={maximized() ? "restore app panel" : "maximize app panel"}
-            aria-label={maximized() ? "restore app panel" : "maximize app panel"}
+            aria-label={
+              maximized() ? "restore app panel" : "maximize app panel"
+            }
             aria-pressed={maximized()}
             onClick={() => setMaximized(!maximized())}
           >
             {maximized() ? <RestoreIcon /> : <MaximizeIcon />}
           </button>
         </Show>
-        <button class="header-icon-button" title="close app" onClick={() => bag.closeUi()}><CloseIcon /></button>
+        <button
+          class="header-icon-button"
+          title="close app"
+          onClick={() => bag.closeUi()}
+        >
+          <CloseIcon />
+        </button>
       </header>
       <div class="ui-frame-stack" ref={frameStack}>
         <Show when={visibleFrameDoc()} keyed>
@@ -260,14 +337,21 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char] || char));
+  return value.replace(
+    /[&<>"]/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] || char,
+  );
 }
 
 function disableParserAutofocus(html: string): string {
   // Browser parser-level autofocus can race with the host composer focus and emit
   // "Autofocus processing was blocked because a document already has a focused element."
   // Preserve the app author's intent without using the special HTML attribute.
-  return html.replace(/\sautofocus(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/gi, ' data-moo-autofocus="true"');
+  return html.replace(
+    /\sautofocus(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/gi,
+    ' data-moo-autofocus="true"',
+  );
 }
 
 function buildUiSrcdoc(html: string, css: string, js: string): string {

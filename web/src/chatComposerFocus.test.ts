@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const stateSource = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
+const stateSource = readFileSync(
+  new URL("./state.ts", import.meta.url),
+  "utf8",
+);
 const timelineSource = readFileSync(
   new URL("./Timeline.tsx", import.meta.url),
   "utf8",

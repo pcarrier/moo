@@ -9,7 +9,9 @@ import {
 } from "./diffs";
 import type { FileDiffItem } from "./api";
 
-function item(partial: Partial<FileDiffItem> & Pick<FileDiffItem, "id" | "diff" | "at">): FileDiffItem {
+function item(
+  partial: Partial<FileDiffItem> & Pick<FileDiffItem, "id" | "diff" | "at">,
+): FileDiffItem {
   return {
     type: "file-diff",
     chatId: "chat" as FileDiffItem["chatId"],
@@ -191,9 +193,7 @@ describe("mergeFileDiffItems", () => {
     expect(merged.diff).not.toContain("+temporary");
     expect(merged.diff).not.toContain("-temporary");
   });
-
 });
-
 
 describe("diffDisplaySections", () => {
   test("does not map concatenated patch hunks onto one final snapshot", () => {
@@ -203,37 +203,45 @@ describe("diffDisplaySections", () => {
       "+++ b/package.json",
       "@@ -1,3 +1,4 @@",
       " {",
-      "   \"scripts\": {",
-      "+    \"typecheck\": \"tsc --noEmit\",",
-      "     \"dev\": \"bun build\"",
+      '   "scripts": {',
+      '+    "typecheck": "tsc --noEmit",',
+      '     "dev": "bun build"',
       "diff --git a/package.json b/package.json",
       "--- a/package.json",
       "+++ b/package.json",
       "@@ -1,4 +1,4 @@",
       " {",
-      "   \"scripts\": {",
-      "-    \"typecheck\": \"tsc --noEmit\",",
-      "+    \"typecheck\": \"tsc --noEmit --noCheck\",",
-      "     \"dev\": \"bun build\"",
+      '   "scripts": {',
+      '-    "typecheck": "tsc --noEmit",',
+      '+    "typecheck": "tsc --noEmit --noCheck",',
+      '     "dev": "bun build"',
     ].join("\n");
     const snapshot = [
       "{",
-      "  \"scripts\": {",
-      "    \"dev\": \"bun build\",",
-      "    \"typecheck\": \"tsc --noEmit --noCheck\"",
+      '  "scripts": {',
+      '    "dev": "bun build",',
+      '    "typecheck": "tsc --noEmit --noCheck"',
       "  }",
       "}",
     ].join("\n");
 
-    const renderedLines = diffDisplaySections(diff, snapshot).flatMap((section) => section.lines);
+    const renderedLines = diffDisplaySections(diff, snapshot).flatMap(
+      (section) => section.lines,
+    );
 
     expect(renderedLines.join("\n")).toContain("@@ -1,3 +1,4 @@");
-    expect(renderedLines.join("\n")).toContain("diff --git a/package.json b/package.json");
-    expect(renderedLines.filter((line) => line.includes('\"scripts\": {')).length).toBe(2);
+    expect(renderedLines.join("\n")).toContain(
+      "diff --git a/package.json b/package.json",
+    );
+    expect(
+      renderedLines.filter((line) => line.includes('\"scripts\": {')).length,
+    ).toBe(2);
   });
 
   test("places snapshot expansion controls next to the remaining hidden side", () => {
-    const snapshot = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+    const snapshot = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join(
+      "\n",
+    );
     const diff = [
       "diff --git a/example.txt b/example.txt",
       "--- a/example.txt",
@@ -244,7 +252,12 @@ describe("diffDisplaySections", () => {
     ].join("\n");
 
     const collapsed = diffDisplaySections(diff, snapshot).filter(
-      (section): section is Extract<ReturnType<typeof diffDisplaySections>[number], { kind: "collapsed" }> => section.kind === "collapsed",
+      (
+        section,
+      ): section is Extract<
+        ReturnType<typeof diffDisplaySections>[number],
+        { kind: "collapsed" }
+      > => section.kind === "collapsed",
     );
 
     expect(collapsed).toMatchObject([
@@ -254,16 +267,23 @@ describe("diffDisplaySections", () => {
   });
 });
 
-
 describe("diff path matching", () => {
   test("does not match unrelated relative paths that share a suffix", () => {
-    expect(sameDiffPath("src/commands/chats.ts", "harness/src/commands/chats.ts")).toBe(false);
-    expect(sameDiffPath("commands/chats.ts", "harness/src/commands/chats.ts")).toBe(false);
+    expect(
+      sameDiffPath("src/commands/chats.ts", "harness/src/commands/chats.ts"),
+    ).toBe(false);
+    expect(
+      sameDiffPath("commands/chats.ts", "harness/src/commands/chats.ts"),
+    ).toBe(false);
   });
 
   test("still matches absolute paths to their relative form", () => {
-    expect(sameDiffPath("/tmp/work/src/example.ts", "src/example.ts")).toBe(true);
-    expect(sameDiffPath("src/example.ts", "/tmp/work/src/example.ts")).toBe(true);
+    expect(sameDiffPath("/tmp/work/src/example.ts", "src/example.ts")).toBe(
+      true,
+    );
+    expect(sameDiffPath("src/example.ts", "/tmp/work/src/example.ts")).toBe(
+      true,
+    );
   });
 
   test("uses the chat root when comparing opened files to diff items", () => {
