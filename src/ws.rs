@@ -318,7 +318,9 @@ fn run_ts_cancel_command(
         .filter(|s| !s.is_empty())
     {
         Some(s) => s.to_string(),
-        None => return json!({ "ok": false, "error": { "message": "run-ts-cancel requires chatId" } }),
+        None => {
+            return json!({ "ok": false, "error": { "message": "run-ts-cancel requires chatId" } });
+        }
     };
     let step_id = payload
         .get("stepId")
@@ -326,31 +328,31 @@ fn run_ts_cancel_command(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
     let cancelled = crate::driver::cancel_runts(&chat_id, step_id.as_deref());
-    if cancelled > 0 {
-        if let Some(sid) = &step_id {
-            crate::broadcast::publish(
-                json!({
-                    "kind": "runts-step-finished",
-                    "chatId": chat_id,
-                    "stepId": sid,
-                    "status": "agent:Cancelled",
-                    "error": "runTS cancelled",
-                    "at": crate::util::now_ms(),
-                })
-                .to_string(),
-            );
-            let pool = pool.clone();
-            let bundle = bundle();
-            let db = db.to_string();
-            let chat_id = chat_id.clone();
-            let sid = sid.clone();
-            std::thread::spawn(move || {
-                if host::install(&db).is_ok() {
-                    let input = json!({ "command": "run-ts-cancel", "chatId": chat_id, "stepId": sid });
-                    let _ = pool.submit(bundle, input.to_string());
-                }
-            });
-        }
+    if cancelled > 0
+        && let Some(sid) = &step_id
+    {
+        crate::broadcast::publish(
+            json!({
+                "kind": "runts-step-finished",
+                "chatId": chat_id,
+                "stepId": sid,
+                "status": "agent:Cancelled",
+                "error": "runTS cancelled",
+                "at": crate::util::now_ms(),
+            })
+            .to_string(),
+        );
+        let pool = pool.clone();
+        let bundle = bundle();
+        let db = db.to_string();
+        let chat_id = chat_id.clone();
+        let sid = sid.clone();
+        std::thread::spawn(move || {
+            if host::install(&db).is_ok() {
+                let input = json!({ "command": "run-ts-cancel", "chatId": chat_id, "stepId": sid });
+                let _ = pool.submit(bundle, input.to_string());
+            }
+        });
     }
     json!({
         "ok": true,
