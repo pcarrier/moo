@@ -3490,7 +3490,13 @@ function RunTSBody(props: {
             )}
           />
         </Show>
-        <Show when={!isTerminalStepStatus(props.item.status) || backgrounded()}>
+        <Show
+          when={
+            props.item.status === "agent:Running" ||
+            backgrounded() ||
+            props.item.status === "agent:Queued"
+          }
+        >
           <span
             class="runts-controls"
             onPointerDown={(ev) => ev.stopPropagation()}

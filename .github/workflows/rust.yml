@@ -48,6 +48,9 @@ jobs:
           cd web
           bun install --frozen-lockfile
 
+      - name: Install harness dependencies
+        run: bun install --cwd harness --frozen-lockfile --no-progress
+
       - name: Run Clippy
         run: |
           cargo clippy \

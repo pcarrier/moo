@@ -153,15 +153,14 @@ test("backgrounded runTS timeline rows remain cancellable", () => {
     'props.item.status === "agent:Running" || backgrounded()',
     summaryStart,
   );
-  const controlsStart = timeline.indexOf(
-    'props.item.status === "agent:Running" || backgrounded()',
-    firstGuard + 1,
-  );
+  const controlsStart = timeline.indexOf('class="runts-controls"', firstGuard + 1);
   const controls = timeline.slice(
     controlsStart,
     timeline.indexOf("</summary>", controlsStart),
   );
 
+  expect(firstGuard).toBeGreaterThanOrEqual(0);
+  expect(controlsStart).toBeGreaterThanOrEqual(0);
   expect(controls).toContain('class="runts-control runts-cancel"');
   expect(controls).toContain("props.bag.cancelRunTSStep(props.item.step);");
   expect(controls).toContain('props.item.status !== "agent:Cancelled"');
