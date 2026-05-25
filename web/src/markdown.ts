@@ -40,7 +40,7 @@ function createSafeRenderer(): Renderer {
   next.link = function ({ href, title, tokens }) {
     const safeHref = safeLinkHref(href);
     const titleAttribute = title ? ' title="' + escapeHtmlAttribute(title) + '"' : "";
-    return '<a href="' + escapeHtmlAttribute(safeHref) + '"' + titleAttribute + '>' + this.parser.parseInline(tokens) + '</a>';
+    return '<a href="' + escapeHtmlAttribute(safeHref) + '"' + titleAttribute + externalLinkAttributes(safeHref) + '>' + this.parser.parseInline(tokens) + '</a>';
   };
   next.image = ({ href, title, text }) => {
     const safeHref = safeLinkHref(href);
@@ -426,7 +426,7 @@ function linkifyPlainText(content: string): string {
     html += escapeHtml(content.slice(cursor, match.start));
     const label = escapeHtml(content.slice(match.start, match.end));
     const href = escapeHtmlAttribute(match.href);
-    html += '<a href="' + href + '">' + label + '</a>';
+    html += '<a href="' + href + '"' + externalLinkAttributes(match.href) + '>' + label + '</a>';
     cursor = match.end;
   }
   html += escapeHtml(content.slice(cursor));
@@ -517,6 +517,14 @@ function safeLinkHref(href: string): string {
   if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return "";
   return trimmed;
+}
+
+function externalLinkAttributes(href: string): string {
+  return isExternalLinkHref(href) ? ' target="_blank" rel="noopener noreferrer"' : "";
+}
+
+function isExternalLinkHref(href: string): boolean {
+  return /^(https?:|mailto:)/i.test(href.trim());
 }
 
 function escapeMarkdownLinkText(value: string): string {

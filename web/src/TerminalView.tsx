@@ -15,6 +15,7 @@ import {
   measureCell,
   type BlitSession,
   type BlitTerminalSurface,
+  type ConnectionStatus,
   type BlitWorkspaceSnapshot,
   type SessionId,
   type TerminalPalette,
@@ -39,6 +40,7 @@ const TERMINAL_DEFAULT_HEIGHT = "36vh";
 const TERMINAL_MAX_VH = 75;
 const TERMINAL_FONT_FAMILY = "ui-monospace, monospace";
 const TERMINAL_FONT_SIZE = 14;
+const CREATE_SHELL_TIMEOUT_MS = 10_000;
 
 const DARK_TERMINAL_PALETTE =
   PALETTES.find((palette) => palette.id === "vscode-dark") ??
@@ -56,6 +58,25 @@ function blitWsUrl(): string {
   if (psk) params.set("psk", psk);
   const qs = params.toString();
   return `${proto}//${location.host}/api/blit/ws${qs ? `?${qs}` : ""}`;
+}
+
+function createShellTimeoutMessage(): string {
+  return (
+    "Local blit accepted the WebSocket connection, but did not respond " +
+    "to the terminal create request. The blit server may be stuck before " +
+    "sending protocol frames; try restarting Moo or blit."
+  );
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(resolve, reject).finally(() => window.clearTimeout(timer));
+  });
 }
 
 function useWorkspaceSnapshot(workspace: BlitWorkspace) {
@@ -264,8 +285,15 @@ export function ChatTerminals(props: {
   const connectionStatus = createMemo(
     () => connection()?.status ?? "connecting",
   );
-  const terminalReady = createMemo(
-    () => connectionStatus() === "connected" && connection()?.ready === true,
+  const [transportStatus, setTransportStatus] = createSignal<ConnectionStatus>(
+    workspace().getConnection(CONNECTION_ID)?.transport.status ?? "connecting",
+  );
+  const terminalConnectable = createMemo(
+    () =>
+      connectionStatus() === "connected" || transportStatus() === "connected",
+  );
+  const visibleConnectionStatus = createMemo(() =>
+    terminalConnectable() ? "connected" : connectionStatus(),
   );
   const chatSessions = createMemo(() => {
     const chatId = props.chatId;
@@ -400,12 +428,16 @@ export function ChatTerminals(props: {
       const connection = workspace().getConnection(CONNECTION_ID);
       if (!connection) throw new Error("Blit connection is not available");
       const cwd = props.worktreePath?.trim() || undefined;
-      const session = await connection.createSession({
-        rows: 24,
-        cols: 120,
-        tag: encodeTag(chatId),
-        cwd,
-      });
+      const session = await withTimeout(
+        connection.createSession({
+          rows: 24,
+          cols: 120,
+          tag: encodeTag(chatId),
+          cwd,
+        }),
+        CREATE_SHELL_TIMEOUT_MS,
+        createShellTimeoutMessage(),
+      );
       selectSession(session.id, { open: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -421,7 +453,7 @@ export function ChatTerminals(props: {
     if (!chatId || creating()) return;
     setOpenForChat(true);
     setError(null);
-    if (!terminalReady()) {
+    if (!terminalConnectable()) {
       setCreating(true);
       setQueuedCreateChatId(chatId);
       workspace().getConnection(CONNECTION_ID)?.connect();
@@ -503,7 +535,7 @@ export function ChatTerminals(props: {
       setCreating(false);
       return;
     }
-    if (!terminalReady()) return;
+    if (!terminalConnectable()) return;
     setQueuedCreateChatId(null);
     void createShellNow(chatId);
   });
@@ -526,7 +558,7 @@ export function ChatTerminals(props: {
     if (selected && sessions.some((session) => session.id === selected)) {
       return;
     }
-    if (!terminalReady()) return;
+    if (!terminalConnectable()) return;
     const next = sessions[0] ?? null;
     if (next) {
       selectSession(next.id, { open: open() });
@@ -633,6 +665,13 @@ export function ChatTerminals(props: {
 
   onMount(() => {
     const conn = workspace().getConnection(CONNECTION_ID);
+    const transport = conn?.transport;
+    const onTransportStatusChange = (status: ConnectionStatus) =>
+      setTransportStatus(status);
+    if (transport) {
+      setTransportStatus(transport.status);
+      transport.addEventListener("statuschange", onTransportStatusChange);
+    }
     conn?.connect();
 
     const onLocalKeyDown = (event: KeyboardEvent) => {
@@ -706,6 +745,7 @@ export function ChatTerminals(props: {
     };
     window.addEventListener("keydown", onGlobalKeyDown, true);
     onCleanup(() => {
+      transport?.removeEventListener("statuschange", onTransportStatusChange);
       rootRef?.removeEventListener("keydown", onLocalKeyDown);
       window.removeEventListener("keydown", onGlobalKeyDown, true);
     });
@@ -779,26 +819,30 @@ export function ChatTerminals(props: {
           onMouseDown={preventPointerFocus}
           disabled={!props.chatId || creating()}
           title={
-            terminalReady() ? "new terminal" : "start terminal when connected"
+            terminalConnectable() ? "new terminal" : "start terminal when connected"
           }
         >
           {creating() ? "starting…" : "+"}
         </button>
-        <Show when={connectionStatus() !== "connected" || error()}>
+        <Show when={visibleConnectionStatus() !== "connected" || error()}>
           <span
             class="chat-terminal-status"
             classList={{
               error: connectionStatus() === "error" || !!error(),
             }}
           >
-            {connectionStatus() === "connected" ? "error" : connectionStatus()}
+            {visibleConnectionStatus() === "connected"
+              ? "error"
+              : visibleConnectionStatus()}
           </span>
         </Show>
       </div>
       <Show when={open()}>
         <div class="chat-terminal-panel">
-          {!selectedSession() && !error() && !terminalReady() ? (
-            <div class="terminal-empty">Connecting…</div>
+          {!selectedSession() && !error() ? (
+            <div class="terminal-empty">
+              {terminalConnectable() ? "Starting terminal…" : "Connecting…"}
+            </div>
           ) : null}
           <Show when={selectedSession()}>
             {(session) => (

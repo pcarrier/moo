@@ -33,7 +33,14 @@ describe("renderUserMessage", () => {
     expect(renderMarkdown('[bad](javascript:alert(1)) ![x](data:text/html,evil)'))
       .toBe('<p><a href="">bad</a> <img src="" alt="x"></p>\n');
     expect(renderMarkdown('[bad](//evil.test/path) [ok](https://example.test/path)'))
-      .toBe('<p><a href="">bad</a> <a href="https://example.test/path">ok</a></p>\n');
+      .toBe('<p><a href="">bad</a> <a href="https://example.test/path" target="_blank" rel="noopener noreferrer">ok</a></p>\n');
+  });
+
+  test("opens external markdown links in new tabs", () => {
+    expect(renderMarkdown('[external](https://example.test/path) [email](mailto:test@example.test) [relative](docs/readme.md)'))
+      .toBe('<p><a href="https://example.test/path" target="_blank" rel="noopener noreferrer">external</a> <a href="mailto:test@example.test" target="_blank" rel="noopener noreferrer">email</a> <a href="docs/readme.md">relative</a></p>\n');
+    expect(renderMarkdownInline('see https://example.test/path'))
+      .toBe('see <a href="https://example.test/path" target="_blank" rel="noopener noreferrer">https://example.test/path</a>');
   });
 
   test("does not add hard newline markers to code block lines", () => {

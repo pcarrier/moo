@@ -713,6 +713,7 @@ export class WSConnection {
   private retryDelay = 500;
   private closed = false;
   private subscribeChatId: string | null = null;
+  private subscribeV8Events = false;
   private pending = new Map<string, Pending>();
   private outbox: OutboxFrame[] = []; // frames queued before open
   private nextId = 1;
@@ -746,6 +747,18 @@ export class WSConnection {
   subscribe(chatId: string) {
     this.subscribeChatId = chatId;
     this.send({ subscribe: chatId });
+  }
+
+  subscribeV8(enabled: boolean) {
+    if (this.subscribeV8Events === enabled) return;
+    this.subscribeV8Events = enabled;
+    this.sendV8Subscription();
+  }
+
+  private sendV8Subscription() {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ subscribeV8: this.subscribeV8Events }));
+    }
   }
 
   // Single-channel RPC. Returns whatever the server sends back as `result`.
@@ -812,6 +825,7 @@ export class WSConnection {
       if (this.subscribeChatId) {
         socket.send(JSON.stringify({ subscribe: this.subscribeChatId }));
       }
+      if (this.subscribeV8Events) this.sendV8Subscription();
       // Flush queued frames. RPC timers start here, after the frame reaches
       // the socket, not when the caller queued the request.
       const queued = this.outbox;

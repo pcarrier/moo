@@ -861,7 +861,7 @@ impl V8Observability {
         }
         drop(events);
         if let Ok(payload) = serde_json::to_string(&json!({ "kind": "v8", "event": &event })) {
-            crate::broadcast::publish(payload);
+            crate::broadcast::publish_v8(payload);
         }
     }
 }

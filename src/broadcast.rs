@@ -17,8 +17,12 @@ use serde_json::Value;
 pub struct Message {
     pub payload: String,
     /// Hint for filtering. None means "broadcast to everyone" — used for
-    /// ephemeral events (drafts, pings) that don't carry a ref.
+    /// ephemeral events (drafts, pings) that don't carry a ref, subject to
+    /// per-stream opt-ins below.
     pub ref_hint: Option<String>,
+    /// V8 worker lifecycle events are high-volume diagnostics; clients must
+    /// explicitly opt in (the V8 tab does this while visible).
+    pub v8: bool,
 }
 
 #[derive(Default, Clone)]
@@ -26,10 +30,14 @@ pub struct Filter {
     /// When set, subscriber wants chat/<id>/* events plus everything that
     /// isn't chat-scoped (memory/, drafts, pings, anything without a ref).
     pub chat_id: Option<String>,
+    pub include_v8: bool,
 }
 
 impl Filter {
     pub fn accepts(&self, msg: &Message) -> bool {
+        if msg.v8 && !self.include_v8 {
+            return false;
+        }
         let Some(chat_id) = &self.chat_id else {
             return true;
         };
@@ -81,15 +89,24 @@ pub fn subscribe() -> Subscription {
 
 pub fn set_filter(id: u64, filter: Filter) -> Vec<String> {
     let replay = active_drafts_for_filter(&filter);
+    replace_filter(id, filter);
+    replay
+}
+
+pub fn set_filter_without_replay(id: u64, filter: Filter) {
+    replace_filter(id, filter);
+}
+
+fn replace_filter(id: u64, filter: Filter) -> bool {
     if let Ok(mut subs) = SUBSCRIBERS.lock() {
         for sub in subs.iter_mut() {
             if sub.id == id {
                 sub.filter = filter;
-                return replay;
+                return true;
             }
         }
     }
-    replay
+    false
 }
 
 pub fn publish_msg(msg: Message) {
@@ -115,6 +132,15 @@ pub fn publish(payload: String) {
     publish_msg(Message {
         payload,
         ref_hint: None,
+        v8: false,
+    });
+}
+
+pub fn publish_v8(payload: String) {
+    publish_msg(Message {
+        payload,
+        ref_hint: None,
+        v8: true,
     });
 }
 
@@ -181,6 +207,7 @@ pub fn pointer_changed(name: &str) {
     publish_msg(Message {
         payload: format!(r#"{{"kind":"pointer","pointer":{}}}"#, json_string(name)),
         ref_hint: Some(name.to_string()),
+        v8: false,
     });
 }
 
@@ -188,6 +215,7 @@ pub fn facts_changed(store: &str) {
     publish_msg(Message {
         payload: format!(r#"{{"kind":"facts","store":{}}}"#, json_string(store)),
         ref_hint: Some(store.to_string()),
+        v8: false,
     });
 }
 
@@ -241,6 +269,7 @@ mod tests {
 
         let replay = active_drafts_for_filter(&Filter {
             chat_id: Some("chat1".to_string()),
+            ..Filter::default()
         });
 
         assert_eq!(replay.len(), 1);
@@ -257,8 +286,29 @@ mod tests {
 
         let replay = active_drafts_for_filter(&Filter {
             chat_id: Some("chat1".to_string()),
+            ..Filter::default()
         });
 
         assert!(replay.is_empty());
+    }
+
+    #[test]
+    fn v8_events_require_explicit_filter_opt_in() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_active_drafts();
+        let msg = Message {
+            payload: r#"{"kind":"v8","event":{}}"#.to_string(),
+            ref_hint: None,
+            v8: true,
+        };
+
+        assert!(!Filter::default().accepts(&msg));
+        assert!(
+            Filter {
+                include_v8: true,
+                ..Filter::default()
+            }
+            .accepts(&msg)
+        );
     }
 }

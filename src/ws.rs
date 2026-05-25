@@ -107,9 +107,10 @@ pub fn handle(
         });
     }
 
-    // Reader thread: parses subscribe messages and dispatches `run` requests
-    // to worker threads. Each worker thread runs the command synchronously
-    // and posts a `{kind:"run-result",id,result}` frame to writer_tx.
+    // Reader thread: parses subscription messages and dispatches `run`
+    // requests to worker threads. Each worker thread runs the command
+    // synchronously and posts a `{kind:"run-result",id,result}` frame to
+    // writer_tx.
     let read_clone = stream.try_clone()?;
     let alive_reader = alive.clone();
     {
@@ -119,6 +120,7 @@ pub fn handle(
         let base_url = base_url.clone();
         thread::spawn(move || {
             let mut s = read_clone;
+            let mut filter = Filter::default();
             // Bound the number of in-flight background `run` workers per
             // connection so a client streaming `run` frames faster than the pool
             // drains them can't spawn unbounded OS threads. Pre-fill a permit
@@ -145,17 +147,20 @@ pub fn handle(
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            let replay = broadcast::set_filter(
-                                sub_id,
-                                Filter {
-                                    chat_id: Some(chat_id.to_string()),
-                                },
-                            );
+                            filter.chat_id = Some(chat_id.to_string());
+                            let replay = broadcast::set_filter(sub_id, filter.clone());
                             for msg in replay {
                                 if forward_or_break(&writer_tx, msg) {
                                     break;
                                 }
                             }
+                            continue;
+                        }
+                        if let Some(include_v8) =
+                            parsed.get("subscribeV8").and_then(|v| v.as_bool())
+                        {
+                            filter.include_v8 = include_v8;
+                            broadcast::set_filter_without_replay(sub_id, filter.clone());
                             continue;
                         }
                         if let Some(payload) = parsed.get("run") {

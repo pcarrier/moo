@@ -5871,6 +5871,9 @@ export function createState() {
 
   const events = new EventStream();
   bindWS(events);
+  createEffect(() => {
+    events.subscribeV8(view() === "v8");
+  });
   void refreshSettingsCache();
   void refreshSkills();
   const offEvents = events.on((ev: WsEvent) => {
@@ -5935,12 +5938,9 @@ export function createState() {
           };
         });
       }
-      // Keep the sidebar's V8 busy badge live after the user has visited the
-      // V8 page once. Before that first load, leave it hidden instead of
-      // implicitly subscribing the whole app to V8 stats. The snapshot refresh
-      // fills in derived counters/heap data; the live event above prevents the
-      // lifecycle list from looking empty while the debounce is pending.
-      if (view() === "v8" || v8StatsLoaded()) refreshV8StatsSoon();
+      // The V8 tab explicitly subscribes to this high-volume diagnostic stream
+      // while it is visible; keep snapshots fresh only for that visible view.
+      if (view() === "v8") refreshV8StatsSoon();
       return;
     }
     if (ev.kind === "online") {
@@ -5970,7 +5970,7 @@ export function createState() {
       refreshChatUis();
       refreshPointers();
       refreshMcpServers();
-      if (view() === "v8" || v8StatsLoaded()) refreshV8Stats();
+      if (view() === "v8") refreshV8Stats();
       return;
     }
     if (ev.kind === "file-diff") {
@@ -6604,10 +6604,9 @@ export function createState() {
     persistChatCache();
   });
 
-  // Facts/vocab/V8 are notification-driven after their first explicit load:
-  // pointer/facts broadcasts schedule memory refreshes, V8 broadcasts schedule
-  // stats refreshes, and reconnect performs a conditional resync. Avoid polling
-  // these expensive side views in the background.
+  // Facts/vocab are notification-driven after their first explicit load.
+  // V8 is opt-in while its tab is visible because that diagnostic stream is
+  // high-volume. Avoid polling these expensive side views in the background.
 
   // Esc follows the same stop path as the stop button. Listen on document so it
   // works regardless of focus.
