@@ -413,6 +413,72 @@ describe("LLM stream provider details", () => {
     expect((finalized.value as any).reasoningContent).toBe("thinking");
   });
 
+  test("parses OpenAI Responses reasoning summary deltas", async () => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: {
+        provider: "openai",
+        model: "gpt-5.5",
+        effort: "xhigh",
+        draftEvent: {
+          kind: "draft",
+          chatId: "chat1",
+          draftId: "draft1",
+          model: "gpt-5.5",
+          effort: "xhigh",
+        },
+      },
+      events: [
+        JSON.stringify({
+          type: "response.reasoning_summary_text.delta",
+          item_id: "rs_1",
+          output_index: 0,
+          summary_index: 0,
+          delta: "looked ",
+        }),
+        JSON.stringify({
+          type: "response.reasoning_summary_text.delta",
+          item_id: "rs_1",
+          output_index: 0,
+          summary_index: 0,
+          delta: "around",
+        }),
+        JSON.stringify({
+          type: "response.output_text.delta",
+          output_index: 1,
+          delta: "answer",
+        }),
+      ],
+    } as any);
+
+    expect(accumulated.ok).toBe(true);
+    expect((accumulated.value as any).state.content).toBe("answer");
+    expect((accumulated.value as any).state.reasoningContent).toBe(
+      "looked around",
+    );
+    expect(
+      (accumulated.value as any).events.some(
+        (ev: any) =>
+          ev.kind === "reasoning-draft" &&
+          ev.reasoningContent === "looked around" &&
+          ev.model === "gpt-5.5" &&
+          ev.effort === "xhigh",
+      ),
+    ).toBe(true);
+
+    const finalized = await dispatch({
+      command: "llm-stream-finalize",
+      chatId: "chat1",
+      state: (accumulated.value as any).state,
+      status: 200,
+    } as any);
+    expect(finalized.ok).toBe(true);
+    expect((finalized.value as any).content).toBe("answer");
+    expect((finalized.value as any).reasoningContent).toBe("looked around");
+  });
+
   test("emits compaction drafts without reasoning draft bubbles", async () => {
     const accumulated = await dispatch({
       command: "llm-stream-accumulate",

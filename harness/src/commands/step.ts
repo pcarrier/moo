@@ -1616,7 +1616,8 @@ export async function stepPrepareCommand(input: Input) {
     const defaultEffort = await defaultChatEffort();
     provider.effort =
       effortAllowedForModel(efforts, selectedEffort) ||
-      effortAllowedForModel(efforts, defaultEffort);
+      effortAllowedForModel(efforts, defaultEffort) ||
+      (provider.name === "openai" ? effortAllowedForModel(efforts, "high") : null);
   } else {
     provider.effort = null;
   }

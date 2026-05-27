@@ -1017,8 +1017,16 @@ fn should_accumulate_websocket_event(event_type: &str, event: &Value) -> bool {
             | "response.text.delta"
             | "response.output_item.added"
             | "response.output_item.done"
+            | "response.content_part.added"
+            | "response.content_part.done"
             | "response.function_call_arguments.delta"
             | "response.function_call_arguments.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.delta"
+            | "response.reasoning_text.done"
     )
 }
 
@@ -1118,5 +1126,38 @@ async fn transport_error(
 fn publish_event_payload(payload: &Value) {
     if let Ok(s) = serde_json::to_string(payload) {
         broadcast::publish(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_accumulate_websocket_event, websocket_terminal_event};
+    use serde_json::json;
+
+    #[test]
+    fn websocket_accumulates_responses_reasoning_events() {
+        for event_type in [
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_summary_text.done",
+            "response.reasoning_text.delta",
+            "response.reasoning_text.done",
+        ] {
+            assert!(
+                should_accumulate_websocket_event(event_type, &json!({ "type": event_type })),
+                "{event_type} should be passed to the harness accumulator"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_status_completed_is_terminal() {
+        assert!(websocket_terminal_event(
+            "response.updated",
+            &json!({ "response": { "status": "completed" } })
+        ));
     }
 }

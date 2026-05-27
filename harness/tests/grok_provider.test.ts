@@ -5,7 +5,7 @@ import { llmAuthGetCommand, llmAuthSaveCommand } from "../src/commands/llm_auth"
 import { applyDefaultChatSettings, chatModelInfo, modelOptionsFor, modelSupportsAttachments, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
 import { modelLongContextUsageKey, modelMetadataFor, modelMatches } from "../src/llm_models";
-import { stepCommand } from "../src/commands/step";
+import { stepCommand, stepPrepareCommand } from "../src/commands/step";
 
 const refs = new Map<string, string>();
 const objects = new Map<string, { kind: string; content: string }>();
@@ -13,7 +13,9 @@ let objectId = 0;
 let envValues = new Map<string, string>();
 
 (globalThis as any).__op_now = () => 1_000;
+(globalThis as any).__op_id = (prefix: string) => prefix + ":test";
 (globalThis as any).__op_env_get = (name: string) => envValues.get(name) ?? null;
+(globalThis as any).__op_broadcast = () => {};
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
 (globalThis as any).__op_ref_delete = (name: string) => refs.delete(name);
@@ -70,6 +72,30 @@ describe("OpenAI-compatible provider support", () => {
     expect(refs.get("chat/fresh/provider")).toBe("openai");
     expect(refs.get("chat/fresh/model")).toBe("gpt-5.5");
     expect(refs.get("chat/fresh/effort")).toBe("high");
+  });
+
+  test("defaults OpenAI reasoning models to high effort", async () => {
+    envValues = new Map([
+      ["OPENAI_MODEL", "gpt-5.5"],
+      ["OPENAI_API_KEY", "key"],
+    ]);
+    refs.set("chat/c1/model", "gpt-5.5");
+
+    const info = await chatModelInfo("c1");
+    expect(info.defaultEffort).toBe("high");
+    expect(info.effectiveEffort).toBe("high");
+
+    const result = await stepPrepareCommand({
+      chatId: "c1",
+      provider: await resolveProvider("gpt-5.5", null, "openai"),
+      messages: [{ role: "user", content: "hello" }],
+    } as any);
+    expect(result.ok).toBe(true);
+    expect((result.value as any).requestEffort).toBe("high");
+    expect((result.value as any).body.reasoning).toEqual({
+      effort: "high",
+      summary: "auto",
+    });
   });
 
   test("last picker state wins over configured fresh-chat defaults", async () => {
@@ -158,6 +184,8 @@ describe("OpenAI-compatible provider support", () => {
     const pro = modelMetadataFor("openai", "gpt-5.5-pro");
     expect(base?.availability).toBe("Plus, Pro, Business, Enterprise, API, and Codex");
     expect(pro?.availability).toBe("ChatGPT Pro, Business, Enterprise, Edu, and API");
+    expect(base?.capabilities?.reasoning).toBe(true);
+    expect(pro?.capabilities?.reasoning).toBe(true);
     expect(base && modelMatches(base, "gpt-5.5-pro")).toBe(false);
     const options = await modelOptionsFor("openai", "gpt-5.5");
     expect(options.find((option) => option.id === "openai:gpt-5.5")?.availability).toBe(base?.availability);

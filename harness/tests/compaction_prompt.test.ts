@@ -281,6 +281,30 @@ describe("compaction prompts", () => {
     expect(JSON.stringify(body.input)).not.toContain("todo 1: fix tests");
   });
 
+  test("OpenAI Responses requests reasoning summaries for gpt-5.5", () => {
+    const provider = {
+      name: "openai" as const,
+      apiKey: "key",
+      baseUrl: "https://llm.test/v1",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      keyEnvHint: "KEY",
+    };
+
+    const request = buildStreamingLLMRequest(
+      provider,
+      [{ role: "user", content: "show your work" }],
+      null,
+    );
+
+    expect(request.responsesApi).toBe(true);
+    expect(request.transport).toBe("websocket");
+    expect((request.body as any).reasoning).toEqual({
+      effort: "xhigh",
+      summary: "auto",
+    });
+  });
+
   test("OpenAI OAuth uses Codex Responses websocket endpoint", () => {
     const provider = {
       name: "openai" as const,

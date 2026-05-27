@@ -72,8 +72,8 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     fallbackModel: "gpt-5.5",
     inferPrefixes: ["gpt-", "o1", "o3", "o4", "chatgpt-"],
     models: [
-      { id: "gpt-5.5", match: "^gpt-5\\.5(?!-pro)(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 5, cachedInput: 0.5, output: 30 }, capabilities: { toolCalls: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
-      { id: "gpt-5.5-pro", match: "^gpt-5\\.5-pro(?:[.-]|$)", contextWindow: 1_000_000, pricing: { input: 30, cachedInput: 3, output: 180 }, capabilities: { toolCalls: true }, availability: "ChatGPT Pro, Business, Enterprise, Edu, and API", defaultOption: true },
+      { id: "gpt-5.5", match: "^gpt-5\\.5(?!-pro)(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 5, cachedInput: 0.5, output: 30 }, capabilities: { toolCalls: true, reasoning: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
+      { id: "gpt-5.5-pro", match: "^gpt-5\\.5-pro(?:[.-]|$)", contextWindow: 1_000_000, pricing: { input: 30, cachedInput: 3, output: 180 }, capabilities: { toolCalls: true, reasoning: true }, availability: "ChatGPT Pro, Business, Enterprise, Edu, and API", defaultOption: true },
       { id: "gpt-5.4", defaultOption: true },
       { id: "gpt-5.4-mini", defaultOption: true },
       { id: "gpt-5.4-nano", defaultOption: true },

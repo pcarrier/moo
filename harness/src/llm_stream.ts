@@ -76,6 +76,7 @@ type LlmAccumulatorState = {
   usage: unknown | null;
   error: unknown | null;
   reasoningContent: string;
+  responseReasoningTextParts: Record<string, string>;
   stopReason: string | null;
   deepseekThinkOpen: boolean;
   deepseekTagBuffer: string;
@@ -125,6 +126,7 @@ export function llmStreamInitEffect(
             usage: null,
             error: null,
             reasoningContent: "",
+            responseReasoningTextParts: {},
             stopReason: null,
             deepseekThinkOpen: false,
             deepseekTagBuffer: "",
@@ -395,6 +397,14 @@ function numericRecord(value: MutableJsonObject): Record<string, number> {
   return out;
 }
 
+function stringRecord(value: MutableJsonObject): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string") out[key] = raw;
+  }
+  return out;
+}
+
 function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
   return {
     content:
@@ -425,6 +435,10 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
       isObject(raw) && typeof raw.reasoningContent === "string"
         ? raw.reasoningContent
         : "",
+    responseReasoningTextParts:
+      isObject(raw) && isObject(raw.responseReasoningTextParts)
+        ? stringRecord(raw.responseReasoningTextParts)
+        : {},
     stopReason:
       isObject(raw) && typeof raw.stopReason === "string" && raw.stopReason
         ? raw.stopReason
@@ -528,6 +542,52 @@ function upsertResponseToolCall(
   state.toolCalls.push(toolCall);
   rememberResponseToolCall(state, item, state.toolCalls.length - 1);
   return toolCall;
+}
+
+function responseReasoningPartKey(parsed: ParsedStreamEvent): string {
+  const itemId = typeof parsed.item_id === "string" ? parsed.item_id : "";
+  const outputIndex = Number.isFinite(Number(parsed.output_index))
+    ? String(Number(parsed.output_index))
+    : "";
+  const contentIndex = Number.isFinite(Number(parsed.content_index))
+    ? String(Number(parsed.content_index))
+    : "";
+  const summaryIndex = Number.isFinite(Number(parsed.summary_index))
+    ? String(Number(parsed.summary_index))
+    : "";
+  return [itemId, outputIndex, contentIndex, summaryIndex].join(":");
+}
+
+function appendResponseReasoningTextDelta(
+  state: LlmAccumulatorState,
+  parsed: ParsedStreamEvent,
+  delta: string,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
+  const key = responseReasoningPartKey(parsed);
+  const previous = state.responseReasoningTextParts[key] ?? "";
+  state.responseReasoningTextParts[key] = previous + delta;
+  appendLlmReasoningDelta(state, delta, streamEvents, events);
+}
+
+function finishResponseReasoningText(
+  state: LlmAccumulatorState,
+  parsed: ParsedStreamEvent,
+  text: string,
+  streamEvents: StreamEventsView,
+  events: StreamOutputEvent[],
+) {
+  if (!text) return;
+  const key = responseReasoningPartKey(parsed);
+  const previous = state.responseReasoningTextParts[key] ?? "";
+  state.responseReasoningTextParts[key] = text;
+  if (previous && text.startsWith(previous)) {
+    const delta = text.slice(previous.length);
+    if (delta) appendLlmReasoningDelta(state, delta, streamEvents, events);
+    return;
+  }
+  if (!previous) appendLlmReasoningDelta(state, text, streamEvents, events);
 }
 
 function ensureRunTsStepId(toolCall: LlmToolCall): string {
@@ -787,10 +847,74 @@ function accumulateLlmStreamEvent(
   }
   if (
     typeof parsed?.delta === "string" &&
-    type.includes("text.delta") &&
+    (type === "response.output_text.delta" ||
+      type === "response.text.delta" ||
+      type === "output_text.delta" ||
+      type === "text.delta") &&
     parsed.delta
   ) {
     appendLlmContentDelta(state, parsed.delta, streamEvents, events);
+  }
+  if (
+    (type === "response.content_part.added" ||
+      type === "response.content_part.done") &&
+    isObject(parsed.part) &&
+    (parsed.part.type === "reasoning_text" ||
+      parsed.part.type === "summary_text") &&
+    typeof parsed.part.text === "string" &&
+    parsed.part.text
+  ) {
+    finishResponseReasoningText(
+      state,
+      parsed,
+      parsed.part.text,
+      streamEvents,
+      events,
+    );
+  }
+  if (
+    (type === "response.reasoning_summary_part.added" ||
+      type === "response.reasoning_summary_part.done") &&
+    isObject(parsed.part) &&
+    typeof parsed.part.text === "string" &&
+    parsed.part.text
+  ) {
+    finishResponseReasoningText(
+      state,
+      parsed,
+      parsed.part.text,
+      streamEvents,
+      events,
+    );
+  }
+  if (
+    (type === "response.reasoning_summary_text.delta" ||
+      type === "response.reasoning_text.delta") &&
+    typeof parsed.delta === "string" &&
+    parsed.delta
+  ) {
+    appendResponseReasoningTextDelta(
+      state,
+      parsed,
+      parsed.delta,
+      streamEvents,
+      events,
+    );
+  }
+  if (
+    (type === "response.reasoning_summary_part.done" ||
+      type === "response.reasoning_summary_text.done" ||
+      type === "response.reasoning_text.done") &&
+    typeof parsed.text === "string" &&
+    parsed.text
+  ) {
+    finishResponseReasoningText(
+      state,
+      parsed,
+      parsed.text,
+      streamEvents,
+      events,
+    );
   }
   const item = isObject(parsed.item) ? parsed.item : {};
   if (

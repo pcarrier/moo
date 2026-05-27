@@ -718,17 +718,22 @@ function applyEffort(
       };
     return;
   }
-  if (!provider.effort) return;
   if (provider.name === "openai") {
+    const levels = openaiEffortLevels(provider.model);
+    if (!levels.length) return;
     const effort = effortAllowed(
-      openaiEffortLevels(provider.model),
+      levels,
       provider.effort,
     );
-    if (!effort) return;
-    if (responsesApi) body.reasoning = { effort };
-    else body.reasoning_effort = effort;
+    if (responsesApi) {
+      body.reasoning =
+        effort === "none"
+          ? { effort }
+          : compactObject({ effort, summary: "auto" });
+    } else if (effort) body.reasoning_effort = effort;
     return;
   }
+  if (!provider.effort) return;
 }
 
 export function buildStreamingLLMRequest(
