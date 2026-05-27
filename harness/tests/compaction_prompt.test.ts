@@ -33,11 +33,6 @@ type SummaryStreamState = { content: string; model: string | null; usage: RawUsa
 
 type ResponsesRequestBody = { instructions?: string; input?: unknown };
 
-function responsesRequestBody(body: unknown): ResponsesRequestBody {
-  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("expected object request body");
-  return body;
-}
-
 describe("compaction prompts", () => {
   test("defaults automatic compaction near the context limit", () => {
     expect(DEFAULT_COMPACTION_THRESHOLD_PERCENT).toBe(50);
@@ -276,10 +271,43 @@ describe("compaction prompts", () => {
     const request = buildStreamingLLMRequest(provider, messages, null);
 
     expect(request.responsesApi).toBe(true);
-    const body = responsesRequestBody(request.body);
+    expect(request.transport).toBe("websocket");
+    expect(request.url).toBe("wss://llm.test/v1/responses");
+    expect(request.headers["OpenAI-Beta"]).toBe("responses_websockets=2026-02-06");
+    expect((request.body as any).type).toBe("response.create");
+    const body = request.body as ResponsesRequestBody;
     expect(body.instructions).toContain("stable system");
     expect(body.instructions).toContain("Current TODO reminders:\n- todo 1: fix tests");
     expect(JSON.stringify(body.input)).not.toContain("todo 1: fix tests");
+  });
+
+  test("OpenAI OAuth uses Codex Responses websocket endpoint", () => {
+    const provider = {
+      name: "openai" as const,
+      apiKey: "oauth-token",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      model: "gpt-5.3-codex",
+      effort: "low",
+      keyEnvHint: "OpenAI OAuth",
+      authMode: "oauth" as const,
+      oauthAccountId: "acct_123",
+    };
+
+    const request = buildStreamingLLMRequest(
+      provider,
+      [{ role: "user", content: "summarize" }],
+      null,
+    );
+
+    expect(request.transport).toBe("websocket");
+    expect(request.responsesApi).toBe(true);
+    expect(request.url).toBe("wss://chatgpt.com/backend-api/codex/responses");
+    expect(request.headers.Authorization).toBe("Bearer oauth-token");
+    expect(request.headers["ChatGPT-Account-ID"]).toBe("acct_123");
+    expect(request.headers["OpenAI-Beta"]).toBe("responses_websockets=2026-02-06");
+    expect((request.body as any).type).toBe("response.create");
+    const body = request.body as ResponsesRequestBody;
+    expect(body.input).toEqual([{ role: "user", content: "summarize" }]);
   });
 
   test("uses low/no reasoning for compaction summary requests", () => {

@@ -668,6 +668,17 @@ function accumulateLlmStreamEvent(
   if (parsed?.error != null) state.error = parsed;
 
   const type = typeof parsed?.type === "string" ? parsed.type : "";
+  const responseStatus =
+    typeof response.status === "string" ? response.status : "";
+  if (
+    type === "response.failed" ||
+    type === "response.incomplete" ||
+    responseStatus === "failed" ||
+    responseStatus === "incomplete" ||
+    responseStatus === "cancelled"
+  ) {
+    state.error = response.error ?? response.incomplete_details ?? parsed;
+  }
   if (type === "message_start") {
     const msg = isObject(parsed.message) ? parsed.message : {};
     if (typeof msg.model === "string" && msg.model) state.model = msg.model;

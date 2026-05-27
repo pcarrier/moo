@@ -38,6 +38,7 @@ export interface InflightState {
   requestModel?: string;
   requestEffort?: string;
   requestAuthMode?: string;
+  transport?: string;
   countThoughtDuration?: boolean;
   forceCompact?: boolean;
   [key: string]: unknown;
@@ -61,6 +62,7 @@ export interface LlmHandlingState {
   requestModel?: string;
   requestEffort?: string;
   requestAuthMode?: string;
+  transport?: string;
   thoughtDurationNs: number;
   forceCompact?: boolean;
   [key: string]: unknown;
@@ -289,6 +291,7 @@ export function reduceStepDriverState(
           requestModel: optionalString(inflight.requestModel),
           requestEffort: optionalString(inflight.requestEffort),
           requestAuthMode: optionalString(inflight.requestAuthMode),
+          transport: optionalString(inflight.transport),
           thoughtDurationNs,
           forceCompact: inflight.forceCompact === true,
         } satisfies LlmHandlingState,
@@ -394,6 +397,7 @@ export function reduceStepDriverState(
           requestModel: optionalString(p.requestModel),
           requestEffort: optionalString(p.requestEffort),
           requestAuthMode: optionalString(p.requestAuthMode) ?? state.provider?.authMode,
+          transport: optionalString(p.transport),
           countThoughtDuration: !!p.countThoughtDuration,
           forceCompact: state.forceCompact === true,
           attempt: Number(p.attempt ?? state.retryAttempt ?? 1) || 1,
@@ -408,6 +412,7 @@ export function reduceStepDriverState(
           url: p.url,
           headers: p.headers || {},
           body: p.body || {},
+          transport: p.transport,
           streamEvents: p.streamEvents ?? null,
           attempt: Number(p.attempt ?? state.retryAttempt ?? 1) || 1,
           delayMs: Number(state.retryDelayMs ?? 0) || 0,

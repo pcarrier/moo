@@ -454,7 +454,22 @@ async function defaultEffort(): Promise<string | null> {
 }
 
 export function usesResponsesApi(provider: LLMProvider): boolean {
-  return provider.name === "openai" && /^gpt-5(?:[.-]|$)/i.test(provider.model);
+  return provider.name === "openai";
+}
+
+function appendPath(baseUrl: string, suffix: string): string {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  return base + suffix;
+}
+
+function openAIWebsocketUrl(provider: LLMProvider): string {
+  // Both API-key and OAuth flows use the Responses-over-WebSocket beta at
+  // `{base}/responses`. The base_url already includes `/v1` for the public
+  // API and `/backend-api/codex` for ChatGPT auth.
+  const url = appendPath(provider.baseUrl, "/responses");
+  if (url.startsWith("https://")) return "wss://" + url.slice("https://".length);
+  if (url.startsWith("http://")) return "ws://" + url.slice("http://".length);
+  return url;
 }
 
 export function effortLevelsForProvider(
@@ -742,17 +757,12 @@ export function buildStreamingLLMRequest(
   const outboundMessages = requiresFinalUserContinuation(provider)
     ? ensureEndsWithUserMessage(providerMessages)
     : providerMessages;
-  const responsesInput = responsesApi
-    ? toResponsesInput(outboundMessages)
-    : null;
-  const instructions = responsesApi
-    ? extractInstructions(outboundMessages)
-    : undefined;
   const body: Record<string, unknown> = responsesApi
     ? {
+        type: "response.create",
         model: provider.model,
-        instructions: instructions ?? "",
-        input: responsesInput,
+        instructions: extractInstructions(outboundMessages) ?? "",
+        input: toResponsesInput(outboundMessages),
         stream: true,
         store: false,
       }
@@ -766,16 +776,18 @@ export function buildStreamingLLMRequest(
       };
   applyEffort(provider, body, responsesApi);
   if (tools?.length) {
-    if (responsesApi) body.tools = toResponsesTools(tools);
-    else body.tools = tools;
+    body.tools = responsesApi ? toResponsesTools(tools) : tools;
     body.tool_choice = "auto";
   }
+  // OpenAI streams use the Responses-over-WebSocket beta (mirrors codex's
+  // ResponsesWsRequest::ResponseCreate which serializes with #[serde(tag = "type")]
+  // so the discriminator and payload fields share the same flat JSON object).
   return {
-    url:
-      provider.baseUrl +
-      "/" +
-      (responsesApi ? "responses" : "chat/completions"),
+    url: responsesApi
+      ? openAIWebsocketUrl(provider)
+      : appendPath(provider.baseUrl, "/chat/completions"),
     body,
+    transport: responsesApi ? "websocket" : "sse",
     responsesApi,
     headers: llmProviderHeaders(provider),
     requestModel: provider.model || null,
@@ -806,6 +818,9 @@ export function llmProviderHeaders(
   const headers: Record<string, string> = {
     Authorization: "Bearer " + (provider.apiKey || ""),
   };
+  if (provider.name === "openai") {
+    headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+  }
   if (provider.authMode === "oauth") {
     if (provider.oauthAccountId)
       headers["ChatGPT-Account-ID"] = provider.oauthAccountId;

@@ -1109,6 +1109,11 @@ async fn drive_loop(
                 let body_value = value.get("body").cloned().unwrap_or(Value::Null);
                 let body = serde_json::to_string(&body_value).unwrap_or_else(|_| "{}".to_string());
                 let stream_events = value.get("streamEvents").cloned().unwrap_or(Value::Null);
+                let transport = value
+                    .get("transport")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("sse")
+                    .to_string();
                 if let Some(delay_ms) = value
                     .get("delayMs")
                     .and_then(|v| v.as_u64())
@@ -1145,6 +1150,7 @@ async fn drive_loop(
                             "effort": value.get("requestEffort").cloned().unwrap_or(Value::Null),
                             "url": url,
                             "responsesApi": value.get("responsesApi").cloned().unwrap_or(Value::Null),
+                            "transport": transport,
                             "estimatedPromptTokens": value.get("estimatedPromptTokens").cloned().unwrap_or(Value::Null),
                             "tokenBudget": value.get("tokenBudget").cloned().unwrap_or(Value::Null),
                             "tokenThreshold": value.get("tokenThreshold").cloned().unwrap_or(Value::Null),
@@ -1154,15 +1160,27 @@ async fn drive_loop(
                     "llm.stream",
                 );
                 let stream_started = std::time::Instant::now();
-                let llm_result = llm::stream_chat(
-                    pool.clone(),
-                    bundle.clone(),
-                    url,
-                    headers,
-                    body,
-                    stream_events,
-                )
-                .await;
+                let llm_result = if transport == "websocket" {
+                    llm::stream_chat_websocket(
+                        pool.clone(),
+                        bundle.clone(),
+                        url,
+                        headers,
+                        body,
+                        stream_events,
+                    )
+                    .await
+                } else {
+                    llm::stream_chat(
+                        pool.clone(),
+                        bundle.clone(),
+                        url,
+                        headers,
+                        body,
+                        stream_events,
+                    )
+                    .await
+                };
                 let duration_ns =
                     u64::try_from(stream_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
                 let llm_ok = llm_result
@@ -1684,6 +1702,11 @@ async fn drive_limited(
                 let body_value = value.get("body").cloned().unwrap_or(Value::Null);
                 let body = serde_json::to_string(&body_value).unwrap_or_else(|_| "{}".to_string());
                 let stream_events = value.get("streamEvents").cloned().unwrap_or(Value::Null);
+                let transport = value
+                    .get("transport")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("sse")
+                    .to_string();
                 if let Some(delay_ms) = value
                     .get("delayMs")
                     .and_then(|v| v.as_u64())
@@ -1692,15 +1715,27 @@ async fn drive_limited(
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 }
                 let stream_started = std::time::Instant::now();
-                let llm_result = llm::stream_chat(
-                    pool.clone(),
-                    bundle.clone(),
-                    url,
-                    headers,
-                    body,
-                    stream_events,
-                )
-                .await;
+                let llm_result = if transport == "websocket" {
+                    llm::stream_chat_websocket(
+                        pool.clone(),
+                        bundle.clone(),
+                        url,
+                        headers,
+                        body,
+                        stream_events,
+                    )
+                    .await
+                } else {
+                    llm::stream_chat(
+                        pool.clone(),
+                        bundle.clone(),
+                        url,
+                        headers,
+                        body,
+                        stream_events,
+                    )
+                    .await
+                };
                 let duration_ns =
                     u64::try_from(stream_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
                 next_input = json!({

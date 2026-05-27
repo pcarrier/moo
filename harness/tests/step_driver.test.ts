@@ -97,6 +97,9 @@ describe("step driver tool result ids", () => {
       null,
     );
 
+    expect(request.transport).toBe("websocket");
+    expect(request.url).toBe("wss://api.openai.com/v1/responses");
+    expect((request.body as any).type).toBe("response.create");
     expect((request.body as any).input).toEqual([
       {
         type: "function_call",
