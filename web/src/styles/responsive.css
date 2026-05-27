@@ -504,6 +504,24 @@
     font-size: 16px;
   }
 
+  .fs-recent-project,
+  .fs-pick-toggle {
+    touch-action: manipulation;
+  }
+
+  .fs-recent-remove {
+    opacity: 0.7;
+  }
+
+  .fs-recent-remove:active:not(:disabled),
+  .fs-recent-remove:focus-visible {
+    opacity: 1;
+  }
+
+  .fs-recent-row:hover .fs-recent-remove {
+    opacity: 0.7;
+  }
+
   .chat-row .chat-select {
     padding-right: 3rem;
     touch-action: manipulation;

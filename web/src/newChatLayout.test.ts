@@ -201,6 +201,21 @@ describe("new chat layout", () => {
     );
   });
 
+  it("keeps recent project rows single-tap on touch devices", () => {
+    const touchRule = css.slice(
+      css.indexOf("@media (hover: none) and (pointer: coarse)"),
+    );
+    expect(touchRule).toContain(".fs-recent-project,");
+    expect(touchRule).toContain(".fs-pick-toggle {");
+    expect(touchRule).toContain("touch-action: manipulation;");
+    expect(touchRule).toContain(".fs-recent-remove {");
+    expect(touchRule).toContain("opacity: 0.7;");
+    expect(touchRule).toContain(
+      ".fs-recent-remove:active:not(:disabled),",
+    );
+    expect(touchRule).toContain(".fs-recent-row:hover .fs-recent-remove {");
+  });
+
   it("lets the route and panel use the available width", () => {
     const route = cssBlock(".new-chat-route");
     expect(route).toContain("overflow: hidden");
