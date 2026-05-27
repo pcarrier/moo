@@ -305,9 +305,29 @@ describe("compaction prompts", () => {
     expect(request.headers.Authorization).toBe("Bearer oauth-token");
     expect(request.headers["ChatGPT-Account-ID"]).toBe("acct_123");
     expect(request.headers["OpenAI-Beta"]).toBe("responses_websockets=2026-02-06");
-    expect((request.body as any).type).toBe("response.create");
-    const body = request.body as ResponsesRequestBody;
+    // session-id / thread-id / x-client-request-id are stamped by the Rust
+    // transport at WS connect time (stable per cached socket), not by the
+    // harness, so they shouldn't appear here.
+    expect(request.headers["session-id"]).toBeUndefined();
+    expect(request.headers["thread-id"]).toBeUndefined();
+    expect(request.headers["x-client-request-id"]).toBeUndefined();
+    const body = request.body as ResponsesRequestBody & {
+      tools?: unknown;
+      tool_choice?: unknown;
+      parallel_tool_calls?: unknown;
+      include?: unknown;
+      client_metadata?: { "x-codex-installation-id"?: unknown };
+      type?: unknown;
+    };
+    expect(body.type).toBe("response.create");
     expect(body.input).toEqual([{ role: "user", content: "summarize" }]);
+    expect(body.tools).toEqual([]);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.parallel_tool_calls).toBe(false);
+    // Provider sets effort: "low" → reasoning enabled → include carries the
+    // encrypted-reasoning replay key (mirrors codex's `build_responses_request`).
+    expect(body.include).toEqual(["reasoning.encrypted_content"]);
+    expect(body.client_metadata?.["x-codex-installation-id"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test("uses low/no reasoning for compaction summary requests", () => {

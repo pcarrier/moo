@@ -504,6 +504,29 @@
     font-size: 16px;
   }
 
+  .chat-row .chat-select {
+    padding-right: 3rem;
+    touch-action: manipulation;
+  }
+
+  .chat-row .chat-actions {
+    opacity: 0.75;
+    pointer-events: auto;
+  }
+
+  .chat-row .chat-actions.open {
+    opacity: 1;
+  }
+
+  .chat-actions .chat-menu {
+    width: 2.75rem;
+  }
+
+  .chat-action-menu {
+    right: 0.25rem;
+    min-width: 11rem;
+  }
+
   .graph-remove,
   .turtle-row-action {
     opacity: 0.9;

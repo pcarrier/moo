@@ -209,7 +209,9 @@ function retryableErrorBodyReason(body: unknown): string | null {
 
 function transportErrorBodyReason(body: unknown): boolean {
   const text = bodyText(body).toLowerCase();
-  return /^(send|stream|transport):/.test(text) || /connection|reset|broken pipe|unexpected eof|\beof\b|network|body error/.test(text);
+  return /^(send|stream|transport):/.test(text)
+    || /^websocket\s+(connect|send|stream|idle timeout|connection|upgrade)/.test(text)
+    || /connection|reset|broken pipe|unexpected eof|\beof\b|network|body error/.test(text);
 }
 
 function collectedBodyText(body: unknown): string {

@@ -472,6 +472,19 @@ function openAIWebsocketUrl(provider: LLMProvider): string {
   return url;
 }
 
+// UUIDv4 for the per-request `x-codex-installation-id` body field. The
+// connection-level routing identity (session-id / thread-id / x-client-request-id)
+// is generated and stamped by the Rust transport at WS connect time so it
+// stays stable for the lifetime of a reused socket.
+function uuidv4(): string {
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (Math.random() * 256) & 0xff;
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function effortLevelsForProvider(
   provider: Pick<LLMProvider, "name" | "model">,
 ): string[] {
@@ -759,12 +772,21 @@ export function buildStreamingLLMRequest(
     : providerMessages;
   const body: Record<string, unknown> = responsesApi
     ? {
+        // Mirrors codex's ResponseCreateWsRequest (serde tag = "type" so fields
+        // are flat) — the server expects these always-serialized fields even
+        // when empty.
         type: "response.create",
         model: provider.model,
         instructions: extractInstructions(outboundMessages) ?? "",
         input: toResponsesInput(outboundMessages),
-        stream: true,
+        tools: tools?.length ? toResponsesTools(tools) : [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        reasoning: null,
         store: false,
+        stream: true,
+        include: [] as string[],
+        client_metadata: { "x-codex-installation-id": uuidv4() },
       }
     : {
         model: provider.model,
@@ -775,13 +797,15 @@ export function buildStreamingLLMRequest(
         stream_options: { include_usage: true },
       };
   applyEffort(provider, body, responsesApi);
-  if (tools?.length) {
-    body.tools = responsesApi ? toResponsesTools(tools) : tools;
+  if (!responsesApi && tools?.length) {
+    body.tools = tools;
     body.tool_choice = "auto";
   }
-  // OpenAI streams use the Responses-over-WebSocket beta (mirrors codex's
-  // ResponsesWsRequest::ResponseCreate which serializes with #[serde(tag = "type")]
-  // so the discriminator and payload fields share the same flat JSON object).
+  if (responsesApi) {
+    // Codex's `include` is non-empty when reasoning is requested so the server
+    // returns encrypted reasoning blobs the client can replay on retry.
+    if (body.reasoning != null) body.include = ["reasoning.encrypted_content"];
+  }
   return {
     url: responsesApi
       ? openAIWebsocketUrl(provider)

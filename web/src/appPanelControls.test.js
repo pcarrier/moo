@@ -111,6 +111,15 @@ describe("header control icons", () => {
     expect(responsiveRule).not.toContain(".chat-menu-popover");
   });
 
+  test("touch chat rows do not require hover before opening", () => {
+    const touchRule = css.slice(css.indexOf("@media (hover: none) and (pointer: coarse)"));
+    expect(touchRule).toContain(".chat-row .chat-select {");
+    expect(touchRule).toContain("touch-action: manipulation;");
+    expect(touchRule).toContain(".chat-row .chat-actions {");
+    expect(touchRule).toContain("opacity: 0.75;");
+    expect(touchRule).toContain("pointer-events: auto;");
+  });
+
   test("agent-opened apps materialize as right-sidebar app tabs", () => {
     const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
 
