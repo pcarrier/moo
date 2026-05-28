@@ -17,6 +17,7 @@ export type LlmCompactionSettings = {
 
 export type UiBehaviorSettings = {
   syntaxHighlightMaxBytes: number;
+  attachmentImageMaxDimension: number;
 };
 
 

@@ -63,6 +63,21 @@ describe("settings layout", () => {
   it("defaults automatic compaction to fifty percent", () => {
     expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 50");
   });
+
+  it("defaults image attachment resizing to 1024px JPEGs", () => {
+    const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+    const api = readFileSync(new URL("./api/llmAuth.ts", import.meta.url), "utf8");
+
+    expect(settingsView).toContain("next.ui?.attachmentImageMaxDimension ?? 1024");
+    expect(settingsView).toContain("attachmentImageMaxDimension: Number(attachmentImageMaxDimension())");
+    expect(settingsView).toContain("Image attachment max edge (px)");
+    expect(settingsView).toContain('min="1" value={attachmentImageMaxDimension()}');
+    expect(settingsView).not.toContain('max="8192" value={attachmentImageMaxDimension()}');
+    expect(timeline).toContain("const DEFAULT_ATTACHMENT_IMAGE_MAX_DIMENSION = 1024;");
+    expect(timeline).toContain('const JPEG_ATTACHMENT_MIME_TYPE = "image/jpeg";');
+    expect(timeline).toContain("canvas.toDataURL(");
+    expect(api).toContain("attachmentImageMaxDimension: number;");
+  });
   it("orders behavior immediately after providers", () => {
     expect(settingsView).toContain('{ id: "providers", title: "Providers" },\n  { id: "behavior", title: "Behavior" },\n  { id: "runtime", title: "Runtime" },\n  { id: "otel", title: "OTEL" },');
   });

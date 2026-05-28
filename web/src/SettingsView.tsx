@@ -115,6 +115,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   const [jitterMs, setJitterMs] = createSignal("250");
   const [maxRetryAfterMs, setMaxRetryAfterMs] = createSignal("1800000");
   const [syntaxHighlightMaxMiB, setSyntaxHighlightMaxMiB] = createSignal("1");
+  const [attachmentImageMaxDimension, setAttachmentImageMaxDimension] = createSignal("1024");
   function updateDraft(id: LlmProviderId, patch: Partial<ProviderDraft>) {
     setDirty(true);
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -140,6 +141,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setMaxDelayMs(numberOrBlank(next.retries.maxDelayMs));
     setJitterMs(numberOrBlank(next.retries.jitterMs));
     setSyntaxHighlightMaxMiB(mib(next.ui?.syntaxHighlightMaxBytes ?? 1024 * 1024));
+    setAttachmentImageMaxDimension(numberOrBlank(next.ui?.attachmentImageMaxDimension ?? 1024));
     setMaxRetryAfterMs(numberOrBlank(next.retries.maxRetryAfterMs));
   }
 
@@ -203,6 +205,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         },
         ui: {
           syntaxHighlightMaxBytes: mibToBytes(syntaxHighlightMaxMiB()) ?? 1024 * 1024,
+          attachmentImageMaxDimension: Number(attachmentImageMaxDimension()),
         },
       }),
       ]);
@@ -666,8 +669,12 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
                               <span>Syntax highlighting cutoff (MiB)</span>
                               <input type="number" min="1" max="64" value={syntaxHighlightMaxMiB()} onInput={(e) => { setDirty(true); setSyntaxHighlightMaxMiB(e.currentTarget.value); }} />
                             </label>
+                            <label>
+                              <span>Image attachment max edge (px)</span>
+                              <input type="number" min="1" value={attachmentImageMaxDimension()} onInput={(e) => { setDirty(true); setAttachmentImageMaxDimension(e.currentTarget.value); }} />
+                            </label>
                           </div>
-                          <p class="settings-help">Files larger than this render as plain text in the sidebar to avoid freezing the browser.</p>
+                          <p class="settings-help">Files larger than this render as plain text in the sidebar. Image attachments are converted to JPEG and scaled to this maximum width or height before sending.</p>
                         </div>
                         <div class="settings-form-section">
                           <h2>Retries</h2>

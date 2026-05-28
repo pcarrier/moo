@@ -184,4 +184,45 @@ describe("LLM prompt context", () => {
     expect(runMessage?.content).toContain("Internal tool transcript for context only");
     expect(messages.some((m) => m.role === "assistant" && JSON.stringify(m).includes("[RunTS · Done]"))).toBe(false);
   });
+
+  test("carries the last user image attachments after automatic compaction", async () => {
+    installHostOps();
+    const chatId = "prompt-context-last-user-attachments";
+    const c = chatRefs(chatId);
+    const summary = "Earlier work summarized. Next action: inspect the screenshot.";
+    const compactionHash = putJSON("agent:Compaction", {
+      summary,
+      throughAt: 1000,
+      at: 1001,
+      trigger: "automatic",
+    });
+    refs.set(c.compaction, "json:" + JSON.stringify({
+      hash: compactionHash,
+      summary,
+      throughAt: 1000,
+      at: 1001,
+      trigger: "automatic",
+    }));
+    const dataUrl = "data:image/jpeg;base64,abc123";
+    const userPayload = putJSON("agent:UserInput", {
+      message: "What is in this screenshot?",
+      attachments: [{ type: "image", mimeType: "image/jpeg", dataUrl, name: "shot.jpg" }],
+    });
+
+    facts.set(c.facts, [
+      [c.graph, "step:user", "rdf:type", "agent:Step"],
+      [c.graph, "step:user", "agent:kind", "agent:UserInput"],
+      [c.graph, "step:user", "agent:status", "agent:Done"],
+      [c.graph, "step:user", "agent:createdAt", "1000"],
+      [c.graph, "step:user", "agent:payload", userPayload],
+    ]);
+
+    const messages = await buildLLMMessages(chatId);
+    const carried = messages.find((m) => Array.isArray(m.content));
+
+    expect(carried?.role).toBe("user");
+    expect(carried?.content[0]).toEqual({ type: "text", text: "What is in this screenshot?" });
+    expect(carried?.content[1]).toEqual({ type: "image_url", image_url: { url: dataUrl } });
+    expect(messages.at(-1)).not.toEqual({ role: "user", content: COMPACTION_CONTINUATION_USER_PROMPT });
+  });
 });

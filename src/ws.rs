@@ -779,6 +779,10 @@ fn value_i64(value: Option<&Value>) -> Option<i64> {
     value.and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|n| n.floor() as i64)))
 }
 
+fn positive_i64(value: Option<i64>, fallback: i64) -> i64 {
+    value.filter(|v| *v > 0).unwrap_or(fallback)
+}
+
 fn normalize_retry_policy(input: Option<&Value>) -> Value {
     let obj = input.and_then(Value::as_object);
     json!({
@@ -797,7 +801,14 @@ fn normalize_ui_settings(raw: Option<&Value>) -> Value {
         .and_then(Value::as_u64)
         .filter(|v| *v > 0)
         .unwrap_or(1024 * 1024);
-    json!({ "syntaxHighlightMaxBytes": syntax_highlight_max_bytes })
+    let attachment_image_max_dimension = positive_i64(
+        obj.and_then(|o| value_i64(o.get("attachmentImageMaxDimension"))),
+        1024,
+    );
+    json!({
+        "syntaxHighlightMaxBytes": syntax_highlight_max_bytes,
+        "attachmentImageMaxDimension": attachment_image_max_dimension,
+    })
 }
 
 fn normalize_compaction_settings(input: Option<&Value>) -> Value {
@@ -1558,6 +1569,7 @@ mod tests {
 
         let settings = json!({
             "compaction": { "thresholdPercent": 100 },
+            "ui": { "attachmentImageMaxDimension": 16384 },
             "retries": { "maxAttempts": 1, "baseDelayMs": 42 },
         });
         let saved = llm_auth_save(db_path, &settings);
@@ -1565,6 +1577,7 @@ mod tests {
         let settings = &saved["value"]["settings"];
 
         assert_eq!(settings["compaction"]["thresholdPercent"], 100);
+        assert_eq!(settings["ui"]["attachmentImageMaxDimension"], 16384);
         assert_eq!(settings["retries"]["maxAttempts"], 1);
         assert_eq!(settings["retries"]["baseDelayMs"], 42);
 

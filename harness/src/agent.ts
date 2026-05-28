@@ -1998,15 +1998,17 @@ async function readCompaction(chatId: string): Promise<{
   throughAt: number;
   summary: string | null;
   hash: string | null;
+  trigger: string | null;
 }> {
   const layer = readCompactionPointerTarget(
     await moo.pointers.get({ name: chatRefs(chatId).compaction }),
   );
-  if (!layer) return { throughAt: 0, summary: null, hash: null };
+  if (!layer) return { throughAt: 0, summary: null, hash: null, trigger: null };
   return {
     throughAt: layer.value.throughAt ?? 0,
     summary: layer.value.summary ?? null,
     hash: layer.hash,
+    trigger: layer.value.trigger ?? null,
   };
 }
 
@@ -2070,6 +2072,32 @@ async function deletedUserInputSteps(
   return rows
     .map((row) => ({ step: row["?step"]!, at: Number(row["?at"]) || 0 }))
     .filter((row) => row.step);
+}
+
+async function latestUserInputEntry(
+  chatId: string,
+  deletedStepIds: Set<string>,
+): Promise<UserInputEntry | null> {
+  const c = chatRefs(chatId);
+  const rows = await moo.facts.matchAll({
+    patterns: [
+      ["?step", "rdf:type", "agent:Step"],
+      ["?step", "agent:kind", "agent:UserInput"],
+      ["?step", "agent:createdAt", "?at"],
+    ],
+    store: c.facts,
+    graph: c.graph,
+  });
+  const latest = rows
+    .map((row) => ({
+      step: row["?step"]!,
+      at: Number(row["?at"]) || 0,
+    }))
+    .filter((row) => row.step && !deletedStepIds.has(row.step))
+    .sort((a, b) => b.at - a.at)[0];
+  if (!latest) return null;
+  const payload = await loadPayloadJSON(c.facts, c.graph, latest.step);
+  return userInputEntryFromPayload(latest.at, payload);
 }
 // Walk the compaction chain newest → oldest. Useful for audit and for the UI;
 // `buildLLMMessages` only uses the head summary because each layer subsumes
@@ -2360,6 +2388,39 @@ export function compactionThroughAt(
   return now;
 }
 
+type UserInputEntry = {
+  at: number;
+  role: "user";
+  content: any;
+};
+
+function userInputEntryFromPayload(at: number, payload: any): UserInputEntry | null {
+  const text = payload?.value?.message || "";
+  const attachments = Array.isArray(payload?.value?.attachments)
+    ? payload.value.attachments
+    : [];
+  if (attachments.length) {
+    return {
+      at,
+      role: "user",
+      content: [
+        { type: "text", text: text || "Please inspect this image." },
+        ...attachments
+          .filter(
+            (a: any) =>
+              a?.type === "image" && typeof a.dataUrl === "string",
+          )
+          .map((a: any) => ({
+            type: "image_url",
+            image_url: { url: a.dataUrl },
+          })),
+      ],
+    };
+  }
+  if (!text) return null;
+  return { at, role: "user", content: text };
+}
+
 export async function runCompaction(
   chatId: string,
   provider: LLMProvider,
@@ -2595,30 +2656,8 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
     if (s["?kind"] === "agent:UserInput") {
       if (deletedStepIds.has(s["?step"]!)) continue;
       const p = await loadPayloadJSON(c.facts, c.graph, s["?step"]!);
-      const text = p?.value?.message || "";
-      const attachments = Array.isArray(p?.value?.attachments)
-        ? p.value.attachments
-        : [];
-      if (attachments.length) {
-        entries.push({
-          at,
-          role: "user",
-          content: [
-            { type: "text", text: text || "Please inspect this image." },
-            ...attachments
-              .filter(
-                (a: any) =>
-                  a?.type === "image" && typeof a.dataUrl === "string",
-              )
-              .map((a: any) => ({
-                type: "image_url",
-                image_url: { url: a.dataUrl },
-              })),
-          ],
-        });
-      } else if (text) {
-        entries.push({ at, role: "user", content: text });
-      }
+      const entry = userInputEntryFromPayload(at, p);
+      if (entry) entries.push(entry);
     } else if (s["?kind"] === "agent:Reply") {
       const p = await loadPayloadJSON(c.facts, c.graph, s["?step"]!);
       const text = p?.value?.text;
@@ -2664,9 +2703,18 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
     compaction.summary && !summaryMayContainDeletedUserInput
       ? compaction.summary
       : null;
+  const automaticLastUser =
+    compactionSummary && compaction.trigger === "automatic"
+      ? await latestUserInputEntry(chatId, deletedStepIds)
+      : null;
+  const shouldCarryAutomaticLastUser = Boolean(
+    automaticLastUser &&
+      automaticLastUser.at <= compaction.throughAt &&
+      !entries.some((entry) => entry.role === "user"),
+  );
   const hasPostCompactionConversation = entries.some(
     (entry) => entry.role !== "system",
-  );
+  ) || shouldCarryAutomaticLastUser;
   const messages: any[] = [
     { role: "system", content: await buildSystemPrompt(chatId) },
   ];
@@ -2677,6 +2725,12 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
         compactionSummary,
         await formatTodosForPrompt(chatId),
       ),
+    });
+  }
+  if (automaticLastUser && shouldCarryAutomaticLastUser) {
+    messages.push({
+      role: automaticLastUser.role,
+      content: automaticLastUser.content,
     });
   }
   for (const e of entries) messages.push({ role: e.role, content: e.content });

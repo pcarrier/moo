@@ -1111,25 +1111,105 @@ export function Timeline(props: {
   );
 }
 
-const readImageAttachment = (file: File) =>
-  new Promise<ImageAttachment>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      resolve({
-        type: "image",
-        mimeType: file.type || "image/png",
-        dataUrl: String(reader.result),
-        name: file.name || "pasted image",
-      });
-    reader.onerror = () =>
-      reject(reader.error || new Error("failed to read image"));
-    reader.readAsDataURL(file);
-  });
+const DEFAULT_ATTACHMENT_IMAGE_MAX_DIMENSION = 1024;
+const JPEG_ATTACHMENT_MIME_TYPE = "image/jpeg";
+const JPEG_ATTACHMENT_QUALITY = 0.88;
 
-const imageAttachmentsFromFiles = async (files: File[]) => {
+function attachmentImageMaxDimension(bag: Bag): number {
+  const configured = Number(
+    bag.settingsCache()?.ui?.attachmentImageMaxDimension,
+  );
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return DEFAULT_ATTACHMENT_IMAGE_MAX_DIMENSION;
+}
+
+function loadImageElement(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("failed to decode image"));
+    };
+    img.src = url;
+  });
+}
+
+function imageSize(img: HTMLImageElement): { width: number; height: number } {
+  return {
+    width: img.naturalWidth || img.width,
+    height: img.naturalHeight || img.height,
+  };
+}
+
+function scaledImageSize(
+  width: number,
+  height: number,
+  maxDimension: number,
+): { width: number; height: number } {
+  const safeWidth = Math.max(1, Math.floor(width));
+  const safeHeight = Math.max(1, Math.floor(height));
+  const safeMax = Math.max(
+    1,
+    Math.floor(maxDimension || DEFAULT_ATTACHMENT_IMAGE_MAX_DIMENSION),
+  );
+  const scale = Math.min(1, safeMax / Math.max(safeWidth, safeHeight));
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale)),
+  };
+}
+
+function canvasToDataUrl(canvas: HTMLCanvasElement): string {
+  const dataUrl = canvas.toDataURL(
+    JPEG_ATTACHMENT_MIME_TYPE,
+    JPEG_ATTACHMENT_QUALITY,
+  );
+  if (!dataUrl.startsWith(`data:${JPEG_ATTACHMENT_MIME_TYPE};`)) {
+    throw new Error("failed to encode image as JPEG");
+  }
+  return dataUrl;
+}
+
+async function readImageAttachment(
+  file: File,
+  maxDimension = DEFAULT_ATTACHMENT_IMAGE_MAX_DIMENSION,
+): Promise<ImageAttachment> {
+  const img = await loadImageElement(file);
+  const original = imageSize(img);
+  if (original.width <= 0 || original.height <= 0) {
+    throw new Error("image has no pixels");
+  }
+  const scaled = scaledImageSize(
+    original.width,
+    original.height,
+    maxDimension,
+  );
+  const canvas = document.createElement("canvas");
+  canvas.width = scaled.width;
+  canvas.height = scaled.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("browser cannot resize images");
+  ctx.drawImage(img, 0, 0, scaled.width, scaled.height);
+  return {
+    type: "image",
+    mimeType: JPEG_ATTACHMENT_MIME_TYPE,
+    dataUrl: canvasToDataUrl(canvas),
+    name: file.name || "pasted image.jpg",
+  };
+}
+
+const imageAttachmentsFromFiles = async (files: File[], bag: Bag) => {
   const images = files.filter((f) => f.type.startsWith("image/"));
   if (!images.length) return [];
-  return Promise.all(images.map(readImageAttachment));
+  const maxDimension = attachmentImageMaxDimension(bag);
+  return Promise.all(
+    images.map((file) => readImageAttachment(file, maxDimension)),
+  );
 };
 
 function TodoMetaBubbles(props: { item: AgentTodo }) {
@@ -1308,8 +1388,16 @@ function PendingItem(props: {
         notifyUnsupportedAttachments();
       return;
     }
-    const next = await imageAttachmentsFromFiles(files);
-    props.bag.addPendingAttachments(props.item().id, next);
+    try {
+      const next = await imageAttachmentsFromFiles(files, props.bag);
+      props.bag.addPendingAttachments(props.item().id, next);
+    } catch (err) {
+      props.bag.notify(
+        "attachments",
+        "Image attachment could not be resized.",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   };
   const handleFilePick = (e: Event) => {
     const el = e.currentTarget as HTMLInputElement;
@@ -1910,9 +1998,17 @@ function InputBar(props: {
         notifyUnsupportedAttachments();
       return;
     }
-    const next = await imageAttachmentsFromFiles(files);
-    if (!next.length) return;
-    setAttachments([...attachments(), ...next]);
+    try {
+      const next = await imageAttachmentsFromFiles(files, bag);
+      if (!next.length) return;
+      setAttachments([...attachments(), ...next]);
+    } catch (err) {
+      bag.notify(
+        "attachments",
+        "Image attachment could not be resized.",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   };
 
   const handlePaste = (e: ClipboardEvent) => {
