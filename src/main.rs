@@ -86,6 +86,9 @@ enum PskCmd {
 }
 
 fn main() {
+    // Dependencies enable both rustls providers; choose one before TLS clients initialize.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
     if let Err(err) = real_main(cli) {
         eprintln!("error: {err}");
