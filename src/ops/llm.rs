@@ -7,14 +7,15 @@ use crate::broadcast;
 use crate::pool::Pool;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -25,8 +26,10 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_tls_with_
 // hand the next user a half-dead socket the server already gave up on.
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-const WS_REUSE_MAX_AGE: Duration = Duration::from_secs(45 * 60);
-const WS_REUSE_MAX_IDLE: Duration = Duration::from_secs(4 * 60);
+const WS_CONNECTION_IDLE_TTL: Duration = Duration::from_secs(600);
+const WS_MAX_CONNECTIONS_PER_KEY: usize = 4;
+const WS_COMMAND_CHANNEL_CAPACITY: usize = 32;
+const WS_EVENT_CHANNEL_CAPACITY: usize = 128;
 
 /// rustls can't auto-select a crypto provider when both `ring` and `aws-lc-rs`
 /// are in the dependency graph (reqwest pulls one, our WS path the other), so
@@ -38,76 +41,6 @@ fn ensure_rustls_crypto_provider() {
     INIT.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
-}
-
-type WsSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-struct WsEntry {
-    socket: WsSocket,
-    upgrade_status: u16,
-    response_headers: Value,
-    opened_at: Instant,
-    last_used: Instant,
-}
-
-type WsSlot = Arc<AsyncMutex<Option<WsEntry>>>;
-
-#[derive(Default)]
-struct WsPool {
-    // Short critical sections (lookup / insert empty slot) — std Mutex is fine
-    // and lets us hand out the per-slot async Mutex without holding the pool
-    // lock across the network I/O.
-    slots: std::sync::Mutex<HashMap<String, WsSlot>>,
-}
-
-impl WsPool {
-    fn slot(&self, key: &str) -> WsSlot {
-        let mut guard = self
-            .slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
-            .clone()
-    }
-}
-
-fn ws_pool() -> &'static WsPool {
-    static POOL: OnceLock<WsPool> = OnceLock::new();
-    POOL.get_or_init(WsPool::default)
-}
-
-fn connection_identity(url: &str, headers: &Value, chat_id: &str) -> String {
-    // Key the pool by (URL, auth principal, chat). Per-chat sockets keep
-    // server-side `session-id` / `thread-id` stable for the lifetime of a
-    // conversation and let concurrent chats stream in parallel — folding
-    // every chat into one socket would serialize them and smear server-side
-    // identity across unrelated conversations.
-    let auth = headers
-        .get("Authorization")
-        .or_else(|| headers.get("authorization"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let account = headers
-        .get("ChatGPT-Account-ID")
-        .or_else(|| headers.get("chatgpt-account-id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let mut hasher = Sha256::new();
-    hasher.update(url.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(auth.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(account.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(chat_id.as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(16);
-    for b in &digest[..8] {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
 }
 
 fn chat_id_from_stream_events(stream_events: &Value) -> &str {
@@ -124,12 +57,107 @@ fn random_uuid_v4() -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
+}
+
+type OpenAiWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+struct OpenAiWebSocketManager {
+    connections: Mutex<HashMap<WebSocketConnectionKey, Vec<WebSocketConnectionHandle>>>,
+    next_session_id: AtomicU64,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct WebSocketConnectionKey {
+    ws_url: String,
+    chat_id: String,
+    model: Option<String>,
+    headers_hash: String,
+    stats_hash: String,
+}
+
+#[derive(Clone)]
+struct WebSocketConnectionHandle {
+    session_id: u64,
+    sender: mpsc::Sender<WebSocketCommand>,
+    load: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct WebSocketSelection {
+    handle: WebSocketConnectionHandle,
+    key_hash: String,
+    pool_size: usize,
+}
+
+struct WebSocketCommand {
+    body: String,
+    events: mpsc::Sender<WebSocketSessionEvent>,
+    key_hash: String,
+    pool_size: usize,
+    model: Option<String>,
+}
+
+#[derive(Clone)]
+struct WebSocketSessionStarted {
+    session_id: u64,
+    connection_id: u64,
+    request_index: u64,
+    connection_reused: bool,
+    reconnects: u64,
+    upgrade_status: u16,
+    response_headers: Value,
+    key_hash: String,
+    pool_size: usize,
+    model: Option<String>,
+}
+
+struct WebSocketSessionFailure {
+    status: u16,
+    error_body: String,
+    response_headers: Value,
+}
+
+enum WebSocketSessionEvent {
+    Started(WebSocketSessionStarted),
+    Message(Message),
+    Failure(WebSocketSessionFailure),
+}
+
+struct WebSocketConnectSuccess {
+    socket: OpenAiWebSocket,
+    upgrade_status: u16,
+    response_headers: Value,
+}
+
+enum ActiveMessageDisposition {
+    Continue,
+    Complete,
+    CloseConnection,
+}
+
+fn websocket_manager() -> &'static OpenAiWebSocketManager {
+    static MANAGER: OnceLock<OpenAiWebSocketManager> = OnceLock::new();
+    MANAGER.get_or_init(|| OpenAiWebSocketManager {
+        connections: Mutex::new(HashMap::new()),
+        next_session_id: AtomicU64::new(0),
+    })
 }
 
 pub async fn stream_chat(
@@ -388,218 +416,59 @@ pub async fn stream_chat_websocket(
     ensure_rustls_crypto_provider();
     let request_started = Instant::now();
     let ws_url = websocket_url(&url);
-    let chat_id = chat_id_from_stream_events(&stream_events);
-    let identity = connection_identity(&ws_url, &headers, chat_id);
-    let slot = ws_pool().slot(&identity);
-    let mut guard = slot.lock().await;
-
-    // Up to one retry: if the cached connection is stale and send/receive
-    // fails on the very first frame, drop it and try with a fresh one. Beyond
-    // that the harness retry layer takes over.
-    let mut attempt = 0u8;
-    loop {
-        // Materialize a live entry. Discard any cached connection that has
-        // exceeded the soft age/idle ceilings before we even try it.
-        let needs_new = match guard.as_ref() {
-            None => true,
-            Some(entry) => {
-                let now = Instant::now();
-                now.duration_since(entry.opened_at) > WS_REUSE_MAX_AGE
-                    || now.duration_since(entry.last_used) > WS_REUSE_MAX_IDLE
-            }
-        };
-        if needs_new && guard.is_some() {
-            drop(guard.take());
-        }
-        if guard.is_none() {
-            match open_ws_entry(&ws_url, &headers).await {
-                Ok(entry) => *guard = Some(entry),
-                Err(transport) => return transport.into_value(&pool, &bundle).await,
-            }
-        }
-
-        let outcome = run_one_stream(
-            &pool,
-            &bundle,
-            guard.as_mut().expect("entry just installed"),
-            &body,
-            &stream_events,
-            request_started,
-            attempt == 0,
-        )
-        .await;
-
-        match outcome {
-            StreamOutcome::Completed(value) => {
-                if let Some(entry) = guard.as_mut() {
-                    entry.last_used = Instant::now();
-                }
-                return value;
-            }
-            StreamOutcome::ProviderError(value) => {
-                // A clean `response.failed` / error event — connection is
-                // still healthy, keep it cached.
-                if let Some(entry) = guard.as_mut() {
-                    entry.last_used = Instant::now();
-                }
-                return value;
-            }
-            StreamOutcome::Reconnect(transport) => {
-                // Cached socket is unhealthy. Drop it and either retry once
-                // (if we hadn't sent anything yet) or surface the transport
-                // error to the retry layer.
-                drop(guard.take());
-                if transport.retry_with_fresh_connection && attempt == 0 {
-                    attempt += 1;
-                    continue;
-                }
-                return transport.into_value(&pool, &bundle).await;
-            }
-        }
-    }
-}
-
-/// Outcome of a single `response.create` exchange on a (possibly reused) socket.
-enum StreamOutcome {
-    /// Server reached `response.completed` (or equivalent terminal status) —
-    /// connection is healthy, value is the harness-finalized result.
-    Completed(Value),
-    /// Server sent a structured error event but the connection itself is
-    /// still healthy and reusable.
-    ProviderError(Value),
-    /// Socket-level failure — caller should drop the cached entry.
-    Reconnect(WsTransportError),
-}
-
-struct WsTransportError {
-    status: u16,
-    error_body: String,
-    accumulator: Value,
-    response_headers: Value,
-    /// Whether the caller may retry with a fresh connection without
-    /// disturbing user-visible state. True only when the failure happened
-    /// before any provider bytes for this request reached the harness.
-    retry_with_fresh_connection: bool,
-}
-
-impl WsTransportError {
-    async fn into_value(self, pool: &Arc<Pool>, bundle: &Arc<String>) -> Value {
-        transport_error(
-            pool,
-            bundle,
-            self.status,
-            self.error_body,
-            self.accumulator,
-            self.response_headers,
-        )
+    let chat_id = chat_id_from_stream_events(&stream_events).to_string();
+    let mut session_events = match websocket_manager()
+        .start_request(ws_url, headers.clone(), body, chat_id)
         .await
-    }
-}
-
-async fn open_ws_entry(
-    ws_url: &str,
-    headers: &Value,
-) -> Result<WsEntry, WsTransportError> {
-    let session_id = random_uuid_v4();
-    let thread_id = random_uuid_v4();
-
-    let mut request = ws_url.into_client_request().map_err(|e| WsTransportError {
-        status: 0,
-        error_body: format!("websocket request: {e}"),
-        accumulator: Value::Null,
-        response_headers: Value::Null,
-        retry_with_fresh_connection: false,
-    })?;
-    let mut request_headers = request_headers_from_value(headers);
-    // The harness-provided headers carry the static identity material
-    // (Authorization, ChatGPT-Account-ID, OpenAI-Beta, User-Agent). Stamp the
-    // codex routing headers in here so they stay stable for the lifetime of
-    // this socket — sticky routing on the codex backend depends on it.
-    request.headers_mut().extend(request_headers.drain());
-    insert_static_header(request.headers_mut(), "session-id", &session_id);
-    insert_static_header(request.headers_mut(), "thread-id", &thread_id);
-    insert_static_header(request.headers_mut(), "x-client-request-id", &thread_id);
-
-    let connect_future = connect_async_tls_with_config(request, None, false, None);
-    let response = tokio::time::timeout(WS_CONNECT_TIMEOUT, connect_future)
-        .await
-        .map_err(|_| WsTransportError {
-            status: 0,
-            error_body: format!(
-                "websocket connect timed out after {}s",
-                WS_CONNECT_TIMEOUT.as_secs()
-            ),
-            accumulator: Value::Null,
-            response_headers: Value::Null,
-            retry_with_fresh_connection: false,
-        })?;
-    let (socket, response) = response.map_err(|e| {
-        let (status, error_body, response_headers) = websocket_connect_error(e);
-        WsTransportError {
-            status,
-            error_body,
-            accumulator: Value::Null,
-            response_headers,
-            retry_with_fresh_connection: false,
+    {
+        Ok(events) => events,
+        Err(e) => {
+            return transport_error(&pool, &bundle, 0, e, Value::Null, Value::Null).await;
         }
-    })?;
+    };
 
-    let upgrade_status = response.status().as_u16();
-    let response_headers = ws_headers_json(response.headers());
-    if upgrade_status >= 400 {
-        return Err(WsTransportError {
-            status: upgrade_status,
-            error_body: format!("websocket upgrade failed with status {upgrade_status}"),
-            accumulator: Value::Null,
-            response_headers,
-            retry_with_fresh_connection: false,
-        });
-    }
+    let started = loop {
+        match session_events.recv().await {
+            Some(WebSocketSessionEvent::Started(started)) => break started,
+            Some(WebSocketSessionEvent::Failure(failure)) => {
+                return transport_error(
+                    &pool,
+                    &bundle,
+                    failure.status,
+                    failure.error_body,
+                    Value::Null,
+                    failure.response_headers,
+                )
+                .await;
+            }
+            Some(WebSocketSessionEvent::Message(_)) => continue,
+            None => {
+                return transport_error(
+                    &pool,
+                    &bundle,
+                    0,
+                    "websocket manager closed before connection started".to_string(),
+                    Value::Null,
+                    Value::Null,
+                )
+                .await;
+            }
+        }
+    };
 
-    let now = Instant::now();
-    Ok(WsEntry {
-        socket,
-        upgrade_status,
-        response_headers,
-        opened_at: now,
-        last_used: now,
-    })
-}
-
-fn insert_static_header(headers: &mut http::HeaderMap, name: &str, value: &str) {
-    if let (Ok(name), Ok(value)) = (
-        http::HeaderName::from_bytes(name.as_bytes()),
-        http::HeaderValue::from_str(value),
-    ) {
-        headers.insert(name, value);
-    }
-}
-
-async fn run_one_stream(
-    pool: &Arc<Pool>,
-    bundle: &Arc<String>,
-    entry: &mut WsEntry,
-    body: &str,
-    stream_events: &Value,
-    request_started: Instant,
-    fresh_connection: bool,
-) -> StreamOutcome {
-    // The websocket handshake is a 101 Switching Protocols response; downstream
-    // LLM result/retry logic expects model streams to look like a successful
-    // request, so we surface 200 here and bubble provider errors through the
-    // accumulator instead.
+    let upgrade_status = started.upgrade_status;
+    let response_headers = started.response_headers.clone();
+    // The websocket handshake itself is a 101 Switching Protocols response, but
+    // downstream LLM result/retry logic expects model streams to look like a
+    // successful request with provider errors surfaced by the accumulator.
     let status = 200;
-    let response_headers = entry.response_headers.clone();
-    let upgrade_status = entry.upgrade_status;
 
     let mut accumulator =
-        match init_stream_accumulator(pool, bundle, stream_events, status, &response_headers).await
+        match init_stream_accumulator(&pool, &bundle, &stream_events, status, &response_headers)
+            .await
         {
             Ok(state) => state,
-            Err(value) => {
-                // Init failure isn't a socket problem — keep the connection.
-                return StreamOutcome::ProviderError(value);
-            }
+            Err(value) => return value,
         };
 
     let mut network_chunks: u64 = 0;
@@ -615,47 +484,33 @@ async fn run_one_stream(
     let mut first_event_ns: Option<u128> = None;
     let mut first_accumulator_ns: Option<u128> = None;
     let mut terminal_seen = false;
-    let mut bytes_seen_for_request = false;
-
-    if let Err(e) = entry
-        .socket
-        .send(Message::Text(body.to_string().into()))
-        .await
-    {
-        return StreamOutcome::Reconnect(WsTransportError {
-            status,
-            error_body: format!("websocket send: {e}"),
-            accumulator,
-            response_headers,
-            retry_with_fresh_connection: !fresh_connection,
-        });
-    }
+    let mut websocket_response_id: Option<String> = None;
 
     loop {
-        let message = match tokio::time::timeout(WS_IDLE_TIMEOUT, entry.socket.next()).await {
-            Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(e))) => {
-                return StreamOutcome::Reconnect(WsTransportError {
-                    status,
-                    error_body: format!("websocket stream: {e}"),
-                    accumulator,
-                    response_headers,
-                    retry_with_fresh_connection: !fresh_connection && !bytes_seen_for_request,
-                });
+        let message = match session_events.recv().await {
+            Some(WebSocketSessionEvent::Message(message)) => message,
+            Some(WebSocketSessionEvent::Failure(failure)) => {
+                let failure_headers = if failure.response_headers.is_null() {
+                    response_headers.clone()
+                } else {
+                    failure.response_headers
+                };
+                return transport_error(
+                    &pool,
+                    &bundle,
+                    if failure.status == 0 {
+                        status
+                    } else {
+                        failure.status
+                    },
+                    failure.error_body,
+                    accumulator.clone(),
+                    failure_headers,
+                )
+                .await;
             }
-            Ok(None) => break,
-            Err(_) => {
-                return StreamOutcome::Reconnect(WsTransportError {
-                    status,
-                    error_body: format!(
-                        "websocket idle timeout after {}s",
-                        WS_IDLE_TIMEOUT.as_secs()
-                    ),
-                    accumulator,
-                    response_headers,
-                    retry_with_fresh_connection: false,
-                });
-            }
+            Some(WebSocketSessionEvent::Started(_)) => continue,
+            None => break,
         };
         if first_byte_ns.is_none() {
             first_byte_ns = Some(request_started.elapsed().as_nanos());
@@ -668,7 +523,6 @@ async fn run_one_stream(
                 network_bytes =
                     network_bytes.saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
                 websocket_text_events = websocket_text_events.saturating_add(1);
-                bytes_seen_for_request = true;
                 if first_event_ns.is_none() {
                     first_event_ns = Some(request_started.elapsed().as_nanos());
                 }
@@ -676,6 +530,9 @@ async fn run_one_stream(
                     Ok(value) => value,
                     Err(_) => continue,
                 };
+                if websocket_response_id.is_none() {
+                    websocket_response_id = websocket_event_response_id(&event);
+                }
                 let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
                 let is_error = event_type == "error" || event.get("error").is_some();
                 let should_accumulate = should_accumulate_websocket_event(event_type, &event);
@@ -683,10 +540,10 @@ async fn run_one_stream(
 
                 if should_accumulate {
                     match accumulate_websocket_text_event(
-                        pool,
-                        bundle,
+                        &pool,
+                        &bundle,
                         accumulator,
-                        stream_events,
+                        &stream_events,
                         text.clone(),
                         request_started,
                     )
@@ -700,22 +557,24 @@ async fn run_one_stream(
                             accumulator = state;
                         }
                         Err(e) => {
-                            return StreamOutcome::ProviderError(
-                                transport_error(
-                                    pool,
-                                    bundle,
-                                    status,
-                                    format!("llm accumulate: {e}"),
-                                    Value::Null,
-                                    response_headers,
-                                )
-                                .await,
-                            );
+                            return transport_error(
+                                &pool,
+                                &bundle,
+                                status,
+                                format!("llm accumulate: {e}"),
+                                Value::Null,
+                                response_headers,
+                            )
+                            .await;
                         }
                     }
                 }
 
-                if is_error || is_terminal {
+                if is_error {
+                    terminal_seen = true;
+                    break;
+                }
+                if is_terminal {
                     terminal_seen = true;
                     break;
                 }
@@ -724,7 +583,6 @@ async fn run_one_stream(
                 network_bytes =
                     network_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
                 websocket_binary_events = websocket_binary_events.saturating_add(1);
-                bytes_seen_for_request = true;
                 if first_event_ns.is_none() {
                     first_event_ns = Some(request_started.elapsed().as_nanos());
                 }
@@ -735,6 +593,9 @@ async fn run_one_stream(
                     Ok(value) => value,
                     Err(_) => continue,
                 };
+                if websocket_response_id.is_none() {
+                    websocket_response_id = websocket_event_response_id(&event);
+                }
                 let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
                 let is_error = event_type == "error" || event.get("error").is_some();
                 let should_accumulate = should_accumulate_websocket_event(event_type, &event);
@@ -742,10 +603,10 @@ async fn run_one_stream(
 
                 if should_accumulate {
                     match accumulate_websocket_text_event(
-                        pool,
-                        bundle,
+                        &pool,
+                        &bundle,
                         accumulator,
-                        stream_events,
+                        &stream_events,
                         text.clone(),
                         request_started,
                     )
@@ -759,33 +620,29 @@ async fn run_one_stream(
                             accumulator = state;
                         }
                         Err(e) => {
-                            return StreamOutcome::ProviderError(
-                                transport_error(
-                                    pool,
-                                    bundle,
-                                    status,
-                                    format!("llm accumulate: {e}"),
-                                    Value::Null,
-                                    response_headers,
-                                )
-                                .await,
-                            );
+                            return transport_error(
+                                &pool,
+                                &bundle,
+                                status,
+                                format!("llm accumulate: {e}"),
+                                Value::Null,
+                                response_headers,
+                            )
+                            .await;
                         }
                     }
                 }
 
                 if is_error {
-                    return StreamOutcome::ProviderError(
-                        transport_error(
-                            pool,
-                            bundle,
-                            status,
-                            text,
-                            accumulator,
-                            response_headers,
-                        )
-                        .await,
-                    );
+                    return transport_error(
+                        &pool,
+                        &bundle,
+                        status,
+                        text,
+                        accumulator.clone(),
+                        response_headers,
+                    )
+                    .await;
                 }
                 if is_terminal {
                     terminal_seen = true;
@@ -811,16 +668,15 @@ async fn run_one_stream(
     }
 
     if !terminal_seen {
-        // Server closed (or read returned None) before sending a terminal
-        // response event. Treat this as a transport failure — the harness
-        // retry layer will retry on a fresh connection.
-        return StreamOutcome::Reconnect(WsTransportError {
+        return transport_error(
+            &pool,
+            &bundle,
             status,
-            error_body: "websocket connection closed before terminal response event".to_string(),
-            accumulator,
+            "websocket connection closed before terminal response event".to_string(),
+            accumulator.clone(),
             response_headers,
-            retry_with_fresh_connection: !fresh_connection && !bytes_seen_for_request,
-        });
+        )
+        .await;
     }
 
     let mut stats = json!({
@@ -834,7 +690,15 @@ async fn run_one_stream(
         "websocketCloseEvents": websocket_close_events,
         "websocketUpgradeStatus": upgrade_status,
         "websocketTerminalSeen": terminal_seen,
-        "websocketConnectionReused": !fresh_connection,
+        "websocketConnectionReused": started.connection_reused,
+        "websocketSessionId": started.session_id,
+        "websocketConnectionId": started.connection_id,
+        "websocketRequestIndex": started.request_index,
+        "websocketReconnects": started.reconnects,
+        "websocketKey": started.key_hash,
+        "websocketPoolSize": started.pool_size,
+        "websocketModel": started.model,
+        "websocketResponseId": websocket_response_id,
         "accumulatorCalls": accumulator_calls,
         "timeToFirstByteNs": first_byte_ns,
         "timeToFirstEventNs": first_event_ns,
@@ -846,9 +710,433 @@ async fn run_one_stream(
             Value::String("websocket".to_string()),
         );
     }
-    StreamOutcome::Completed(
-        finalize_stream(pool, bundle, accumulator, status, response_headers, stats).await,
-    )
+    finalize_stream(&pool, &bundle, accumulator, status, response_headers, stats).await
+}
+
+impl OpenAiWebSocketManager {
+    async fn start_request(
+        &self,
+        ws_url: String,
+        headers: Value,
+        body: String,
+        chat_id: String,
+    ) -> Result<mpsc::Receiver<WebSocketSessionEvent>, String> {
+        let model = websocket_body_model(&body);
+        let key = WebSocketConnectionKey::new(&ws_url, &headers, &chat_id, model);
+        let (events_tx, events_rx) = mpsc::channel(WS_EVENT_CHANNEL_CAPACITY);
+        let mut command = Some(WebSocketCommand {
+            body,
+            events: events_tx,
+            key_hash: key.stats_hash.clone(),
+            pool_size: 0,
+            model: key.model.clone(),
+        });
+
+        for _ in 0..2 {
+            let selection = self.select_connection(&key, &ws_url, &headers);
+            if let Some(cmd) = command.as_mut() {
+                cmd.key_hash = selection.key_hash.clone();
+                cmd.pool_size = selection.pool_size;
+            }
+            selection.handle.load.fetch_add(1, Ordering::AcqRel);
+            let send_result = selection
+                .handle
+                .sender
+                .send(command.take().expect("websocket command missing"))
+                .await;
+            match send_result {
+                Ok(()) => return Ok(events_rx),
+                Err(err) => {
+                    selection.handle.load.fetch_sub(1, Ordering::AcqRel);
+                    self.remove_connection(&key, selection.handle.session_id);
+                    command = Some(err.0);
+                }
+            }
+        }
+
+        Err("websocket manager: connection worker closed".to_string())
+    }
+
+    fn select_connection(
+        &self,
+        key: &WebSocketConnectionKey,
+        ws_url: &str,
+        headers: &Value,
+    ) -> WebSocketSelection {
+        let mut connections = self.connections.lock().expect("websocket manager poisoned");
+        let pool = connections.entry(key.clone()).or_default();
+        pool.retain(|handle| !handle.sender.is_closed());
+
+        let all_busy = pool
+            .iter()
+            .all(|handle| handle.load.load(Ordering::Acquire) > 0);
+        if pool.is_empty() || (all_busy && pool.len() < WS_MAX_CONNECTIONS_PER_KEY) {
+            let session_id = self.next_session_id.fetch_add(1, Ordering::AcqRel) + 1;
+            let (sender, receiver) = mpsc::channel(WS_COMMAND_CHANNEL_CAPACITY);
+            let load = Arc::new(AtomicUsize::new(0));
+            spawn_websocket_connection(
+                session_id,
+                key.stats_hash.clone(),
+                ws_url.to_string(),
+                headers.clone(),
+                receiver,
+                load.clone(),
+            );
+            pool.push(WebSocketConnectionHandle {
+                session_id,
+                sender,
+                load,
+            });
+        }
+
+        let handle = pool
+            .iter()
+            .min_by_key(|handle| handle.load.load(Ordering::Acquire))
+            .expect("websocket pool unexpectedly empty")
+            .clone();
+        WebSocketSelection {
+            handle,
+            key_hash: key.stats_hash.clone(),
+            pool_size: pool.len(),
+        }
+    }
+
+    fn remove_connection(&self, key: &WebSocketConnectionKey, session_id: u64) {
+        let mut connections = self.connections.lock().expect("websocket manager poisoned");
+        if let Some(pool) = connections.get_mut(key) {
+            pool.retain(|handle| handle.session_id != session_id && !handle.sender.is_closed());
+            if pool.is_empty() {
+                connections.remove(key);
+            }
+        }
+    }
+}
+
+impl WebSocketConnectionKey {
+    fn new(ws_url: &str, headers: &Value, chat_id: &str, model: Option<String>) -> Self {
+        let headers_hash = websocket_headers_fingerprint(headers);
+        let stats_hash =
+            websocket_connection_stats_hash(ws_url, chat_id, model.as_deref(), &headers_hash);
+        Self {
+            ws_url: ws_url.to_string(),
+            chat_id: chat_id.to_string(),
+            model,
+            headers_hash,
+            stats_hash,
+        }
+    }
+}
+
+fn spawn_websocket_connection(
+    session_id: u64,
+    key_hash: String,
+    ws_url: String,
+    headers: Value,
+    commands: mpsc::Receiver<WebSocketCommand>,
+    load: Arc<AtomicUsize>,
+) {
+    tokio::spawn(async move {
+        run_websocket_connection(session_id, key_hash, ws_url, headers, commands, load).await;
+    });
+}
+
+async fn run_websocket_connection(
+    session_id: u64,
+    key_hash: String,
+    ws_url: String,
+    headers: Value,
+    mut commands: mpsc::Receiver<WebSocketCommand>,
+    load: Arc<AtomicUsize>,
+) {
+    let mut socket: Option<OpenAiWebSocket> = None;
+    let mut response_headers = Value::Null;
+    let mut upgrade_status = 0_u16;
+    let mut connection_id = 0_u64;
+    let mut reconnects = 0_u64;
+    let mut request_index = 0_u64;
+
+    loop {
+        if socket.is_none() {
+            let Some(cmd) = commands.recv().await else {
+                break;
+            };
+            request_index = request_index.saturating_add(1);
+            let connect = connect_openai_websocket(&ws_url, &headers).await;
+            let success = match connect {
+                Ok(success) => success,
+                Err(failure) => {
+                    let _ = cmd
+                        .events
+                        .send(WebSocketSessionEvent::Failure(failure))
+                        .await;
+                    load.fetch_sub(1, Ordering::AcqRel);
+                    continue;
+                }
+            };
+            connection_id = connection_id.saturating_add(1);
+            if connection_id > 1 {
+                reconnects = reconnects.saturating_add(1);
+            }
+            response_headers = success.response_headers.clone();
+            upgrade_status = success.upgrade_status;
+            socket = Some(success.socket);
+            let started = WebSocketSessionStarted {
+                session_id,
+                connection_id,
+                request_index,
+                connection_reused: false,
+                reconnects,
+                upgrade_status,
+                response_headers: response_headers.clone(),
+                key_hash: cmd.key_hash.clone(),
+                pool_size: cmd.pool_size,
+                model: cmd.model.clone(),
+            };
+            let keep_socket = handle_active_websocket_request(
+                socket.as_mut().expect("websocket missing after connect"),
+                cmd,
+                started,
+            )
+            .await;
+            load.fetch_sub(1, Ordering::AcqRel);
+            if !keep_socket {
+                socket = None;
+            }
+            continue;
+        }
+
+        let idle = tokio::time::sleep(WS_CONNECTION_IDLE_TTL);
+        tokio::pin!(idle);
+        tokio::select! {
+            maybe_cmd = commands.recv() => {
+                let Some(cmd) = maybe_cmd else {
+                    break;
+                };
+                request_index = request_index.saturating_add(1);
+                let started = WebSocketSessionStarted {
+                    session_id,
+                    connection_id,
+                    request_index,
+                    connection_reused: true,
+                    reconnects,
+                    upgrade_status,
+                    response_headers: response_headers.clone(),
+                    key_hash: cmd.key_hash.clone(),
+                    pool_size: cmd.pool_size,
+                    model: cmd.model.clone(),
+                };
+                let keep_socket = handle_active_websocket_request(
+                    socket.as_mut().expect("websocket missing for active request"),
+                    cmd,
+                    started,
+                ).await;
+                load.fetch_sub(1, Ordering::AcqRel);
+                if !keep_socket {
+                    socket = None;
+                }
+            }
+            maybe_message = socket.as_mut().expect("websocket missing while idle").next() => {
+                match maybe_message {
+                    Some(Ok(Message::Close(_))) | None => {
+                        break;
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if let Some(active_socket) = socket.as_mut() {
+                            let _ = active_socket.send(Message::Pong(payload)).await;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => {
+                        break;
+                    }
+                }
+            }
+            _ = &mut idle => {
+                if let Some(mut idle_socket) = socket.take() {
+                    let _ = idle_socket.close(None).await;
+                }
+                break;
+            }
+        }
+    }
+
+    let _ = key_hash;
+}
+
+async fn connect_openai_websocket(
+    ws_url: &str,
+    headers: &Value,
+) -> Result<WebSocketConnectSuccess, WebSocketSessionFailure> {
+    ensure_rustls_crypto_provider();
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(|e| WebSocketSessionFailure {
+            status: 0,
+            error_body: format!("websocket request: {e}"),
+            response_headers: Value::Null,
+        })?;
+    let mut request_headers = request_headers_from_value(headers);
+    if let Ok(value) = http::HeaderValue::from_str(&random_uuid_v4()) {
+        request_headers.insert("session-id", value);
+    }
+    if let Ok(value) = http::HeaderValue::from_str(&random_uuid_v4()) {
+        request_headers.insert("thread-id", value);
+    }
+    request.headers_mut().extend(request_headers.drain());
+
+    let connect_future = connect_async_tls_with_config(request, None, false, None);
+    let response = match tokio::time::timeout(WS_CONNECT_TIMEOUT, connect_future).await {
+        Ok(result) => result,
+        Err(_) => {
+            return Err(WebSocketSessionFailure {
+                status: 0,
+                error_body: format!(
+                    "websocket connect timed out after {}s",
+                    WS_CONNECT_TIMEOUT.as_secs()
+                ),
+                response_headers: Value::Null,
+            });
+        }
+    };
+    let (socket, response) = match response {
+        Ok(pair) => pair,
+        Err(e) => {
+            let (status, error_body, response_headers) = websocket_connect_error(e);
+            return Err(WebSocketSessionFailure {
+                status,
+                error_body,
+                response_headers,
+            });
+        }
+    };
+
+    let upgrade_status = response.status().as_u16();
+    let response_headers = ws_headers_json(response.headers());
+    if upgrade_status >= 400 {
+        return Err(WebSocketSessionFailure {
+            status: upgrade_status,
+            error_body: format!("websocket upgrade failed with status {upgrade_status}"),
+            response_headers,
+        });
+    }
+
+    Ok(WebSocketConnectSuccess {
+        socket,
+        upgrade_status,
+        response_headers,
+    })
+}
+
+async fn handle_active_websocket_request(
+    socket: &mut OpenAiWebSocket,
+    cmd: WebSocketCommand,
+    started: WebSocketSessionStarted,
+) -> bool {
+    let response_headers = started.response_headers.clone();
+    let events = cmd.events;
+    if events
+        .send(WebSocketSessionEvent::Started(started))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+
+    if let Err(e) = socket.send(Message::Text(cmd.body.into())).await {
+        let _ = events
+            .send(WebSocketSessionEvent::Failure(WebSocketSessionFailure {
+                status: 200,
+                error_body: format!("websocket send: {e}"),
+                response_headers,
+            }))
+            .await;
+        return false;
+    }
+
+    loop {
+        let message = match tokio::time::timeout(WS_IDLE_TIMEOUT, socket.next()).await {
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(e))) => {
+                let _ = events
+                    .send(WebSocketSessionEvent::Failure(WebSocketSessionFailure {
+                        status: 200,
+                        error_body: format!("websocket stream: {e}"),
+                        response_headers,
+                    }))
+                    .await;
+                return false;
+            }
+            Ok(None) => {
+                let _ = events
+                    .send(WebSocketSessionEvent::Failure(WebSocketSessionFailure {
+                        status: 200,
+                        error_body: "websocket connection closed before terminal response event"
+                            .to_string(),
+                        response_headers,
+                    }))
+                    .await;
+                return false;
+            }
+            Err(_) => {
+                let _ = events
+                    .send(WebSocketSessionEvent::Failure(WebSocketSessionFailure {
+                        status: 200,
+                        error_body: format!(
+                            "websocket idle timeout after {}s",
+                            WS_IDLE_TIMEOUT.as_secs()
+                        ),
+                        response_headers,
+                    }))
+                    .await;
+                return false;
+            }
+        };
+
+        let disposition = websocket_active_message_disposition(&message);
+        if let Message::Ping(payload) = &message {
+            let _ = socket.send(Message::Pong(payload.clone())).await;
+        }
+        if events
+            .send(WebSocketSessionEvent::Message(message))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        match disposition {
+            ActiveMessageDisposition::Continue => {}
+            ActiveMessageDisposition::Complete => return true,
+            ActiveMessageDisposition::CloseConnection => return false,
+        }
+    }
+}
+
+fn websocket_active_message_disposition(message: &Message) -> ActiveMessageDisposition {
+    match message {
+        Message::Close(_) => ActiveMessageDisposition::CloseConnection,
+        Message::Text(text) => websocket_text_message_disposition(text.as_str()),
+        Message::Binary(bytes) => match std::str::from_utf8(bytes.as_ref()) {
+            Ok(text) => websocket_text_message_disposition(text),
+            Err(_) => ActiveMessageDisposition::Continue,
+        },
+        Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+            ActiveMessageDisposition::Continue
+        }
+    }
+}
+
+fn websocket_text_message_disposition(text: &str) -> ActiveMessageDisposition {
+    let Ok(event) = serde_json::from_str::<Value>(text) else {
+        return ActiveMessageDisposition::Continue;
+    };
+    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    if event_type == "error" || event.get("error").is_some() {
+        return ActiveMessageDisposition::CloseConnection;
+    }
+    if websocket_terminal_event(event_type, &event) {
+        return ActiveMessageDisposition::Complete;
+    }
+    ActiveMessageDisposition::Continue
 }
 
 async fn init_stream_accumulator(
@@ -945,6 +1233,81 @@ async fn finalize_stream(
             .await
         }
     }
+}
+
+fn websocket_body_model(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body).ok().and_then(|value| {
+        value
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn websocket_event_response_id(event: &Value) -> Option<String> {
+    event
+        .get("response")
+        .and_then(|response| response.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| event.get("response_id").and_then(Value::as_str))
+        .or_else(|| {
+            event
+                .get("item")
+                .and_then(|item| item.get("response_id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string)
+}
+
+fn websocket_headers_fingerprint(headers: &Value) -> String {
+    let mut pairs: Vec<(String, String)> = headers
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|s| (name.to_ascii_lowercase(), s.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut canonical = String::new();
+    for (name, value) in pairs {
+        canonical.push_str(&name);
+        canonical.push(':');
+        canonical.push_str(&value);
+        canonical.push('\n');
+    }
+    sha256_hex(&canonical)
+}
+
+fn websocket_connection_stats_hash(
+    ws_url: &str,
+    chat_id: &str,
+    model: Option<&str>,
+    headers_hash: &str,
+) -> String {
+    let mut canonical = String::new();
+    canonical.push_str(ws_url);
+    canonical.push('\0');
+    canonical.push_str(chat_id);
+    canonical.push('\0');
+    canonical.push_str(model.unwrap_or(""));
+    canonical.push('\0');
+    canonical.push_str(headers_hash);
+    let hash = sha256_hex(&canonical);
+    format!("ws:{}", &hash[..16])
+}
+
+fn sha256_hex(input: &str) -> String {
+    let digest = Sha256::digest(input.as_bytes());
+    let mut out = String::with_capacity(64);
+    for byte in digest.as_slice() {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn websocket_url(url: &str) -> String {
@@ -1131,7 +1494,11 @@ fn publish_event_payload(payload: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_accumulate_websocket_event, websocket_terminal_event};
+    use super::{
+        ActiveMessageDisposition, WebSocketConnectionKey, should_accumulate_websocket_event,
+        websocket_active_message_disposition, websocket_body_model, websocket_event_response_id,
+        websocket_terminal_event,
+    };
     use serde_json::json;
 
     #[test]
@@ -1158,6 +1525,72 @@ mod tests {
         assert!(websocket_terminal_event(
             "response.updated",
             &json!({ "response": { "status": "completed" } })
+        ));
+    }
+
+    #[test]
+    fn websocket_connection_key_separates_auth_without_leaking_it() {
+        let key_a = WebSocketConnectionKey::new(
+            "wss://api.openai.test/v1/responses",
+            &json!({ "Authorization": "Bearer secret-a", "OpenAI-Beta": "responses_websockets=2026-02-06" }),
+            "chat-a",
+            Some("gpt-5".to_string()),
+        );
+        let key_b = WebSocketConnectionKey::new(
+            "wss://api.openai.test/v1/responses",
+            &json!({ "authorization": "Bearer secret-b", "OpenAI-Beta": "responses_websockets=2026-02-06" }),
+            "chat-a",
+            Some("gpt-5".to_string()),
+        );
+        let key_c = WebSocketConnectionKey::new(
+            "wss://api.openai.test/v1/responses",
+            &json!({ "Authorization": "Bearer secret-a", "OpenAI-Beta": "responses_websockets=2026-02-06" }),
+            "chat-c",
+            Some("gpt-5".to_string()),
+        );
+
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a, key_c);
+        assert_ne!(key_a.headers_hash, key_b.headers_hash);
+        assert_ne!(key_a.stats_hash, key_b.stats_hash);
+        assert_ne!(key_a.stats_hash, key_c.stats_hash);
+        assert!(!key_a.stats_hash.contains("secret-a"));
+        assert!(key_a.stats_hash.starts_with("ws:"));
+    }
+
+    #[test]
+    fn websocket_model_and_response_id_helpers_cover_openai_shapes() {
+        assert_eq!(
+            websocket_body_model(r#"{"type":"response.create","model":"gpt-5"}"#),
+            Some("gpt-5".to_string())
+        );
+        assert_eq!(
+            websocket_event_response_id(&json!({ "response": { "id": "resp_nested" } })),
+            Some("resp_nested".to_string())
+        );
+        assert_eq!(
+            websocket_event_response_id(&json!({ "response_id": "resp_top" })),
+            Some("resp_top".to_string())
+        );
+        assert_eq!(
+            websocket_event_response_id(&json!({ "item": { "response_id": "resp_item" } })),
+            Some("resp_item".to_string())
+        );
+    }
+
+    #[test]
+    fn websocket_active_disposition_keeps_terminal_socket_reusable() {
+        assert!(matches!(
+            websocket_active_message_disposition(&tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.completed","response":{"status":"completed"}}"#.into()
+            )),
+            ActiveMessageDisposition::Complete
+        ));
+        assert!(matches!(
+            websocket_active_message_disposition(&tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"error","error":{"message":"bad"}}"#.into()
+            )),
+            ActiveMessageDisposition::CloseConnection
         ));
     }
 }
