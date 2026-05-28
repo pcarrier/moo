@@ -30,6 +30,33 @@ describe("chat message queueing", () => {
     );
   });
 
+  test("holds follow-up messages while a streamed draft is active", () => {
+    const draftBusy = stateSource.slice(
+      stateSource.indexOf("const chatHasUnendedDraft = (id: string)"),
+      stateSource.indexOf("const chatHasServerRun = (id: string)"),
+    );
+    const inFlight = stateSource.slice(
+      stateSource.indexOf("const chatHasInFlightTurn = (id: string)"),
+      stateSource.indexOf("const chatBusy = (id: string)"),
+    );
+    const draftEnd = stateSource.slice(
+      stateSource.indexOf('if (ev.kind === "draft-end")'),
+      stateSource.indexOf('if (ev.kind === "llm-auth-required")'),
+    );
+
+    expect(draftBusy).toContain("const draft = draftReply();");
+    expect(draftBusy).toContain("draft.chatId === id");
+    expect(draftBusy).toContain("!endedDraftReplyIds.has(draft.draftId)");
+    expect(inFlight).toContain("chatHasUnendedDraft(id)");
+    expect(draftEnd).toContain(
+      "endedDraftReplyIds.set(ev.draftId, Date.now());",
+    );
+    expect(draftEnd).toContain(
+      "pending().some((p) => p.chatId === cur.chatId)",
+    );
+    expect(draftEnd).toContain("drainSoon();");
+  });
+
   test("settles queued visible rows on step-end before draining follow-ups", () => {
     const settleRows = stateSource.slice(
       stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
@@ -47,6 +74,38 @@ describe("chat message queueing", () => {
     expect(
       stepEnd.indexOf("settleRunningTimelineRows(ev.chatId);"),
     ).toBeLessThan(stepEnd.indexOf("drainSoon();"));
+  });
+
+  test("does not release active turns while streamed tool rows are open", () => {
+    const helper = stateSource.slice(
+      stateSource.indexOf("function timelineHasOpenForegroundStepSince("),
+      stateSource.indexOf("function isManualCompactionStep"),
+    );
+    const settleActiveTurn = stateSource.slice(
+      stateSource.indexOf("function timelineRowsSettleActiveTurn("),
+      stateSource.indexOf("function settleRunningTimelineRows"),
+    );
+    const applyRows = stateSource.slice(
+      stateSource.indexOf("function applyTimelineRows("),
+      stateSource.indexOf("function applyOverviewValue"),
+    );
+
+    expect(helper).toContain("items.some(");
+    expect(helper).toContain("Number(item.at) >= since");
+    expect(helper).toContain("!isTerminalStepStatus(item.status)");
+    expect(helper).toContain('item.kind !== "agent:UserInput"');
+    expect(helper).toContain("!isBackgroundedRunTSTimelineItem(item, id)");
+    expect(settleActiveTurn).toContain(
+      "if (timelineHasOpenForegroundStepSince(id, items, startedAt)) return false;",
+    );
+    expect(settleActiveTurn).toContain("return false;");
+    expect(applyRows).toContain(
+      "const hasOpenForegroundStep = timelineHasOpenForegroundStepSince(",
+    );
+    expect(applyRows).toContain("currentDraft.at");
+    expect(applyRows).toContain(
+      'currentDraft.kind !== "compaction" && !hasOpenForegroundStep',
+    );
   });
 
   test("wakes queued messages when refresh proves the active turn is settled", () => {
@@ -101,7 +160,9 @@ describe("chat message queueing", () => {
       stateSource.indexOf("async function refreshTimeline"),
     );
 
-    expect(applyRows).toContain("timelineRowsSettleActiveTurn(id, mergedTimeline)");
+    expect(applyRows).toContain(
+      "timelineRowsSettleActiveTurn(id, mergedTimeline)",
+    );
     expect(applyRows).toContain("releaseSettledChatRuntime(id);");
     expect(release).toContain("clearActiveChatRuntime(id);");
     expect(release).toContain("settleRunningTimelineRows(id);");
@@ -133,9 +194,9 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain(
       "const chatHasInFlightTurn = (id: string) =>",
     );
-    expect(stateSource).toContain(
-      "chatHasServerRun(id) || hasRunningTimelineRowForChat(id)",
-    );
+    expect(stateSource).toContain("chatHasServerRun(id) ||");
+    expect(stateSource).toContain("hasRunningTimelineRowForChat(id) ||");
+    expect(stateSource).toContain("chatHasUnendedDraft(id)");
     expect(stateSource).not.toContain(
       'currentChat()?.status === "agent:Queued"',
     );

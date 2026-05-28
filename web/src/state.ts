@@ -742,10 +742,19 @@ export function createState() {
               item.status === "agent:Cancelled"),
         );
       if (matchingReplyLanded || terminalNonReplyLanded) {
+        const activeStartedAt = Number(activeChatStartedAt().get(id));
+        const hasOpenForegroundStep = timelineHasOpenForegroundStepSince(
+          id,
+          mergedTimeline,
+          Number.isFinite(activeStartedAt) && activeStartedAt > 0
+            ? activeStartedAt
+            : currentDraft.at,
+        );
         endedDraftReplyIds.delete(currentDraft.draftId);
         toolClosedDraftReplyIds.delete(currentDraft.draftId);
         setDraftReply(null);
-        if (currentDraft.kind !== "compaction") releaseSettledChatRuntime(id);
+        if (currentDraft.kind !== "compaction" && !hasOpenForegroundStep)
+          releaseSettledChatRuntime(id);
       }
     }
     if (timelineRowsSettleActiveTurn(id, mergedTimeline))
@@ -1081,13 +1090,21 @@ export function createState() {
         !(item.runts && isRunTSBackgrounded(item.step, id)) &&
         !(item.runjs && isRunTSBackgrounded(item.step, id)),
     );
+  const chatHasUnendedDraft = (id: string) => {
+    const draft = draftReply();
+    return (
+      !!draft && draft.chatId === id && !endedDraftReplyIds.has(draft.draftId)
+    );
+  };
   const chatHasServerRun = (id: string) =>
     setHas(activeChats(), id) ||
     chats().some(
       (chat) => chat.chatId === id && chat.status === "agent:Running",
     );
   const chatHasInFlightTurn = (id: string) =>
-    chatHasServerRun(id) || hasRunningTimelineRowForChat(id);
+    chatHasServerRun(id) ||
+    hasRunningTimelineRowForChat(id) ||
+    chatHasUnendedDraft(id);
   const chatBusy = (id: string) =>
     (chatHasInFlightTurn(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
     setHas(dispatchingChats(), id) ||
@@ -3185,6 +3202,22 @@ export function createState() {
     );
   }
 
+  function timelineHasOpenForegroundStepSince(
+    id: string,
+    items: TimelineItem[],
+    sinceAt?: number | null,
+  ): boolean {
+    const since = Number(sinceAt);
+    return items.some(
+      (item) =>
+        item.type === "step" &&
+        (!Number.isFinite(since) || since <= 0 || Number(item.at) >= since) &&
+        !isTerminalStepStatus(item.status) &&
+        item.kind !== "agent:UserInput" &&
+        !isBackgroundedRunTSTimelineItem(item, id),
+    );
+  }
+
   function isManualCompactionStep(
     item: Extract<TimelineItem, { type: "step" }>,
   ): boolean {
@@ -3201,6 +3234,7 @@ export function createState() {
     if (chatId() !== id) return false;
     const startedAt = Number(activeChatStartedAt().get(id));
     if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+    if (timelineHasOpenForegroundStepSince(id, items, startedAt)) return false;
     const latest = items[items.length - 1];
     return (
       latest?.type === "step" &&
@@ -5680,10 +5714,8 @@ export function createState() {
           content: ev.content ?? previous?.content ?? "",
           reasoningContent: ev.reasoningContent ?? "",
           reasoningStreaming: !toolClosedDraftReplyIds.has(ev.draftId),
-          model:
-            typeof ev.model === "string" ? ev.model : previous?.model,
-          effort:
-            typeof ev.effort === "string" ? ev.effort : previous?.effort,
+          model: typeof ev.model === "string" ? ev.model : previous?.model,
+          effort: typeof ev.effort === "string" ? ev.effort : previous?.effort,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -5728,10 +5760,8 @@ export function createState() {
           reasoningContent:
             ev.reasoningContent ?? previous?.reasoningContent ?? "",
           reasoningStreaming: false,
-          model:
-            typeof ev.model === "string" ? ev.model : previous?.model,
-          effort:
-            typeof ev.effort === "string" ? ev.effort : previous?.effort,
+          model: typeof ev.model === "string" ? ev.model : previous?.model,
+          effort: typeof ev.effort === "string" ? ev.effort : previous?.effort,
           at:
             previous?.draftId === ev.draftId
               ? (previous?.at ?? (Number(ev.at) || Date.now()))
@@ -5745,6 +5775,7 @@ export function createState() {
       if (cur && cur.draftId === ev.draftId) {
         setDraftReply({ ...cur, reasoningStreaming: false });
         endedDraftReplyIds.set(ev.draftId, Date.now());
+        if (pending().some((p) => p.chatId === cur.chatId)) drainSoon();
         window.setTimeout(() => {
           const latest = draftReply();
           if (
