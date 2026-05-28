@@ -123,6 +123,8 @@ describe("llm retry policy", () => {
       errorBody: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }),
     }, 1, policy)).toEqual({ retry: true, reason: "overloaded", delayMs: 10 });
     expect(llmRetryDecision({ ok: false, status: 200, errorBody: "stream: connection reset" }, 1, policy)).toEqual({ retry: true, reason: "stream", delayMs: 10 });
+    expect(llmRetryDecision({ ok: false, status: 200, errorBody: "websocket connection closed before terminal response event" }, 1, policy)).toEqual({ retry: true, reason: "stream", delayMs: 10 });
+    expect(llmRetryDecision({ ok: false, status: 200, errorBody: "websocket stream: protocol reset" }, 1, policy)).toEqual({ retry: true, reason: "stream", delayMs: 10 });
   });
 
   test("does not retry permanent or exhausted failures", () => {
