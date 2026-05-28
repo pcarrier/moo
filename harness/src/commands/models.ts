@@ -310,13 +310,7 @@ export async function chatModelInfo(chatId: string) {
   const efforts = effortLevelsForProvider(effectiveProvider);
   const effortSupported = efforts.length > 0;
   const configuredEffort = effortSupported ? effortAllowedForModel(efforts, await defaultChatEffort()) : null;
-  const defaultEffort =
-    configuredEffort ||
-    ((effectiveProvider.name === "deepseek" ||
-      effectiveProvider.name === "openai") &&
-    effortSupported
-      ? "high"
-      : null);
+  const defaultEffort = configuredEffort || (effectiveProvider.name === "deepseek" && effortSupported ? "high" : null);
   const supportedSelectedEffort = effortAllowedForModel(efforts, selectedEffort);
   const modelOptions = await modelOptionsFor(selectedProvider || effectiveProvider.name, selectedModel);
   const selectedModelId = selectedProvider && selectedModel ? modelOptionId(selectedProvider, selectedModel) : null;
