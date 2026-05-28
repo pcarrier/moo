@@ -724,10 +724,13 @@ export function createState() {
     page: DescribeTimelinePage,
     current: TimelineItem[] = timeline(),
   ): TimelineItem[] {
+    const baseCurrent = withoutLiveTimelineOverlayRows(id, current);
     const mergedTimeline = page.sinceAt
-      ? mergeTimelineUpdateRows(page.items, current)
-      : mergeTimelineRows(page.items, current);
-    setTimeline(mergedTimeline);
+      ? mergeTimelineUpdateRows(page.items, baseCurrent)
+      : mergeTimelineRows(page.items, baseCurrent);
+    pruneLandedLiveTimelineOverlayRows(id, mergedTimeline);
+    const displayedTimeline = applyLiveTimelineOverlayRows(id, mergedTimeline);
+    setTimeline(displayedTimeline);
     rememberServerTimelineWatermark(id, page.items);
     pruneDismissedReplies(id, mergedTimeline);
 
@@ -769,10 +772,10 @@ export function createState() {
           releaseSettledChatRuntime(id);
       }
     }
-    if (timelineRowsSettleActiveTurn(id, mergedTimeline))
+    if (timelineRowsSettleActiveTurn(id, displayedTimeline))
       releaseSettledChatRuntime(id);
 
-    return mergedTimeline;
+    return displayedTimeline;
   }
 
   function applyOverviewValue(id: string, value: DescribeOverviewValue) {
@@ -1399,6 +1402,191 @@ export function createState() {
         );
       }),
     );
+  }
+
+  type LiveTimelineOverlayKind = "tool-call-draft";
+  type ToolCallDraftEvent = Extract<WsEvent, { kind: "tool-call-draft" }>;
+
+  const liveTimelineOverlayByChat = new Map<
+    string,
+    Map<string, { kind: LiveTimelineOverlayKind; item: TimelineItem }>
+  >();
+
+  function liveTimelineOverlayKey(item: TimelineItem): string {
+    return timelineItemKey(item);
+  }
+
+  function liveTimelineOverlayForChat(id: string) {
+    let overlay = liveTimelineOverlayByChat.get(id);
+    if (!overlay) {
+      overlay = new Map();
+      liveTimelineOverlayByChat.set(id, overlay);
+    }
+    return overlay;
+  }
+
+  function rememberLiveTimelineOverlayItem(
+    id: string,
+    kind: LiveTimelineOverlayKind,
+    item: TimelineItem,
+  ) {
+    liveTimelineOverlayForChat(id).set(liveTimelineOverlayKey(item), {
+      kind,
+      item,
+    });
+  }
+
+  function clearLiveTimelineOverlayItem(id: string, key: string) {
+    const overlay = liveTimelineOverlayByChat.get(id);
+    if (!overlay) return;
+    overlay.delete(key);
+    if (overlay.size === 0) liveTimelineOverlayByChat.delete(id);
+  }
+
+  function clearLiveTimelineOverlayStep(id: string, stepId: string) {
+    if (!stepId) return;
+    clearLiveTimelineOverlayItem(id, `step:${stepId}`);
+  }
+
+  function withoutLiveTimelineOverlayRows(
+    id: string,
+    rows: TimelineItem[],
+  ): TimelineItem[] {
+    const overlay = liveTimelineOverlayByChat.get(id);
+    if (!overlay?.size) return rows;
+    return rows.filter((item) => !overlay.has(liveTimelineOverlayKey(item)));
+  }
+
+  function pruneLandedLiveTimelineOverlayRows(
+    id: string,
+    baseRows: TimelineItem[],
+  ) {
+    const overlay = liveTimelineOverlayByChat.get(id);
+    if (!overlay?.size) return;
+    for (const item of baseRows) overlay.delete(liveTimelineOverlayKey(item));
+    if (overlay.size === 0) liveTimelineOverlayByChat.delete(id);
+  }
+
+  function applyLiveTimelineOverlayRows(
+    id: string,
+    baseRows: TimelineItem[],
+  ): TimelineItem[] {
+    const overlay = liveTimelineOverlayByChat.get(id);
+    if (!overlay?.size) return baseRows;
+    const byKey = new Map<string, TimelineItem>();
+    for (const item of baseRows) byKey.set(liveTimelineOverlayKey(item), item);
+    for (const { item } of overlay.values())
+      byKey.set(liveTimelineOverlayKey(item), item);
+    return compactTimelineRows(sortTimelineItems([...byKey.values()]));
+  }
+
+  function mergeToolCallDraftRow(
+    rows: TimelineItem[],
+    ev: ToolCallDraftEvent,
+  ): TimelineItem[] {
+    const stepId = String(ev.stepId);
+    const at = Number(ev.at) || Date.now();
+    const hasArgs = ev.hasArgs === true || typeof ev.args === "string";
+    let streamedArgs: unknown = ev.args ?? "";
+    if (typeof ev.args === "string") {
+      try {
+        streamedArgs = JSON.parse(ev.args);
+      } catch {
+        streamedArgs = ev.args;
+      }
+    }
+    const existingIndex = rows.findIndex(
+      (item) => item.type === "step" && item.step === stepId,
+    );
+    const existing = existingIndex >= 0 ? rows[existingIndex] : undefined;
+    const existingRunts =
+      existing?.type === "step" ? (existing.runts ?? existing.runjs) : null;
+    const runts = {
+      ...(existingRunts ?? {}),
+      label:
+        typeof ev.label === "string" ? ev.label : (existingRunts?.label ?? null),
+      description:
+        typeof ev.description === "string"
+          ? ev.description
+          : (existingRunts?.description ?? null),
+      ...(hasArgs ? { args: streamedArgs } : {}),
+      code: typeof ev.code === "string" ? ev.code : (existingRunts?.code ?? null),
+      backgroundAfterNs:
+        typeof ev.backgroundAfterNs === "number"
+          ? ev.backgroundAfterNs
+          : existingRunts?.backgroundAfterNs,
+    };
+    const model =
+      typeof ev.model === "string"
+        ? ev.model
+        : existing?.type === "step"
+          ? existing.model
+          : undefined;
+    const effort =
+      typeof ev.effort === "string"
+        ? ev.effort
+        : existing?.type === "step"
+          ? existing.effort
+          : undefined;
+    const nextItem = {
+      type: "step",
+      step: stepId,
+      kind: "agent:RunTS",
+      status:
+        existing?.type === "step" && existing.status !== "agent:Queued"
+          ? existing.status
+          : "agent:Queued",
+      at: existing?.type === "step" ? existing.at : at,
+      updatedAt: at,
+      text: existing?.type === "step" ? existing.text : "",
+      runts,
+      ...(existing?.type === "step" && existing.resultHash
+        ? { resultHash: existing.resultHash }
+        : {}),
+      ...(existing?.type === "step" && existing.lazyRuntsResult
+        ? { lazyRuntsResult: existing.lazyRuntsResult }
+        : {}),
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    } as TimelineItem;
+    if (existingIndex >= 0) {
+      const next = rows.slice();
+      next[existingIndex] = nextItem;
+      return next;
+    }
+    return compactTimelineRows(sortTimelineItems([...rows, nextItem]));
+  }
+
+  function rememberToolCallDraftRow(
+    ev: ToolCallDraftEvent,
+    currentRows: TimelineItem[] = [],
+  ): TimelineItem | null {
+    if (!ev.chatId || !ev.stepId) return null;
+    const overlayRows = [
+      ...(liveTimelineOverlayByChat.get(ev.chatId)?.values() ?? []),
+    ].map(({ item }) => item);
+    const rows = currentRows.length
+      ? mergeTimelineRows(overlayRows, currentRows)
+      : overlayRows;
+    const nextRows = mergeToolCallDraftRow(rows, ev);
+    const item = nextRows.find(
+      (row) => row.type === "step" && row.step === String(ev.stepId),
+    );
+    if (!item) return null;
+    rememberLiveTimelineOverlayItem(ev.chatId, "tool-call-draft", item);
+    return item;
+  }
+
+  function updateLiveTimelineOverlayStep(
+    id: string,
+    stepId: string,
+    fn: (item: TimelineItem) => TimelineItem,
+  ) {
+    const overlay = liveTimelineOverlayByChat.get(id);
+    const key = `step:${stepId}`;
+    const entry = overlay?.get(key);
+    if (!entry) return;
+    overlay!.set(key, { ...entry, item: fn(entry.item) });
   }
 
   const [rightSidebarByChat, setRightSidebarByChat] = createSignal<
@@ -5503,126 +5691,53 @@ export function createState() {
     }
 
     if (ev.kind === "runts-step-finished") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid && ev.stepId) {
-        setTimeline((items) =>
-          compactTimelineRows(
-            items.map((item) => {
-              if (item.type !== "step" || item.step !== ev.stepId) return item;
-              const existingRunts = item.runts ?? item.runjs;
-              const runts = existingRunts
-                ? {
-                    ...existingRunts,
-                    error:
-                      typeof ev.error === "string"
-                        ? ev.error
-                        : existingRunts.error,
-                    durationNs:
-                      typeof ev.durationNs === "number"
-                        ? ev.durationNs
-                        : existingRunts.durationNs,
-                  }
-                : item.runts;
-              return {
-                ...item,
-                status: ev.status || (ev.error ? "agent:Failed" : "agent:Done"),
-                resultHash: ev.resultHash || item.resultHash,
-                lazyRuntsResult: !!(ev.resultHash || item.resultHash),
-                runts,
-              } as TimelineItem;
-            }),
-          ),
-        );
-        refreshTimelineIncrementalSoon();
+      if (ev.chatId && ev.stepId) {
+        const patchRuntsFinishedRow = (item: TimelineItem): TimelineItem => {
+          if (item.type !== "step" || item.step !== ev.stepId) return item;
+          const existingRunts = item.runts ?? item.runjs;
+          const runts = existingRunts
+            ? {
+                ...existingRunts,
+                error:
+                  typeof ev.error === "string" ? ev.error : existingRunts.error,
+                durationNs:
+                  typeof ev.durationNs === "number"
+                    ? ev.durationNs
+                    : existingRunts.durationNs,
+              }
+            : item.runts;
+          return {
+            ...item,
+            status: ev.status || (ev.error ? "agent:Failed" : "agent:Done"),
+            resultHash: ev.resultHash || item.resultHash,
+            lazyRuntsResult: !!(ev.resultHash || item.resultHash),
+            runts,
+          } as TimelineItem;
+        };
+        updateLiveTimelineOverlayStep(ev.chatId, ev.stepId, patchRuntsFinishedRow);
+        if (ev.chatId === chatId()) {
+          setTimeline((items) => compactTimelineRows(items.map(patchRuntsFinishedRow)));
+          refreshTimelineIncrementalSoon();
+        }
       }
       return;
     }
 
     if (ev.kind === "tool-call-draft") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid && ev.stepId) {
-        closeDraftReplyThinkingForToolCall(cid);
-        const stepId = String(ev.stepId);
-        const at = Number(ev.at) || Date.now();
-        const hasArgs = ev.hasArgs === true || typeof ev.args === "string";
-        let streamedArgs: unknown = ev.args ?? "";
-        if (typeof ev.args === "string") {
-          try {
-            streamedArgs = JSON.parse(ev.args);
-          } catch {
-            streamedArgs = ev.args;
-          }
-        }
-        setTimeline((items) => {
-          const existingIndex = items.findIndex(
-            (item) => item.type === "step" && item.step === stepId,
+      if (ev.chatId && ev.stepId) {
+        closeDraftReplyThinkingForToolCall(ev.chatId);
+        const currentRows = ev.chatId === chatId() ? timeline() : [];
+        rememberToolCallDraftRow(ev, currentRows);
+        if (ev.chatId === chatId())
+          setTimeline((items) =>
+            applyLiveTimelineOverlayRows(
+              ev.chatId,
+              mergeToolCallDraftRow(
+                withoutLiveTimelineOverlayRows(ev.chatId, items),
+                ev,
+              ),
+            ),
           );
-          const existing =
-            existingIndex >= 0 ? items[existingIndex] : undefined;
-          const existingRunts =
-            existing?.type === "step"
-              ? (existing.runts ?? existing.runjs)
-              : null;
-          const runts = {
-            ...(existingRunts ?? {}),
-            label:
-              typeof ev.label === "string"
-                ? ev.label
-                : (existingRunts?.label ?? null),
-            description:
-              typeof ev.description === "string"
-                ? ev.description
-                : (existingRunts?.description ?? null),
-            ...(hasArgs ? { args: streamedArgs } : {}),
-            code:
-              typeof ev.code === "string"
-                ? ev.code
-                : (existingRunts?.code ?? null),
-            backgroundAfterNs:
-              typeof ev.backgroundAfterNs === "number"
-                ? ev.backgroundAfterNs
-                : existingRunts?.backgroundAfterNs,
-          };
-          const model =
-            typeof ev.model === "string"
-              ? ev.model
-              : existing?.type === "step"
-                ? existing.model
-                : undefined;
-          const effort =
-            typeof ev.effort === "string"
-              ? ev.effort
-              : existing?.type === "step"
-                ? existing.effort
-                : undefined;
-          const nextItem = {
-            type: "step",
-            step: stepId,
-            kind: "agent:RunTS",
-            status:
-              existing?.type === "step" && existing.status !== "agent:Queued"
-                ? existing.status
-                : "agent:Queued",
-            at: existing?.type === "step" ? existing.at : at,
-            updatedAt: at,
-            text: existing?.type === "step" ? existing.text : "",
-            runts,
-            ...(existing?.type === "step" && existing.resultHash
-              ? { resultHash: existing.resultHash }
-              : {}),
-            ...(existing?.type === "step" && existing.lazyRuntsResult
-              ? { lazyRuntsResult: existing.lazyRuntsResult }
-              : {}),
-            ...(model ? { model } : {}),
-            ...(effort ? { effort } : {}),
-          } as TimelineItem;
-          if (existingIndex >= 0) {
-            const next = items.slice();
-            next[existingIndex] = nextItem;
-            return next;
-          }
-          return compactTimelineRows(sortTimelineItems([...items, nextItem]));
-        });
       }
       return;
     }

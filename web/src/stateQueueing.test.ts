@@ -123,7 +123,7 @@ describe("chat message queueing", () => {
     );
 
     expect(applyRows).toContain(
-      "timelineRowsSettleActiveTurn(id, mergedTimeline)",
+      "timelineRowsSettleActiveTurn(id, displayedTimeline)",
     );
     expect(applyRows).toContain("releaseSettledChatRuntime(id);");
     expect(release).toContain("clearActiveChatRuntime(id);");
@@ -161,7 +161,7 @@ describe("chat message queueing", () => {
     );
 
     expect(applyRows).toContain(
-      "timelineRowsSettleActiveTurn(id, mergedTimeline)",
+      "timelineRowsSettleActiveTurn(id, displayedTimeline)",
     );
     expect(applyRows).toContain("releaseSettledChatRuntime(id);");
     expect(release).toContain("clearActiveChatRuntime(id);");

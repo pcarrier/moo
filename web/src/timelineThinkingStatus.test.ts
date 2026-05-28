@@ -297,7 +297,9 @@ describe("timeline thinking status", () => {
       "setActiveDraftReply({ ...cur, reasoningStreaming: false });",
     );
     expect(state).toContain('if (ev.kind === "tool-call-draft")');
-    expect(state).toContain("closeDraftReplyThinkingForToolCall(cid);");
+    expect(state).toContain("closeDraftReplyThinkingForToolCall(ev.chatId);");
+    expect(state).toContain("const liveTimelineOverlayByChat = new Map<");
+    expect(state).toContain("rememberToolCallDraftRow(ev, currentRows);");
     expect(state).toContain(
       "reasoningStreaming: !toolClosedDraftReplyIds.has(ev.draftId)",
     );
