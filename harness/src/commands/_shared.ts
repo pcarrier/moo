@@ -133,6 +133,7 @@ export type StepDriverInput = {
   provider?: ProviderInput;
   messages?: LlmMessageInput[];
   forceCompact?: boolean;
+  compactionTrigger?: "automatic" | "manual" | string;
   toolCalls?: ToolCallInput[];
   toolCall?: ToolCallInput | null;
   usedModel?: string | null;
@@ -171,6 +172,7 @@ export type LlmResultInput = {
   requestAuthMode?: string | null;
   availableTokens?: number | string;
   compactionsInARow?: number | string;
+  compactionTrigger?: "automatic" | "manual" | string;
 };
 
 export type StepCommandInput = StepReferenceInput & UserStepInput & StepDriverInput & LlmResultInput & {

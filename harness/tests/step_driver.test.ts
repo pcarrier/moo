@@ -25,13 +25,15 @@ describe("step driver compaction", () => {
     expect(next.provider).toEqual({ name: "openai" });
   });
 
-  test("manual compaction success stops after the compaction row", () => {
+  test("manual compaction routes through driver LLM transport", () => {
     const source = readFileSync(new URL("../src/commands/step.ts", import.meta.url), "utf8");
+    const driver = readFileSync(new URL("../src/driver/step.ts", import.meta.url), "utf8");
 
-    expect(source).toContain('if (result === "compacted")');
-    expect(source).toContain('return { ok: true, value: { kind: "done" } };');
-    expect(source).not.toContain('return { ok: true, value: { kind: "loop", provider, mode: "resume" } };');
-    expect(source).not.toContain("compacted older turns into a summary");
+    expect(source).not.toContain("runCompaction(chatId, provider");
+    expect(source).toContain('value: { kind: "loop", provider, mode: "compact", compactionTrigger: "manual" }');
+    expect(source).toContain('purpose: "compact"');
+    expect(source).toContain('...request,');
+    expect(driver).toContain('transport: p.transport');
   });
 
   test("manual compaction empty result does not persist a status reply", () => {
@@ -41,8 +43,20 @@ describe("step driver compaction", () => {
     );
 
     expect(source).not.toContain("nothing to compact yet");
-    expect(source).toContain('if (result === "failed")');
-    expect(source).toContain('"compaction failed; see the error above"');
+    expect(source).toContain("if (!hasCompactionTranscript(compactionMessages))");
+    expect(source).not.toContain('"compaction failed; see the error above"');
+  });
+
+  test("manual compaction trigger survives LLM result handling", () => {
+    const source = readFileSync(new URL("../src/commands/step.ts", import.meta.url), "utf8");
+    const driver = readFileSync(new URL("../src/driver/step.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('input.compactionTrigger === "manual" ? "manual" : "automatic"');
+    expect(source).toContain('compactionThroughAt(compactionTrigger, lastUserAt, now)');
+    expect(source).toContain('["agent:trigger", compactionTriggerTerm]');
+    expect(source).toContain('return compactionTrigger === "manual"');
+    expect(driver).toContain('compactionTrigger: s.mode === "compact" ? "manual" : undefined');
+    expect(driver).toContain('compactionTrigger: optionalCompactionTrigger(p.compactionTrigger ?? state.compactionTrigger)');
   });
 
   test("manual compaction covers the current transcript", () => {

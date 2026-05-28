@@ -51,7 +51,7 @@ import {
   compactionThroughAt,
   compactionRequestTokenLimit,
   fitCompactionSummaryMessages,
-  runCompaction,
+  hasCompactionTranscript,
   estimateCompactionSummaryTokens,
   finishRunTSStep,
   TOOLS,
@@ -920,29 +920,21 @@ export async function compactPreludeCommand(input: Input) {
     return { ok: true, value: { kind: "done" } };
   }
 
-  await setChatOngoing(chatId, true);
-  const draftId = await moo.id.new({ prefix: "draft" });
-  await traceMark("compaction.draft.created", {
-    chatId,
-    draftId,
-    trigger: "manual",
-  });
-  const result = await runCompaction(chatId, provider, {
-    trigger: "manual",
-    draftId,
-  });
-  moo.events.publish({ payload: { kind: "draft-end", chatId, draftId } });
-  if (result === "compacted") {
+  const compactionMessages = await traceSpan(
+    "compaction.build_messages",
+    { chatId, trigger: "manual", source: "prelude" },
+    () => buildCompactionMessages(chatId),
+  );
+  if (!hasCompactionTranscript(compactionMessages)) {
     await setChatOngoing(chatId, false);
-    moo.events.publish({ payload: { kind: "compaction-end", chatId } });
     return { ok: true, value: { kind: "done" } };
   }
 
-  if (result === "failed") {
-    await reply(chatId, "compaction failed; see the error above");
-  }
-  await setChatOngoing(chatId, false);
-  return { ok: true, value: { kind: "done" } };
+  await setChatOngoing(chatId, true);
+  return {
+    ok: true,
+    value: { kind: "loop", provider, mode: "compact", compactionTrigger: "manual" },
+  };
 }
 
 export async function stepPreludeCommand(input: Input) {
@@ -1636,6 +1628,9 @@ export async function stepPrepareCommand(input: Input) {
   let messages: LlmMessage[];
   let estimatedPromptTokens = 0;
   let budget = await contextBudget(provider);
+  const compactionTrigger =
+    input.compactionTrigger === "manual" ? "manual" : "automatic";
+  const forceCompact = input.forceCompact === true || compactionTrigger === "manual";
   if (passedMessages == null) {
     messages = await traceSpan("llm.build_messages", { chatId }, () =>
       buildLLMMessages(chatId),
@@ -1700,7 +1695,6 @@ export async function stepPrepareCommand(input: Input) {
       availableTokens,
       compactionsInARow: previousConsecutiveCompactions,
     });
-    const forceCompact = input.forceCompact === true;
     const overCompactionLimit =
       previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS;
     const shouldCompact =
@@ -1718,6 +1712,7 @@ export async function stepPrepareCommand(input: Input) {
       availableTokens,
       compactionsInARow: previousConsecutiveCompactions,
       forceCompact,
+      compactionTrigger,
       overCompactionLimit,
       shouldCompact,
     });
@@ -1734,6 +1729,7 @@ export async function stepPrepareCommand(input: Input) {
         availableTokens,
         compactionsInARow: previousConsecutiveCompactions,
         forceCompact,
+        compactionTrigger,
       });
       await reply(
         chatId,
@@ -1758,6 +1754,7 @@ export async function stepPrepareCommand(input: Input) {
         compactionsInARow: previousConsecutiveCompactions,
         nextCompactionsInARow: previousConsecutiveCompactions + 1,
         forceCompact,
+        compactionTrigger,
       });
       const nextConsecutiveCompactions = previousConsecutiveCompactions + 1;
       await announceCompactionAvailableTokens(chatId, {
@@ -1773,6 +1770,10 @@ export async function stepPrepareCommand(input: Input) {
         { chatId },
         () => buildCompactionMessages(chatId),
       );
+      if (!hasCompactionTranscript(compactionMessages)) {
+        await setChatOngoing(chatId, false);
+        return { ok: true, value: { kind: "done" } };
+      }
       moo.events.publish({ payload: { kind: "compaction-start", chatId } });
       const rawSummaryMessages =
         buildCompactionSummaryPromptMessages(compactionMessages);
@@ -1787,7 +1788,7 @@ export async function stepPrepareCommand(input: Input) {
       await traceMark("compaction.draft.created", {
         chatId,
         draftId,
-        trigger: "automatic",
+        trigger: compactionTrigger,
         forceCompact,
       });
       const request = buildStreamingLLMRequest(
@@ -1810,6 +1811,7 @@ export async function stepPrepareCommand(input: Input) {
         tokenThreshold: threshold,
         availableTokens,
         compactionsInARow: nextConsecutiveCompactions,
+        compactionTrigger,
         truncatedForRequest:
           summaryRequestPromptTokens < estimateTokens(rawSummaryMessages),
         ...messagesForTrace(summaryMessages, null),
@@ -1834,6 +1836,8 @@ export async function stepPrepareCommand(input: Input) {
           requestPromptTokens: summaryRequestPromptTokens,
           requestTokenLimit,
           requestProvider: compactionProvider.name,
+          compactionTrigger,
+          forceCompact,
           streamEvents: llmStreamEventOptions(
             chatId,
             draftId,
@@ -2083,6 +2087,10 @@ export async function stepHandleLlmCommand(input: Input) {
   }
 
   if (purpose === "compact") {
+    const compactionTrigger =
+      input.compactionTrigger === "manual" ? "manual" : "automatic";
+    const compactionTriggerTerm =
+      compactionTrigger === "manual" ? "agent:Manual" : "agent:Automatic";
     const compactionAvailableTokens = Number(input.availableTokens);
     const compactionsInARow = Math.max(
       1,
@@ -2108,7 +2116,7 @@ export async function stepHandleLlmCommand(input: Input) {
         hint,
       });
       await recordCompactionFailure(chatId, reason, {
-        trigger: "automatic",
+        trigger: compactionTrigger,
         promptTokens: Number(input.estimatedPromptTokens) || null,
         tokenBudget: Number(input.tokenBudget) || null,
         tokenThreshold: Number(input.tokenThreshold) || null,
@@ -2148,7 +2156,7 @@ export async function stepHandleLlmCommand(input: Input) {
         chatId,
         "provider returned an empty summary",
         {
-          trigger: "automatic",
+          trigger: compactionTrigger,
           promptTokens: Number(input.estimatedPromptTokens) || null,
           tokenBudget: Number(input.tokenBudget) || null,
           tokenThreshold: Number(input.tokenThreshold) || null,
@@ -2166,7 +2174,7 @@ export async function stepHandleLlmCommand(input: Input) {
       return { ok: true, value: { kind: "done" } };
     }
     const compactionTracking = {
-      trigger: "automatic",
+      trigger: compactionTrigger,
       promptTokens: Number(input.estimatedPromptTokens) || null,
       tokenBudget: Number(input.tokenBudget) || null,
       tokenThreshold: Number(input.tokenThreshold) || null,
@@ -2181,7 +2189,7 @@ export async function stepHandleLlmCommand(input: Input) {
     };
     const now = await moo.time.nowMs({});
     const lastUserAt = await latestUserInputAt(chatId);
-    const throughAt = compactionThroughAt("automatic", lastUserAt, now);
+    const throughAt = compactionThroughAt(compactionTrigger, lastUserAt, now);
     await traceMark("compaction.summary.received", {
       chatId,
       chars: summary.length,
@@ -2218,7 +2226,7 @@ export async function stepHandleLlmCommand(input: Input) {
       payloadHash: patchedCompactionHash,
       extras: [
         ...stepLlmExtras(usedModel, input.requestEffort),
-        ["agent:trigger", "agent:Automatic"],
+        ["agent:trigger", compactionTriggerTerm],
         ...(compactionTracking.promptTokens != null
           ? [
               [
@@ -2284,8 +2292,11 @@ export async function stepHandleLlmCommand(input: Input) {
       budget,
       threshold,
     });
+    if (compactionTrigger === "manual") await setChatOngoing(chatId, false);
     moo.events.publish({ payload: { kind: "compaction-end", chatId } });
-    return { ok: true, value: { kind: "iterate", messages: null } };
+    return compactionTrigger === "manual"
+      ? { ok: true, value: { kind: "done" } }
+      : { ok: true, value: { kind: "iterate", messages: null } };
   }
 
   // purpose === "step"

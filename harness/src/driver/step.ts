@@ -41,6 +41,7 @@ export interface InflightState {
   transport?: string;
   countThoughtDuration?: boolean;
   forceCompact?: boolean;
+  compactionTrigger?: "automatic" | "manual";
   [key: string]: unknown;
 }
 
@@ -65,6 +66,7 @@ export interface LlmHandlingState {
   transport?: string;
   thoughtDurationNs: number;
   forceCompact?: boolean;
+  compactionTrigger?: "automatic" | "manual";
   [key: string]: unknown;
 }
 
@@ -94,6 +96,7 @@ export type StepDriverState = Record<string, unknown> & {
   retryDelayMs?: number;
   thoughtDurationNs?: number;
   forceCompact?: boolean;
+  compactionTrigger?: "automatic" | "manual";
   inflight?: InflightState;
 };
 
@@ -133,6 +136,7 @@ export interface PrepareInput {
   attempt?: number;
   retryReason?: string;
   forceCompact?: boolean;
+  compactionTrigger?: "automatic" | "manual";
 }
 
 export type StepDriverEffect =
@@ -146,6 +150,10 @@ export type StepDriverEffect =
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function optionalCompactionTrigger(value: unknown): "automatic" | "manual" | undefined {
+  return value === "automatic" || value === "manual" ? value : undefined;
 }
 
 function optionalNumber(value: unknown): number | undefined {
@@ -294,6 +302,7 @@ export function reduceStepDriverState(
           transport: optionalString(inflight.transport),
           thoughtDurationNs,
           forceCompact: inflight.forceCompact === true,
+          compactionTrigger: optionalCompactionTrigger(inflight.compactionTrigger),
         } satisfies LlmHandlingState,
         phase: "handleLlm" as const,
       };
@@ -347,6 +356,7 @@ export function reduceStepDriverState(
         retryReason: optionalString(handled.retryReason),
         retryDelayMs: optionalNumber(handled.retryDelayMs),
         forceCompact: handled.forceCompact === true,
+        compactionTrigger: optionalCompactionTrigger(handled.compactionTrigger),
         inflight: undefined,
         phase: "prepare" as const,
       };
@@ -367,6 +377,7 @@ export function reduceStepDriverState(
         retryReason: undefined,
         retryDelayMs: undefined,
         forceCompact: false,
+        compactionTrigger: s.mode === "compact" ? "manual" : undefined,
         inflight: undefined,
         phase: "prepare" as const,
       };
@@ -399,7 +410,8 @@ export function reduceStepDriverState(
           requestAuthMode: optionalString(p.requestAuthMode) ?? state.provider?.authMode,
           transport: optionalString(p.transport),
           countThoughtDuration: !!p.countThoughtDuration,
-          forceCompact: state.forceCompact === true,
+          forceCompact: p.forceCompact === true || state.forceCompact === true,
+          compactionTrigger: optionalCompactionTrigger(p.compactionTrigger ?? state.compactionTrigger),
           attempt: Number(p.attempt ?? state.retryAttempt ?? 1) || 1,
         },
       };
@@ -426,6 +438,7 @@ export function reduceStepDriverState(
           tokenThreshold: p.tokenThreshold,
           availableTokens: p.availableTokens,
           compactionsInARow: p.compactionsInARow,
+          compactionTrigger: optionalCompactionTrigger(p.compactionTrigger ?? state.compactionTrigger),
         },
       };
     }
@@ -476,6 +489,7 @@ export function planStepDriverEffects(state: StepDriverState): StepDriverEffect[
           attempt: state.retryAttempt ?? undefined,
           retryReason: state.retryReason ?? undefined,
           forceCompact: state.forceCompact === true,
+          compactionTrigger: optionalCompactionTrigger(state.compactionTrigger),
         } satisfies PrepareInput,
       }];
     case "return":

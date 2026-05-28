@@ -2340,7 +2340,7 @@ function compactionProviderErrorBodyForRecord(parsed: any, raw: unknown): any {
   return raw;
 }
 
-function hasCompactionTranscript(messages: any[]): boolean {
+export function hasCompactionTranscript(messages: any[]): boolean {
   return messages.some((m) => {
     if (m?.role === "system") return false;
     const text = contentText(m?.content).trim();
