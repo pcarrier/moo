@@ -743,6 +743,7 @@ export function createState() {
         );
       if (matchingReplyLanded || terminalNonReplyLanded) {
         endedDraftReplyIds.delete(currentDraft.draftId);
+        toolClosedDraftReplyIds.delete(currentDraft.draftId);
         setDraftReply(null);
         if (currentDraft.kind !== "compaction") releaseSettledChatRuntime(id);
       }
@@ -1245,9 +1246,18 @@ export function createState() {
     at: number;
   } | null>(null);
   const endedDraftReplyIds = new Map<string, number>();
+  const toolClosedDraftReplyIds = new Set<string>();
   const [dismissedReplies, setDismissedReplies] = createSignal<
     DismissedReply[]
   >([]);
+
+  function closeDraftReplyThinkingForToolCall(id: string) {
+    const cur = draftReply();
+    if (!cur || cur.chatId !== id || cur.kind === "compaction") return;
+    toolClosedDraftReplyIds.add(cur.draftId);
+    if (cur.reasoningStreaming === false) return;
+    setDraftReply({ ...cur, reasoningStreaming: false });
+  }
 
   function dismissedReplyId(chatId: string, draftId: string): string {
     return `dismissed-${chatId}-${draftId}`;
@@ -5453,6 +5463,7 @@ export function createState() {
     if (ev.kind === "tool-call-draft") {
       const cid = chatId();
       if (cid && ev.chatId === cid && ev.stepId) {
+        closeDraftReplyThinkingForToolCall(cid);
         const stepId = String(ev.stepId);
         const at = Number(ev.at) || Date.now();
         const hasArgs = ev.hasArgs === true || typeof ev.args === "string";
@@ -5653,7 +5664,10 @@ export function createState() {
             ev.reasoningContent ?? "",
           );
           const cur = draftReply();
-          if (cur?.draftId === ev.draftId) setDraftReply(null);
+          if (cur?.draftId === ev.draftId) {
+            toolClosedDraftReplyIds.delete(ev.draftId);
+            setDraftReply(null);
+          }
           return;
         }
         endedDraftReplyIds.delete(ev.draftId);
@@ -5665,7 +5679,7 @@ export function createState() {
           draftId: ev.draftId,
           content: ev.content ?? previous?.content ?? "",
           reasoningContent: ev.reasoningContent ?? "",
-          reasoningStreaming: true,
+          reasoningStreaming: !toolClosedDraftReplyIds.has(ev.draftId),
           model:
             typeof ev.model === "string" ? ev.model : previous?.model,
           effort:
@@ -5697,7 +5711,10 @@ export function createState() {
             ev.reasoningContent ?? "",
           );
           const cur = draftReply();
-          if (cur?.draftId === ev.draftId) setDraftReply(null);
+          if (cur?.draftId === ev.draftId) {
+            toolClosedDraftReplyIds.delete(ev.draftId);
+            setDraftReply(null);
+          }
           return;
         }
         endedDraftReplyIds.delete(ev.draftId);
@@ -5735,6 +5752,7 @@ export function createState() {
             endedDraftReplyIds.has(ev.draftId)
           ) {
             endedDraftReplyIds.delete(ev.draftId);
+            toolClosedDraftReplyIds.delete(ev.draftId);
             setDraftReply(null);
           }
         }, 15000);
@@ -5759,6 +5777,7 @@ export function createState() {
         const cur = draftReply();
         if (cur?.kind === "compaction" && cur.chatId === ev.chatId) {
           endedDraftReplyIds.delete(cur.draftId);
+          toolClosedDraftReplyIds.delete(cur.draftId);
           setDraftReply(null);
         }
         if (ev.chatId === chatId()) refreshTimelineIncrementalSoon();

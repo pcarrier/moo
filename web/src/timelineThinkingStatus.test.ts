@@ -276,12 +276,30 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("bag.draftReply()?.reasoningContent");
     expect(state).toContain('if (ev.kind === "reasoning-draft")');
     expect(state).toContain("reasoningContent: ev.reasoningContent");
-    expect(state).toContain("reasoningStreaming: true");
+    expect(state).toContain(
+      "reasoningStreaming: !toolClosedDraftReplyIds.has(ev.draftId)",
+    );
     expect(state).toContain("reasoningStreaming: false");
     expect(state).toContain('typeof ev.model === "string" ? ev.model : previous?.model');
     expect(state).toContain('typeof ev.effort === "string" ? ev.effort : previous?.effort');
     expect(state).toContain(
       "setDraftReply({ ...cur, reasoningStreaming: false });",
+    );
+  });
+
+  test("closes streamed thinking when a tool call starts", () => {
+    expect(state).toContain("const toolClosedDraftReplyIds = new Set<string>();");
+    expect(state).toContain(
+      "function closeDraftReplyThinkingForToolCall(id: string)",
+    );
+    expect(state).toContain("toolClosedDraftReplyIds.add(cur.draftId);");
+    expect(state).toContain(
+      "setDraftReply({ ...cur, reasoningStreaming: false });",
+    );
+    expect(state).toContain('if (ev.kind === "tool-call-draft")');
+    expect(state).toContain("closeDraftReplyThinkingForToolCall(cid);");
+    expect(state).toContain(
+      "reasoningStreaming: !toolClosedDraftReplyIds.has(ev.draftId)",
     );
   });
 
