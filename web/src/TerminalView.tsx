@@ -25,6 +25,11 @@ import { getPsk } from "./auth";
 import initBlitWasm from "./blitWasm";
 import { hasOpenModalDialog } from "./modal";
 import { installPointerResize } from "./resizeDrag";
+import {
+  loadTerminalUiState,
+  saveTerminalUiState,
+  type TerminalUiState,
+} from "./terminalState";
 
 const CONNECTION_ID = "local";
 const PASSPHRASE = "moo-blit-local";
@@ -199,6 +204,7 @@ export function ChatTerminals(props: {
   worktreePath?: string | null;
   notify?: (source: string, message: string, details?: string) => void;
 }) {
+  const initialUiState = loadTerminalUiState(props.chatId);
   const [workspace] = createSignal(
     new BlitWorkspace({
       wasm: initBlitWasm(),
@@ -216,10 +222,12 @@ export function ChatTerminals(props: {
   );
   const snapshot = useWorkspaceSnapshot(workspace());
   const [selectedSessionId, setSelectedSessionId] =
-    createSignal<SessionId | null>(null);
+    createSignal<SessionId | null>(
+      initialUiState.selectedSessionId as SessionId | null,
+    );
   const [terminalSurface, setTerminalSurface] =
     createSignal<BlitTerminalSurface | null>(null);
-  const [open, setOpen] = createSignal(false);
+  const [open, setOpen] = createSignal(initialUiState.open);
   const [error, setError] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
   const [queuedCreateChatId, setQueuedCreateChatId] = createSignal<
@@ -292,20 +300,65 @@ export function ChatTerminals(props: {
     if (surface) focusTerminalSoon();
   };
 
-  const selectSession = (sessionId: SessionId | null) => {
-    setSelectedSessionId(sessionId);
-    if (sessionId) {
-      setOpen(true);
-      focusTerminalSoon();
+  const applyUiState = (
+    state: TerminalUiState,
+    options: { persist?: boolean; chatId?: string | null } = {},
+  ) => {
+    const selected = state.selectedSessionId as SessionId | null;
+    setSelectedSessionId(selected);
+    setOpen(state.open);
+    if (options.persist !== false) {
+      saveTerminalUiState(options.chatId ?? props.chatId, state);
     }
+    if (state.open && selected) focusTerminalSoon();
   };
+
+  const currentUiState = (): TerminalUiState => ({
+    open: open(),
+    selectedSessionId: selectedSessionId(),
+  });
+
+  const setOpenForChat = (nextOpen: boolean) => {
+    applyUiState({ ...currentUiState(), open: nextOpen });
+  };
+
+  const selectSession = (
+    sessionId: SessionId | null,
+    options: { open?: boolean; persist?: boolean } = {},
+  ) => {
+    const nextOpen = options.open ?? (sessionId ? true : open());
+    applyUiState(
+      { open: nextOpen, selectedSessionId: sessionId },
+      { persist: options.persist },
+    );
+  };
+
+  createEffect(
+    on(
+      () => props.chatId,
+      (chatId, previousChatId) => {
+        if (previousChatId) saveTerminalUiState(previousChatId, currentUiState());
+        applyUiState(loadTerminalUiState(chatId), {
+          chatId,
+          persist: false,
+        });
+      },
+      { defer: true },
+    ),
+  );
+
+  createEffect(
+    on([open, selectedSessionId], () => {
+      saveTerminalUiState(props.chatId, currentUiState());
+    }),
+  );
 
   const toggleSession = (sessionId: SessionId) => {
     if (selectedSessionId() === sessionId) {
-      setOpen(!open());
+      setOpenForChat(!open());
       return;
     }
-    selectSession(sessionId);
+    selectSession(sessionId, { open: true });
   };
 
   const setTerminalRows = (rows: number) => {
@@ -350,10 +403,10 @@ export function ChatTerminals(props: {
         tag: encodeTag(chatId),
         cwd,
       });
-      selectSession(session.id);
+      selectSession(session.id, { open: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setOpen(false);
+      setOpenForChat(false);
       reportTerminalError(message);
     } finally {
       setCreating(false);
@@ -363,7 +416,7 @@ export function ChatTerminals(props: {
   const createShell = async () => {
     const chatId = props.chatId;
     if (!chatId || creating()) return;
-    setOpen(true);
+    setOpenForChat(true);
     setError(null);
     if (!terminalReady()) {
       setCreating(true);
@@ -428,14 +481,13 @@ export function ChatTerminals(props: {
     try {
       await workspace().closeSession(sessionId);
       if (selectedSessionId() === sessionId) {
-        selectSession(next?.id ?? null);
-        if (!next) setOpen(false);
+        selectSession(next?.id ?? null, { open: next ? open() : false });
       }
       if (next) focusTerminalSoon();
       if (!next && options?.createIfLast) void createShell();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setOpen(false);
+      setOpenForChat(false);
       reportTerminalError(message);
     }
   };
@@ -460,7 +512,7 @@ export function ChatTerminals(props: {
     setQueuedCreateChatId(null);
     setCreating(false);
     const message = connection()?.error || `terminal connection ${status}`;
-    setOpen(false);
+    setOpenForChat(false);
     setError(null);
     reportTerminalError(message);
   });
@@ -471,9 +523,13 @@ export function ChatTerminals(props: {
     if (selected && sessions.some((session) => session.id === selected)) {
       return;
     }
+    if (!terminalReady()) return;
     const next = sessions[0] ?? null;
-    selectSession(next?.id ?? null);
-    if (!next && terminalReady() && !creating() && !error()) setOpen(false);
+    if (next) {
+      selectSession(next.id, { open: open() });
+    } else if (!creating() && !error()) {
+      selectSession(null, { open: false });
+    }
   });
 
   createEffect(

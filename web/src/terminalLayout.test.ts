@@ -51,4 +51,17 @@ describe("terminal layout", () => {
       "border-inline-start: 1px solid var(--line);",
     );
   });
+
+  test("persists open and selected terminal per chat", () => {
+    const terminal = readFileSync(
+      new URL("./TerminalView.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(terminal).toContain("loadTerminalUiState(props.chatId)");
+    expect(terminal).toContain("saveTerminalUiState(previousChatId");
+    expect(terminal).toContain("saveTerminalUiState(props.chatId");
+    expect(terminal.indexOf("previousChatId")).toBeLessThan(
+      terminal.indexOf("loadTerminalUiState(chatId)"),
+    );
+  });
 });
