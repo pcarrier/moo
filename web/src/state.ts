@@ -155,6 +155,18 @@ export type DismissedReply = {
   at: number;
 };
 
+type DraftReply = {
+  kind?: "reply" | "compaction";
+  chatId: string;
+  draftId: string;
+  content: string;
+  reasoningContent?: string;
+  reasoningStreaming?: boolean;
+  model?: string;
+  effort?: string;
+  at: number;
+};
+
 export function createState() {
   const chatModelsSingle = createSingleFlight(
     (chatId: ChatId) => api("chat-models", { chatId }),
@@ -752,7 +764,7 @@ export function createState() {
         );
         endedDraftReplyIds.delete(currentDraft.draftId);
         toolClosedDraftReplyIds.delete(currentDraft.draftId);
-        setDraftReply(null);
+        clearDraftReply(currentDraft.chatId, currentDraft.draftId);
         if (currentDraft.kind !== "compaction" && !hasOpenForegroundStep)
           releaseSettledChatRuntime(id);
       }
@@ -1246,34 +1258,66 @@ export function createState() {
   let startupRun = 0;
 
   const { toasts, dismissToast, notify, reportError } = createToastSystem();
-  // Streaming reply buffer keyed by the current chat. Cleared by:
+  // Streaming reply buffer for the visible chat, plus a per-chat cache for
+  // active streams that continue while the user is viewing another chat.
+  // Cleared by:
   // - draft-end events from the agent
-  // - new chat selection
   // - stop/interrupt, after the partial content is moved to dismissedReplies
-  // - the real Reply step landing (caller can clear via setDraftReply)
-  const [draftReply, setDraftReply] = createSignal<{
-    kind?: "reply" | "compaction";
-    chatId: string;
-    draftId: string;
-    content: string;
-    reasoningContent?: string;
-    reasoningStreaming?: boolean;
-    model?: string;
-    effort?: string;
-    at: number;
-  } | null>(null);
+  // - the real Reply step landing (caller can clear via clearDraftReply)
+  const [draftReply, setDraftReply] = createSignal<DraftReply | null>(null);
+  const draftRepliesByChat = new Map<string, DraftReply>();
   const endedDraftReplyIds = new Map<string, number>();
   const toolClosedDraftReplyIds = new Set<string>();
   const [dismissedReplies, setDismissedReplies] = createSignal<
     DismissedReply[]
   >([]);
 
+  function setActiveDraftReply(next: DraftReply) {
+    draftRepliesByChat.set(next.chatId, next);
+    if (chatId() === next.chatId) setDraftReply(next);
+  }
+
+  function clearDraftReply(
+    chatIdToClear?: string | null,
+    draftId?: string | null,
+  ) {
+    const current = untrack(draftReply);
+    const targetChatId = chatIdToClear ?? current?.chatId ?? null;
+    if (targetChatId) {
+      const cached = draftRepliesByChat.get(targetChatId);
+      if (!draftId || cached?.draftId === draftId) {
+        draftRepliesByChat.delete(targetChatId);
+      }
+    }
+    const latest = untrack(draftReply);
+    if (
+      latest &&
+      (!targetChatId || latest.chatId === targetChatId) &&
+      (!draftId || latest.draftId === draftId)
+    ) {
+      setDraftReply(null);
+    }
+  }
+
+  function restoreDraftReplyForChat(id: string) {
+    const draft = draftRepliesByChat.get(id);
+    setDraftReply(draft ?? null);
+  }
+
+  function cachedDraftReplyForEnd(chatId: string | undefined, draftId: string) {
+    if (chatId) return draftRepliesByChat.get(chatId) ?? null;
+    for (const draft of draftRepliesByChat.values()) {
+      if (draft.draftId === draftId) return draft;
+    }
+    return null;
+  }
+
   function closeDraftReplyThinkingForToolCall(id: string) {
-    const cur = draftReply();
-    if (!cur || cur.chatId !== id || cur.kind === "compaction") return;
+    const cur = draftRepliesByChat.get(id);
+    if (!cur || cur.kind === "compaction") return;
     toolClosedDraftReplyIds.add(cur.draftId);
     if (cur.reasoningStreaming === false) return;
-    setDraftReply({ ...cur, reasoningStreaming: false });
+    setActiveDraftReply({ ...cur, reasoningStreaming: false });
   }
 
   function dismissedReplyId(chatId: string, draftId: string): string {
@@ -3649,7 +3693,7 @@ export function createState() {
       setChatId(resolved.chatId);
       showTokensForChat(resolved.chatId);
       showTodosForChat(resolved.chatId);
-      setDraftReply(null);
+      restoreDraftReplyForChat(resolved.chatId);
       forgetServerTimelineWatermark(resolved.chatId);
       const summary = chats().find((c) => c.chatId === resolved.chatId);
       const restored = restoreCachedChat(resolved.chatId, summary, {
@@ -3699,7 +3743,7 @@ export function createState() {
     setChatId(id);
     showTokensForChat(id);
     showTodosForChat(id);
-    setDraftReply(null);
+    restoreDraftReplyForChat(id);
     forgetServerTimelineWatermark(id);
     // A sidebar chat click should always return to the chat itself, not carry
     // over an app/dashboard query such as ?ui=apps-dashboards from the
@@ -3942,7 +3986,7 @@ export function createState() {
       setChatId(requestedChatId);
       showTokensForChat(requestedChatId);
       showTodosForChat(requestedChatId);
-      setDraftReply(null);
+      clearDraftReply(requestedChatId);
       setTimeline([]);
       setTrail([]);
       setTimelineLimit(INITIAL_TIMELINE_LIMIT);
@@ -4275,7 +4319,7 @@ export function createState() {
     if (opts.clearChatId) setChatId(null);
     showTokensForChat(null);
     showTodosForChat(null);
-    setDraftReply(null);
+    clearDraftReply();
     setTimeline([]);
     setTrail([]);
     setTimelineLimit(INITIAL_TIMELINE_LIMIT);
@@ -5071,7 +5115,7 @@ export function createState() {
     else addToSet(setInterruptedChats, interruptedChats, id);
     updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
     dismissCurrentDraftReply(id);
-    setDraftReply(null);
+    clearDraftReply(id);
     if (options.offerResume) setResumeOfferRequest((n) => n + 1);
     // Keep queued follow-ups paused until the interrupt RPC reaches Rust.
     // Draining earlier can start a fresh turn that the delayed interrupt then
@@ -5662,12 +5706,12 @@ export function createState() {
       return;
     }
     if (ev.kind === "compaction-draft") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid) {
+      const cid = ev.chatId;
+      if (cid) {
         addToSet(setCompactingChats, compactingChats, cid);
         endedDraftReplyIds.delete(ev.draftId);
-        const previous = draftReply();
-        setDraftReply({
+        const previous = draftRepliesByChat.get(cid);
+        setActiveDraftReply({
           kind: "compaction",
           chatId: cid,
           draftId: ev.draftId,
@@ -5683,8 +5727,8 @@ export function createState() {
       return;
     }
     if (ev.kind === "reasoning-draft") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid) {
+      const cid = ev.chatId;
+      if (cid) {
         deleteFromSet(setCompactingChats, compactingChats, cid);
         if (
           dismissedReplies().some(
@@ -5700,14 +5744,14 @@ export function createState() {
           const cur = draftReply();
           if (cur?.draftId === ev.draftId) {
             toolClosedDraftReplyIds.delete(ev.draftId);
-            setDraftReply(null);
+            clearDraftReply(cid, ev.draftId);
           }
           return;
         }
         endedDraftReplyIds.delete(ev.draftId);
-        const previous = draftReply();
+        const previous = draftRepliesByChat.get(cid);
         setActiveChatRuntimeModel(ev.chatId, ev.model, ev.effort);
-        setDraftReply({
+        setActiveDraftReply({
           kind: "reply",
           chatId: cid,
           draftId: ev.draftId,
@@ -5725,8 +5769,8 @@ export function createState() {
       return;
     }
     if (ev.kind === "draft") {
-      const cid = chatId();
-      if (cid && ev.chatId === cid) {
+      const cid = ev.chatId;
+      if (cid) {
         // A reply draft can only come from the real answer stream; compaction
         // summary calls emit compaction-draft instead. If compaction-end was
         // missed, don't let the compacting status leak into the reply UI.
@@ -5745,14 +5789,14 @@ export function createState() {
           const cur = draftReply();
           if (cur?.draftId === ev.draftId) {
             toolClosedDraftReplyIds.delete(ev.draftId);
-            setDraftReply(null);
+            clearDraftReply(cid, ev.draftId);
           }
           return;
         }
         endedDraftReplyIds.delete(ev.draftId);
-        const previous = draftReply();
+        const previous = draftRepliesByChat.get(cid);
         setActiveChatRuntimeModel(ev.chatId, ev.model, ev.effort);
-        setDraftReply({
+        setActiveDraftReply({
           kind: "reply",
           chatId: cid,
           draftId: ev.draftId,
@@ -5771,20 +5815,20 @@ export function createState() {
       return;
     }
     if (ev.kind === "draft-end") {
-      const cur = draftReply();
+      const cur = cachedDraftReplyForEnd(ev.chatId, ev.draftId);
       if (cur && cur.draftId === ev.draftId) {
-        setDraftReply({ ...cur, reasoningStreaming: false });
+        setActiveDraftReply({ ...cur, reasoningStreaming: false });
         endedDraftReplyIds.set(ev.draftId, Date.now());
         if (pending().some((p) => p.chatId === cur.chatId)) drainSoon();
         window.setTimeout(() => {
-          const latest = draftReply();
+          const latest = cachedDraftReplyForEnd(ev.chatId, ev.draftId);
           if (
             latest?.draftId === ev.draftId &&
             endedDraftReplyIds.has(ev.draftId)
           ) {
             endedDraftReplyIds.delete(ev.draftId);
             toolClosedDraftReplyIds.delete(ev.draftId);
-            setDraftReply(null);
+            clearDraftReply(latest.chatId, ev.draftId);
           }
         }, 15000);
       }
@@ -5809,7 +5853,7 @@ export function createState() {
         if (cur?.kind === "compaction" && cur.chatId === ev.chatId) {
           endedDraftReplyIds.delete(cur.draftId);
           toolClosedDraftReplyIds.delete(cur.draftId);
-          setDraftReply(null);
+          clearDraftReply(ev.chatId, cur.draftId);
         }
         if (ev.chatId === chatId()) refreshTimelineIncrementalSoon();
       }

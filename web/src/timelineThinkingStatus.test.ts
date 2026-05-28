@@ -283,7 +283,7 @@ describe("timeline thinking status", () => {
     expect(state).toContain('typeof ev.model === "string" ? ev.model : previous?.model');
     expect(state).toContain('typeof ev.effort === "string" ? ev.effort : previous?.effort');
     expect(state).toContain(
-      "setDraftReply({ ...cur, reasoningStreaming: false });",
+      "setActiveDraftReply({ ...cur, reasoningStreaming: false });",
     );
   });
 
@@ -294,7 +294,7 @@ describe("timeline thinking status", () => {
     );
     expect(state).toContain("toolClosedDraftReplyIds.add(cur.draftId);");
     expect(state).toContain(
-      "setDraftReply({ ...cur, reasoningStreaming: false });",
+      "setActiveDraftReply({ ...cur, reasoningStreaming: false });",
     );
     expect(state).toContain('if (ev.kind === "tool-call-draft")');
     expect(state).toContain("closeDraftReplyThinkingForToolCall(cid);");
@@ -321,4 +321,25 @@ describe("timeline thinking status", () => {
       "deleteFromSet(setCompactingChats, compactingChats, cid);",
     );
   });
+});
+
+
+test("keeps streamed reasoning drafts cached across chat switches", () => {
+  expect(state).toContain("const draftRepliesByChat = new Map<string, DraftReply>();");
+  expect(state).toContain("function restoreDraftReplyForChat(id: string)");
+
+  const selectStart = state.indexOf("async function selectChat(");
+  expect(selectStart).toBeGreaterThanOrEqual(0);
+  const selectEnd = state.indexOf("function olderTimelineLoadCount", selectStart);
+  const selectBlock = state.slice(selectStart, selectEnd);
+  expect(selectBlock).toContain("restoreDraftReplyForChat(id);");
+  expect(selectBlock).not.toContain("setDraftReply(null);");
+
+  const reasoningStart = state.indexOf('if (ev.kind === "reasoning-draft")');
+  expect(reasoningStart).toBeGreaterThanOrEqual(0);
+  const reasoningEnd = state.indexOf('if (ev.kind === "draft")', reasoningStart);
+  const reasoningBlock = state.slice(reasoningStart, reasoningEnd);
+  expect(reasoningBlock).toContain("const cid = ev.chatId;");
+  expect(reasoningBlock).toContain("const previous = draftRepliesByChat.get(cid);");
+  expect(reasoningBlock).toContain("setActiveDraftReply({");
 });
