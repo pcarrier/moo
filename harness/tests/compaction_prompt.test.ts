@@ -18,6 +18,7 @@ import {
   buildStreamingLLMRequest,
   stripDynamicContextMessages,
   compactionProviderForRequest,
+  effortLevelsForProvider,
   compactionRequestTokenLimit,
   estimateTokens,
   fitCompactionSummaryMessages,
@@ -192,19 +193,35 @@ describe("compaction prompts", () => {
 
 
 
-  test("Anthropic Opus 4.7 enables summarized adaptive thinking by default", () => {
-    const request = buildStreamingLLMRequest({
+  test("Anthropic Opus 4.8 enables summarized adaptive thinking with xhigh effort", () => {
+    expect(effortLevelsForProvider({ name: "anthropic", model: "claude-opus-4-8" })).toEqual(["low", "medium", "high", "xhigh", "max"]);
+
+    const defaultRequest = buildStreamingLLMRequest({
       name: "anthropic",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "key",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       effort: null,
     } as any, [{ role: "user", content: "Think deeply" }], null);
 
-    expect(request.requestEffort).toBe("high");
-    expect(request.body).toMatchObject({
+    expect(defaultRequest.requestEffort).toBe("high");
+    expect(defaultRequest.body).toMatchObject({
       thinking: { type: "adaptive", display: "summarized" },
       output_config: { effort: "high" },
+    });
+
+    const xhighRequest = buildStreamingLLMRequest({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "key",
+      model: "claude-opus-4-8",
+      effort: "xhigh",
+    } as any, [{ role: "user", content: "Think deeply" }], null);
+
+    expect(xhighRequest.requestEffort).toBe("xhigh");
+    expect(xhighRequest.body).toMatchObject({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "xhigh" },
     });
   });
 
@@ -360,6 +377,7 @@ describe("compaction prompts", () => {
     expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5.5", effort: "xhigh" }).effort).toBe("none");
     expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5", effort: "high" }).effort).toBe("minimal");
     expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-sonnet-4", effort: "xhigh" }).effort).toBe("low");
+    expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-opus-4-8", effort: "xhigh" }).effort).toBe("low");
   });
 
   test("accumulates streamed compaction summaries", () => {

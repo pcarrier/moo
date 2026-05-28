@@ -593,7 +593,7 @@ const ANTHROPIC_ADAPTIVE_MAX_EFFORT_LEVELS = [
   "high",
   "max",
 ] as const;
-const ANTHROPIC_ADAPTIVE_OPUS_4_7_EFFORT_LEVELS = [
+const ANTHROPIC_ADAPTIVE_OPUS_4_7_PLUS_EFFORT_LEVELS = [
   "low",
   "medium",
   "high",
@@ -613,14 +613,14 @@ const ANTHROPIC_BUDGET_THINKING_MODELS: Array<{
   },
 ];
 
-function isClaudeOpus47(id: string): boolean {
-  return /(?:^|[-.])opus[-.]4[-.]7(?:[-.]|$)/.test(id);
+function isClaudeOpus47Plus(id: string): boolean {
+  return /(?:^|[-.])opus[-.]4[-.](?:7|8)(?:[-.]|$)/.test(id);
 }
 
 function isClaudeMaxEffortModel(id: string): boolean {
   return (
     /(?:^|[-.])mythos(?:[-.]|$)/.test(id) ||
-    /(?:^|[-.])opus[-.]4[-.](?:6|7)(?:[-.]|$)/.test(id) ||
+    /(?:^|[-.])opus[-.]4[-.]6(?:[-.]|$)/.test(id) ||
     /(?:^|[-.])sonnet[-.]4[-.]6(?:[-.]|$)/.test(id)
   );
 }
@@ -632,7 +632,7 @@ function anthropicAdaptiveEffortLevels(
     .trim()
     .toLowerCase();
   if (!id.startsWith("claude")) return null;
-  if (isClaudeOpus47(id)) return ANTHROPIC_ADAPTIVE_OPUS_4_7_EFFORT_LEVELS;
+  if (isClaudeOpus47Plus(id)) return ANTHROPIC_ADAPTIVE_OPUS_4_7_PLUS_EFFORT_LEVELS;
   if (isClaudeMaxEffortModel(id)) return ANTHROPIC_ADAPTIVE_MAX_EFFORT_LEVELS;
   if (/(?:^|[-.])(?:opus|sonnet|haiku)[-.]4(?:[-.]|$)/.test(id))
     return ANTHROPIC_ADAPTIVE_EFFORT_LEVELS;

@@ -144,6 +144,19 @@ describe("OpenAI-compatible provider support", () => {
     expect(modelMetadataFor("xai", "grok-4-fast")?.rateLimits).toMatchObject({ requestsPerMinute: 600, tokensPerMinute: 4_000_000 });
   });
 
+  test("uses Claude Opus 4.8 defaults, context, and pricing", async () => {
+    expect(modelContextBudget({ name: "anthropic", model: "claude-opus-4-8" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "anthropic", model: "claude-opus-4-8-20260201" })).toBe(1_000_000);
+
+    const metadata = modelMetadataFor("anthropic", "claude-opus-4-8-20260201");
+    expect(metadata?.id).toBe("claude-opus-4-8");
+    expect(metadata?.maxOutputTokens).toBe(128_000);
+    expect(metadata?.pricing).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
+
+    const options = await modelOptionsFor("anthropic", "claude-opus-4-8");
+    expect(options.map((option) => option.id)).toContain("anthropic:claude-opus-4-8");
+  });
+
   test("uses GPT-5.5 API and Codex context windows for dated model variants", () => {
     expect(modelContextBudget({ name: "openai", model: "gpt-5.5" })).toBe(1_000_000);
     expect(modelContextBudget({ name: "openai", model: "gpt-5.5-2026-01" })).toBe(1_000_000);
@@ -234,6 +247,13 @@ describe("OpenAI-compatible provider support", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({ source: "unsupported_attachments", provider: "deepseek", model: "deepseek-v4-flash" });
     expect(JSON.stringify(result.error)).toContain("does not support image attachments");
+  });
+
+  test("tracks Claude Opus 4.8 pricing", async () => {
+    const pricing = await loadPricing();
+    expect(priceFor("claude-opus-4-8", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
+    expect(priceFor("claude-opus-4-8-20260201", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
+    expect(estimateCostUsd({ models: { "claude-opus-4-8": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(36.75);
   });
 
   test("tracks GPT-5.5 pricing", async () => {
