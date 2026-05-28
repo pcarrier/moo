@@ -17,6 +17,7 @@ export function startMermaidRenderer(root: ParentNode = document): () => void {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      suppressErrorRendering: true,
       theme: mermaidTheme(),
     });
     initialized = true;
@@ -210,6 +211,7 @@ async function renderMermaidDiagram(element: HTMLElement) {
     element.setAttribute("aria-label", "Open Mermaid diagram in zoomable lightbox");
     element.title = "Open diagram";
   } catch (error) {
+    removeMermaidRenderArtifacts(id);
     if (partial) {
       deferPartialMermaidUpdate(element, source, error);
       return;
@@ -239,6 +241,12 @@ function renderMermaidError(element: HTMLElement, source: string, error: unknown
   element.removeAttribute("title");
   element.setAttribute("role", "img");
   element.setAttribute("aria-label", "Mermaid diagram failed to render");
+}
+
+function removeMermaidRenderArtifacts(id: string) {
+  document.getElementById("d" + id)?.remove();
+  document.getElementById("i" + id)?.remove();
+  document.getElementById(id)?.remove();
 }
 
 function isPreviousMermaidSource(previous: string, next: string): boolean {

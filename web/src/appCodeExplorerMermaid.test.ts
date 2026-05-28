@@ -33,6 +33,15 @@ describe("code explorer Mermaid source preview", () => {
   justify-content: center;`);
   });
 
+  test("keeps Mermaid syntax errors within the source pane", () => {
+    const errorRule = styles.match(/\.apps-code-mermaid\[data-mermaid-error\]\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(errorRule).toContain("max-inline-size: 100%;");
+    expect(errorRule).toContain("min-inline-size: 0;");
+    expect(errorRule).toContain("white-space: pre-wrap;");
+    expect(errorRule).toContain("overflow-wrap: anywhere;");
+    expect(errorRule).toContain("word-break: break-word;");
+  });
+
   test("keeps Source mode as highlighted code", () => {
     expect(source).toContain('<pre class="apps-code-block">');
     expect(source).toContain("<code innerHTML={props.highlighted} />");

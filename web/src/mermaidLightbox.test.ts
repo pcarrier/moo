@@ -51,4 +51,17 @@ describe("mermaid streaming updates", () => {
     expect(mermaid).toContain('queueMermaidSourceUpdate(previous, element);');
     expect(mermaid).toContain('delete element.dataset.mermaidPendingSource;');
   });
+
+  test("keeps Mermaid syntax errors from breaking timeline layout", () => {
+    const errorRule = timelineCss.match(/\.markdown \.mermaid\[data-mermaid-error\]\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(mermaid).toContain("suppressErrorRendering: true");
+    expect(mermaid).toContain("removeMermaidRenderArtifacts(id);");
+    expect(mermaid).toContain('document.getElementById("d" + id)?.remove();');
+    expect(errorRule).toContain("max-inline-size: 100%;");
+    expect(errorRule).toContain("max-block-size: min(22rem, 60vh);");
+    expect(errorRule).toContain("overflow: auto;");
+    expect(errorRule).toContain("white-space: pre-wrap;");
+    expect(errorRule).toContain("overflow-wrap: anywhere;");
+    expect(errorRule).toContain("word-break: break-word;");
+  });
 });

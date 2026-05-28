@@ -2017,10 +2017,25 @@ details.collapsible > pre {
 .markdown .mermaid {
   box-sizing: border-box;
   max-inline-size: 100%;
+  min-inline-size: 0;
   margin: 0.65em 0;
   padding: 0.55em 0.7em;
   overflow-x: auto;
   background: rgba(0, 0, 0, 0.035);
+}
+.markdown .mermaid[data-mermaid-error] {
+  display: block;
+  max-inline-size: 100%;
+  max-block-size: min(22rem, 60vh);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--fg);
+  background: var(--bubble-error);
+  border: 1px solid color-mix(in srgb, crimson 35%, var(--line));
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 .markdown .mermaid svg {
   display: block;
@@ -2179,7 +2194,7 @@ body.mermaid-lightbox-open {
   :root:not([data-theme="light"]) .markdown pre code {
     background: transparent;
   }
-  :root:not([data-theme="light"]) .markdown .mermaid {
+  :root:not([data-theme="light"]) .markdown .mermaid:not([data-mermaid-error]) {
     background: rgba(255, 255, 255, 0.05);
   }
 }
