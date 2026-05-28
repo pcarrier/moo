@@ -37,4 +37,23 @@ describe("right sidebar layout", () => {
     expect(state).toContain("setOpenUiId(null);");
     expect(state).toContain("setOpenUiInstanceId(null);");
   });
+
+  test("refreshes file tabs in the event chat scope", () => {
+    expect(state).toContain(
+      "async function refreshMatchingRepoFiles(path: string, targetChatId = chatId())",
+    );
+    expect(state).toContain("rightSidebarFileTabsForScope(scopeId)");
+    expect(state).toContain("readRepoFileIntoSidebarScope(");
+    const fileDiffBlock = state.slice(
+      state.indexOf('if (ev.kind === "file-diff")'),
+      state.indexOf('if (ev.kind === "todo-diff")'),
+    );
+    expect(fileDiffBlock).toContain("refreshMatchingRepoFilesSoon(ev.path, ev.chatId);");
+    expect(
+      fileDiffBlock.indexOf("refreshMatchingRepoFilesSoon(ev.path, ev.chatId);"),
+    ).toBeGreaterThan(fileDiffBlock.indexOf("if (cid && ev.chatId === cid)"));
+    expect(state).toContain(
+      'pendingRepoFileRefreshPaths.add(`${targetChatId ?? ""}\\n${path}`);',
+    );
+  });
 });

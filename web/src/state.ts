@@ -2490,24 +2490,117 @@ export function createState() {
     );
   }
 
-  async function refreshMatchingRepoFiles(path: string) {
-    const files = rightSidebarTabs()
-      .filter(
-        (tab): tab is Extract<RightSidebarTab, { kind: "file" }> =>
-          tab.kind === "file",
-      )
-      .filter(
-        (tab) =>
-          sameRepoFilePath(tab.file.path, path) ||
-          sameRepoFilePath(tab.file.requestedPath, path),
+  function chatWorktreePathForId(id: string): string | null {
+    const chat = chats().find((candidate) => candidate.chatId === id) ?? null;
+    if (!chat) return null;
+    return chat.worktreePath ?? expectedChatWorktreePath(chat);
+  }
+
+  function sameRepoFilePathInRoot(
+    root: string | null | undefined,
+    a: string | null | undefined,
+    b: string | null | undefined,
+  ): boolean {
+    return sameDiffPathInRoot(a, b, root);
+  }
+
+  async function readRepoFileIntoSidebarScope(
+    scopeId: string,
+    requestedPath: string,
+    basePath: string | null,
+  ) {
+    const tabId = repoFileTabId(requestedPath);
+    const seqKey = `${scopeId}\n${tabId}`;
+    const seq = (repoFileReadSeq.get(seqKey) ?? 0) + 1;
+    repoFileReadSeq.set(seqKey, seq);
+    const r = await api("fs-read", {
+      path: requestedPath,
+      basePath,
+      includeDiff: true,
+    });
+    if (repoFileReadSeq.get(seqKey) !== seq) return;
+    const layout = rightSidebarLayoutForScope(scopeId);
+    setRightSidebarByChat((prev) => {
+      const current = normalizeRightSidebarState(
+        prev[scopeId] ?? cachedRightSidebarState(scopeId),
+        layout,
       );
+      let changed = false;
+      const tabs = current.tabs.map((tab) => {
+        if (tab.kind !== "file" || tab.id !== tabId) return tab;
+        changed = true;
+        if (!r.ok) {
+          return {
+            ...tab,
+            file: {
+              requestedPath,
+              path: tab.file.path ?? null,
+              content: tab.file.content,
+              size: tab.file.size,
+              mtime: tab.file.mtime,
+              kind: tab.file.kind ?? "file",
+              entries: tab.file.entries,
+              loading: false,
+              error: r.error.message,
+            },
+          } as RightSidebarTab;
+        }
+        const file: OpenRepoFile = {
+          requestedPath,
+          path: r.value.path,
+          content: r.value.content,
+          size: r.value.size,
+          mtime: r.value.mtime,
+          kind: r.value.kind,
+          entries: r.value.entries,
+          changed: r.value.changed,
+          additions: r.value.additions,
+          deletions: r.value.deletions,
+          diff: r.value.diff,
+          diffStats: r.value.diffStats,
+          loading: false,
+          error: null,
+        };
+        return {
+          ...tab,
+          title: fileName(file.path || file.requestedPath),
+          file,
+        } as RightSidebarTab;
+      });
+      if (!changed) return prev;
+      const nextState = normalizeRightSidebarState({ ...current, tabs }, layout);
+      if (!scopeId.startsWith("view:"))
+        touchChatCache(scopeId, { rightSidebar: nextState });
+      return pruneRightSidebarScopes({ ...prev, [scopeId]: nextState }, scopeId);
+    });
+  }
+
+  function rightSidebarFileTabsForScope(scopeId: string) {
+    return normalizeRightSidebarState(
+      rightSidebarByChat()[scopeId] ?? cachedRightSidebarState(scopeId),
+      rightSidebarLayoutForScope(scopeId),
+    ).tabs.filter(
+      (tab): tab is Extract<RightSidebarTab, { kind: "file" }> =>
+        tab.kind === "file",
+    );
+  }
+
+  async function refreshMatchingRepoFiles(path: string, targetChatId = chatId()) {
+    const scopeId = targetChatId ?? currentRightSidebarScopeId();
+    const root = scopeId
+      ? chatWorktreePathForId(scopeId)
+      : currentChatWorktreePath();
+    if (!scopeId || !root) return;
+    const files = rightSidebarFileTabsForScope(scopeId).filter(
+      (tab) =>
+        sameRepoFilePathInRoot(root, tab.file.path, path) ||
+        sameRepoFilePathInRoot(root, tab.file.requestedPath, path),
+    );
     await Promise.all(
       files.map((tab) =>
-        readRepoFileIntoSidebar(
-          tab.file.requestedPath,
-          currentChatWorktreePath(),
-          false,
-        ),
+        scopeId === currentRightSidebarScopeId()
+          ? readRepoFileIntoSidebar(tab.file.requestedPath, root, false)
+          : readRepoFileIntoSidebarScope(scopeId, tab.file.requestedPath, root),
       ),
     );
   }
@@ -5463,12 +5556,19 @@ export function createState() {
   const refreshV8StatsSoon = debounce(refreshV8Stats, 1000);
   const pendingRepoFileRefreshPaths = new Set<string>();
   const refreshPendingRepoFilesSoon = debounce(() => {
-    const paths = Array.from(pendingRepoFileRefreshPaths);
+    const entries = Array.from(pendingRepoFileRefreshPaths).map((key) => {
+      const sep = key.indexOf("\n");
+      return sep >= 0
+        ? { chatId: key.slice(0, sep), path: key.slice(sep + 1) }
+        : { chatId: chatId(), path: key };
+    });
     pendingRepoFileRefreshPaths.clear();
-    void Promise.all(paths.map((path) => refreshMatchingRepoFiles(path)));
+    void Promise.all(
+      entries.map((entry) => refreshMatchingRepoFiles(entry.path, entry.chatId)),
+    );
   }, 150);
-  function refreshMatchingRepoFilesSoon(path: string) {
-    pendingRepoFileRefreshPaths.add(path);
+  function refreshMatchingRepoFilesSoon(path: string, targetChatId = chatId()) {
+    pendingRepoFileRefreshPaths.add(`${targetChatId ?? ""}\n${path}`);
     refreshPendingRepoFilesSoon();
   }
 
@@ -5597,12 +5697,12 @@ export function createState() {
             } as TimelineItem,
           ]),
         );
-        refreshMatchingRepoFilesSoon(ev.path);
         refreshMatchingDiffTabs(
           ev.path,
           [id, ev.hash || "", ev.at || ""].join(":"),
         );
       }
+      refreshMatchingRepoFilesSoon(ev.path, ev.chatId);
       return;
     }
     if (ev.kind === "todo-diff") {
