@@ -546,6 +546,7 @@ export type ProcRunArgs = {
 
 export type LineRange = [from: number, to: number];
 export type PartialReadArgs = { path: string; lineRanges: LineRange[]; numbered?: boolean };
+export type FsDeleteArgs = { path: string; recursive?: boolean };
 
 export type WorkspaceScope = {
   root: string;
@@ -560,7 +561,7 @@ export type WorkspaceScope = {
     exists(args?: { path?: string }): Promise<boolean>;
     ensureDir(args?: { path?: string }): Promise<void>;
     patch(args: { path: string; diff: string }): Promise<PatchResult>;
-    delete(args: { path: string }): Promise<PatchResult>;
+    delete(args: FsDeleteArgs): Promise<PatchResult>;
   };
   proc: {
     run(args: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }): Promise<ProcResult>;
@@ -647,7 +648,7 @@ export type Moo = {
     exists(args: { path: string }): Promise<boolean>;
     ensureDir(args: { path: string }): Promise<void>;
     patch(args: { path: string; diff: string }): Promise<PatchResult>;
-    delete(args: { path: string }): Promise<PatchResult>;
+    delete(args: FsDeleteArgs): Promise<PatchResult>;
   };
   proc: {
     run(args: ProcRunArgs): Promise<ProcResult>;

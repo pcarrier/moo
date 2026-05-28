@@ -71,7 +71,26 @@ fn op_fs_delete(
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
-    if let Err(e) = fs::remove_file(&path) {
+    let recursive = args
+        .get(1)
+        .boolean_value(scope);
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            throw(scope, &format!("fs_delete {path}: {e}"));
+            return;
+        }
+    };
+    let result = if meta.is_dir() {
+        if recursive {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_dir(&path)
+        }
+    } else {
+        fs::remove_file(&path)
+    };
+    if let Err(e) = result {
         throw(scope, &format!("fs_delete {path}: {e}"));
     }
 }

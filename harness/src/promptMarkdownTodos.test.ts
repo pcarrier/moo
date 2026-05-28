@@ -17,7 +17,8 @@ describe("filesystem editing prompt", () => {
     expect(prompt).toContain("partialRead({path:string,lineRanges:[number,number][],numbered?:boolean})");
     expect(prompt).toContain("1-based inclusive line ranges; sorted/collapsed overlaps");
     expect(prompt).toContain("patch({path:string,diff:string})→Promise<{status:string,output?:string|null}>");
-    expect(prompt).toContain("delete({path:string})→Promise<{status:string,output?:string|null}>");
+    expect(prompt).toContain("delete({path:string,recursive?:boolean})→Promise<{status:string,output?:string|null}>");
+    expect(prompt).toContain("recursive:true is required for non-empty dirs");
     expect(prompt).toContain("applies unified/context patch to existing file and throws on failure");
     expect(prompt).toContain("delete failures return status=\'failed\' plus output");
     expect(prompt).toContain("patch failures throw, so retry only after inspecting context");

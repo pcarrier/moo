@@ -963,6 +963,10 @@ type PartialReadArgs = {
     lineRanges: LineRange[];
     numbered?: boolean;
 };
+type FsDeleteArgs = {
+    path: string;
+    recursive?: boolean;
+};
 type WorkspaceScope = {
     root: string;
     fs: {
@@ -1000,9 +1004,7 @@ type WorkspaceScope = {
             path: string;
             diff: string;
         }): Promise<PatchResult>;
-        delete(args: {
-            path: string;
-        }): Promise<PatchResult>;
+        delete(args: FsDeleteArgs): Promise<PatchResult>;
     };
     proc: {
         run(args: Omit<ProcRunArgs, "cwd"> & {
@@ -1199,9 +1201,7 @@ type Moo = {
             path: string;
             diff: string;
         }): Promise<PatchResult>;
-        delete(args: {
-            path: string;
-        }): Promise<PatchResult>;
+        delete(args: FsDeleteArgs): Promise<PatchResult>;
     };
     proc: {
         run(args: ProcRunArgs): Promise<ProcResult>;

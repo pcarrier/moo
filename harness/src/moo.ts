@@ -472,7 +472,7 @@ function buildTraceWaterfall(rows: TraceRow[]): Array<Record<string, unknown>> {
 }
 
 function buildTraceSideEffects(rows: TraceRow[]): TraceRow[] {
-  return rows.filter((row) => /^(moo.(fs.(write|patch|record_diff|ensureDir)|proc.run|http.|facts.(add|addAll|remove|swap|update|clearStore|deleteStore|deleteGraph|deleteGraphEverywhere)|pointers.(set|cas|delete)|objects.put|memory.(assert|retract|patch)|chat.|ui.|mcp.|agent.run)|timeline.|usage.|command.)/.test(row.name));
+  return rows.filter((row) => /^(moo.(fs.(write|patch|record_diff|ensureDir|delete)|proc.run|http.|facts.(add|addAll|remove|swap|update|clearStore|deleteStore|deleteGraph|deleteGraphEverywhere)|pointers.(set|cas|delete)|objects.put|memory.(assert|retract|patch)|chat.|ui.|mcp.|agent.run)|timeline.|usage.|command.)/.test(row.name));
 }
 
 function buildTraceCausalLinks(rows: TraceRow[]): Array<Record<string, unknown>> {
@@ -1348,7 +1348,7 @@ async function executePatch(path: string, diff: string | null | undefined, worki
   return patchResult("completed", "Patched '" + display + "'.");
 }
 
-async function executeDelete(path: string, workingDirectory: string | null): Promise<PatchResult> {
+async function executeDelete(path: string, recursive: boolean | undefined, workingDirectory: string | null): Promise<PatchResult> {
   let display: string;
   let absolute: string;
   try {
@@ -1357,17 +1357,29 @@ async function executeDelete(path: string, workingDirectory: string | null): Pro
     return patchResult("failed", (e as Error).message);
   }
 
-  if ((await fs.stat({ path: absolute })) === null) {
+  const stat = await fs.stat({ path: absolute });
+  if (stat === null) {
     return patchResult("failed", "Cannot delete '" + display + "' because it does not exist.");
   }
+  const forceRecursive = !!recursive;
+  if (stat.kind === "dir" && !forceRecursive) {
+    try {
+      const entries = await fs.list({ path: absolute });
+      if (entries.length > 0) {
+        return patchResult("failed", "Cannot delete non-empty directory '" + display + "' without recursive: true.");
+      }
+    } catch (e) {
+      return patchResult("failed", "Could not inspect directory '" + display + "': " + (e as Error).message);
+    }
+  }
   let before: string | null = null;
-  try {
+  if (stat.kind !== "dir") try {
     before = await fs.read({ path: absolute });
   } catch (_) {
     before = null;
   }
   try {
-    await traceObserved("moo.fs.delete", { path, resolved: absolute }, () => host.deleteFile(absolute));
+    await traceObserved("moo.fs.delete", { path, resolved: absolute, recursive: forceRecursive }, () => host.deleteFile(absolute, forceRecursive));
   } catch (e) {
     return patchResult("failed", "Could not delete '" + display + "': " + (e as Error).message);
   }
@@ -1431,9 +1443,9 @@ const fs: Moo["fs"] = {
     const root = await activeScratchRoot();
     return await traceObserved("moo.fs.patch", { path, root }, () => executePatch(path, diff, root), (value) => ({ status: value.status, output: value.output ?? null }));
   },
-  async delete({ path }) {
+  async delete({ path, recursive = false }) {
     const root = await activeScratchRoot();
-    return await traceObserved("moo.fs.delete", { path, root }, () => executeDelete(path, root), (value) => ({ status: value.status, output: value.output ?? null }));
+    return await traceObserved("moo.fs.delete", { path, root, recursive: !!recursive }, () => executeDelete(path, recursive, root), (value) => ({ status: value.status, output: value.output ?? null }));
   },
 };
 
@@ -1531,7 +1543,7 @@ const workspace: Moo["workspace"] = {
         exists: (args = {}) => fs.exists({ path: resolveWorkspacePath(root, args.path ?? ".") }),
         ensureDir: (args = {}) => fs.ensureDir({ path: resolveWorkspacePath(root, args.path ?? ".") }),
         patch: ({ path, diff }) => executePatch(path, diff, root),
-        delete: ({ path }) => executeDelete(path, root),
+        delete: ({ path, recursive = false }) => executeDelete(path, recursive, root),
       },
       proc: {
         run: (input: Omit<ProcRunArgs, "cwd"> & { cwd?: string | null }) => proc.run({ ...input, cwd: input.cwd ? resolveWorkspacePath(root, input.cwd) : root }),

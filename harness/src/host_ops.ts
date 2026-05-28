@@ -80,7 +80,7 @@ export const sparqlQuery = (query: string, store: string, graph: string | null, 
 
 export const readFile = (path: string): string => __op_fs_read(path);
 export const writeFile = (path: string, content: string): void => __op_fs_write(path, content);
-export const deleteFile = (path: string): void => __op_fs_delete(path);
+export const deleteFile = (path: string, recursive = false): void => __op_fs_delete(path, recursive);
 export const makeDir = (path: string): void => __op_fs_mkdir(path);
 export const listDir = (path: string): string[] => __op_fs_list(path);
 export const globFiles = (pattern: string): string[] => __op_fs_glob(pattern);

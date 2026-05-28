@@ -14,6 +14,21 @@ function addDir(path: string, names: string[] = []) {
   const normalized = normalize(path);
   dirs.set(normalized, names);
   stats.set(normalized, { kind: "dir", size: 0, mtime: 0 });
+  const slash = normalized.lastIndexOf("/");
+  const parent = slash > 0 ? normalized.slice(0, slash) : "/";
+  const name = normalized.slice(slash + 1);
+  const parentNames = dirs.get(parent);
+  if (normalized !== "/" && parentNames && !parentNames.includes(name)) parentNames.push(name);
+}
+
+function removeParentEntry(path: string) {
+  const slash = path.lastIndexOf("/");
+  const parent = slash > 0 ? path.slice(0, slash) : "/";
+  const name = path.slice(slash + 1);
+  const names = dirs.get(parent);
+  if (!names) return;
+  const index = names.indexOf(name);
+  if (index >= 0) names.splice(index, 1);
 }
 
 function addFile(path: string, content: string) {
@@ -63,10 +78,23 @@ function addFile(path: string, content: string) {
   return files.get(normalized) ?? "";
 };
 (globalThis as any).__op_fs_write = (path: string, content: string) => addFile(path, content);
-(globalThis as any).__op_fs_delete = (path: string) => {
+(globalThis as any).__op_fs_delete = (path: string, recursive = false) => {
   const normalized = normalize(path);
-  if (!files.delete(normalized)) throw new Error("not found");
+  const stat = stats.get(normalized);
+  if (!stat) throw new Error("not found");
+  if (stat.kind === "dir") {
+    const children = dirs.get(normalized) ?? [];
+    if (children.length > 0 && !recursive) throw new Error("directory not empty");
+    const prefix = normalized === "/" ? "/" : normalized + "/";
+    for (const key of Array.from(files.keys())) if (key.startsWith(prefix)) files.delete(key);
+    for (const key of Array.from(dirs.keys())) if (key === normalized || key.startsWith(prefix)) dirs.delete(key);
+    for (const key of Array.from(stats.keys())) if (key === normalized || key.startsWith(prefix)) stats.delete(key);
+    removeParentEntry(normalized);
+    return;
+  }
+  files.delete(normalized);
   stats.delete(normalized);
+  removeParentEntry(normalized);
 };
 (globalThis as any).__op_fs_glob = () => [];
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
@@ -255,6 +283,27 @@ describe("filesystem API", () => {
 
     await expect(workspace.fs.delete({ path: "src/example.txt" })).resolves.toMatchObject({ status: "completed" });
     expect(files.has("/repo/src/example.txt")).toBe(false);
+  });
+
+  test("removes empty directories and requires recursive for non-empty directories", async () => {
+    const workspace = await moo.workspace.current({ root: "/repo" });
+    addDir("/repo/empty", []);
+    addDir("/repo/full", []);
+    addFile("/repo/full/example.txt", "content");
+
+    await expect(workspace.fs.delete({ path: "empty" })).resolves.toMatchObject({ status: "completed" });
+    expect(dirs.has("/repo/empty")).toBe(false);
+
+    await expect(workspace.fs.delete({ path: "full" })).resolves.toMatchObject({
+      status: "failed",
+      output: "Cannot delete non-empty directory 'full' without recursive: true.",
+    });
+    expect(dirs.has("/repo/full")).toBe(true);
+    expect(files.has("/repo/full/example.txt")).toBe(true);
+
+    await expect(workspace.fs.delete({ path: "full", recursive: true })).resolves.toMatchObject({ status: "completed" });
+    expect(dirs.has("/repo/full")).toBe(false);
+    expect(files.has("/repo/full/example.txt")).toBe(false);
   });
 
   test("patch accepts apply-patch envelope metadata", async () => {
