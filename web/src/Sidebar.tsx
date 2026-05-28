@@ -990,9 +990,31 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     return isGitRepo() ? selectedBranch() : null;
   }
 
-  function applyBranchValue(value: GitBranchesValue, displayPath: string) {
+  function applyBranchValue(
+    value: GitBranchesValue,
+    displayPath: string,
+    choices: {
+      selectedBranch?: string | null;
+      selectedJjRevision?: string | null;
+    } = {},
+  ) {
     const collapsed = collapseHome(value.path || displayPath);
     const previousPath = branchPath();
+    const hasSelectedBranchChoice = Object.prototype.hasOwnProperty.call(
+      choices,
+      "selectedBranch",
+    );
+    const branchChoice = hasSelectedBranchChoice
+      ? choices.selectedBranch
+      : selectedBranch();
+    const hasSelectedJjRevisionChoice = Object.prototype.hasOwnProperty.call(
+      choices,
+      "selectedJjRevision",
+    );
+    const jjRevisionChoice = hasSelectedJjRevisionChoice
+      ? choices.selectedJjRevision
+      : selectedJjRevision();
+    const samePath = sameBranchPath(previousPath, collapsed);
     setBranchPath(collapsed);
     setRepoKind(value.repoKind ?? (value.isRepo ? "git" : null));
     setIsGitRepo((value.repoKind ?? (value.isRepo ? "git" : null)) === "git");
@@ -1001,22 +1023,24 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setJjRevisions(value.jjRevisions || []);
     setHasBranchRemote(value.hasRemote);
     setJjAvailable(Boolean(value.jjAvailable));
-    setSelectedBranch((prev) => {
+    setSelectedBranch(() => {
       if (
-        sameBranchPath(previousPath, collapsed) &&
-        prev &&
-        value.branches.some((branch) => branch.ref === prev)
+        (hasSelectedBranchChoice || samePath) &&
+        branchChoice &&
+        value.branches.some((branch) => branch.ref === branchChoice)
       )
-        return prev;
+        return branchChoice;
       return selectedBranchFromValue(value);
     });
-    setSelectedJjRevision((prev) => {
+    setSelectedJjRevision(() => {
       if (
-        sameBranchPath(previousPath, collapsed) &&
-        prev &&
-        (value.jjRevisions || []).some((revision) => revision.rev === prev)
+        (hasSelectedJjRevisionChoice || samePath) &&
+        jjRevisionChoice &&
+        (value.jjRevisions || []).some(
+          (revision) => revision.rev === jjRevisionChoice,
+        )
       )
-        return prev;
+        return jjRevisionChoice;
       return selectedJjRevisionFromValue(value);
     });
     setBranchesMessage(
@@ -1060,6 +1084,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   async function pullBranches() {
     if (branchesPulling()) return;
     const path = branchPath() || explorerPath();
+    const branchChoice = selectedBranch();
     setBranchesPulling(true);
     setBranchesError(null);
     const r = await api("fs-git-pull-branches", { path: expandHome(path) });
@@ -1068,7 +1093,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
       setBranchesError(r.error.message);
       return;
     }
-    applyBranchValue(r.value, path);
+    applyBranchValue(r.value, path, { selectedBranch: branchChoice });
   }
 
   async function loadExplorer(path: string) {

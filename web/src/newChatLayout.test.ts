@@ -152,6 +152,37 @@ describe("new chat layout", () => {
     expect(sidebar).not.toContain("fs-branch-upgrade");
   });
 
+  it("preserves selected branch when pulling branches", () => {
+    const pullStart = sidebar.indexOf("async function pullBranches()");
+    expect(pullStart).toBeGreaterThanOrEqual(0);
+    const pullEnd = sidebar.indexOf("async function loadExplorer", pullStart);
+    expect(pullEnd).toBeGreaterThan(pullStart);
+    const pullBranches = sidebar.slice(pullStart, pullEnd);
+
+    expect(pullBranches).toContain("const branchChoice = selectedBranch();");
+    expect(pullBranches.indexOf("const branchChoice = selectedBranch();"))
+      .toBeLessThan(pullBranches.indexOf('api("fs-git-pull-branches"'));
+    expect(pullBranches).toContain(
+      "applyBranchValue(r.value, path, { selectedBranch: branchChoice });",
+    );
+
+    const applyStart = sidebar.indexOf("function applyBranchValue(");
+    expect(applyStart).toBeGreaterThanOrEqual(0);
+    const applyEnd = sidebar.indexOf("let branchLoadSeq", applyStart);
+    expect(applyEnd).toBeGreaterThan(applyStart);
+    const applyBranchValue = sidebar.slice(applyStart, applyEnd);
+
+    expect(applyBranchValue).toContain("hasSelectedBranchChoice");
+    expect(applyBranchValue).toContain("choices.selectedBranch");
+    expect(applyBranchValue).toContain(
+      "(hasSelectedBranchChoice || samePath) &&",
+    );
+    expect(applyBranchValue).toContain(
+      "value.branches.some((branch) => branch.ref === branchChoice)",
+    );
+    expect(applyBranchValue).toContain("return branchChoice;");
+  });
+
   it("uses each project row as the action without duplicate labels", () => {
     expect(sidebar).not.toContain("fs-scratch-action");
     expect(sidebar).not.toContain("fs-recent-action");
