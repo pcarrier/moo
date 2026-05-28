@@ -25,7 +25,7 @@ describe("loading dot animation", () => {
     expect(loadingDots.match(/class=\"loading-dot\"/g)).toHaveLength(3);
 
     expect(timeline).toContain('<LoadingDots class="thinking-dots" label="loading chat" />');
-    expect(timeline).toContain('class="thinking-dots"');
+    expect(timeline).toContain('class="reply-thinking-dots"');
     expect(timeline).toContain('label="thinking"');
     expect(timeline).toContain('<LoadingDots class="compaction-dots" label="compacting" />');
     expect(timeline).toContain('<LoadingDots class="runts-loading" label="running" />');

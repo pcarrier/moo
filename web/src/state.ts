@@ -1026,8 +1026,8 @@ export function createState() {
     new Set(),
   );
   // Server-confirmed start time for each active chat. This lives in global
-  // state instead of Timeline so the elapsed Thinking timer does not restart
-  // when the user switches chats/tabs and Timeline remounts.
+  // state so Timeline can distinguish old terminal rows from the active turn
+  // even when the user switches chats/tabs and Timeline remounts.
   const [activeChatStartedAt, setActiveChatStartedAt] = createSignal<
     Map<string, number>
   >(new Map());

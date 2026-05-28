@@ -37,7 +37,6 @@ import {
   compareTimelineItems,
   dismissedTimelineEntryAt,
   dismissedTimelineEntryKey,
-  formatThinkingElapsed,
   formatThoughtDuration,
   insertTimelineItemChronologically,
   isCancelledTimelineItem,
@@ -319,34 +318,11 @@ export function Timeline(props: {
   let handledTimelineJumpId = 0;
   let timelineJumpHighlightTimer: number | undefined;
 
-  const [thinkingNow, setThinkingNow] = createSignal(Date.now());
-  let thinkingTimer: number | undefined;
-  createEffect(() => {
-    if (bag.thinking() || bag.compacting()) {
-      setThinkingNow(Date.now());
-      if (thinkingTimer === undefined) {
-        thinkingTimer = window.setInterval(
-          () => setThinkingNow(Date.now()),
-          1000,
-        );
-      }
-    } else if (thinkingTimer !== undefined) {
-      window.clearInterval(thinkingTimer);
-      thinkingTimer = undefined;
-    }
-  });
   onCleanup(() => {
-    if (thinkingTimer !== undefined) window.clearInterval(thinkingTimer);
     if (timelineJumpHighlightTimer !== undefined)
       window.clearTimeout(timelineJumpHighlightTimer);
   });
 
-  const thinkingElapsed = createMemo(() => {
-    const startedAt = bag.thinkingStartedAt();
-    return startedAt === null
-      ? "0:00"
-      : formatThinkingElapsed(thinkingNow() - startedAt);
-  });
   const activeWaitLabel = () => {
     const runningModel = bag.runningModel();
     return activeThinkingLabel(runningModel?.model, runningModel?.effort);
@@ -1008,12 +984,19 @@ export function Timeline(props: {
                   }
                 </For>
                 <Show when={showStandaloneThinking()}>
-                  <div class="step thinking" data-timeline-key="thinking">
-                    <LoadingDots class="thinking-dots" label="thinking" />
-                    <div class="meta">
-                      {activeWaitLabel()} {thinkingElapsed()}
-                    </div>
-                  </div>
+                  <details
+                    class="step reply-thinking"
+                    data-timeline-key="thinking"
+                    open
+                  >
+                    <summary>
+                      <span>{activeWaitLabel()}</span>
+                      <LoadingDots
+                        class="reply-thinking-dots"
+                        label="thinking"
+                      />
+                    </summary>
+                  </details>
                 </Show>
                 <Show when={showTimelineRefreshingIndicator()}>
                   <div class="history-loading history-loading-bottom">
@@ -2603,9 +2586,9 @@ function activeThinkingLabel(
   const displayModel = displayModelName(model);
   const displayEffort = String(effort ?? "").trim();
   if (displayModel && displayEffort)
-    return `${displayModel} ${displayEffort} thinking…`;
-  if (displayModel) return `${displayModel} thinking…`;
-  return "Thinking…";
+    return `${displayModel} ${displayEffort} thinking`;
+  if (displayModel) return `${displayModel} thinking`;
+  return "Thinking";
 }
 
 function activeReplyStatusLabel(item: StepItem, compacting: boolean): string {

@@ -139,11 +139,15 @@ describe("timeline thinking status", () => {
     expect(state).toContain("const runningModel = () =>");
     expect(state).toContain("setActiveChatRuntimeModel(");
     expect(timeline).toContain("function activeThinkingLabel(");
-    expect(timeline).toContain('return `${displayModel} ${displayEffort} thinking…`;');
-    expect(timeline).toContain('return "Thinking…";');
+    expect(timeline).toContain('return `${displayModel} ${displayEffort} thinking`;');
+    expect(timeline).toContain('return "Thinking";');
     expect(timeline).toContain("bag.thinking() &&");
     expect(timeline).toContain("!bag.compacting() &&");
-    expect(timeline).toContain("{activeWaitLabel()} {thinkingElapsed()}");
+    expect(timeline).toContain("<span>{activeWaitLabel()}</span>");
+    expect(timeline).not.toContain("thinkingElapsed()");
+    expect(timeline).not.toContain('class="step thinking"');
+    expect(timeline).toContain('class="step reply-thinking"');
+    expect(timeline).toContain('class="reply-thinking-dots"');
     expect(timeline).toContain('label="thinking"');
     expect(timeline).not.toContain("const compactingTokenPrompt = () =>");
     expect(timeline).not.toContain("tokens before compaction");
