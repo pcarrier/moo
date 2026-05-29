@@ -121,6 +121,15 @@ describe("compaction prompts", () => {
     ).toEqual({ used: 220_000, source: "compaction" });
   });
 
+  test("autocompaction replaces stale compaction pressure with fresh estimates", () => {
+    expect(
+      tokenPressureForCompactionCheck(2_000, 3_000, {
+        used: 210_000,
+        source: "compaction",
+      }),
+    ).toEqual({ used: 3_000, source: "context" });
+  });
+
   test("reports available tokens before compaction", () => {
     expect(availableTokensBeforeCompaction(190_000, 200_000)).toBe(10_000);
     expect(availableTokensBeforeCompaction(210_000, 200_000)).toBe(0);
@@ -172,6 +181,27 @@ describe("compaction prompts", () => {
     expect(fitted[1].content).toContain("Please inspect this image.");
     expect(fitted[1].content).toContain("image attachment omitted from compaction request");
     expect(Array.isArray(fitted[1].content)).toBe(false);
+  });
+
+  test("estimates image attachments without counting base64 bytes", () => {
+    const messagesForImageSize = (base64Size: number) => [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Please inspect this image." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64," + "A".repeat(base64Size) },
+          },
+        ],
+      },
+    ];
+
+    const small = estimateTokens(messagesForImageSize(100));
+    const large = estimateTokens(messagesForImageSize(500_000));
+
+    expect(large).toBe(small);
+    expect(large).toBeLessThan(2_000);
   });
 
   test("continuation message can include current TODO reminders", () => {

@@ -3,11 +3,26 @@ import { truncate } from "../lib";
 // Compact when the next prompt would consume more than half the model's
 // context window by default. Token count is a chars-÷-4 estimate; calibration
 // tuned to English-with-code prose.
+const IMAGE_ATTACHMENT_ESTIMATED_TOKENS = 1_024;
+const IMAGE_ATTACHMENT_ESTIMATED_CHARS = IMAGE_ATTACHMENT_ESTIMATED_TOKENS * 4;
+
+function isImageContentPart(value: any): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return (
+    value.type === "image_url" ||
+    value.type === "input_image" ||
+    value.type === "image" ||
+    value.image_url != null ||
+    value.source?.type === "base64"
+  );
+}
+
 function estimateTokenChars(value: any): number {
   if (value == null) return 0;
   if (typeof value === "string") return value.length;
   if (typeof value === "number" || typeof value === "boolean") return String(value).length;
   if (Array.isArray(value)) return value.reduce((sum, item) => sum + estimateTokenChars(item), 0);
+  if (isImageContentPart(value)) return IMAGE_ATTACHMENT_ESTIMATED_CHARS;
   try {
     return JSON.stringify(value).length;
   } catch {

@@ -1577,6 +1577,7 @@ export function tokenPressureForCompactionCheck(
     compactionPromptTokens,
     requestPromptTokens,
   );
+  if (previousPressure?.source === "compaction") return estimated;
   const previousUsed = tokenPressureCount(previousPressure?.used);
   if (previousUsed <= estimated.used) return estimated;
   return {
