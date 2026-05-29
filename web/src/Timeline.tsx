@@ -1199,6 +1199,8 @@ async function readImageAttachment(
     type: "image",
     mimeType: JPEG_ATTACHMENT_MIME_TYPE,
     dataUrl: canvasToDataUrl(canvas),
+    width: scaled.width,
+    height: scaled.height,
     name: file.name || "pasted image.jpg",
   };
 }

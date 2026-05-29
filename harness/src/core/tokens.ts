@@ -1,10 +1,20 @@
 import { truncate } from "../lib";
 
 // Compact when the next prompt would consume more than half the model's
-// context window by default. Token count is a chars-÷-4 estimate; calibration
-// tuned to English-with-code prose.
-const IMAGE_ATTACHMENT_ESTIMATED_TOKENS = 1_024;
-const IMAGE_ATTACHMENT_ESTIMATED_CHARS = IMAGE_ATTACHMENT_ESTIMATED_TOKENS * 4;
+// context window by default. Text token count is a chars-÷-4 estimate;
+// calibration tuned to English-with-code prose. Image parts are different:
+// providers charge by pixels/tiles, not by data-URL byte length.
+const FALLBACK_IMAGE_ATTACHMENT_TOKENS = 1_024;
+const IMAGE_ATTACHMENT_LOW_DETAIL_TOKENS = 85;
+const OPENAI_IMAGE_BASE_TOKENS = 85;
+const OPENAI_IMAGE_TILE_TOKENS = 170;
+const OPENAI_IMAGE_TILE_SIZE = 512;
+const OPENAI_IMAGE_MAX_SIDE = 2_048;
+const OPENAI_IMAGE_SHORT_SIDE = 768;
+const ANTHROPIC_IMAGE_PIXELS_PER_TOKEN = 750;
+const MAX_IMAGE_DIMENSION_FOR_ESTIMATE = 100_000;
+
+type ImageDimensions = { width: number; height: number };
 
 function isImageContentPart(value: any): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -17,12 +27,77 @@ function isImageContentPart(value: any): boolean {
   );
 }
 
+function positiveImageDimension(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(MAX_IMAGE_DIMENSION_FOR_ESTIMATE, Math.max(1, Math.floor(n)));
+}
+
+function imagePartDimensions(value: any): ImageDimensions | null {
+  const width = positiveImageDimension(
+    value?.width ?? value?.image_url?.width ?? value?.source?.width,
+  );
+  const height = positiveImageDimension(
+    value?.height ?? value?.image_url?.height ?? value?.source?.height,
+  );
+  return width && height ? { width, height } : null;
+}
+
+function imagePartDetail(value: any): string | null {
+  const detail = value?.detail ?? value?.image_url?.detail;
+  return typeof detail === "string" ? detail.toLowerCase() : null;
+}
+
+function scaleImageToFit(
+  dims: ImageDimensions,
+  maxSide: number,
+): ImageDimensions {
+  const side = Math.max(dims.width, dims.height);
+  if (side <= maxSide) return dims;
+  const scale = maxSide / side;
+  return {
+    width: Math.max(1, Math.floor(dims.width * scale)),
+    height: Math.max(1, Math.floor(dims.height * scale)),
+  };
+}
+
+function openAIHighDetailImageTokens(dims: ImageDimensions): number {
+  let scaled = scaleImageToFit(dims, OPENAI_IMAGE_MAX_SIDE);
+  const shortSide = Math.min(scaled.width, scaled.height);
+  if (shortSide > OPENAI_IMAGE_SHORT_SIDE) {
+    const scale = OPENAI_IMAGE_SHORT_SIDE / shortSide;
+    scaled = {
+      width: Math.max(1, Math.floor(scaled.width * scale)),
+      height: Math.max(1, Math.floor(scaled.height * scale)),
+    };
+  }
+  const tiles =
+    Math.ceil(scaled.width / OPENAI_IMAGE_TILE_SIZE) *
+    Math.ceil(scaled.height / OPENAI_IMAGE_TILE_SIZE);
+  return OPENAI_IMAGE_BASE_TOKENS + OPENAI_IMAGE_TILE_TOKENS * tiles;
+}
+
+function anthropicImageTokens(dims: ImageDimensions): number {
+  return Math.ceil((dims.width * dims.height) / ANTHROPIC_IMAGE_PIXELS_PER_TOKEN);
+}
+
+export function estimateImageAttachmentTokens(value: any): number {
+  if (imagePartDetail(value) === "low") return IMAGE_ATTACHMENT_LOW_DETAIL_TOKENS;
+  const dims = imagePartDimensions(value);
+  if (!dims) return FALLBACK_IMAGE_ATTACHMENT_TOKENS;
+  return Math.max(
+    IMAGE_ATTACHMENT_LOW_DETAIL_TOKENS,
+    openAIHighDetailImageTokens(dims),
+    anthropicImageTokens(dims),
+  );
+}
+
 function estimateTokenChars(value: any): number {
   if (value == null) return 0;
   if (typeof value === "string") return value.length;
   if (typeof value === "number" || typeof value === "boolean") return String(value).length;
   if (Array.isArray(value)) return value.reduce((sum, item) => sum + estimateTokenChars(item), 0);
-  if (isImageContentPart(value)) return IMAGE_ATTACHMENT_ESTIMATED_CHARS;
+  if (isImageContentPart(value)) return estimateImageAttachmentTokens(value) * 4;
   try {
     return JSON.stringify(value).length;
   } catch {

@@ -20,6 +20,7 @@ import {
   compactionProviderForRequest,
   effortLevelsForProvider,
   compactionRequestTokenLimit,
+  estimateImageAttachmentTokens,
   estimateTokens,
   fitCompactionSummaryMessages,
   MAX_CONSECUTIVE_COMPACTIONS,
@@ -183,8 +184,8 @@ describe("compaction prompts", () => {
     expect(Array.isArray(fitted[1].content)).toBe(false);
   });
 
-  test("estimates image attachments without counting base64 bytes", () => {
-    const messagesForImageSize = (base64Size: number) => [
+  test("estimates image attachments from dimensions without counting base64 bytes", () => {
+    const messagesForImageSize = (base64Size: number, width = 1024, height = 768) => [
       {
         role: "user",
         content: [
@@ -192,6 +193,8 @@ describe("compaction prompts", () => {
           {
             type: "image_url",
             image_url: { url: "data:image/png;base64," + "A".repeat(base64Size) },
+            width,
+            height,
           },
         ],
       },
@@ -201,7 +204,11 @@ describe("compaction prompts", () => {
     const large = estimateTokens(messagesForImageSize(500_000));
 
     expect(large).toBe(small);
-    expect(large).toBeLessThan(2_000);
+    expect(estimateImageAttachmentTokens({ type: "image_url", width: 1024, height: 768 })).toBe(1_049);
+    expect(estimateImageAttachmentTokens({ type: "image_url", width: 256, height: 256 })).toBe(255);
+    expect(estimateImageAttachmentTokens({ type: "image_url", image_url: { detail: "low" }, width: 4096, height: 4096 })).toBe(85);
+    expect(estimateTokens(messagesForImageSize(100, 256, 256))).toBeLessThan(small);
+    expect(large).toBeLessThan(1_200);
   });
 
   test("continuation message can include current TODO reminders", () => {
@@ -326,6 +333,32 @@ describe("compaction prompts", () => {
     expect(body.instructions).toContain("stable system");
     expect(body.instructions).toContain("Current TODO reminders:\n- todo 1: fix tests");
     expect(JSON.stringify(body.input)).not.toContain("todo 1: fix tests");
+  });
+
+  test("image dimensions stay out of provider request bodies", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "inspect" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/jpeg;base64,abc" },
+            width: 1024,
+            height: 768,
+          },
+        ],
+      },
+    ];
+    const provider = { name: "openai" as const, apiKey: "key", baseUrl: "https://llm.test/v1", model: "gpt-4.1", effort: null, keyEnvHint: "KEY" };
+
+    const chatRequest = buildStreamingLLMRequest({ ...provider, name: "qwen" as const, model: "qwen-vl" }, messages, null);
+    const responsesRequest = buildStreamingLLMRequest(provider, messages, null);
+
+    expect(JSON.stringify((chatRequest.body as any).messages)).not.toContain("width");
+    expect(JSON.stringify((chatRequest.body as any).messages)).not.toContain("height");
+    expect(JSON.stringify((responsesRequest.body as any).input)).not.toContain("width");
+    expect(JSON.stringify((responsesRequest.body as any).input)).not.toContain("height");
   });
 
   test("OpenAI Responses requests reasoning summaries for gpt-5.5", () => {

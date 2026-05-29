@@ -37,6 +37,7 @@ import {
 } from "./llm_models";
 export {
   compactionRequestTokenLimit,
+  estimateImageAttachmentTokens,
   estimateTokens,
   fitCompactionSummaryMessages,
 } from "./core/tokens";
@@ -795,7 +796,7 @@ export function buildStreamingLLMRequest(
       }
     : {
         model: provider.model,
-        messages: outboundMessages,
+        messages: stripLocalImageMetadataFromMessages(outboundMessages),
         stream: true,
         // Ask OpenAI-compatible endpoints to include token usage in the final
         // SSE chunk. Endpoints that ignore the option simply drop it.
@@ -1026,9 +1027,43 @@ function toResponsesContent(role: string, content: any): any {
         typeof part.image_url === "string"
           ? part.image_url
           : part.image_url?.url;
-      return { type: "input_image", image_url: imageUrl };
+      const detail =
+        typeof part.detail === "string"
+          ? part.detail
+          : typeof part.image_url?.detail === "string"
+            ? part.image_url.detail
+            : undefined;
+      return detail
+        ? { type: "input_image", image_url: imageUrl, detail }
+        : { type: "input_image", image_url: imageUrl };
     }
     return part;
+  });
+}
+
+function stripLocalImageMetadataFromMessages(messages: any[]): any[] {
+  return messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message;
+    return {
+      ...message,
+      content: message.content.map((part: any) => {
+        if (part?.type !== "image_url") return part;
+        const imageUrl =
+          typeof part.image_url === "string"
+            ? part.image_url
+            : part.image_url?.url;
+        const detail =
+          typeof part.detail === "string"
+            ? part.detail
+            : typeof part.image_url?.detail === "string"
+              ? part.image_url.detail
+              : undefined;
+        return {
+          type: "image_url",
+          image_url: detail ? { url: imageUrl, detail } : { url: imageUrl },
+        };
+      }),
+    };
   });
 }
 
@@ -2413,6 +2448,9 @@ function userInputEntryFromPayload(at: number, payload: any): UserInputEntry | n
           .map((a: any) => ({
             type: "image_url",
             image_url: { url: a.dataUrl },
+            ...(typeof a.width === "number" && typeof a.height === "number"
+              ? { width: a.width, height: a.height }
+              : {}),
           })),
       ],
     };

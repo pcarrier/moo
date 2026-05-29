@@ -83,6 +83,8 @@ export type ImageAttachment = {
   type: "image";
   mimeType: string;
   dataUrl: string;
+  width?: number;
+  height?: number;
   name?: string;
 };
 

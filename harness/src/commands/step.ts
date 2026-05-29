@@ -89,6 +89,8 @@ type PendingAttachment = {
   type: "image";
   mimeType: string;
   dataUrl: string;
+  width?: number;
+  height?: number;
   name?: string;
 };
 type PendingMessage = {
@@ -108,6 +110,12 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 
 function messageArray(value: unknown): LlmMessage[] | null {
   return Array.isArray(value) ? value : null;
+}
+
+function sanitizeImageDimension(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(1, Math.floor(n));
 }
 
 function sanitizePendingMessage(value: unknown): PendingMessage | null {
@@ -800,12 +808,17 @@ export function sanitizeAttachments(value: unknown): PendingAttachment[] {
         a.dataUrl.startsWith("data:image/"),
     )
     .slice(0, 8)
-    .map((a) => ({
-      type: "image" as const,
-      mimeType: typeof a.mimeType === "string" ? a.mimeType : "image/png",
-      dataUrl: String(a.dataUrl),
-      ...(typeof a.name === "string" ? { name: a.name } : {}),
-    }));
+    .map((a) => {
+      const width = sanitizeImageDimension(a.width);
+      const height = sanitizeImageDimension(a.height);
+      return {
+        type: "image" as const,
+        mimeType: typeof a.mimeType === "string" ? a.mimeType : "image/png",
+        dataUrl: String(a.dataUrl),
+        ...(width && height ? { width, height } : {}),
+        ...(typeof a.name === "string" ? { name: a.name } : {}),
+      };
+    });
 }
 
 export function chatOngoingRef(chatId: string): string {
@@ -1577,14 +1590,13 @@ export function tokenPressureForCompactionCheck(
     compactionPromptTokens,
     requestPromptTokens,
   );
-  if (previousPressure?.source === "compaction") return estimated;
-  const previousUsed = tokenPressureCount(previousPressure?.used);
+  // Provider usage from the last ordinary LLM call is the most accurate signal
+  // we have, so keep it as a floor. Compaction-only estimates are local guesses
+  // and must not force another compaction when the fresh request is now small.
+  if (previousPressure?.source !== "context") return estimated;
+  const previousUsed = tokenPressureCount(previousPressure.used);
   if (previousUsed <= estimated.used) return estimated;
-  return {
-    used: previousUsed,
-    source:
-      previousPressure?.source === "compaction" ? "compaction" : "context",
-  };
+  return { used: previousUsed, source: "context" };
 }
 
 export async function stepPrepareCommand(input: Input) {
