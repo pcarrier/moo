@@ -71,9 +71,7 @@ fn op_fs_delete(
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
-    let recursive = args
-        .get(1)
-        .boolean_value(scope);
+    let recursive = args.get(1).boolean_value(scope);
     let meta = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) => {
