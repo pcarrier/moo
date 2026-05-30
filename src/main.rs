@@ -5,6 +5,7 @@ mod cdp;
 mod driver;
 mod host;
 mod ops;
+mod passphrase;
 mod pool;
 mod runtime;
 mod server;
@@ -78,10 +79,18 @@ enum Cmd {
 #[derive(Subcommand)]
 enum PskCmd {
     /// Set the PSK. Clients must pass `?psk=<value>` (UI takes it from `#psk=`).
-    Set { value: String },
+    /// The value is stored as an argon2id hash by default; pass --plaintext to
+    /// store it verbatim.
+    Set {
+        value: String,
+        /// Store the PSK verbatim instead of hashing it with argon2id.
+        #[arg(long)]
+        plaintext: bool,
+    },
     /// Remove the PSK so the web shell accepts any client.
     Clear,
-    /// Print the current PSK value, or nothing if unset.
+    /// Print the stored PSK (an argon2id hash unless set with --plaintext), or
+    /// nothing if unset.
     Show,
 }
 
@@ -231,12 +240,17 @@ fn real_main(cli: Cli) -> Result<(), String> {
     if let Cmd::Psk { action } = &cli.command {
         let conn = host::open_db(&db_path)?;
         return match action {
-            PskCmd::Set { value } => {
+            PskCmd::Set { value, plaintext } => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
                     return Err("psk value must be non-empty".to_string());
                 }
-                settings::set(&conn, settings::PSK_KEY, trimmed)?;
+                let stored = if *plaintext {
+                    trimmed.to_string()
+                } else {
+                    passphrase::hash(trimmed)?
+                };
+                settings::set(&conn, settings::PSK_KEY, &stored)?;
                 Ok(())
             }
             PskCmd::Clear => {

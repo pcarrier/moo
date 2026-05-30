@@ -281,7 +281,7 @@ fn write_psk_status(stream: &mut TcpStream, db: &str, query: Option<&str>) -> st
     };
     let valid = query
         .and_then(|q| query_get(q, "psk"))
-        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()));
+        .is_some_and(|provided| crate::passphrase::verify(&provided, &expected));
     let body = format!(r#"{{"required":true,"valid":{valid}}}"#);
     write_response(
         stream,
@@ -302,7 +302,7 @@ fn psk_ok(db: &str, query: Option<&str>) -> bool {
     let Some(provided) = query.and_then(|q| query_get(q, "psk")) else {
         return false;
     };
-    constant_time_eq(provided.as_bytes(), expected.as_bytes())
+    crate::passphrase::verify(&provided, &expected)
 }
 
 fn serve_raw_file(stream: &mut TcpStream, path: &str, db: &str) -> std::io::Result<()> {
@@ -410,7 +410,7 @@ fn raw_path_psk_ok(db: &str, provided: Option<&str>) -> bool {
     let Some(provided) = provided else {
         return false;
     };
-    constant_time_eq(provided.as_bytes(), expected.as_bytes())
+    crate::passphrase::verify(provided, &expected)
 }
 
 struct RawFileRequest {
@@ -597,17 +597,6 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 fn legacy_facts_route_redirect(path: &str, query: Option<&str>) -> Option<String> {
