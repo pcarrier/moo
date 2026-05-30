@@ -29,6 +29,7 @@ import {
 import { formatTodosForPrompt } from "./todos";
 import {
   modelContextWindow,
+  modelMetadataFor,
   inferProviderForModelId,
   modelLongContextUsageKey,
   modelSupportsVision,
@@ -750,7 +751,7 @@ export function buildStreamingLLMRequest(
     const anthropic = toAnthropicMessages(providerMessages);
     const body: Record<string, unknown> = {
       model: provider.model,
-      max_tokens: anthropicMaxTokens(),
+      max_tokens: anthropicMaxTokens(provider.model),
       messages: anthropic.messages,
       stream: true,
     };
@@ -860,8 +861,8 @@ export function llmProviderHeaders(
   return headers;
 }
 
-function anthropicMaxTokens(): number {
-  return 8192;
+function anthropicMaxTokens(model: string | null | undefined): number {
+  return modelMetadataFor("anthropic", model)?.maxOutputTokens ?? 8192;
 }
 
 export function toAnthropicTools(tools: any[] | null): any[] | null {
