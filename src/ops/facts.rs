@@ -1393,13 +1393,13 @@ fn op_facts_purge_subject_prefix(
         );
         let count = if let Some(graph) = graph {
             tx.execute(
-                "delete from quads where ref_name = ?1 and graph = ?2 and subject like ?3 escape '\'",
+                "delete from quads where ref_name = ?1 and graph = ?2 and subject like ?3 escape '\\'",
                 params![&ref_name, &graph, &like],
             )
             .map_err(|e| e.to_string())?
         } else {
             tx.execute(
-                "delete from quads where ref_name = ?1 and subject like ?2 escape '\'",
+                "delete from quads where ref_name = ?1 and subject like ?2 escape '\\'",
                 params![&ref_name, &like],
             )
             .map_err(|e| e.to_string())?

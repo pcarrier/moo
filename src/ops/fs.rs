@@ -1,5 +1,6 @@
 use glob::glob;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -7,8 +8,15 @@ use rusty_v8 as v8;
 
 use crate::ops::v8util::{
     array_from_strings, required_args, set_object_str, set_object_value, set_return_str,
+    try_set_return_str,
 };
 use crate::runtime::{install_fn, throw};
+
+/// Upper bound on the size of a file `fs_read` will load into memory. Reads of
+/// regular files larger than this, and reads of non-regular files (FIFOs,
+/// character/block devices, sockets) are rejected rather than allowed to
+/// exhaust memory or hang the host thread.
+const MAX_FILE_READ_BYTES: u64 = 256 * 1024 * 1024;
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_fs_read", op_fs_read)?;
@@ -31,12 +39,100 @@ fn op_fs_read(
         return;
     }
     let path = args.get(0).to_rust_string_lossy(scope);
-    match fs::read(&path) {
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            set_return_str(scope, &mut rv, &text);
+
+    // Reject non-regular files (FIFOs, char/block devices, sockets) and
+    // oversized regular files up front, before reading, so they error out
+    // instead of hanging the host thread or exhausting memory. Use
+    // symlink_metadata to avoid following into a special file via a symlink.
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            throw(scope, &format!("fs_read {path}: {e}"));
+            return;
         }
-        Err(e) => throw(scope, &format!("fs_read {path}: {e}")),
+    };
+    let file_type = meta.file_type();
+    if !file_type.is_file() && !file_type.is_symlink() {
+        throw(
+            scope,
+            &format!("fs_read {path}: not a regular file (refusing to read special file)"),
+        );
+        return;
+    }
+
+    let file = match fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            throw(scope, &format!("fs_read {path}: {e}"));
+            return;
+        }
+    };
+    // Re-stat the opened handle: this resolves symlinks and confirms the
+    // underlying object is a regular file (guards against symlink-to-FIFO).
+    match file.metadata() {
+        Ok(m) if !m.file_type().is_file() => {
+            throw(
+                scope,
+                &format!("fs_read {path}: not a regular file (refusing to read special file)"),
+            );
+            return;
+        }
+        Ok(m) if m.len() > MAX_FILE_READ_BYTES => {
+            throw(
+                scope,
+                &format!(
+                    "fs_read {path}: file too large ({} bytes, limit {MAX_FILE_READ_BYTES})",
+                    m.len()
+                ),
+            );
+            return;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            throw(scope, &format!("fs_read {path}: {e}"));
+            return;
+        }
+    }
+
+    // Bounded read: read at most MAX_FILE_READ_BYTES + 1 so a file that grows
+    // past the limit during the read is detected and rejected rather than
+    // streamed without bound.
+    let mut bytes = Vec::new();
+    if let Err(e) = file
+        .take(MAX_FILE_READ_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        throw(scope, &format!("fs_read {path}: {e}"));
+        return;
+    }
+    if bytes.len() as u64 > MAX_FILE_READ_BYTES {
+        throw(
+            scope,
+            &format!("fs_read {path}: file too large (exceeds limit {MAX_FILE_READ_BYTES})"),
+        );
+        return;
+    }
+
+    // Reject non-UTF-8/binary content instead of lossily substituting bytes,
+    // which would silently corrupt the file on a read-modify-write round trip.
+    let text = match String::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => {
+            throw(
+                scope,
+                &format!("fs_read {path}: file is not valid UTF-8 (binary read not supported)"),
+            );
+            return;
+        }
+    };
+
+    // Detect when the string is too large for V8 (exceeds its max string
+    // length) and throw a clear error instead of silently returning undefined.
+    if !try_set_return_str(scope, &mut rv, &text) {
+        throw(
+            scope,
+            &format!("fs_read {path}: file too large to return as string"),
+        );
     }
 }
 
@@ -57,9 +153,55 @@ fn op_fs_write(
         throw(scope, &format!("fs_write mkdir {parent:?}: {e}"));
         return;
     }
-    if let Err(e) = fs::write(&path, content.as_bytes()) {
+    if let Err(e) = atomic_write(Path::new(&path), content.as_bytes()) {
         throw(scope, &format!("fs_write {path}: {e}"));
     }
+}
+
+/// Write `content` to `path` atomically: write to a temp file in the same
+/// directory, fsync it, then rename over the target. On error (e.g. ENOSPC
+/// mid-write, crash) the original file is left intact. The temp file is in the
+/// same directory so the rename stays on one filesystem and is atomic.
+fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = dir.unwrap_or_else(|| Path::new("."));
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "fs_write".to_string());
+    let tmp_path = dir.join(format!(".{file_name}.moo-tmp-{}", std::process::id()));
+
+    // Preserve the existing file's permissions onto the temp file, since
+    // rename does not carry them over from the target.
+    let existing_perms = fs::metadata(path).ok().map(|m| m.permissions());
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(content)?;
+        tmp.sync_all()?;
+        if let Some(perms) = existing_perms {
+            tmp.set_permissions(perms)?;
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    // Best-effort fsync of the parent directory so the rename is durable.
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+
+    Ok(())
 }
 
 fn op_fs_delete(

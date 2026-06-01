@@ -27,6 +27,27 @@ struct StoredObjectJson {
 
 const OBJECTS_GET_CHUNK_SIZE: usize = 500;
 
+/// Reads a V8 value as a Rust string without lossy U+FFFD substitution.
+///
+/// The content store is content-addressable and presents stored bytes
+/// verbatim (`bytesBase64`), so silently replacing un-encodable code units
+/// (lone/unpaired UTF-16 surrogates) with U+FFFD would corrupt both the
+/// stored bytes and their hash. Instead we read the raw UTF-16 code units and
+/// reject (Err) any input that is not well-formed Unicode.
+fn to_rust_string_strict(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+) -> Result<String, String> {
+    let s = value
+        .to_string(scope)
+        .ok_or_else(|| "expected a string argument".to_string())?;
+    let len = s.length();
+    let mut units = vec![0u16; len];
+    s.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+    String::from_utf16(&units)
+        .map_err(|_| "string contains unpaired surrogates and cannot be stored".to_string())
+}
+
 fn op_object_put(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -35,8 +56,20 @@ fn op_object_put(
     if !required_args(scope, &args, 2, "object_put requires (kind, content)") {
         return;
     }
-    let kind = args.get(0).to_rust_string_lossy(scope);
-    let content = args.get(1).to_rust_string_lossy(scope);
+    let kind = match to_rust_string_strict(scope, args.get(0)) {
+        Ok(k) => k,
+        Err(e) => {
+            throw(scope, &e);
+            return;
+        }
+    };
+    let content = match to_rust_string_strict(scope, args.get(1)) {
+        Ok(c) => c,
+        Err(e) => {
+            throw(scope, &e);
+            return;
+        }
+    };
     let hash = match put_object(&kind, content.as_bytes()) {
         Ok(hash) => hash,
         Err(e) => {

@@ -140,7 +140,7 @@ function enqueuePayload(command: "enqueue", args: string[]): Input {
 }
 
 function submitPayload(command: "submit", args: string[]): Input {
-  return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, requestId: args[1], values: parseJson(args[2], {}) };
+  return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, requestId: args[1], values: parseJsonStrict(args[2], {}, "submit values") };
 }
 
 function newChatPayload(command: "chat-new", args: string[]): Input {
@@ -242,7 +242,7 @@ function mcpOAuthCompletePayload(command: "mcp-oauth-complete", args: string[]):
 }
 
 function mcpCallPayload(command: "mcp-call", args: string[]): Input {
-  return { command, serverId: args[0], name: args[1], arguments: parseJson(args.slice(2).join(" "), {}) };
+  return { command, serverId: args[0], name: args[1], arguments: parseJsonStrict(args.slice(2).join(" "), {}, "mcp-call arguments") };
 }
 
 function uiIdPayload(command: UiCommandName, args: string[]): Input {
@@ -260,11 +260,11 @@ function instancePayload(command: UiCommandName, args: string[]): Input {
 }
 
 function uiStatePayload(command: "ui-state-set", args: string[]): Input {
-  return { command, instanceId: args[0], state: parseJson(args[1], {}) };
+  return { command, instanceId: args[0], state: parseJsonStrict(args[1], {}, "ui-state-set state") };
 }
 
 function uiCallPayload(command: "ui-call", args: string[]): Input {
-  return { command, uiId: args[0], name: args[1], input: parseJson(args.slice(2).join(" "), {}) };
+  return { command, uiId: args[0], name: args[1], input: parseJsonStrict(args.slice(2).join(" "), {}, "ui-call input") };
 }
 
 function vocabDefinePayload(command: "vocab-define", args: string[]): Input {
@@ -273,6 +273,19 @@ function vocabDefinePayload(command: "vocab-define", args: string[]): Input {
 
 function parseJson(text: string | undefined, fallback: unknown) {
   try { return JSON.parse(text || ""); } catch { return fallback; }
+}
+
+// Like parseJson, but only falls back when the argument was genuinely
+// omitted/empty. A present-but-unparseable JSON argument is a caller mistake
+// and must surface as an error rather than silently becoming the fallback
+// (which would run the command with empty arguments and wrong side effects).
+function parseJsonStrict(text: string | undefined, fallback: unknown, label: string) {
+  if (text == null || text.trim() === "") return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`invalid JSON for ${label}: ${text}`);
+  }
 }
 
 function isFalseArg(value: string | undefined): boolean {

@@ -81,6 +81,8 @@ type LlmAccumulatorState = {
   deepseekThinkOpen: boolean;
   deepseekTagBuffer: string;
   lastTokenProgressUsed: number;
+  contentCodePoints: number;
+  lastChatToolIndex: number | null;
   anthropicToolIndex: number | null;
   anthropicToolBlockToCall: Record<string, number>;
   anthropicThinkingBlockIndex: number | null;
@@ -131,6 +133,8 @@ export function llmStreamInitEffect(
             deepseekThinkOpen: false,
             deepseekTagBuffer: "",
             lastTokenProgressUsed: estimated,
+            contentCodePoints: 0,
+            lastChatToolIndex: null,
             anthropicToolIndex: null,
             anthropicToolBlockToCall: {},
             anthropicThinkingBlockIndex: null,
@@ -450,6 +454,16 @@ function normalizeLlmAccumulatorState(raw: unknown): LlmAccumulatorState {
         : "",
     lastTokenProgressUsed:
       Number(isObject(raw) ? (raw.lastTokenProgressUsed ?? 0) : 0) || 0,
+    contentCodePoints:
+      isObject(raw) && Number.isFinite(Number(raw.contentCodePoints))
+        ? Math.max(0, Math.floor(Number(raw.contentCodePoints)))
+        : isObject(raw) && typeof raw.content === "string"
+          ? Array.from(raw.content).length
+          : 0,
+    lastChatToolIndex:
+      isObject(raw) && Number.isFinite(Number(raw.lastChatToolIndex))
+        ? Number(raw.lastChatToolIndex)
+        : null,
     anthropicToolIndex:
       isObject(raw) && Number.isFinite(Number(raw.anthropicToolIndex))
         ? Number(raw.anthropicToolIndex)
@@ -991,10 +1005,25 @@ function accumulateLlmStreamEvent(
     for (const rawTc of delta.tool_calls) {
       const tc = isObject(rawTc) ? rawTc : {};
       const fn = isObject(tc.function) ? tc.function : {};
-      const i =
-        Number.isFinite(Number(tc.index)) && Number(tc.index) >= 0
-          ? Math.floor(Number(tc.index))
-          : 0;
+      const hasIndex =
+        Number.isFinite(Number(tc.index)) && Number(tc.index) >= 0;
+      const introducesNewCall =
+        (typeof tc.id === "string" && tc.id) ||
+        (typeof fn.name === "string" && fn.name);
+      let i: number;
+      if (hasIndex) {
+        i = Math.floor(Number(tc.index));
+      } else if (introducesNewCall) {
+        // No usable index but this fragment starts a new call (carries id/name):
+        // allocate a fresh slot rather than clobbering slot 0.
+        i = state.toolCalls.length || 0;
+      } else if (state.lastChatToolIndex !== null) {
+        // Pure arguments continuation with no index: append to the last slot.
+        i = state.lastChatToolIndex;
+      } else {
+        i = 0;
+      }
+      state.lastChatToolIndex = i;
       while (state.toolCalls.length <= i) {
         state.toolCalls.push({
           id: syntheticToolCallId(state),
@@ -1059,6 +1088,7 @@ function appendLlmContentDelta(
   events: StreamOutputEvent[],
 ) {
   state.content += delta;
+  state.contentCodePoints += Array.from(delta).length;
   const draft = isObject(streamEvents.draftEvent)
     ? (streamEvents.draftEvent as JsonObject)
     : null;
@@ -1077,7 +1107,7 @@ function appendLlmContentDelta(
     const estimated = Number(streamEvents.estimatedPromptTokens ?? 0) || 0;
     const budget =
       Number(streamEvents.tokenBudget ?? tokenEvent.budget ?? 0) || 0;
-    const used = estimated + estimateTextTokens(state.content);
+    const used = estimated + Math.ceil(state.contentCodePoints / 4);
     if (used >= state.lastTokenProgressUsed + 8) {
       events.push(tokenProgressPayload(tokenEvent, used, budget));
       state.lastTokenProgressUsed = used;

@@ -307,8 +307,8 @@ pub async fn stream_chat(
         // this network chunk into one short harness call to avoid waking V8 for
         // every tiny token delta.
         let mut events: Vec<String> = Vec::new();
-        while let Some(idx) = find_double_newline(&buffered) {
-            let event_bytes: Vec<u8> = buffered.drain(..idx + 2).collect();
+        while let Some((idx, term_len)) = find_double_newline(&buffered) {
+            let event_bytes: Vec<u8> = buffered.drain(..idx + term_len).collect();
             event_blocks = event_blocks.saturating_add(1);
             let event = String::from_utf8_lossy(&event_bytes);
             for line in event.split('\n') {
@@ -1460,8 +1460,21 @@ fn publish_returned_events(value: &Value) {
     }
 }
 
-fn find_double_newline(buf: &[u8]) -> Option<usize> {
-    buf.windows(2).position(|w| w == b"\n\n")
+/// Locate the next SSE event boundary (a blank line). Per the SSE spec the
+/// line terminator may be LF, CRLF, or a bare CR, so a blank line is `\n\n`,
+/// `\r\n\r\n`, or `\r\r`. Returns the byte index where the terminator begins
+/// and the terminator's length so the caller drains exactly the matched bytes
+/// (draining a 4-byte CRLF boundary as 2 bytes would leave a stray `\r\n`
+/// prefixed on the next event). The earliest boundary wins; when boundaries
+/// start at the same index the longer (CRLF) terminator is preferred.
+fn find_double_newline(buf: &[u8]) -> Option<(usize, usize)> {
+    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
+    let cr = buf.windows(2).position(|w| w == b"\r\r").map(|i| (i, 2));
+    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| (i, 4));
+    [lf, cr, crlf]
+        .into_iter()
+        .flatten()
+        .min_by(|(ai, alen), (bi, blen)| ai.cmp(bi).then(blen.cmp(alen)))
 }
 
 fn headers_json(headers: &HeaderMap) -> Value {

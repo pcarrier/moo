@@ -41,26 +41,41 @@ export async function appendStep(chatId: string, args: AppendStepArgs): Promise<
   touchChat(chatId);
   const runId = await ensureRun(chatId);
   const stepId = args.stepId || host.newId("step");
-  const previous = host.getRef(refs.head);
   const now = args.at ?? host.now();
-  const adds: Quad[] = [
-    [refs.graph, runId, "rdf:type", "agent:Run"],
-    [refs.graph, runId, "agent:chat", refs.graph],
-    [refs.graph, stepId, "rdf:type", "agent:Step"],
-    [refs.graph, stepId, "rdf:type", stepClass(args.kind)],
-    [refs.graph, stepId, "agent:createdBy", "agent:moo"],
-    [refs.graph, stepId, "agent:run", runId],
-    [refs.graph, stepId, "agent:kind", args.kind],
-    [refs.graph, stepId, "agent:status", args.status],
-    [refs.graph, stepId, "agent:createdAt", String(now)],
-  ];
-  if (previous) adds.push([refs.graph, stepId, "agent:parent", previous]);
-  if (args.payloadHash) adds.push([refs.graph, stepId, "agent:payload", args.payloadHash]);
-  for (const [predicate, object] of args.extras || []) {
-    adds.push([refs.graph, stepId, predicate, object]);
+
+  // The head pointer can be raced by a detached background runTS appending to
+  // the same chat from a different isolate. Read-modify-write of refs.head is
+  // not atomic at the JS level (the read and write are separate DB-lock
+  // acquisitions), so a plain setRef would lose the earlier append from the
+  // head chain. Compute the parent edge and CAS the head atomically, retrying
+  // against the freshly observed head on contention so the timeline stays
+  // linear and ordered.
+  for (;;) {
+    const previous = host.getRef(refs.head);
+    const adds: Quad[] = [
+      [refs.graph, runId, "rdf:type", "agent:Run"],
+      [refs.graph, runId, "agent:chat", refs.graph],
+      [refs.graph, stepId, "rdf:type", "agent:Step"],
+      [refs.graph, stepId, "rdf:type", stepClass(args.kind)],
+      [refs.graph, stepId, "agent:createdBy", "agent:moo"],
+      [refs.graph, stepId, "agent:run", runId],
+      [refs.graph, stepId, "agent:kind", args.kind],
+      [refs.graph, stepId, "agent:status", args.status],
+      [refs.graph, stepId, "agent:createdAt", String(now)],
+    ];
+    if (previous) adds.push([refs.graph, stepId, "agent:parent", previous]);
+    if (args.payloadHash) adds.push([refs.graph, stepId, "agent:payload", args.payloadHash]);
+    for (const [predicate, object] of args.extras || []) {
+      adds.push([refs.graph, stepId, predicate, object]);
+    }
+    assertFactObjects(adds);
+    if (host.compareAndSetRef(refs.head, previous, stepId)) {
+      // Only persist the step's facts once we have won the head slot, so a
+      // losing attempt does not leave a parent edge pointing at a stale head.
+      host.swapFacts(refs.facts, EMPTY_JSON_ARRAY, JSON.stringify(adds));
+      return { runId, stepId, previous, now };
+    }
+    // Lost the race: another append advanced the head. Re-read and retry with
+    // the new parent.
   }
-  assertFactObjects(adds);
-  host.swapFacts(refs.facts, EMPTY_JSON_ARRAY, JSON.stringify(adds));
-  host.setRef(refs.head, stepId);
-  return { runId, stepId, previous, now };
 }

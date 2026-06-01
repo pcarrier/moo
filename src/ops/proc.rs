@@ -12,6 +12,11 @@ use crate::runtime::{current_cancel_token, install_fn, throw};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+/// Hard default cap on captured stdout/stderr when the caller does not request
+/// a smaller bound. Prevents an unbounded producer (e.g. `yes`, `cat /dev/zero`)
+/// from exhausting host memory before the timeout fires.
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_proc_run", op_proc_run)?;
     Ok(())
@@ -131,11 +136,10 @@ fn op_proc_run(
             return;
         }
     };
-    if let Some(text) = stdin_text
-        && let Some(mut sin) = child.stdin.take()
-    {
-        let _ = sin.write_all(text.as_bytes());
-    }
+    // Take the stdin handle now, but defer the actual write until after the
+    // stdout/stderr reader threads are spawned (see below) to avoid a pipe
+    // deadlock for filters that stream stdin to stdout.
+    let stdin_handle = child.stdin.take();
     let stdout_pipe = match child.stdout.take() {
         Some(p) => p,
         None => {
@@ -151,20 +155,45 @@ fn op_proc_run(
         }
     };
 
-    let stdout_limit = max_output_bytes;
-    let stderr_limit = max_output_bytes;
+    // Clamp captured output to a sane bound even when the caller passes null,
+    // so a runaway producer cannot OOM the host before the timeout fires.
+    let effective_limit = match max_output_bytes {
+        Some(n) => n.min(DEFAULT_MAX_OUTPUT_BYTES),
+        None => DEFAULT_MAX_OUTPUT_BYTES,
+    };
+    let stdout_limit = Some(effective_limit);
+    let stderr_limit = Some(effective_limit);
     let stdout_thread = thread::spawn(move || read_limited(stdout_pipe, stdout_limit));
     let stderr_thread = thread::spawn(move || read_limited(stderr_pipe, stderr_limit));
+
+    // Feed stdin from a dedicated thread so a child that streams stdin to its
+    // (now drained) stdout cannot deadlock the op thread. The reader threads
+    // above are already running, keeping the output pipes drained. Dropping the
+    // handle after write_all delivers EOF so filters like `cat` can terminate.
+    let stdin_thread = stdin_text.map(|text| {
+        thread::spawn(move || {
+            if let Some(mut sin) = stdin_handle {
+                let _ = sin.write_all(text.as_bytes());
+                drop(sin);
+            }
+        })
+    });
 
     let (status, timed_out, cancelled) =
         match wait_for_child(&mut child, timeout_ms, current_cancel_token()) {
             Ok(result) => result,
             Err(e) => {
+                if let Some(handle) = stdin_thread {
+                    let _ = handle.join();
+                }
                 throw(scope, &e);
                 return;
             }
         };
 
+    if let Some(handle) = stdin_thread {
+        let _ = handle.join();
+    }
     let stdout_capture = stdout_thread.join().unwrap_or_default();
     let stderr_capture = stderr_thread.join().unwrap_or_default();
     let elapsed_ns = started.elapsed().as_nanos() as f64;

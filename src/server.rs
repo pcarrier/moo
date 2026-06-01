@@ -1,9 +1,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::blit;
 use crate::driver;
@@ -14,6 +14,55 @@ use crate::util;
 use crate::ws;
 
 pub type BundleProvider = Arc<dyn Fn() -> Arc<String> + Send + Sync>;
+
+// Bound the header-reading phase so a slow-loris peer that stalls between bytes
+// (or never terminates headers) can't pin a connection/thread indefinitely.
+// This runs before any PSK check, so it must apply to unauthenticated peers.
+const HEADER_PHASE_TIMEOUT: Duration = Duration::from_secs(15);
+// Cap on concurrently-handled connections so an attacker can't exhaust threads
+// and memory by opening many connections at once.
+const MAX_CONCURRENT_CONNECTIONS: usize = 512;
+
+/// A counting semaphore that limits how many connection handler threads can run
+/// at once. A permit is held for the lifetime of the returned guard.
+struct ConnLimiter {
+    count: Mutex<usize>,
+    cap: usize,
+    cv: Condvar,
+}
+
+struct ConnPermit {
+    limiter: Arc<ConnLimiter>,
+}
+
+impl ConnLimiter {
+    fn new(cap: usize) -> Self {
+        ConnLimiter {
+            count: Mutex::new(0),
+            cap,
+            cv: Condvar::new(),
+        }
+    }
+
+    fn acquire(self: &Arc<Self>) -> ConnPermit {
+        let mut count = self.count.lock().unwrap();
+        while *count >= self.cap {
+            count = self.cv.wait(count).unwrap();
+        }
+        *count += 1;
+        ConnPermit {
+            limiter: self.clone(),
+        }
+    }
+}
+
+impl Drop for ConnPermit {
+    fn drop(&mut self) {
+        let mut count = self.limiter.count.lock().unwrap();
+        *count = count.saturating_sub(1);
+        self.limiter.cv.notify_one();
+    }
+}
 
 struct StaticAsset {
     path: &'static str,
@@ -117,9 +166,20 @@ pub fn serve(
     let db = Arc::new(db.to_string());
     eprintln!("moo: {}", listening_message(local_addr));
 
+    let limiter = Arc::new(ConnLimiter::new(MAX_CONCURRENT_CONNECTIONS));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
+                // Bound the header phase so a peer that stalls between bytes (or
+                // never sends a blank line) can't hold the connection/thread
+                // forever. Set timeouts before any try_clone() so they apply to
+                // the clone too. Long-lived WebSocket connections clear/relax
+                // these in handle_request after the upgrade handshake.
+                let _ = s.set_read_timeout(Some(HEADER_PHASE_TIMEOUT));
+                let _ = s.set_write_timeout(Some(HEADER_PHASE_TIMEOUT));
+                // Cap concurrency: block accepting more work than we can handle
+                // so an attacker can't spawn unbounded threads.
+                let permit = limiter.acquire();
                 let bundle = bundle.clone();
                 let db = db.clone();
                 let base_url = base_url.clone();
@@ -128,6 +188,7 @@ pub fn serve(
                     // The /api/ws handler carries both broadcast events and
                     // request/response RPC over a single WebSocket.
                     let _ = handle_request(s, &bundle, ui_html_br, pool, &db, base_url.as_deref());
+                    drop(permit);
                 });
             }
             Err(_) => continue,
@@ -225,6 +286,10 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
+        // The header phase is done; WebSocket connections are long-lived and may
+        // sit idle, so clear the short header-phase timeouts before handoff.
+        let _ = stream.set_read_timeout(None);
+        let _ = stream.set_write_timeout(None);
         return ws::handle(
             stream,
             &key,
@@ -245,6 +310,9 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
+        // Long-lived WebSocket: clear the short header-phase timeouts.
+        let _ = stream.set_read_timeout(None);
+        let _ = stream.set_write_timeout(None);
         return blit::handle_ws(stream, &key);
     }
 
@@ -356,6 +424,19 @@ fn serve_raw_file(stream: &mut TcpStream, path: &str, db: &str) -> std::io::Resu
             b"not found",
         );
     };
+    // Reject a base that canonicalizes to the filesystem root: the
+    // child.starts_with(base) containment check below would be vacuously true
+    // for every path, turning this route into an arbitrary-file-read primitive.
+    // The legacy and base64 route variants can also encode root="/", so guard
+    // here regardless of which parser produced the request.
+    if base_canon.parent().is_none() {
+        return write_response(
+            stream,
+            "403 Forbidden",
+            "text/plain; charset=utf-8",
+            b"forbidden",
+        );
+    }
     let Ok(child_canon) = std::fs::canonicalize(&child) else {
         return write_response(
             stream,
@@ -458,12 +539,11 @@ fn raw_file_request(path: &str) -> Option<RawFileRequest> {
     // (%2Ftmp%2F...), which some browsers/proxies decode before forwarding and
     // turn into a different route. Keeping normal slash-separated path segments
     // also lets iframe src= previews resolve relative assets naturally.
-    if let Some(after_root) = rest.strip_prefix("-/") {
-        return Some(RawFileRequest {
-            psk,
-            root: "/".to_string(),
-            rest: percent_decode(after_root),
-        });
+    if rest.strip_prefix("-/").is_some() {
+        // A bare "-/" yields root="/" (filesystem root), which makes the
+        // containment check in serve_raw_file vacuous and turns this into an
+        // arbitrary-file-read primitive. Reject it; a real root must be given.
+        return None;
     }
     if let Some((encoded_root, encoded_rest)) = rest.split_once("/-/") {
         let root = percent_decode(encoded_root).trim_matches('/').to_string();

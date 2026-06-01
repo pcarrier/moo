@@ -99,10 +99,15 @@ function parseScalar(raw: string): unknown {
 export function parseSkillMarkdown(content: string): { frontmatterRaw: string; frontmatter: SkillFrontmatter; body: string } {
   const text = String(content ?? "");
   if (!text.startsWith("---\n") && text !== "---") return { frontmatterRaw: "", frontmatter: {}, body: text };
-  const end = text.indexOf("\n---", 4);
-  if (end < 0) return { frontmatterRaw: "", frontmatter: {}, body: text };
+  // The closing delimiter must be a standalone `---` (or `...`) line, not an
+  // arbitrary mid-content `\n---` prefix (e.g. a `----` rule or an unindented
+  // `---...` value inside the frontmatter), which would truncate metadata and
+  // leak body text. Match line-anchored after the opening fence.
+  const closing = /\r?\n(?:---|\.\.\.)[ \t]*(?=\r?\n|$)/.exec(text.slice(3));
+  if (!closing) return { frontmatterRaw: "", frontmatter: {}, body: text };
+  const end = 3 + closing.index;
   const frontmatterRaw = text.slice(4, end).trim();
-  const body = text.slice(end + 4).replace(/^\r?\n/, "");
+  const body = text.slice(end + closing[0].length).replace(/^\r?\n/, "");
   const frontmatter: SkillFrontmatter = {};
   const lines = frontmatterRaw.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {

@@ -3429,9 +3429,10 @@ export function createState() {
 
   // Single-flight describe per chat. Multiple in-flight describes can race:
   // a slower, earlier-issued one can clobber the timeline with stale data.
-  // Coalesce into one in-flight + at most one queued re-fetch.
-  let describeInFlight: string | null = null;
-  let describeRequeued = false;
+  // Coalesce into one in-flight + at most one queued re-fetch, keyed per chat
+  // so that switching chats mid-flight does not clobber another chat's marker.
+  const describeInFlight = new Set<string>();
+  const describeRequeued = new Set<string>();
   let timelineMutationSeq = 0;
   const serverTimelineWatermarkByChat = new Map<string, number>();
 
@@ -3457,12 +3458,12 @@ export function createState() {
       opts.showRefreshing !== false &&
       loadedChatId() === id &&
       timeline().length > 0;
-    if (describeInFlight === id) {
-      describeRequeued = true;
+    if (describeInFlight.has(id)) {
+      describeRequeued.add(id);
       if (showInlineRefresh) setTimelineRefreshing(true);
       return;
     }
-    describeInFlight = id;
+    describeInFlight.add(id);
     const describeSeq = timelineMutationSeq;
     if (showInlineRefresh) setTimelineRefreshing(true);
     try {
@@ -3490,7 +3491,7 @@ export function createState() {
           return;
         }
         if (describeSeq !== timelineMutationSeq) {
-          describeRequeued = true;
+          describeRequeued.add(id);
           return;
         }
         if (updateHasTimeline(r.value) && r.value.timeline.items.length) {
@@ -3508,7 +3509,7 @@ export function createState() {
         cacheDescribeSnapshot(id, r.value, limit);
         if (chatId() !== id) return;
         if (describeSeq !== timelineMutationSeq) {
-          describeRequeued = true;
+          describeRequeued.add(id);
           return;
         }
         applyDescribeValue(id, r.value);
@@ -3517,10 +3518,9 @@ export function createState() {
         reportError(`describe ${id}`, r.error);
       }
     } finally {
-      describeInFlight = null;
+      describeInFlight.delete(id);
       if (chatId() === id) setTimelineRefreshing(false);
-      if (describeRequeued) {
-        describeRequeued = false;
+      if (describeRequeued.delete(id)) {
         queueMicrotask(refreshTimeline);
       }
     }

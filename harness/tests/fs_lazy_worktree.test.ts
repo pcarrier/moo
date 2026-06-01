@@ -99,7 +99,7 @@ function addFile(path: string, content: string) {
 (globalThis as any).__op_fs_glob = () => [];
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
-(globalThis as any).__op_ref_cas = () => true;
+(globalThis as any).__op_ref_cas = (name: string, expected: string | null, next: string) => { const cur = refs.get(name) ?? null; if (cur !== (expected ?? null)) return false; refs.set(name, next); return true; };
 (globalThis as any).__op_ref_delete = () => true;
 (globalThis as any).__op_refs_list = () => [];
 (globalThis as any).__op_refs_entries = () => [];

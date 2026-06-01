@@ -13,6 +13,7 @@ const env = new Map<string, string>();
 (globalThis as any).__op_env_get = (name: string) => env.get(name) ?? null;
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
+(globalThis as any).__op_ref_cas = (name: string, expected: string | null, next: string) => { const __cur = refs.has(name) ? refs.get(name) : null; if (__cur !== (expected ?? null)) return false; refs.set(name, next); return true; };
 (globalThis as any).__op_object_put = (kind: string, content: string) => {
   const hash = "sha256:" + String(++objectId).padStart(64, "0");
   objects.set(hash, { kind, content });

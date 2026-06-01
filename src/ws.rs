@@ -379,15 +379,43 @@ fn run_ts_cancel_command(
     })
 }
 
+/// How long a worker thread will wait to enqueue a run-result reply when the
+/// writer queue is momentarily full (e.g. a streaming session is flooding the
+/// shared queue with droppable broadcast frames). Unlike broadcast events, an
+/// RPC reply must not be silently dropped: dropping it makes the client RPC
+/// time out and retry a command that already ran, causing duplicate side
+/// effects. We wait (bounded) so a transient backlog drains; only a truly
+/// dead/stalled client (queue still full after the timeout) loses the reply,
+/// and that connection is torn down anyway.
+const RUN_RESULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn send_run_result(writer_tx: &mpsc::SyncSender<String>, id: &str, result: Value) {
     let frame = json!({
         "kind": "run-result",
         "id": id,
         "result": result,
     });
-    // try_send (not send) so a stalled client can't block this worker thread
-    // forever on a full queue; a dead client drops the reply and reconnects.
-    let _ = writer_tx.try_send(frame.to_string());
+    let mut frame = frame.to_string();
+    // Run-result replies are not droppable (see RUN_RESULT_SEND_TIMEOUT). Try a
+    // non-blocking send first; on a full queue retry with a short backoff so a
+    // transient backlog of droppable broadcast frames doesn't lose the reply.
+    // Only give up if the queue stays full past the timeout (genuinely
+    // dead/stalled client) or the writer is gone. SyncSender::send_timeout is
+    // unstable, so we open-code a bounded wait with try_send.
+    let deadline = std::time::Instant::now() + RUN_RESULT_SEND_TIMEOUT;
+    loop {
+        match writer_tx.try_send(frame) {
+            Ok(()) => return,
+            Err(mpsc::TrySendError::Disconnected(_)) => return,
+            Err(mpsc::TrySendError::Full(returned)) => {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                frame = returned;
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
 }
 fn effective_server_base_url(db: &str, base_url: Option<&str>) -> Option<String> {
     let configured = host::open_settings_db(db)

@@ -36,8 +36,9 @@ fn op_ref_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     let name = args.get(0).to_rust_string_lossy(scope);
     let target = args.get(1).to_rust_string_lossy(scope);
     let r: Result<(), String> = with_db(|conn| {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = now_ms();
-        let old: Option<String> = conn
+        let old: Option<String> = tx
             .query_row(
                 "select target from refs where name = ?1",
                 params![&name],
@@ -45,18 +46,19 @@ fn op_ref_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "insert into refs(name, target, updated_at) values (?1, ?2, ?3)
              on conflict(name) do update set target = excluded.target, updated_at = excluded.updated_at",
             params![&name, &target, now],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "insert into ref_log(name, old_target, new_target, created_at)
              values (?1, ?2, ?3, ?4)",
             params![&name, &old, &target, now],
         )
         .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     });
     match r {
@@ -184,6 +186,10 @@ fn op_refs_list(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
         } else {
+            // prefix_upper_bound could not produce a valid exclusive upper
+            // bound (e.g. the increment broke UTF-8). Run an open-ended scan
+            // but post-filter to names that actually start with the prefix so
+            // we never leak refs outside the requested namespace.
             let mut stmt = conn
                 .prepare_cached("select name from refs where name >= ?1 order by name")
                 .map_err(|e| e.to_string())?;
@@ -192,6 +198,12 @@ fn op_refs_list(
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
+                .map(|names: Vec<String>| {
+                    names
+                        .into_iter()
+                        .filter(|name| name.starts_with(&prefix))
+                        .collect()
+                })
         }
     });
     match names {
@@ -238,6 +250,10 @@ fn op_refs_entries(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
         } else {
+            // prefix_upper_bound could not produce a valid exclusive upper
+            // bound (e.g. the increment broke UTF-8). Run an open-ended scan
+            // but post-filter to names that actually start with the prefix so
+            // we never leak refs outside the requested namespace.
             let mut stmt = conn
                 .prepare_cached("select name, target from refs where name >= ?1 order by name")
                 .map_err(|e| e.to_string())?;
@@ -248,6 +264,12 @@ fn op_refs_entries(
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())
+                .map(|entries: Vec<(String, String)>| {
+                    entries
+                        .into_iter()
+                        .filter(|(name, _)| name.starts_with(&prefix))
+                        .collect()
+                })
         }
     });
     match entries {

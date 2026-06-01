@@ -391,8 +391,7 @@ async function normalizeDirMaterializingChatWorktree(path: string): Promise<stri
   }
 }
 
-export async function loadRecentChatPaths(): Promise<string[]> {
-  const raw = await moo.pointers.get({ name: RECENT_CHAT_PATHS_REF });
+function parseRecentChatPaths(raw: string | null): string[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -402,12 +401,42 @@ export async function loadRecentChatPaths(): Promise<string[]> {
   }
 }
 
-export async function rememberChatPath(path: string, alreadyNormalized = false): Promise<string[]> {
-  const normalized = alreadyNormalized ? path : await normalizeDir(path);
-  const rest = (await loadRecentChatPaths()).filter((p) => p !== normalized);
-  const next = [normalized, ...rest].slice(0, RECENT_CHAT_PATHS_LIMIT);
+async function loadRecentChatPathsRaw(): Promise<{ raw: string | null; parsed: string[] }> {
+  const raw = (await moo.pointers.get({ name: RECENT_CHAT_PATHS_REF })) ?? null;
+  return { raw, parsed: parseRecentChatPaths(raw) };
+}
+
+export async function loadRecentChatPaths(): Promise<string[]> {
+  return parseRecentChatPaths((await moo.pointers.get({ name: RECENT_CHAT_PATHS_REF })) ?? null);
+}
+
+const RECENT_CHAT_PATHS_CAS_ATTEMPTS = 5;
+
+// Atomically read-modify-write the persisted recent-paths list. The host
+// dispatches commands as independent async tasks, so a plain get/compute/set
+// races: two concurrent mutators both read the same snapshot and the second
+// write clobbers the first. CAS against the exact prior raw value (including
+// the null/unset case) and retry on contention.
+async function mutateRecentChatPaths(compute: (current: string[]) => string[]): Promise<string[]> {
+  for (let attempt = 0; attempt < RECENT_CHAT_PATHS_CAS_ATTEMPTS; attempt += 1) {
+    const { raw, parsed } = await loadRecentChatPathsRaw();
+    const next = compute(parsed);
+    const ok = await moo.pointers.cas({ name: RECENT_CHAT_PATHS_REF, expected: raw, next: JSON.stringify(next) });
+    if (ok) return next;
+  }
+  // Best-effort fallback after exhausting retries: write the latest computed value.
+  const { parsed } = await loadRecentChatPathsRaw();
+  const next = compute(parsed);
   await moo.pointers.set({ name: RECENT_CHAT_PATHS_REF, target: JSON.stringify(next) });
   return next;
+}
+
+export async function rememberChatPath(path: string, alreadyNormalized = false): Promise<string[]> {
+  const normalized = alreadyNormalized ? path : await normalizeDir(path);
+  return await mutateRecentChatPaths((current) => {
+    const rest = current.filter((p) => p !== normalized);
+    return [normalized, ...rest].slice(0, RECENT_CHAT_PATHS_LIMIT);
+  });
 }
 
 
@@ -443,10 +472,13 @@ export async function removeRecentChatPathCommand(input: Input = {}) {
   } catch {
     normalized = input.path.trim();
   }
-  const paths = await loadRecentChatPaths();
-  const next = paths.filter((path) => path !== normalized && path !== input.path);
-  await moo.pointers.set({ name: RECENT_CHAT_PATHS_REF, target: JSON.stringify(next) });
-  return { ok: true, value: { removed: next.length !== paths.length, paths: next } };
+  let removed = false;
+  const next = await mutateRecentChatPaths((current) => {
+    const filtered = current.filter((path) => path !== normalized && path !== input.path);
+    removed = filtered.length !== current.length;
+    return filtered;
+  });
+  return { ok: true, value: { removed, paths: next } };
 }
 
 export async function fsListCommand(input: Input) {

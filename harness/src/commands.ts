@@ -8,7 +8,16 @@ export async function dispatch(input: Input) {
 }
 
 async function runDispatch(input: Input) {
-  const { command, payload } = commandPayload(input);
+  let command: string;
+  let payload: Input;
+  try {
+    ({ command, payload } = commandPayload(input));
+  } catch (error: any) {
+    // commandPayload can throw when an argv-provided JSON argument is present
+    // but unparseable; surface that as a structured command error instead of
+    // an unhandled rejection.
+    return { ok: false, error: { message: error?.message ?? String(error) } };
+  }
   const existingTrace = await moo.traces.current({}).catch(() => null);
   const shouldRoot = !existingTrace && shouldTraceCommand(command);
   const trace = shouldRoot ? await startTraceRoot(commandStepId(command, payload), {

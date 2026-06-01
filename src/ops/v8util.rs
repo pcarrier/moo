@@ -16,8 +16,18 @@ pub fn required_args(
 }
 
 pub fn set_return_str(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, value: &str) {
+    let _ = try_set_return_str(scope, rv, value);
+}
+
+/// Like `set_return_str`, but returns `false` when the string could not be
+/// created (e.g. it exceeds V8's maximum string length), so callers can throw
+/// an explicit error instead of silently leaving the return value undefined.
+pub fn try_set_return_str(scope: &mut v8::PinScope, rv: &mut v8::ReturnValue, value: &str) -> bool {
     if let Some(s) = v8::String::new(scope, value) {
         rv.set(s.into());
+        true
+    } else {
+        false
     }
 }
 

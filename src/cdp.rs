@@ -20,7 +20,7 @@
 // the inspector thread serves them one after the other.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -58,6 +58,12 @@ const INTERNAL_PROFILER_ENABLE_ID: i64 = -10_001;
 const INTERNAL_PROFILER_START_ID: i64 = -10_002;
 const INTERNAL_PROFILER_STOP_ID: i64 = -10_003;
 const JSON_LIST_CACHE_TTL: Duration = Duration::from_millis(500);
+// Bound the per-session IO stream store so a client spamming
+// loadNetworkResource / Tracing.end (each retaining a full content clone)
+// cannot drive the inspector thread to OOM. Oldest streams are evicted once
+// either cap is exceeded.
+const MAX_IO_STREAMS: usize = 64;
+const MAX_IO_STREAM_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn spawn(
     addr: &str,
@@ -83,9 +89,15 @@ pub fn spawn(
     let (inspect_tx, inspect_rx) = mpsc::channel::<InspectRequest>();
     let active_target = Arc::new(Mutex::new(None::<TargetSpec>));
     let target_cache = Arc::new(Mutex::new(None::<TargetCache>));
+    // Cross-thread view of the inspector's pause state. The inspector thread is
+    // single-threaded (Shared.paused is a Cell), but run_if_attached runs on
+    // caller threads and must observe pause without blocking forever on a
+    // breakpoint, so mirror it into an AtomicBool.
+    let paused_flag = Arc::new(AtomicBool::new(false));
     let _ = CDP_HANDLE.set(CdpHandle {
         inspect_tx,
         active_target: active_target.clone(),
+        paused: paused_flag.clone(),
     });
 
     {
@@ -94,6 +106,7 @@ pub fn spawn(
         let map_for_inspector = map_path.clone();
         let inspector_active_target = active_target.clone();
         let inspector_db_path = db_path.clone();
+        let inspector_paused = paused_flag.clone();
         thread::Builder::new()
             .name("moo-cdp-isolate".into())
             .spawn(move || {
@@ -105,6 +118,7 @@ pub fn spawn(
                     map_for_inspector,
                     inspector_active_target,
                     inspector_db_path,
+                    inspector_paused,
                 )
             })
             .map_err(|e| format!("spawn cdp isolate thread: {e}"))?;
@@ -176,6 +190,7 @@ struct InspectRequest {
 pub struct CdpHandle {
     inspect_tx: Sender<InspectRequest>,
     active_target: Arc<Mutex<Option<TargetSpec>>>,
+    paused: Arc<AtomicBool>,
 }
 
 static CDP_HANDLE: OnceLock<CdpHandle> = OnceLock::new();
@@ -203,6 +218,15 @@ impl CdpHandle {
         {
             return None;
         }
+        // The inspector services inspect_rx only from its main pump, not from
+        // the run_message_loop_on_pause loop. If V8 is paused at a breakpoint
+        // the job would never be processed, blocking this caller until the
+        // developer resumes. Fail fast instead.
+        if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
+            return Some(Err(
+                "cdp target is paused in the debugger; resume to run".to_string()
+            ));
+        }
         let (response, rx) = mpsc::channel();
         let request = InspectRequest {
             input: input.to_string(),
@@ -212,10 +236,26 @@ impl CdpHandle {
         if self.inspect_tx.send(request).is_err() {
             return Some(Err("cdp inspector thread is not running".to_string()));
         }
-        Some(match rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err("cdp inspector thread dropped inspected job".to_string()),
-        })
+        // Use a bounded wait so a pause that begins *after* the send (before the
+        // pump dequeues the job) cannot block this caller indefinitely. On
+        // timeout, re-check the pause flag to give a precise error.
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(result) => return Some(result),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Some(Err(
+                        "cdp inspector thread dropped inspected job".to_string()
+                    ));
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Some(Err(
+                            "cdp target is paused in the debugger; resume to run".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -255,6 +295,8 @@ struct CdpResource {
 
 struct Shared {
     paused: Cell<bool>,
+    // Cross-thread mirror of `paused` for run_if_attached (see CdpHandle).
+    paused_flag: Arc<AtomicBool>,
     in_rx: RefCell<Option<Receiver<Vec<u8>>>>,
     session: Cell<Option<NonNull<V8InspectorSession>>>,
     // Set once at thread startup so callbacks can reconstruct the Isolate
@@ -268,9 +310,75 @@ struct Shared {
     tracing_return_stream: Cell<bool>,
     tracing_start_ts: Cell<u64>,
     trace_stream_counter: Cell<u64>,
-    io_streams: RefCell<HashMap<String, String>>,
+    io_streams: RefCell<IoStreamStore>,
     io_stream_counter: Cell<u64>,
     cdp_resources: RefCell<HashMap<String, CdpResource>>,
+    // Ids the inspector thread itself issued (profiler bridging). Responses
+    // whose id is in this set are internal and must be intercepted rather than
+    // forwarded to the client. Without this a CDP client could send a request
+    // with one of the reserved sentinel ids and have its response swallowed
+    // (or trigger spurious tracing). Single-threaded interior mutability.
+    internal_request_ids: RefCell<HashSet<i64>>,
+}
+
+// Bounded store of outstanding IO streams. Tracks total retained bytes and
+// evicts the oldest entries once either the count or byte cap is exceeded, so
+// repeated loadNetworkResource / Tracing.end calls cannot grow the heap
+// without bound within a session.
+#[derive(Default)]
+struct IoStreamStore {
+    // handle -> content
+    by_handle: HashMap<String, String>,
+    // insertion order (monotonic seq -> handle) for oldest-first eviction
+    order: BTreeMap<u64, String>,
+    // handle -> insertion seq, to drop the order entry on explicit removal
+    seq_by_handle: HashMap<String, u64>,
+    next_seq: u64,
+    total_bytes: usize,
+}
+
+impl IoStreamStore {
+    fn insert(&mut self, handle: String, content: String) {
+        // Replacing an existing handle: drop its old accounting first.
+        self.remove(&handle);
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.total_bytes = self.total_bytes.saturating_add(content.len());
+        self.order.insert(seq, handle.clone());
+        self.seq_by_handle.insert(handle.clone(), seq);
+        self.by_handle.insert(handle, content);
+        self.evict_to_fit();
+    }
+
+    fn remove(&mut self, handle: &str) -> Option<String> {
+        let content = self.by_handle.remove(handle)?;
+        self.total_bytes = self.total_bytes.saturating_sub(content.len());
+        if let Some(seq) = self.seq_by_handle.remove(handle) {
+            self.order.remove(&seq);
+        }
+        Some(content)
+    }
+
+    fn evict_to_fit(&mut self) {
+        while self.by_handle.len() > MAX_IO_STREAMS
+            || (self.total_bytes > MAX_IO_STREAM_BYTES && self.by_handle.len() > 1)
+        {
+            let Some((&seq, _)) = self.order.iter().next() else {
+                break;
+            };
+            let Some(handle) = self.order.remove(&seq) else {
+                break;
+            };
+            self.seq_by_handle.remove(&handle);
+            if let Some(content) = self.by_handle.remove(&handle) {
+                self.total_bytes = self.total_bytes.saturating_sub(content.len());
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = IoStreamStore::default();
+    }
 }
 
 // SAFETY: Shared is only ever accessed on the inspector thread. We hold a
@@ -280,6 +388,16 @@ struct Shared {
 unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
+impl Shared {
+    // Update both the single-threaded pause Cell (read on the inspector
+    // thread) and its cross-thread mirror (read by run_if_attached).
+    fn set_paused(&self, paused: bool) {
+        self.paused.set(paused);
+        self.paused_flag
+            .store(paused, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -287,6 +405,7 @@ fn now_nanos() -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_inspector_thread(
     session_rx: Receiver<PendingSession>,
     inspect_rx: Receiver<InspectRequest>,
@@ -295,6 +414,7 @@ fn run_inspector_thread(
     map_path: Option<Arc<PathBuf>>,
     active_target: Arc<Mutex<Option<TargetSpec>>>,
     db_path: String,
+    paused_flag: Arc<AtomicBool>,
 ) {
     if let Err(e) = host::install(&db_path) {
         eprintln!("cdp: host init: {e}");
@@ -306,6 +426,7 @@ fn run_inspector_thread(
     // pause loop both hold raw pointers into it.
     let shared = Box::new(Shared {
         paused: Cell::new(false),
+        paused_flag,
         in_rx: RefCell::new(None),
         session: Cell::new(None),
         isolate_ptr: Cell::new(None),
@@ -314,9 +435,10 @@ fn run_inspector_thread(
         tracing_return_stream: Cell::new(false),
         tracing_start_ts: Cell::new(0),
         trace_stream_counter: Cell::new(0),
-        io_streams: RefCell::new(HashMap::new()),
+        io_streams: RefCell::new(IoStreamStore::default()),
         io_stream_counter: Cell::new(0),
         cdp_resources: RefCell::new(HashMap::new()),
+        internal_request_ids: RefCell::new(HashSet::new()),
     });
     let shared_ptr: *const Shared = &*shared;
 
@@ -487,7 +609,7 @@ fn run_session(
         NonNull::new(Box::as_ref(&session_box) as *const V8InspectorSession as *mut _)
             .expect("NonNull V8InspectorSession from Box");
     session.shared.session.set(Some(session_ptr));
-    session.shared.paused.set(false);
+    session.shared.set_paused(false);
 
     *session
         .active_target
@@ -504,11 +626,12 @@ fn run_session(
         .expect("active_target lock for session end") = None;
 
     session.shared.session.set(None);
-    session.shared.paused.set(false);
+    session.shared.set_paused(false);
     drop(session_box);
     *session.shared.in_rx.borrow_mut() = None;
     *session.shared.out_tx.borrow_mut() = None;
     session.shared.io_streams.borrow_mut().clear();
+    session.shared.internal_request_ids.borrow_mut().clear();
     session.shared.cdp_resources.borrow_mut().clear();
 
     session.inspector.context_destroyed(context);
@@ -937,6 +1060,10 @@ fn dispatch_internal_protocol(shared: *const Shared, id: i64, method: &str, para
         return false;
     };
     let session = unsafe { session_ptr.as_ref() };
+    // Record the id as internal *before* dispatch so the synchronous response
+    // (V8 may answer inline) is recognized and intercepted rather than leaked
+    // to the client.
+    unsafe { (*shared).internal_request_ids.borrow_mut().insert(id) };
     let request = json!({"id": id, "method": method, "params": params}).to_string();
     let view = StringView::from(request.as_bytes());
     session.dispatch_protocol_message(view);
@@ -950,6 +1077,13 @@ fn handle_internal_response(shared: *const Shared, msg: &[u8]) -> bool {
     let Some(id) = value.get("id").and_then(Value::as_i64) else {
         return false;
     };
+    // Only intercept responses to requests *we* issued. Matching purely on the
+    // sentinel id value would let a client send a request with the same id and
+    // have its real response swallowed (and, for the stop id, trigger spurious
+    // tracing). Consume the id on match so a stray duplicate doesn't re-fire.
+    if !unsafe { (*shared).internal_request_ids.borrow_mut().remove(&id) } {
+        return false;
+    }
     match id {
         INTERNAL_PROFILER_ENABLE_ID | INTERNAL_PROFILER_START_ID => true,
         INTERNAL_PROFILER_STOP_ID => {
@@ -957,7 +1091,9 @@ fn handle_internal_response(shared: *const Shared, msg: &[u8]) -> bool {
             finish_tracing(shared, profile);
             true
         }
-        _ => false,
+        // Some other id we issued but don't special-case: still swallow it
+        // (it was never meant for the client).
+        _ => true,
     }
 }
 
@@ -1089,7 +1225,7 @@ impl V8InspectorClientImpl for InspectorClient {
         // it'll exit when `paused` flips back to false (we re-check per
         // iteration via session/in_rx state).
         unsafe {
-            (*self.shared).paused.set(true);
+            (*self.shared).set_paused(true);
         }
         // Local pump: differs from the outer pump only in that it bails out
         // when `paused` flips to false, even if the channel still has work.
@@ -1105,7 +1241,7 @@ impl V8InspectorClientImpl for InspectorClient {
                     Ok(bytes) => bytes,
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
-                        unsafe { (*self.shared).paused.set(false) };
+                        unsafe { (*self.shared).set_paused(false) };
                         return;
                     }
                 }
@@ -1124,7 +1260,7 @@ impl V8InspectorClientImpl for InspectorClient {
     }
 
     fn quit_message_loop_on_pause(&self) {
-        unsafe { (*self.shared).paused.set(false) };
+        unsafe { (*self.shared).set_paused(false) };
     }
 
     fn run_if_waiting_for_debugger(&self, _context_group_id: i32) {}

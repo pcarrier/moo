@@ -21,6 +21,60 @@ function clean(value: unknown): string {
   return value == null ? "" : String(value).trim();
 }
 
+// Best-effort SSRF guard for client-supplied URLs fetched server-side.
+// Enforces http/https and rejects literal loopback / private / link-local /
+// CGNAT / metadata hosts. NOTE: this is a syntactic check only — it cannot
+// defend against DNS rebinding, since the JS harness layer has no DNS-resolve
+// primitive. The authoritative resolve-then-pin guard must live in the native
+// http op (src/ops/http.rs op_http_fetch / op_http_stream_open). See concerns.
+function isBlockedHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (!h) return true;
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  // IPv6 loopback / unspecified / link-local / unique-local.
+  if (h === "::1" || h === "::") return true;
+  if (h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) return true; // fe80::/10
+  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true; // fc00::/7 (ULA)
+  // IPv4 literals.
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127) return true; // loopback
+    if (a === 10) return true; // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
+    if (a === 192 && b === 168) return true; // RFC1918
+    if (a === 169 && b === 254) return true; // link-local / metadata
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+    if (a === 0) return true; // "this" network
+  }
+  return false;
+}
+
+function validateOutboundUrl(raw: string): void {
+  // scheme://[userinfo@]host[:port]... ; host is either [ipv6] or a host without
+  // '/', '@', or ':' separators. The harness V8 has no URL global, so parse
+  // structurally rather than relying on `new URL`.
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]*)/.exec(raw.trim());
+  if (!m) throw new Error("invalid url");
+  const scheme = m[1].toLowerCase();
+  if (scheme !== "http" && scheme !== "https") {
+    throw new Error("unsupported url scheme: " + scheme);
+  }
+  let authority = m[2];
+  const at = authority.lastIndexOf("@");
+  if (at >= 0) authority = authority.slice(at + 1); // strip userinfo
+  let host: string;
+  if (authority.startsWith("[")) {
+    const close = authority.indexOf("]");
+    host = close >= 0 ? authority.slice(0, close + 1) : authority;
+  } else {
+    host = authority.split(":")[0];
+  }
+  if (isBlockedHost(host)) {
+    throw new Error("url host not allowed");
+  }
+}
+
 function stripTrailingSlash(path: string): string {
   const stripped = path.replace(/\/+$/g, "");
   return stripped || path;
@@ -99,6 +153,7 @@ export async function skillDownloadCommand(input: Input) {
   const url = clean(input.url);
   if (!url) return { ok: false, error: { message: "skill-download requires url" } };
   try {
+    validateOutboundUrl(url);
     const response = await moo.http.fetch({ method: "GET", url, headers: { Accept: "text/markdown, text/plain, */*" }, timeoutMs: input.timeoutMs == null ? undefined : Number(input.timeoutMs) });
     if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
     const parsed = moo.skills.parseMarkdown(response.body);
