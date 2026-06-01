@@ -128,7 +128,8 @@ describe("chat message queueing", () => {
     expect(applyRows).toContain("releaseSettledChatRuntime(id);");
     expect(release).toContain("clearActiveChatRuntime(id);");
     expect(release).toContain("settleRunningTimelineRows(id);");
-    expect(release).toContain("unblockRunTSQueue(id);");
+    expect(release).toContain("clearRunTSQueueUnblock(id);");
+    expect(release).toContain('status: "agent:Done"');
     expect(release).toContain("pending().some((p) => p.chatId === id)");
     expect(release).toContain("drainSoon();");
     expect(refreshChats).toContain("const currentChatId = chatId();");
@@ -166,7 +167,8 @@ describe("chat message queueing", () => {
     expect(applyRows).toContain("releaseSettledChatRuntime(id);");
     expect(release).toContain("clearActiveChatRuntime(id);");
     expect(release).toContain("settleRunningTimelineRows(id);");
-    expect(release).toContain("unblockRunTSQueue(id);");
+    expect(release).toContain("clearRunTSQueueUnblock(id);");
+    expect(release).toContain('status: "agent:Done"');
     expect(release).toContain("pending().some((p) => p.chatId === id)");
     expect(release).toContain("drainSoon();");
     expect(refreshChats).toContain("const currentChatId = chatId();");
@@ -219,10 +221,17 @@ describe("chat message queueing", () => {
 
   test("keeps dispatch locks as queue-only state, not visible thinking", () => {
     expect(stateSource).toContain(
-      "chatHasInFlightTurn(id) && !setHas(runTSQueueUnblockedChats(), id)",
+      "chatHasServerRun(id) && !setHas(runTSQueueUnblockedChats(), id)",
     );
+    expect(stateSource).toContain("chatHasLocalOpenTurn(id) ||");
     expect(stateSource).toContain("setHas(dispatchingChats(), id)");
     expect(stateSource).toContain("setHas(interruptingChats(), id)");
+    expect(stateSource).toContain(
+      "They must not dequeue follow-ups while the current",
+    );
+    expect(stateSource).toContain(
+      "chat still has streamed thinking/reply drafts or visible foreground rows.",
+    );
     // the visible "thinking" UI.");
     expect(stateSource).toContain("Only this server-confirmed state drives");
     expect(stateSource).toContain('the visible "thinking" UI.');

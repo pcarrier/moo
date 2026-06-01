@@ -1117,11 +1117,15 @@ export function createState() {
       (chat) => chat.chatId === id && chat.status === "agent:Running",
     );
   const chatHasInFlightTurn = (id: string) =>
-    chatHasServerRun(id) ||
-    hasRunningTimelineRowForChat(id) ||
-    chatHasUnendedDraft(id);
+    chatHasServerRun(id) || chatHasLocalOpenTurn(id);
+  const chatHasLocalOpenTurn = (id: string) =>
+    hasRunningTimelineRowForChat(id) || chatHasUnendedDraft(id);
   const chatBusy = (id: string) =>
-    (chatHasInFlightTurn(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
+    (chatHasServerRun(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
+    // Queue unblocks only bypass stale server-running state after a foreground
+    // RunTS backgrounds. They must not dequeue follow-ups while the current
+    // chat still has streamed thinking/reply drafts or visible foreground rows.
+    chatHasLocalOpenTurn(id) ||
     setHas(dispatchingChats(), id) ||
     setHas(interruptingChats(), id);
   function addToSet(
@@ -3615,7 +3619,11 @@ export function createState() {
   function releaseSettledChatRuntime(id: string) {
     clearActiveChatRuntime(id);
     settleRunningTimelineRows(id);
-    unblockRunTSQueue(id);
+    clearRunTSQueueUnblock(id);
+    updateChatSummary(id, {
+      status: "agent:Done",
+      runningStartedAt: null,
+    });
     if (pending().some((p) => p.chatId === id)) drainSoon();
   }
 
