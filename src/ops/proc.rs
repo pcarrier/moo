@@ -184,7 +184,14 @@ fn op_proc_run(
     let timed_out_value = v8::Boolean::new(scope, timed_out);
     set_object_value(scope, obj, "timedOut", timed_out_value.into());
     if cancelled {
-        set_object_str(scope, obj, "stderr", "proc_run cancelled");
+        // Annotate rather than clobber so the process's own stderr (which may
+        // explain why it was killed) isn't lost.
+        let annotated = if stderr.is_empty() {
+            "proc_run cancelled".to_string()
+        } else {
+            format!("{stderr}\nproc_run cancelled")
+        };
+        set_object_str(scope, obj, "stderr", &annotated);
     }
     let stdout_truncated_value = v8::Boolean::new(scope, stdout_truncated);
     set_object_value(scope, obj, "stdoutTruncated", stdout_truncated_value.into());

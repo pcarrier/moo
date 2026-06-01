@@ -187,17 +187,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(_) if path.exists() => {
             let _ = fs::remove_file(&tmp);
-            if bytes.len()
-                == fs::metadata(path)
-                    .map(|m| m.len() as usize)
-                    .unwrap_or(usize::MAX)
-            {
-                Ok(())
-            } else {
-                Err(format!(
+            match fs::metadata(path) {
+                Ok(meta) if meta.len() as usize == bytes.len() => Ok(()),
+                Ok(_) => Err(format!(
                     "content-addressed path already exists with different size: {}",
                     path.display()
-                ))
+                )),
+                Err(e) => Err(format!(
+                    "verify existing content-addressed path {}: {e}",
+                    path.display()
+                )),
             }
         }
         Err(err) => {

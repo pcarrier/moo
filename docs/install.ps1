@@ -49,6 +49,16 @@ try {
   New-Item -ItemType Directory -Path $TmpDir | Out-Null
   $Zip = Join-Path $TmpDir 'moo.zip'
   Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $Zip
+  # Verify integrity against the .sha256 published alongside the asset before
+  # extracting/installing, to close the MITM / partial-tamper window.
+  $SumFile = "$Zip.sha256"
+  Invoke-WebRequest -Uri ($Asset.browser_download_url + '.sha256') -OutFile $SumFile
+  $Expected = ((Get-Content -LiteralPath $SumFile -First 1) -split '\s+')[0]
+  if (-not $Expected) { throw 'could not parse expected checksum' }
+  $Actual = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLower()
+  if ($Actual -ne $Expected.ToLower()) {
+    throw "checksum mismatch for downloaded archive (expected $Expected, got $Actual)"
+  }
   Expand-Archive -Path $Zip -DestinationPath $TmpDir -Force
   $Moo = Get-ChildItem -Path $TmpDir -Recurse -Filter moo.exe | Select-Object -First 1
   if (-not $Moo) { throw 'release archive did not contain moo.exe' }

@@ -147,8 +147,17 @@ fn handle_request(
     let read_clone = stream.try_clone()?;
     let mut reader = BufReader::new(read_clone);
 
+    // Cap how many bytes a single line read may consume so a client sending a
+    // request/header line with no newline can't drive unbounded heap
+    // allocation (checking len() after read_line is too late — it's already
+    // allocated). This runs before any auth, so it must bound an unauthed peer.
+    const MAX_HEADER_LINE: u64 = 8192;
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    if (&mut reader)
+        .take(MAX_HEADER_LINE)
+        .read_line(&mut request_line)?
+        == 0
+    {
         return Ok(());
     }
     let trimmed = request_line.trim_end_matches(['\r', '\n']);
@@ -161,8 +170,18 @@ fn handle_request(
     let mut accept_br = false;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let n = (&mut reader).take(MAX_HEADER_LINE).read_line(&mut line)?;
+        if n == 0 {
             break;
+        }
+        // Hit the cap without a terminating newline: an over-long header line.
+        if n as u64 == MAX_HEADER_LINE && !line.ends_with('\n') {
+            return write_response(
+                &mut stream,
+                "431 Request Header Fields Too Large",
+                "text/plain; charset=utf-8",
+                b"header line too large",
+            );
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {

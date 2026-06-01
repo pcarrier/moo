@@ -723,16 +723,23 @@ export class Effect<A, E = ErrorInfo> {
     return new Effect<A, E | ErrorInfo>(async (_outerScope, signal) => {
       const scope = new Scope();
       const cleanup = linkAbort(scope, signal);
+      let result: Result<A, E | ErrorInfo>;
       try {
-        return widenError(await effect.thunk(scope, scope.signal));
+        result = widenError(await effect.thunk(scope, scope.signal));
+      } catch (e) {
+        result = errorInfoResult(e);
       } finally {
         cleanup();
-        try {
-          await scope.close();
-        } catch (e) {
-          return errorInfoResult(e, "scope finalizer failed");
-        }
       }
+      try {
+        await scope.close();
+      } catch (e) {
+        // Only surface a scope-finalizer failure when the main operation
+        // succeeded; never let it clobber an existing failure (a `return` in
+        // `finally` would otherwise suppress the original result).
+        if (result.ok) result = errorInfoResult(e, "scope finalizer failed");
+      }
+      return result;
     });
   }
 }

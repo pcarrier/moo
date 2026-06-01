@@ -56,7 +56,13 @@ fn op_object_get(
         return;
     }
     let hash = args.get(0).to_rust_string_lossy(scope);
-    let row: Option<(String, Vec<u8>)> = get_object(&hash).unwrap_or(None);
+    let row: Option<(String, Vec<u8>)> = match get_object(&hash) {
+        Ok(opt) => opt,
+        Err(e) => {
+            throw(scope, &e);
+            return;
+        }
+    };
     match row {
         Some((kind, bytes)) => {
             let content = String::from_utf8_lossy(&bytes).to_string();

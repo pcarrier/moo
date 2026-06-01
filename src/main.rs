@@ -160,10 +160,14 @@ fn real_main(cli: Cli) -> Result<(), String> {
                         return guard.1.clone();
                     }
                     let source = fs::read_to_string(&path).unwrap_or_else(|e| {
+                        // JSON-encode the message so a path/error containing a
+                        // quote can't break out of the JS string literal. (A
+                        // JSON string is a valid JS string literal.)
+                        let message = format!("failed to read bundle: {}: {}", path.display(), e);
                         format!(
-                            "throw new Error('failed to read bundle: {}: {}');",
-                            path.display(),
-                            e
+                            "throw new Error({});",
+                            serde_json::to_string(&message)
+                                .unwrap_or_else(|_| "\"failed to read bundle\"".to_string())
                         )
                     });
                     let source = Arc::new(source);
@@ -305,7 +309,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
                 .prepare(
                     "select graph, subject, predicate, object from quads
                      where ref_name = ?1 and graph = ?2
-                       and (subject like ?3 escape '\\' or predicate like ?3 escape '\\' or object like ?3 escape '\\')",
+                       and subject like ?3 escape '\\'",
                 )
                 .map_err(|e| e.to_string())?;
             let iter = stmt
@@ -320,7 +324,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
                 .prepare(
                     "select graph, subject, predicate, object from quads
                      where ref_name = ?1
-                       and (subject like ?2 escape '\\' or predicate like ?2 escape '\\' or object like ?2 escape '\\')",
+                       and subject like ?2 escape '\\'",
                 )
                 .map_err(|e| e.to_string())?;
             let iter = stmt
@@ -347,13 +351,13 @@ fn real_main(cli: Cli) -> Result<(), String> {
         let n = if let Some(graph) = graph {
             tx.execute(
                 "delete from quads where ref_name = ?1 and graph = ?2
-                  and (subject like ?3 escape '\\' or predicate like ?3 escape '\\' or object like ?3 escape '\\')",
+                  and subject like ?3 escape '\\'",
                 rusqlite::params![store, graph, like],
             )
         } else {
             tx.execute(
                 "delete from quads where ref_name = ?1
-                  and (subject like ?2 escape '\\' or predicate like ?2 escape '\\' or object like ?2 escape '\\')",
+                  and subject like ?2 escape '\\'",
                 rusqlite::params![store, like],
             )
         }

@@ -50,6 +50,34 @@ cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT INT TERM
 
 curl -fL --progress-bar "$asset_url" -o "$tmp_dir/moo.tar.gz"
+
+# Verify integrity against the .sha256 published alongside the asset before
+# extracting/installing, to close the MITM / partial-tamper window.
+sum_url="$asset_url.sha256"
+if ! curl -fsSL "$sum_url" -o "$tmp_dir/moo.tar.gz.sha256"; then
+  echo "could not download checksum from $sum_url" >&2
+  exit 1
+fi
+# The .sha256 file embeds a "dist/<name>" path that won't match our temp file,
+# so compare just the hash field rather than using `sha256sum -c`.
+expected="$(awk '{print $1; exit}' "$tmp_dir/moo.tar.gz.sha256")"
+if [ -z "$expected" ]; then
+  echo "could not parse expected checksum" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp_dir/moo.tar.gz" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp_dir/moo.tar.gz" | awk '{print $1}')"
+else
+  echo "no sha256 tool (sha256sum or shasum) available to verify download" >&2
+  exit 1
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "checksum mismatch for downloaded archive (expected $expected, got $actual)" >&2
+  exit 1
+fi
+
 tar -xzf "$tmp_dir/moo.tar.gz" -C "$tmp_dir"
 moo_bin="$(find "$tmp_dir" -type f -name moo | head -n 1)"
 if [ -z "$moo_bin" ]; then

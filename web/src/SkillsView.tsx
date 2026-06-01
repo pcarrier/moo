@@ -215,9 +215,13 @@ export function SkillsView(props: { bag: Bag; onToggleSidebar?: () => void }) {
     setMessage(null);
     try {
       if (canPersistRefresh) {
+        const before = draft();
         const result = await api("skill-refresh", { id: selectedId, ...skillContext(bag) });
         if (!result.ok) return setMessage(result.error.message || "fetch failed");
         if (!result.value.ok || !result.value.skill) return setMessage(result.value.error || "fetch failed");
+        // The form stays editable during the in-flight refresh; don't clobber
+        // edits the user made while we were waiting.
+        if (!sameDraft(before, draft())) return setMessage("draft changed during fetch; not applied");
         const next = draftFromSkill(result.value.skill);
         setSelected(result.value.skill.id);
         setSavedDraft(next);
