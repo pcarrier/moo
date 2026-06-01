@@ -353,6 +353,7 @@ export type LLMProvider = {
   baseUrl: string;
   model: string;
   effort: string | null;
+  serviceTier?: string | null;
   keyEnvHint: string;
   authMode?: "env" | "apiKey" | "oauth";
   oauthAccountId?: string | null;

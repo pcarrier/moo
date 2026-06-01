@@ -59,6 +59,8 @@ export type ProviderMetadata = {
 };
 
 export const DEFAULT_CONTEXT_TOKENS = 128_000;
+export const OPENAI_FAST_MODEL_SUFFIX = "#fast";
+export const OPENAI_FAST_SERVICE_TIER = "priority";
 
 export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai", "deepseek"];
 
@@ -226,13 +228,41 @@ function lower(value: string | null | undefined): string {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function isOpenAIGptModelId(model: string | null | undefined): boolean {
+  return lower(model).startsWith("gpt-");
+}
+
+export function openAIBaseModelForRequest(model: string | null | undefined): string {
+  const trimmed = String(model ?? "").trim();
+  const suffix = OPENAI_FAST_MODEL_SUFFIX;
+  if (!trimmed.toLowerCase().endsWith(suffix)) return trimmed;
+  const base = trimmed.slice(0, -suffix.length).trim();
+  return isOpenAIGptModelId(base) ? base : trimmed;
+}
+
+export function openAIServiceTierForModel(model: string | null | undefined): typeof OPENAI_FAST_SERVICE_TIER | null {
+  const trimmed = String(model ?? "").trim();
+  if (!trimmed.toLowerCase().endsWith(OPENAI_FAST_MODEL_SUFFIX)) return null;
+  const base = openAIBaseModelForRequest(trimmed);
+  return base !== trimmed && isOpenAIGptModelId(base) ? OPENAI_FAST_SERVICE_TIER : null;
+}
+
+export function openAIFastModelId(model: string | null | undefined): string {
+  return openAIBaseModelForRequest(model) + OPENAI_FAST_MODEL_SUFFIX;
+}
+
+export function modelSupportsOpenAIFastMode(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
+  if (provider && provider !== "openai") return false;
+  return isOpenAIGptModelId(openAIBaseModelForRequest(model));
+}
+
 export function normalizeProvider(value: unknown): ProviderName | null {
   const id = lower(String(value ?? ""));
   return (PROVIDERS as readonly string[]).includes(id) ? id as ProviderName : null;
 }
 
 export function inferProviderForModelId(model: string | null | undefined): ProviderName | null {
-  const id = lower(model);
+  const id = lower(openAIBaseModelForRequest(model));
   if (!id) return null;
   for (const provider of PROVIDERS) {
     if (PROVIDER_METADATA[provider].inferPrefixes.some((prefix) => id.startsWith(prefix))) return provider;
@@ -241,7 +271,7 @@ export function inferProviderForModelId(model: string | null | undefined): Provi
 }
 
 export function modelMatches(metadata: ModelMetadata, model: string): boolean {
-  const id = lower(model);
+  const id = lower(openAIBaseModelForRequest(model));
   if (!id) return false;
   if (id === lower(metadata.id)) return true;
   if (metadata.aliases?.some((alias) => id === lower(alias))) return true;
@@ -249,7 +279,7 @@ export function modelMatches(metadata: ModelMetadata, model: string): boolean {
 }
 
 export function modelMetadataFor(provider: ProviderName | null | undefined, model: string | null | undefined): ModelMetadata | null {
-  const id = lower(model);
+  const id = lower(openAIBaseModelForRequest(model));
   if (!id) return null;
   const providers = provider ? [provider] : PROVIDERS;
   let best: ModelMetadata | null = null;
@@ -279,7 +309,7 @@ export function modelContextWindow(provider: ProviderName | null | undefined, mo
 export function modelSupportsTools(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
   const metadata = modelMetadataFor(provider, model);
   if (metadata?.capabilities?.toolCalls != null) return metadata.capabilities.toolCalls;
-  const id = lower(model);
+  const id = lower(openAIBaseModelForRequest(model));
   if (!id) return false;
   if (id.startsWith("claude-")) return true;
   if (id.startsWith("qwen")) {
@@ -295,7 +325,7 @@ export function modelSupportsTools(provider: ProviderName | null | undefined, mo
 export function modelSupportsVision(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
   const metadata = modelMetadataFor(provider, model);
   if (metadata?.capabilities?.vision != null) return metadata.capabilities.vision;
-  const id = lower(model);
+  const id = lower(openAIBaseModelForRequest(model));
   if (!id) return false;
   if (id.startsWith("deepseek")) return false;
   if (id.startsWith("grok")) return metadata?.capabilities?.vision === true;

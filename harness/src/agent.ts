@@ -31,6 +31,8 @@ import {
   modelContextWindow,
   modelMetadataFor,
   inferProviderForModelId,
+  openAIBaseModelForRequest,
+  openAIServiceTierForModel,
   modelLongContextUsageKey,
   modelSupportsVision,
   normalizeProvider as normalizeProviderName,
@@ -459,6 +461,16 @@ export function usesResponsesApi(provider: LLMProvider): boolean {
   return provider.name === "openai";
 }
 
+function providerForRequest(provider: LLMProvider): LLMProvider {
+  if (provider.name !== "openai") return provider;
+  const serviceTier = provider.serviceTier ?? openAIServiceTierForModel(provider.model);
+  return {
+    ...provider,
+    model: openAIBaseModelForRequest(provider.model),
+    serviceTier,
+  };
+}
+
 function appendPath(baseUrl: string, suffix: string): string {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   return base + suffix;
@@ -743,38 +755,39 @@ export function buildStreamingLLMRequest(
   messages: any[],
   tools: any[] | null,
 ) {
+  const requestProvider = providerForRequest(provider);
   const providerMessages = withDeepSeekThinkMaxPrompt(
-    provider,
-    messagesForRequest(provider, messages),
+    requestProvider,
+    messagesForRequest(requestProvider, messages),
   );
-  if (provider.name === "anthropic") {
+  if (requestProvider.name === "anthropic") {
     const anthropic = toAnthropicMessages(providerMessages);
     const body: Record<string, unknown> = {
-      model: provider.model,
-      max_tokens: anthropicMaxTokens(provider.model),
+      model: requestProvider.model,
+      max_tokens: anthropicMaxTokens(requestProvider.model),
       messages: anthropic.messages,
       stream: true,
     };
     if (anthropic.system) body.system = anthropic.system;
-    applyEffort(provider, body);
+    applyEffort(requestProvider, body);
     const anthropicTools = toAnthropicTools(tools);
     if (anthropicTools?.length) {
       body.tools = anthropicTools;
       body.tool_choice = { type: "auto" };
     }
     return {
-      url: provider.baseUrl + "/messages",
+      url: requestProvider.baseUrl + "/messages",
       body,
       responsesApi: false,
-      headers: llmProviderHeaders(provider),
-      requestModel: provider.model || null,
-      requestEffort: requestEffortForProvider(provider),
-      requestAuthMode: provider.authMode || null,
+      headers: llmProviderHeaders(requestProvider),
+      requestModel: requestProvider.model || null,
+      requestEffort: requestEffortForProvider(requestProvider),
+      requestAuthMode: requestProvider.authMode || null,
     };
   }
 
-  const responsesApi = usesResponsesApi(provider);
-  const outboundMessages = requiresFinalUserContinuation(provider)
+  const responsesApi = usesResponsesApi(requestProvider);
+  const outboundMessages = requiresFinalUserContinuation(requestProvider)
     ? ensureEndsWithUserMessage(providerMessages)
     : providerMessages;
   const body: Record<string, unknown> = responsesApi
@@ -783,7 +796,7 @@ export function buildStreamingLLMRequest(
         // are flat) — the server expects these always-serialized fields even
         // when empty.
         type: "response.create",
-        model: provider.model,
+        model: requestProvider.model,
         instructions: extractInstructions(outboundMessages) ?? "",
         input: toResponsesInput(outboundMessages),
         tools: tools?.length ? toResponsesTools(tools) : [],
@@ -796,14 +809,15 @@ export function buildStreamingLLMRequest(
         client_metadata: { "x-codex-installation-id": uuidv4() },
       }
     : {
-        model: provider.model,
+        model: requestProvider.model,
         messages: stripLocalImageMetadataFromMessages(outboundMessages),
         stream: true,
         // Ask OpenAI-compatible endpoints to include token usage in the final
         // SSE chunk. Endpoints that ignore the option simply drop it.
         stream_options: { include_usage: true },
       };
-  applyEffort(provider, body, responsesApi);
+  applyEffort(requestProvider, body, responsesApi);
+  if (requestProvider.name === "openai" && requestProvider.serviceTier) body.service_tier = requestProvider.serviceTier;
   if (!responsesApi && tools?.length) {
     body.tools = tools;
     body.tool_choice = "auto";
@@ -815,15 +829,15 @@ export function buildStreamingLLMRequest(
   }
   return {
     url: responsesApi
-      ? openAIWebsocketUrl(provider)
-      : appendPath(provider.baseUrl, "/chat/completions"),
+      ? openAIWebsocketUrl(requestProvider)
+      : appendPath(requestProvider.baseUrl, "/chat/completions"),
     body,
     transport: responsesApi ? "websocket" : "sse",
     responsesApi,
-    headers: llmProviderHeaders(provider),
-    requestModel: provider.model || null,
-    requestEffort: requestEffortForProvider(provider),
-    requestAuthMode: provider.authMode || null,
+    headers: llmProviderHeaders(requestProvider),
+    requestModel: requestProvider.model || null,
+    requestEffort: requestEffortForProvider(requestProvider),
+    requestAuthMode: requestProvider.authMode || null,
   };
 }
 export function toResponsesTools(tools: any[] | null): any[] | null {
@@ -1331,15 +1345,17 @@ export async function resolveProvider(
     };
   }
   const configuredOpenAI = await providerConfiguredCredential("openai");
+  const openAIModel = modelOverride || configuredOpenAI.model;
   return {
     name: "openai",
     apiKey: configuredOpenAI.apiKey,
     baseUrl: configuredOpenAI.baseUrl,
-    model: modelOverride || configuredOpenAI.model,
+    model: openAIBaseModelForRequest(openAIModel),
     effort: normalizeEffort(effortOverride) || (await defaultEffort()),
     keyEnvHint: configuredOpenAI.keyEnvHint,
     authMode: configuredOpenAI.authMode,
     oauthAccountId: configuredOpenAI.oauthAccountId,
+    serviceTier: openAIServiceTierForModel(openAIModel),
   };
 }
 

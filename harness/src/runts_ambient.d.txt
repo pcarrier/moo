@@ -79,8 +79,14 @@ type ProviderMetadata = {
     models: readonly ModelMetadata[];
 };
 declare const DEFAULT_CONTEXT_TOKENS = 128000;
+declare const OPENAI_FAST_MODEL_SUFFIX = "#fast";
+declare const OPENAI_FAST_SERVICE_TIER = "priority";
 declare const PROVIDERS: readonly ProviderName[];
 declare const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata>;
+declare function openAIBaseModelForRequest(model: string | null | undefined): string;
+declare function openAIServiceTierForModel(model: string | null | undefined): typeof OPENAI_FAST_SERVICE_TIER | null;
+declare function openAIFastModelId(model: string | null | undefined): string;
+declare function modelSupportsOpenAIFastMode(provider: ProviderName | null | undefined, model: string | null | undefined): boolean;
 declare function normalizeProvider(value: unknown): ProviderName | null;
 declare function inferProviderForModelId(model: string | null | undefined): ProviderName | null;
 declare function modelMatches(metadata: ModelMetadata, model: string): boolean;
@@ -595,6 +601,7 @@ type LLMProvider = {
     baseUrl: string;
     model: string;
     effort: string | null;
+    serviceTier?: string | null;
     keyEnvHint: string;
     authMode?: "env" | "apiKey" | "oauth";
     oauthAccountId?: string | null;

@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildStreamingLLMRequest, modelContextBudget } from "../src/agent";
+import { buildStreamingLLMRequest, modelContextBudget, resolveProvider } from "../src/agent";
 import { modelOptionsFor } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
-import { modelMetadataFor } from "../src/llm_models";
+import { modelMetadataFor, openAIServiceTierForModel } from "../src/llm_models";
 
 const refs = new Map<string, string>();
 const objects = new Map<string, { kind: string; content: string }>();
 let objectId = 0;
 
-(globalThis as any).__op_env_get = () => null;
+const env = new Map<string, string>();
+(globalThis as any).__op_env_get = (name: string) => env.get(name) ?? null;
 (globalThis as any).__op_ref_get = (name: string) => refs.get(name) ?? null;
 (globalThis as any).__op_ref_set = (name: string, target: string) => { refs.set(name, target); return true; };
 (globalThis as any).__op_object_put = (kind: string, content: string) => {
@@ -100,5 +101,46 @@ describe("Anthropic provider support", () => {
     expect(priceFor("claude-opus-4-8", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
     expect(priceFor("claude-opus-4-8-20260201", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
     expect(estimateCostUsd({ models: { "claude-opus-4-8": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(36.75);
+  });
+});
+
+
+describe("OpenAI fast mode", () => {
+  test("shows GPT fast variants as separate model options", async () => {
+    const options = await modelOptionsFor("openai", "gpt-5");
+    const ids = options.map((option) => option.id);
+
+    expect(ids).toContain("openai:gpt-5");
+    expect(ids).toContain("openai:gpt-5#fast");
+    expect(options.find((option) => option.id === "openai:gpt-5#fast")?.label).toBe("openai / gpt-5 (fast)");
+    expect(options.find((option) => option.id === "openai:o3#fast")).toBeUndefined();
+  });
+
+  test("sends priority service tier while preserving the base model slug", () => {
+    const request = buildStreamingLLMRequest({
+      name: "openai",
+      apiKey: "key",
+      baseUrl: "https://llm.test/v1",
+      model: "gpt-5.5#fast",
+      effort: "xhigh",
+      keyEnvHint: "KEY",
+    }, [{ role: "user", content: "hello" }], null);
+
+    expect(openAIServiceTierForModel("gpt-5.5#fast")).toBe("priority");
+    expect(request.requestModel).toBe("gpt-5.5");
+    expect((request.body as any).model).toBe("gpt-5.5");
+    expect((request.body as any).service_tier).toBe("priority");
+    expect((request.body as any).reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+  });
+
+  test("resolves fast model ids from OpenAI env defaults", async () => {
+    env.set("OPENAI_MODEL", "gpt-5#fast");
+    try {
+      const provider = await resolveProvider(null, null, "openai");
+      expect(provider.model).toBe("gpt-5");
+      expect(provider.serviceTier).toBe("priority");
+    } finally {
+      env.delete("OPENAI_MODEL");
+    }
   });
 });

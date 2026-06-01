@@ -11,9 +11,13 @@ import {
   defaultModelIds,
   inferProviderForModelId,
   modelMetadataFor,
+  modelSupportsOpenAIFastMode,
   modelSupportsTools,
   modelSupportsVision,
   normalizeProvider,
+  openAIBaseModelForRequest,
+  openAIFastModelId,
+  openAIServiceTierForModel,
   PROVIDERS,
   type ProviderName,
 } from "../llm_models";
@@ -226,6 +230,12 @@ function modelAvailability(provider: ProviderName | null | undefined, model: str
   return modelMetadataFor(provider, model)?.availability;
 }
 
+function modelOptionLabel(provider: ProviderName, model: string): string {
+  const base = provider === "openai" ? openAIBaseModelForRequest(model) : model;
+  const suffix = provider === "openai" && openAIServiceTierForModel(model) ? " (fast)" : "";
+  return provider + " / " + base + suffix;
+}
+
 function configuredModelsFrom(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -246,22 +256,26 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
       id: modelOptionId(provider, trimmed),
       provider,
       model: trimmed,
-      label: provider + " / " + trimmed,
+      label: modelOptionLabel(provider, trimmed),
       supportsAttachments: modelSupportsAttachments(provider, trimmed),
       availability: modelAvailability(provider, trimmed),
     });
+  };
+  const addWithFastMode = (provider: ProviderName, model: string) => {
+    add(provider, model);
+    if (modelSupportsOpenAIFastMode(provider, model)) add(provider, openAIFastModelId(model));
   };
 
   for (const model of configuredModelsFrom(await moo.env.get({ name: "MOO_LLM_MODELS" }))) {
     const parsed = splitModelId(model);
     const provider = parsed.provider || inferProviderNameForModel(parsed.model);
-    if (provider) add(provider, parsed.model);
+    if (provider) addWithFastMode(provider, parsed.model);
   }
-  for (const model of configuredModelsFrom(await moo.env.get({ name: "OPENAI_MODELS" }))) add("openai", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get({ name: "QWEN_MODELS" }))) add("qwen", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) add("anthropic", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) add("xai", splitModelId(model).model);
-  for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) add("deepseek", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "OPENAI_MODELS" }))) addWithFastMode("openai", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "QWEN_MODELS" }))) addWithFastMode("qwen", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) addWithFastMode("anthropic", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) addWithFastMode("xai", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) addWithFastMode("deepseek", splitModelId(model).model);
   return out;
 }
 
@@ -278,21 +292,26 @@ export async function modelOptionsFor(selectedProvider: ProviderName | null, sel
       id,
       provider,
       model: trimmed,
-      label: provider + " / " + trimmed,
+      label: modelOptionLabel(provider, trimmed),
       supportsAttachments: modelSupportsAttachments(provider, trimmed),
       availability: modelAvailability(provider, trimmed),
     });
   };
+  const addWithFastMode = (provider: ProviderName, model: string) => {
+    add(provider, model);
+    if (modelSupportsOpenAIFastMode(provider, model)) add(provider, openAIFastModelId(model));
+  };
 
-  if (selectedProvider && selectedModel) add(selectedProvider, selectedModel);
+  if (selectedProvider && selectedModel) addWithFastMode(selectedProvider, selectedModel);
 
   for (const provider of PROVIDERS) {
     const resolved = await resolveProvider(null, null, provider);
-    add(provider, resolved.model);
+    const model = resolved.name === "openai" && resolved.serviceTier ? openAIFastModelId(resolved.model) : resolved.model;
+    addWithFastMode(provider, model);
   }
 
   for (const option of await configuredModelOptions()) add(option.provider, option.model);
-  for (const provider of PROVIDERS) for (const model of defaultModelIds(provider)) add(provider, model);
+  for (const provider of PROVIDERS) for (const model of defaultModelIds(provider)) addWithFastMode(provider, model);
   return options;
 }
 
@@ -314,7 +333,8 @@ export async function chatModelInfo(chatId: string) {
   const supportedSelectedEffort = effortAllowedForModel(efforts, selectedEffort);
   const modelOptions = await modelOptionsFor(selectedProvider || effectiveProvider.name, selectedModel);
   const selectedModelId = selectedProvider && selectedModel ? modelOptionId(selectedProvider, selectedModel) : null;
-  const effectiveModelId = modelOptionId(effectiveProvider.name, effectiveProvider.model);
+  const effectiveOptionModel = effectiveProvider.name === "openai" && effectiveProvider.serviceTier ? openAIFastModelId(effectiveProvider.model) : effectiveProvider.model;
+  const effectiveModelId = modelOptionId(effectiveProvider.name, effectiveOptionModel);
   const supportsAttachments = modelSupportsAttachments(effectiveProvider.name, effectiveProvider.model);
   return {
     chatId,
