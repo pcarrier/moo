@@ -1470,7 +1470,10 @@ fn publish_returned_events(value: &Value) {
 fn find_double_newline(buf: &[u8]) -> Option<(usize, usize)> {
     let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
     let cr = buf.windows(2).position(|w| w == b"\r\r").map(|i| (i, 2));
-    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| (i, 4));
+    let crlf = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| (i, 4));
     [lf, cr, crlf]
         .into_iter()
         .flatten()

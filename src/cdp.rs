@@ -243,14 +243,12 @@ impl CdpHandle {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(result) => return Some(result),
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Some(Err(
-                        "cdp inspector thread dropped inspected job".to_string()
-                    ));
+                    return Some(Err("cdp inspector thread dropped inspected job".to_string()));
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
                         return Some(Err(
-                            "cdp target is paused in the debugger; resume to run".to_string(),
+                            "cdp target is paused in the debugger; resume to run".to_string()
                         ));
                     }
                 }

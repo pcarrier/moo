@@ -98,10 +98,7 @@ fn op_fs_read(
     // past the limit during the read is detected and rejected rather than
     // streamed without bound.
     let mut bytes = Vec::new();
-    if let Err(e) = file
-        .take(MAX_FILE_READ_BYTES + 1)
-        .read_to_end(&mut bytes)
-    {
+    if let Err(e) = file.take(MAX_FILE_READ_BYTES + 1).read_to_end(&mut bytes) {
         throw(scope, &format!("fs_read {path}: {e}"));
         return;
     }

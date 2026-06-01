@@ -50,8 +50,7 @@ fn run_inner() -> Result<ExitStatus, String> {
     let install = infer_install_location(&exe)?;
     let bytes = fetch_installer(INSTALLER_URL)?;
     verify_installer(&bytes)?;
-    let script =
-        String::from_utf8(bytes).map_err(|e| format!("installer is not UTF-8: {e}"))?;
+    let script = String::from_utf8(bytes).map_err(|e| format!("installer is not UTF-8: {e}"))?;
     let script_path = write_temp_installer(&script)?;
     let status = run_installer(&script_path, &install);
     let _ = fs::remove_file(&script_path);

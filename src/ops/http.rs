@@ -95,13 +95,15 @@ fn ipv6_is_blocked(ip: &Ipv6Addr) -> bool {
 /// Parse and validate a URL for SSRF. Allows only http/https, resolves the host
 /// and rejects any blocked address.
 fn validate_url(url: &str) -> Result<(), String> {
-    let uri: ureq::http::Uri = url
-        .parse()
-        .map_err(|e| format!("invalid url {url}: {e}"))?;
+    let uri: ureq::http::Uri = url.parse().map_err(|e| format!("invalid url {url}: {e}"))?;
 
     match uri.scheme_str() {
         Some("http") | Some("https") => {}
-        Some(other) => return Err(format!("blocked url scheme {other:?} (only http/https allowed)")),
+        Some(other) => {
+            return Err(format!(
+                "blocked url scheme {other:?} (only http/https allowed)"
+            ));
+        }
         None => return Err(format!("url {url} is missing a scheme")),
     }
 
@@ -112,7 +114,11 @@ fn validate_url(url: &str) -> Result<(), String> {
     let host_trimmed = host.trim_start_matches('[').trim_end_matches(']');
     let port = uri
         .port_u16()
-        .unwrap_or(if uri.scheme_str() == Some("https") { 443 } else { 80 });
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
 
     // If the host is an IP literal, validate it directly without DNS.
     if let Ok(ip) = host_trimmed.parse::<IpAddr>() {
@@ -178,15 +184,15 @@ fn run_validated_request(
             .map_err(|e| format!("http request {current_url}: {e}"))?;
 
         let status = resp.status().as_u16();
-        if (300..400).contains(&status) {
-            if let Some(location) = resp.headers().get(ureq::http::header::LOCATION) {
-                let location = location
-                    .to_str()
-                    .map_err(|e| format!("invalid redirect location for {current_url}: {e}"))?;
-                // Resolve the Location relative to the current URL.
-                current_url = resolve_redirect(&current_url, location)?;
-                continue;
-            }
+        if (300..400).contains(&status)
+            && let Some(location) = resp.headers().get(ureq::http::header::LOCATION)
+        {
+            let location = location
+                .to_str()
+                .map_err(|e| format!("invalid redirect location for {current_url}: {e}"))?;
+            // Resolve the Location relative to the current URL.
+            current_url = resolve_redirect(&current_url, location)?;
+            continue;
         }
         return Ok(resp);
     }
@@ -199,10 +205,10 @@ fn run_validated_request(
 /// Resolve a (possibly relative) redirect Location against the current URL.
 fn resolve_redirect(base: &str, location: &str) -> Result<String, String> {
     // Absolute URL with a scheme: use as-is (validation happens on next hop).
-    if let Ok(uri) = location.parse::<ureq::http::Uri>() {
-        if uri.scheme_str().is_some() {
-            return Ok(location.to_string());
-        }
+    if let Ok(uri) = location.parse::<ureq::http::Uri>()
+        && uri.scheme_str().is_some()
+    {
+        return Ok(location.to_string());
     }
 
     let base_uri: ureq::http::Uri = base
