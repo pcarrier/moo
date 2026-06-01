@@ -295,4 +295,33 @@ describe("chat message queueing", () => {
     expect(refreshChats).toContain("clearDispatchingChat(id);");
     expect(dispatchQueued).toContain("watchDispatchingChat(head.chatId);");
   });
+
+  test("steer interrupts queue blockers beyond activeChats", () => {
+    const steerInterrupt = stateSource.slice(
+      stateSource.indexOf("async function interruptQueuedChatForSteer"),
+      stateSource.indexOf("async function steerPending"),
+    );
+    const steerPending = stateSource.slice(
+      stateSource.indexOf("async function steerPending"),
+      stateSource.indexOf("function beginPendingEdit"),
+    );
+
+    expect(steerInterrupt).toContain("chatHasInFlightTurn(id)");
+    expect(steerInterrupt).toContain("setHas(dispatchingChats(), id)");
+    expect(steerInterrupt).toContain("setHas(interruptingChats(), id)");
+    expect(steerInterrupt).toContain("clearActiveChatRuntime(id);");
+    expect(steerInterrupt).toContain("settleRunningTimelineRows(id);");
+    expect(steerInterrupt).toContain("clearDraftReply(id);");
+    expect(steerInterrupt).toContain(
+      'updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });',
+    );
+    expect(steerInterrupt).toContain(
+      'const r = await api("interrupt", { chatId: id });',
+    );
+    expect(steerPending).toContain(
+      "await interruptQueuedChatForSteer(item.chatId);",
+    );
+    expect(steerPending).not.toContain("activeChats().has(item.chatId)");
+    expect(steerPending).not.toContain("setChatId(item.chatId)");
+  });
 });

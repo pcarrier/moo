@@ -4800,6 +4800,27 @@ export function createState() {
       return next;
     });
   }
+
+  async function interruptQueuedChatForSteer(id: string) {
+    if (
+      !chatHasInFlightTurn(id) &&
+      !setHas(dispatchingChats(), id) &&
+      !setHas(interruptingChats(), id)
+    ) {
+      return;
+    }
+    clearActiveChatRuntime(id);
+    settleRunningTimelineRows(id);
+    dismissCurrentDraftReply(id);
+    clearDraftReply(id);
+    addToSet(setInterruptingChats, interruptingChats, id);
+    addToSet(setInterruptedChats, interruptedChats, id);
+    updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
+    const r = await api("interrupt", { chatId: id });
+    deleteFromSet(setInterruptingChats, interruptingChats, id);
+    if (!r.ok) reportError(`interrupt ${id}`, r.error);
+  }
+
   async function steerPending(id: string) {
     const item = pending().find((p) => p.id === id);
     if (!item) return;
@@ -4811,13 +4832,7 @@ export function createState() {
       return next;
     });
     addToSet(setInterruptedChats, interruptedChats, item.chatId);
-    if (activeChats().has(item.chatId)) {
-      const previousChatId = chatId();
-      if (previousChatId !== item.chatId) setChatId(item.chatId);
-      await interruptAgent({ resumeQueued: false, offerResume: false });
-      if (previousChatId && previousChatId !== item.chatId)
-        setChatId(previousChatId);
-    }
+    await interruptQueuedChatForSteer(item.chatId);
     deleteFromSet(setInterruptedChats, interruptedChats, item.chatId);
     setPending([item, ...pending()]);
     drainSoon();
