@@ -72,14 +72,17 @@
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-          # Source filter: keep Rust + Cargo + build.rs.  Web/harness sources
-          # are consumed via separate JS-build derivations exposed through env
-          # vars, so they don't need to invalidate the rust dep cache.
+          # Source filter: keep Rust + Cargo + build.rs + the installer pubkey.
+          # Web/harness sources are consumed via separate JS-build derivations
+          # exposed through env vars, so they don't need to invalidate the rust
+          # dep cache.  keys/installer.pub is embedded by upgrade.rs via
+          # include_str!, so it must survive the filter or the build can't see it.
           src = lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
               (craneLib.filterCargoSources path type)
-              || lib.hasSuffix "/build.rs" path;
+              || lib.hasSuffix "/build.rs" path
+              || lib.hasSuffix "/keys/installer.pub" path;
           };
 
           # ---- JS artifacts -------------------------------------------------
