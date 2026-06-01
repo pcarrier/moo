@@ -39,7 +39,10 @@ enum WsRecv<T> {
 /// caller should stop). A full queue (slow client) drops the frame and keeps
 /// going rather than blocking the producer thread.
 fn forward_or_break(writer_tx: &mpsc::SyncSender<String>, msg: String) -> bool {
-    matches!(writer_tx.try_send(msg), Err(mpsc::TrySendError::Disconnected(_)))
+    matches!(
+        writer_tx.try_send(msg),
+        Err(mpsc::TrySendError::Disconnected(_))
+    )
 }
 
 fn recv_ws_tick<T>(rx: &mpsc::Receiver<T>) -> WsRecv<T> {

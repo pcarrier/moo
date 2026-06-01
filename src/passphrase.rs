@@ -4,9 +4,9 @@
 //! Verification transparently accepts either a PHC hash or a legacy plaintext
 //! value so existing databases keep working until the PSK is set again.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::password_hash::rand_core::OsRng;
 use argon2::Argon2;
+use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 
 /// PHC strings produced by the argon2 crate always start with this marker
 /// (covers `$argon2id$`, `$argon2i$`, and `$argon2d$`).
