@@ -3303,7 +3303,11 @@ const agent: Moo["agent"] = {
       await finishSubagentRun(request.childChatId, result);
       return result;
     } catch (err) {
-      await failSubagentRun(request?.childChatId ?? null, err);
+      try {
+        await failSubagentRun(request?.childChatId ?? null, err);
+      } catch {
+        // best-effort cleanup; don't let it mask the original failure
+      }
       throw err;
     }
   },

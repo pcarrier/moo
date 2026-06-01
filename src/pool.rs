@@ -1601,6 +1601,12 @@ impl Pool {
     /// (sync, outside a tokio runtime).
     pub fn chat_lock(&self, key: &str) -> Arc<TokioMutex<()>> {
         let mut locks = self.chat_locks.lock().expect("chat locks");
+        // Drop locks that nobody else references (strong_count == 1 means only
+        // the map holds it), so the map stays bounded by *active* chats rather
+        // than by every chat ever seen. Safe because an entry kept by an
+        // in-flight turn has strong_count >= 2 and is preserved, so we never
+        // split a held lock into two independent mutexes.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         locks
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(())))

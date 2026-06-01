@@ -1739,6 +1739,14 @@ fn read_text_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
         match opcode {
             0x8 => return Ok(None),
             0x9 | 0xA => continue,
+            0x1 if in_text_message => {
+                // RFC 6455 §5.4: a new data frame while a fragmented message is
+                // in progress is a protocol violation; fail the connection
+                // instead of silently overwriting the partial buffer.
+                return Err(std::io::Error::other(
+                    "cdp ws: unexpected text frame during fragmented message",
+                ));
+            }
             0x1 => {
                 message = payload;
                 in_text_message = !fin;

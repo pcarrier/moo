@@ -632,15 +632,21 @@ export class Effect<A, E = ErrorInfo> {
 
   ensuring(finalizer: Finalizer): Effect<A, E | ErrorInfo> {
     return new Effect<A, E | ErrorInfo>(async (scope, signal) => {
+      let result: Result<A, E | ErrorInfo>;
       try {
-        return widenError(await this.thunk(scope, signal));
-      } finally {
-        try {
-          await finalizer();
-        } catch (e) {
-          return errorInfoResult(e, "finalizer failed");
-        }
+        result = widenError(await this.thunk(scope, signal));
+      } catch (e) {
+        result = errorInfoResult(e);
       }
+      try {
+        await finalizer();
+      } catch (e) {
+        // Only surface a finalizer failure when the main operation succeeded;
+        // never let it clobber an existing failure (a `return` in `finally`
+        // would otherwise suppress the original error).
+        if (result.ok) result = errorInfoResult(e, "finalizer failed");
+      }
+      return result;
     });
   }
 

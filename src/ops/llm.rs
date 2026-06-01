@@ -571,8 +571,15 @@ pub async fn stream_chat_websocket(
                 }
 
                 if is_error {
-                    terminal_seen = true;
-                    break;
+                    return transport_error(
+                        &pool,
+                        &bundle,
+                        status,
+                        text,
+                        accumulator.clone(),
+                        response_headers,
+                    )
+                    .await;
                 }
                 if is_terminal {
                     terminal_seen = true;

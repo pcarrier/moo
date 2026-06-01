@@ -1249,9 +1249,17 @@ fn op_facts_snapshot_copy(
         if inserted > 0 {
             tx.execute(
                 "insert into fact_log(ref_name, graph, subject, predicate, object, action, created_by, created_at)
-                 select ref_name, graph, subject, predicate, object, 'add', 'system', ?2
-                 from quads
-                 where ref_name = ?1",
+                 select q.ref_name, q.graph, q.subject, q.predicate, q.object, 'add', 'system', ?2
+                 from quads q
+                 where q.ref_name = ?1
+                   and not exists (
+                     select 1 from fact_log fl
+                     where fl.ref_name = q.ref_name
+                       and fl.graph = q.graph
+                       and fl.subject = q.subject
+                       and fl.predicate = q.predicate
+                       and fl.object = q.object
+                   )",
                 params![&target_ref, now],
             )
             .map_err(|e| e.to_string())?;

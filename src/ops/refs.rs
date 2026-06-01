@@ -74,20 +74,18 @@ fn op_ref_get(
         return;
     }
     let name = args.get(0).to_rust_string_lossy(scope);
-    let target: Option<String> = with_db(|conn| {
-        let mut stmt = match conn.prepare_cached("select target from refs where name = ?1") {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
+    let target: Result<Option<String>, String> = with_db(|conn| {
+        let mut stmt = conn
+            .prepare_cached("select target from refs where name = ?1")
+            .map_err(|e| e.to_string())?;
         stmt.query_row(params![&name], |r| r.get::<_, String>(0))
             .optional()
-            .unwrap_or(None)
+            .map_err(|e| e.to_string())
     });
     match target {
-        Some(t) => {
-            set_return_str(scope, &mut rv, &t);
-        }
-        None => rv.set(v8::null(scope).into()),
+        Ok(Some(t)) => set_return_str(scope, &mut rv, &t),
+        Ok(None) => rv.set(v8::null(scope).into()),
+        Err(e) => throw(scope, &e),
     }
 }
 
