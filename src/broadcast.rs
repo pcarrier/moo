@@ -213,12 +213,18 @@ fn json_string(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // These tests mutate the process-global ACTIVE_DRAFTS, so they must not run
+    // concurrently. Serialize them on a shared lock (recovering from poison so
+    // one failing test doesn't cascade into the others).
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn clear_active_drafts() {
         ACTIVE_DRAFTS.lock().unwrap().clear();
     }
 
     #[test]
     fn replays_latest_active_draft_for_chat_filter() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_active_drafts();
         publish(
             r#"{"kind":"draft","chatId":"chat1","draftId":"draft1","content":"hel","at":1}"#
@@ -244,6 +250,7 @@ mod tests {
 
     #[test]
     fn draft_end_removes_replay() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_active_drafts();
         publish(r#"{"kind":"reasoning-draft","chatId":"chat1","draftId":"draft1","content":"","reasoningContent":"thinking"}"#.to_string());
         publish(r#"{"kind":"draft-end","chatId":"chat1","draftId":"draft1"}"#.to_string());
