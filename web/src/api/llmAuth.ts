@@ -1,6 +1,6 @@
 import type { ApiCommand } from "./contract";
 
-export type LlmProviderId = "openai" | "anthropic" | "qwen" | "xai" | "deepseek";
+export type LlmProviderId = "openai" | "anthropic" | "qwen" | "xai" | "deepseek" | "kimi";
 export type LlmAuthMode = "env" | "apiKey" | "oauth";
 
 export type LlmRetrySettings = {

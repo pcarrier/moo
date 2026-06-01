@@ -1,4 +1,4 @@
-export type ProviderName = "openai" | "qwen" | "anthropic" | "xai" | "deepseek";
+export type ProviderName = "openai" | "qwen" | "anthropic" | "xai" | "deepseek" | "kimi";
 
 export type ModelPrice = {
   /** USD per million regular input tokens. */
@@ -62,7 +62,7 @@ export const DEFAULT_CONTEXT_TOKENS = 128_000;
 export const OPENAI_FAST_MODEL_SUFFIX = "#fast";
 export const OPENAI_FAST_SERVICE_TIER = "priority";
 
-export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai", "deepseek"];
+export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai", "deepseek", "kimi"];
 
 export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
   openai: {
@@ -220,6 +220,48 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
         capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true },
         defaultOption: true,
       },
+    ],
+  },
+  kimi: {
+    id: "kimi",
+    title: "Kimi",
+    envKey: "MOONSHOT_API_KEY",
+    envAltKeys: ["KIMI_API_KEY"],
+    baseUrlEnv: "MOONSHOT_BASE_URL",
+    defaultBaseUrl: "https://api.moonshot.ai/v1",
+    fallbackModel: "kimi-k2.6",
+    inferPrefixes: ["kimi-", "moonshot-"],
+    models: [
+      {
+        id: "kimi-k2.6",
+        match: "^kimi-k2\\.6(?:[-.]|$)",
+        contextWindow: 262_144,
+        capabilities: { toolCalls: true },
+        defaultOption: true,
+      },
+      {
+        id: "kimi-k2.5",
+        aliases: ["kimi-k2-turbo-preview", "kimi-k2-0905-preview", "kimi-k2-0711-preview"],
+        match: "^kimi-k2(?:\\.5|-turbo-preview|-0905-preview|-0711-preview)?(?:[-.]|$)",
+        contextWindow: 262_144,
+        capabilities: { toolCalls: true },
+        defaultOption: true,
+      },
+      {
+        id: "kimi-k2-thinking",
+        aliases: ["kimi-k2-thinking-turbo"],
+        match: "^kimi-k2-thinking(?:-turbo)?(?:[-.]|$)",
+        contextWindow: 262_144,
+        capabilities: { toolCalls: true, reasoning: true },
+        defaultOption: true,
+      },
+      { id: "moonshot-v1-auto", match: "^moonshot-v1-auto(?:[-.]|$)", contextWindow: 128_000, capabilities: { toolCalls: true }, defaultOption: true },
+      { id: "moonshot-v1-128k", match: "^moonshot-v1-128k(?:[-.]|$)", contextWindow: 128_000, capabilities: { toolCalls: true }, defaultOption: true },
+      { id: "moonshot-v1-32k", match: "^moonshot-v1-32k(?:[-.]|$)", contextWindow: 32_000, capabilities: { toolCalls: true }, defaultOption: true },
+      { id: "moonshot-v1-8k", match: "^moonshot-v1-8k(?:[-.]|$)", contextWindow: 8_000, capabilities: { toolCalls: true }, defaultOption: true },
+      { id: "moonshot-v1-128k-vision-preview", contextWindow: 128_000, capabilities: { vision: true }, defaultOption: true },
+      { id: "moonshot-v1-32k-vision-preview", contextWindow: 32_000, capabilities: { vision: true }, defaultOption: true },
+      { id: "moonshot-v1-8k-vision-preview", contextWindow: 8_000, capabilities: { vision: true }, defaultOption: true },
     ],
   },
 };

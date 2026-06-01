@@ -82,6 +82,7 @@ function defaultSettings(): LlmAuthSettings {
       qwen: defaultProviderSettings(),
       xai: defaultProviderSettings(),
       deepseek: defaultProviderSettings(),
+      kimi: defaultProviderSettings(),
     },
     compaction: normalizeCompactionSettings(null),
     retries: normalizeRetryPolicy(DEFAULT_LLM_RETRY_POLICY),
@@ -118,6 +119,7 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
       qwen: normalizeProviderSettings(raw.providers?.qwen, "qwen"),
       xai: normalizeProviderSettings(raw.providers?.xai, "xai"),
       deepseek: normalizeProviderSettings(raw.providers?.deepseek, "deepseek"),
+      kimi: normalizeProviderSettings(raw.providers?.kimi, "kimi"),
     },
     compaction: normalizeCompactionSettings(raw.compaction),
     retries: normalizeRetryPolicy(raw.retries),
@@ -165,8 +167,9 @@ async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAut
     qwen: "QWEN_MODEL",
     xai: "XAI_MODEL",
     deepseek: "DEEPSEEK_MODEL",
+    kimi: "KIMI_MODEL",
   };
-  return (await moo.env.get({ name: modelEnv[id] })) || providerFallback;
+  return (await moo.env.get({ name: modelEnv[id] })) || (id === "kimi" ? await moo.env.get({ name: "MOONSHOT_MODEL" }) : null) || providerFallback;
 }
 
 
@@ -212,6 +215,7 @@ function redact(settings: LlmAuthSettings) {
       qwen: redactProvider(settings.providers.qwen),
       xai: redactProvider(settings.providers.xai),
       deepseek: redactProvider(settings.providers.deepseek),
+      kimi: redactProvider(settings.providers.kimi),
     },
   };
 }

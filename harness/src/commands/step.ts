@@ -2063,7 +2063,8 @@ export async function stepHandleLlmCommand(input: Input) {
       input.requestProvider === "anthropic" ||
       input.requestProvider === "qwen" ||
       input.requestProvider === "xai" ||
-      input.requestProvider === "deepseek"
+      input.requestProvider === "deepseek" ||
+      input.requestProvider === "kimi"
         ? input.requestProvider
         : "openai";
     const requestAuthMode =

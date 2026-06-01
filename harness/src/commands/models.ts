@@ -34,7 +34,7 @@ export type ModelOption = {
 
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
   const raw = String(value ?? "").trim();
-  const match = /^(openai|qwen|anthropic|xai|deepseek):(.*)$/i.exec(raw);
+  const match = /^(openai|qwen|anthropic|xai|deepseek|kimi):(.*)$/i.exec(raw);
   if (!match) return { provider: null, model: raw };
   return { provider: normalizeProvider(match[1]), model: match[2].trim() };
 }
@@ -276,6 +276,8 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) addWithFastMode("anthropic", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) addWithFastMode("xai", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) addWithFastMode("deepseek", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "KIMI_MODELS" }))) addWithFastMode("kimi", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "MOONSHOT_MODELS" }))) addWithFastMode("kimi", splitModelId(model).model);
   return out;
 }
 

@@ -1267,6 +1267,7 @@ async function defaultProviderName(): Promise<ProviderName> {
   if (await moo.env.get({ name: "ANTHROPIC_MODEL" })) return "anthropic";
   if (await moo.env.get({ name: "XAI_MODEL" })) return "xai";
   if (await moo.env.get({ name: "DEEPSEEK_MODEL" })) return "deepseek";
+  if ((await moo.env.get({ name: "KIMI_MODEL" })) || (await moo.env.get({ name: "MOONSHOT_MODEL" }))) return "kimi";
 
   if (await moo.env.get({ name: "OPENAI_API_KEY" })) return "openai";
   if (await moo.env.get({ name: "ANTHROPIC_API_KEY" })) return "anthropic";
@@ -1281,6 +1282,11 @@ async function defaultProviderName(): Promise<ProviderName> {
   )
     return "xai";
   if (await moo.env.get({ name: "DEEPSEEK_API_KEY" })) return "deepseek";
+  if (
+    (await moo.env.get({ name: "MOONSHOT_API_KEY" })) ||
+    (await moo.env.get({ name: "KIMI_API_KEY" }))
+  )
+    return "kimi";
   return "openai";
 }
 
@@ -1340,6 +1346,18 @@ export async function resolveProvider(
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
       effort: normalizeEffort(effortOverride) || (await defaultEffort()),
+      keyEnvHint: configured.keyEnvHint,
+      authMode: configured.authMode,
+    };
+  }
+  if (which === "kimi") {
+    const configured = await providerConfiguredCredential("kimi");
+    return {
+      name: "kimi",
+      apiKey: configured.apiKey,
+      baseUrl: configured.baseUrl,
+      model: modelOverride || configured.model,
+      effort: null,
       keyEnvHint: configured.keyEnvHint,
       authMode: configured.authMode,
     };

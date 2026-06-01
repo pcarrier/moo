@@ -36,6 +36,7 @@ const PROVIDERS: ProviderMeta[] = [
   { id: "qwen", title: "Qwen", envLabel: "QWEN_API_KEY or DASHSCOPE_API_KEY", defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
   { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
   { id: "deepseek", title: "DeepSeek", envLabel: "DEEPSEEK_API_KEY", defaultBaseUrl: "https://api.deepseek.com" },
+  { id: "kimi", title: "Kimi", envLabel: "MOONSHOT_API_KEY or KIMI_API_KEY", defaultBaseUrl: "https://api.moonshot.ai/v1" },
 ];
 
 
@@ -106,6 +107,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     qwen: blankDraft(),
     xai: blankDraft(),
     deepseek: blankDraft(),
+    kimi: blankDraft(),
   });
   const [compactionThresholdPercent, setCompactionThresholdPercent] = createSignal("50");
   const [maxAttempts, setMaxAttempts] = createSignal("3");
@@ -124,7 +126,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
 
   function hydrate(next: LlmAuthSettings) {
     setSettings(next);
-    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), xai: blankDraft(), deepseek: blankDraft() };
+    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), xai: blankDraft(), deepseek: blankDraft(), kimi: blankDraft() };
     for (const meta of PROVIDERS) {
       const p = next.providers[meta.id];
       providerDrafts[meta.id] = {
@@ -192,6 +194,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           authMode: d.deepseek.authMode,
           apiKey: d.deepseek.apiKey === "••••" ? undefined : d.deepseek.apiKey,
           baseUrl: d.deepseek.baseUrl,
+        },
+        kimi: {
+          authMode: d.kimi.authMode,
+          apiKey: d.kimi.apiKey === "••••" ? undefined : d.kimi.apiKey,
+          baseUrl: d.kimi.baseUrl,
         },
         compaction: {
           thresholdPercent: Number(compactionThresholdPercent()),

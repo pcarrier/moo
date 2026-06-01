@@ -259,6 +259,7 @@ export type ProviderAuthConfigInput = {
   qwen?: ProviderAuthInput;
   xai?: ProviderAuthInput;
   deepseek?: ProviderAuthInput;
+  kimi?: ProviderAuthInput;
 };
 
 export type ContentCommandInput = {
