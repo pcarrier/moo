@@ -48,6 +48,11 @@ describe("chat message queueing", () => {
     expect(draftBusy).toContain("draft.chatId === id");
     expect(draftBusy).toContain("!endedDraftReplyIds.has(draft.draftId)");
     expect(inFlight).toContain("chatHasUnendedDraft(id)");
+    expect(stateSource).toContain("const chatVisiblyActive = (id: string)");
+    expect(stateSource).toContain(
+      "setHas(activeChats(), id) || chatHasLocalOpenTurn(id)",
+    );
+    expect(stateSource).toContain("isChatActive: chatVisiblyActive");
     expect(draftEnd).toContain(
       "endedDraftReplyIds.set(ev.draftId, Date.now());",
     );
@@ -134,7 +139,30 @@ describe("chat message queueing", () => {
     expect(release).toContain("drainSoon();");
     expect(refreshChats).toContain("const currentChatId = chatId();");
     expect(refreshChats).toContain("await refreshBackgroundRunTS();");
+    expect(refreshChats).toContain("if (!chatHasLocalOpenTurn(currentChatId))");
     expect(refreshChats).toContain("releaseSettledChatRuntime(currentChatId);");
+  });
+
+  test("keeps sidebar active through stale chat-list refreshes", () => {
+    const refreshChats = stateSource.slice(
+      stateSource.indexOf("async function refreshChats()"),
+      stateSource.indexOf("async function refreshChatMemory"),
+    );
+    expect(refreshChats).toContain("const requestStartedAt = Date.now();");
+    expect(refreshChats).toContain(
+      "const staleActiveChats = new Set<string>();",
+    );
+    expect(refreshChats).toContain("for (const id of activeChats())");
+    expect(stateSource).toContain(
+      "const STALE_ACTIVE_CHAT_REFRESH_GRACE_MS = 2000;",
+    );
+    expect(refreshChats).toContain(
+      "activeStartedAt + STALE_ACTIVE_CHAT_REFRESH_GRACE_MS",
+    );
+    expect(refreshChats).toContain("requestStartedAt");
+    expect(refreshChats).toContain("live.add(id);");
+    expect(refreshChats).toContain("for (const id of staleActiveChats)");
+    expect(refreshChats).toContain("next.set(id, startedAt);");
   });
 
   test("does not settle backgrounded RunTS rows while unblocking queued chat sends", () => {

@@ -128,6 +128,7 @@ const MAX_REMEMBERED_TIMELINE_KEYS = 1200;
 const MAX_DISMISSED_REPLIES = 24;
 const RIGHT_SIDEBAR_CHAT_MAX = 24;
 const MISSING_REPO_FILE_REFRESH_MS = 2000;
+const STALE_ACTIVE_CHAT_REFRESH_GRACE_MS = 2000;
 
 const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:apps",
@@ -1120,6 +1121,8 @@ export function createState() {
     chatHasServerRun(id) || chatHasLocalOpenTurn(id);
   const chatHasLocalOpenTurn = (id: string) =>
     hasRunningTimelineRowForChat(id) || chatHasUnendedDraft(id);
+  const chatVisiblyActive = (id: string) =>
+    setHas(activeChats(), id) || chatHasLocalOpenTurn(id);
   const chatBusy = (id: string) =>
     (chatHasServerRun(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
     // Queue unblocks only bypass stale server-running state after a foreground
@@ -3259,6 +3262,7 @@ export function createState() {
   // -- fetchers ----------------------------------------------------------
 
   async function refreshChats() {
+    const requestStartedAt = Date.now();
     const archiveRefreshGuard = captureChatArchiveRefreshGuard();
     const keepHiddenChatId = chatId();
     const existingHidden = keepHiddenChatId
@@ -3298,6 +3302,22 @@ export function createState() {
         (c) => c.status === "agent:Running",
       );
       const live = new Set(runningChats.map((c) => c.chatId));
+      const staleActiveChats = new Set<string>();
+      for (const id of activeChats()) {
+        const activeStartedAt = Number(activeChatStartedAt().get(id));
+        // Ignore chat-list responses that started before this turn, plus a
+        // short start-race grace: step-start is published just before the Rust
+        // running registry is updated, so an immediate chat-list can otherwise
+        // make the sidebar blink idle while drafts/tools keep streaming.
+        if (
+          Number.isFinite(activeStartedAt) &&
+          activeStartedAt + STALE_ACTIVE_CHAT_REFRESH_GRACE_MS >
+            requestStartedAt
+        ) {
+          staleActiveChats.add(id);
+          live.add(id);
+        }
+      }
       setActiveChats(live);
       setActiveChatStartedAt((current) => {
         const next = new Map<string, number>();
@@ -3310,6 +3330,10 @@ export function createState() {
               : (current.get(c.chatId) ?? Date.now()),
           );
         }
+        for (const id of staleActiveChats) {
+          const startedAt = current.get(id);
+          if (startedAt != null) next.set(id, startedAt);
+        }
         return next;
       });
       setCompactingChats((current) => {
@@ -3318,14 +3342,14 @@ export function createState() {
         return next;
       });
       const currentChatId = chatId();
-      if (
-        currentChatId &&
-        !live.has(currentChatId) &&
-        hasRunningTimelineRowForChat(currentChatId)
-      )
-        await refreshBackgroundRunTS();
-      if (currentChatId && !live.has(currentChatId))
-        releaseSettledChatRuntime(currentChatId);
+      if (currentChatId && !live.has(currentChatId)) {
+        if (hasRunningTimelineRowForChat(currentChatId)) {
+          await refreshBackgroundRunTS();
+        }
+        if (!chatHasLocalOpenTurn(currentChatId)) {
+          releaseSettledChatRuntime(currentChatId);
+        }
+      }
       if (pending().some((p) => !live.has(p.chatId))) drainSoon();
     } else {
       setChatsLoaded(true);
@@ -6625,7 +6649,7 @@ export function createState() {
     canResumeAgent,
     thinkingStartedAt,
     runningModel,
-    isChatActive: (id: string) => activeChats().has(id),
+    isChatActive: chatVisiblyActive,
     connected,
     pskRequired,
     pskChecking,
