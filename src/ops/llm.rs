@@ -555,10 +555,14 @@ pub async fn stream_chat_websocket(
                 let is_terminal = websocket_terminal_event(event_type, &event);
 
                 if should_accumulate {
+                    // Pass a clone so the partial state survives an accumulate
+                    // error and can be reported (mirrors the SSE path); otherwise
+                    // the error payload would lose all text/tool-call/usage
+                    // accumulated so far.
                     match accumulate_websocket_text_event(
                         &pool,
                         &bundle,
-                        accumulator,
+                        accumulator.clone(),
                         &stream_events,
                         text.clone(),
                         request_started,
@@ -578,7 +582,7 @@ pub async fn stream_chat_websocket(
                                 &bundle,
                                 status,
                                 format!("llm accumulate: {e}"),
-                                Value::Null,
+                                accumulator,
                                 response_headers,
                             )
                             .await;
@@ -625,10 +629,14 @@ pub async fn stream_chat_websocket(
                 let is_terminal = websocket_terminal_event(event_type, &event);
 
                 if should_accumulate {
+                    // Pass a clone so the partial state survives an accumulate
+                    // error and can be reported (mirrors the SSE path); otherwise
+                    // the error payload would lose all text/tool-call/usage
+                    // accumulated so far.
                     match accumulate_websocket_text_event(
                         &pool,
                         &bundle,
-                        accumulator,
+                        accumulator.clone(),
                         &stream_events,
                         text.clone(),
                         request_started,
@@ -648,7 +656,7 @@ pub async fn stream_chat_websocket(
                                 &bundle,
                                 status,
                                 format!("llm accumulate: {e}"),
-                                Value::Null,
+                                accumulator,
                                 response_headers,
                             )
                             .await;

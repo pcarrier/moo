@@ -1406,6 +1406,10 @@ fn handle_conn(mut stream: TcpStream, context: CdpConnContext) -> std::io::Resul
             ws_key = Some(trimmed[idx + 1..].trim().to_string());
         }
     }
+    // The BufReader may hold bytes past the end of the header block (a client
+    // that pipelined its first WS frame with the upgrade request). Capture them
+    // before dropping the reader so the WS frame parser doesn't lose them.
+    let leftover = reader.buffer().to_vec();
     drop(reader);
 
     let path_only = request_target_path(&path);
@@ -1430,7 +1434,7 @@ fn handle_conn(mut stream: TcpStream, context: CdpConnContext) -> std::io::Resul
             title: target_id.to_string(),
             chat_id: chat_id_from_target_id(target_id),
         });
-        return handle_ws_upgrade(stream, &key, session_tx, target);
+        return handle_ws_upgrade(stream, &key, session_tx, target, leftover);
     }
 
     match path_only {
@@ -1775,6 +1779,7 @@ fn handle_ws_upgrade(
     sec_key: &str,
     session_tx: Sender<PendingSession>,
     target: TargetSpec,
+    leftover: Vec<u8>,
 ) -> std::io::Result<()> {
     let accept = compute_accept(sec_key);
     let response = format!(
@@ -1820,14 +1825,18 @@ fn handle_ws_upgrade(
 
     // Reader: parse WS frames → in_tx. Returning here closes the connection;
     // dropping `in_tx` then signals the inspector that the session is over.
-    let reader_result = read_ws_loop(&mut stream, &in_tx);
+    // Prepend any bytes the header BufReader had already pulled past the upgrade
+    // request so a pipelined first frame isn't lost.
+    let reader_clone = stream.try_clone()?;
+    let mut ws_source = std::io::Cursor::new(leftover).chain(reader_clone);
+    let reader_result = read_ws_loop(&mut ws_source, &in_tx);
     drop(in_tx);
     let _ = writer.join();
     let _ = stream.shutdown(std::net::Shutdown::Both);
     reader_result
 }
 
-fn read_ws_loop(stream: &mut TcpStream, in_tx: &Sender<Vec<u8>>) -> std::io::Result<()> {
+fn read_ws_loop(stream: &mut impl Read, in_tx: &Sender<Vec<u8>>) -> std::io::Result<()> {
     loop {
         match read_text_frame(stream)? {
             Some(bytes) => {
@@ -1844,7 +1853,7 @@ fn read_ws_loop(stream: &mut TcpStream, in_tx: &Sender<Vec<u8>>) -> std::io::Res
 // complete message, Ok(None) on close/EOF. Mirrors the framing logic in
 // src/ws.rs but yields raw bytes (CDP messages are JSON; we don't need to
 // decode them as UTF-8 strings before forwarding).
-fn read_text_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+fn read_text_frame(stream: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
     let mut message: Vec<u8> = Vec::new();
     let mut in_text_message = false;
     loop {
@@ -1917,7 +1926,7 @@ fn read_text_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
-fn read_exact_or_eof(stream: &mut TcpStream, buf: &mut [u8]) -> std::io::Result<bool> {
+fn read_exact_or_eof(stream: &mut impl Read, buf: &mut [u8]) -> std::io::Result<bool> {
     let mut filled = 0;
     while filled < buf.len() {
         match stream.read(&mut buf[filled..]) {

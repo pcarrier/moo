@@ -287,9 +287,12 @@ fn handle_request(
         }
         let key = ws_key.unwrap_or_default();
         // The header phase is done; WebSocket connections are long-lived and may
-        // sit idle, so clear the short header-phase timeouts before handoff.
+        // sit idle, so clear the short header-phase read timeout. Keep a generous
+        // write deadline so a stalled client that stops reading (filling the TCP
+        // window) eventually errors the write instead of pinning the writer
+        // thread and its connection-limiter permit forever.
         let _ = stream.set_read_timeout(None);
-        let _ = stream.set_write_timeout(None);
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
         return ws::handle(
             stream,
             &key,
@@ -310,9 +313,10 @@ fn handle_request(
             );
         }
         let key = ws_key.unwrap_or_default();
-        // Long-lived WebSocket: clear the short header-phase timeouts.
+        // Long-lived WebSocket: clear the short header-phase read timeout but keep
+        // a generous write deadline so a stalled client can't pin the writer.
         let _ = stream.set_read_timeout(None);
-        let _ = stream.set_write_timeout(None);
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
         return blit::handle_ws(stream, &key);
     }
 
@@ -467,6 +471,18 @@ fn serve_raw_file(stream: &mut TcpStream, path: &str, db: &str) -> std::io::Resu
             "404 Not Found",
             "text/plain; charset=utf-8",
             b"not found",
+        );
+    }
+    // Bound how much we buffer into memory. The raw endpoint is unauthenticated
+    // in open mode (no PSK), so without a cap a request for a multi-GB file —
+    // multiplied by MAX_CONCURRENT_CONNECTIONS — would exhaust RAM.
+    const MAX_RAW_FILE_BYTES: u64 = 256 * 1024 * 1024;
+    if meta.len() > MAX_RAW_FILE_BYTES {
+        return write_response(
+            stream,
+            "413 Payload Too Large",
+            "text/plain; charset=utf-8",
+            b"file too large",
         );
     }
     let Ok(body) = std::fs::read(&child_canon) else {

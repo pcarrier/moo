@@ -505,9 +505,10 @@ function getSourceLine(lines: FileLine[], i: number): FileLine {
 }
 
 function resolveHunkSourceIndex(h: UnifiedHunk): number {
-  if (h.oldCount === 0) {
-    return h.oldStart;
-  }
+  // git's rule is uniformly "insert/replace before 1-based line oldStart", so a
+  // pure-insertion hunk (oldCount === 0) must map the same way. Returning
+  // oldStart directly put a prepend (`@@ -1,0 +1,1 @@`) after line 1 instead of
+  // before it.
   return Math.max(h.oldStart - 1, 0);
 }
 

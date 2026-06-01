@@ -251,9 +251,9 @@ export function llmStreamFinalizeEffect(
                       : null,
                   reasoningContent: state.reasoningContent || null,
                   stopReason: state.stopReason,
-                  anthropicThinkingBlocks: state.anthropicThinkingBlocks.length
-                    ? state.anthropicThinkingBlocks
-                    : undefined,
+                  anthropicThinkingBlocks: finalizeAnthropicThinkingBlocks(
+                    state.anthropicThinkingBlocks,
+                  ),
                   model: state.model,
                   usage: state.usage,
                 }
@@ -265,9 +265,9 @@ export function llmStreamFinalizeEffect(
                   errorBody: null,
                   reasoningContent: state.reasoningContent || null,
                   stopReason: state.stopReason,
-                  anthropicThinkingBlocks: state.anthropicThinkingBlocks.length
-                    ? state.anthropicThinkingBlocks
-                    : undefined,
+                  anthropicThinkingBlocks: finalizeAnthropicThinkingBlocks(
+                    state.anthropicThinkingBlocks,
+                  ),
                   model: state.model,
                   usage: state.usage,
                 };
@@ -716,13 +716,27 @@ function normalizeAnthropicThinkingBlock(
   value: unknown,
 ): { type: "thinking"; thinking: string; signature: string } | null {
   if (!isObject(value) || value.type !== "thinking") return null;
-  const signature = typeof value.signature === "string" ? value.signature : "";
-  if (!signature) return null;
+  // Preserve in-progress blocks whose signature hasn't arrived yet. The
+  // accumulator state round-trips through this normalizer on every accumulate
+  // call; the signature only streams in at the very end, so dropping
+  // signatureless blocks here lost the accumulated thinking text and desynced
+  // the block-index maps mid-stream. The signature requirement is enforced at
+  // finalize time (finalizeAnthropicThinkingBlocks) and in agent.ts.
   return {
     type: "thinking",
     thinking: typeof value.thinking === "string" ? value.thinking : "",
-    signature,
+    signature: typeof value.signature === "string" ? value.signature : "",
   };
+}
+
+// At finalize, only emit thinking blocks that carry a signature — Anthropic
+// requires it on resubmission, and an interrupted stream may leave a trailing
+// signatureless block.
+function finalizeAnthropicThinkingBlocks(
+  blocks: Array<{ type: "thinking"; thinking: string; signature: string }>,
+): Array<{ type: "thinking"; thinking: string; signature: string }> | undefined {
+  const complete = blocks.filter((b) => b.signature);
+  return complete.length ? complete : undefined;
 }
 
 function accumulateLlmStreamEvent(

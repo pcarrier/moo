@@ -645,6 +645,10 @@ fn op_facts_refs(
         None
     };
     let refs: Result<Vec<String>, String> = with_db(|conn| {
+        // When the prefix has no valid UTF-8 upper bound we fall back to an
+        // open-ended `>= prefix` scan, which over-returns every ref
+        // lexicographically >= the prefix; remember to post-filter in that case.
+        let mut needs_prefix_filter: Option<String> = None;
         let (sql, vals): (&str, Vec<SqlValue>) = if let Some(prefix) = prefix {
             if let Some(upper) = prefix_upper_bound(&prefix) {
                 (
@@ -653,6 +657,7 @@ fn op_facts_refs(
                     vec![SqlValue::Text(prefix), SqlValue::Text(upper)],
                 )
             } else {
+                needs_prefix_filter = Some(prefix.clone());
                 (
                     "select distinct ref_name from quads where ref_name >= ?1
                      order by ref_name",
@@ -669,8 +674,13 @@ fn op_facts_refs(
         let iter = stmt
             .query_map(params_from_iter(vals.iter()), |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        iter.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
+        let mut out = iter
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if let Some(prefix) = needs_prefix_filter {
+            out.retain(|name| name.starts_with(&prefix));
+        }
+        Ok(out)
     });
     match refs {
         Ok(refs) => {

@@ -853,7 +853,15 @@ fn select_union_bindings(
     let mut seen = HashSet::new();
     let mut branch_limit = None;
     let final_limit = effective_limit(opt_limit, plan.limit);
-    if let Some(limit) = final_limit {
+    // Only push a per-branch LIMIT when there is no ORDER BY. With an ORDER BY,
+    // each branch is queried *without* the outer ordering (it wraps the UNION
+    // externally), so SQLite would return an arbitrary subset per branch; the
+    // authoritative sort runs below after merging all branches, and truncating a
+    // branch early can discard rows that belong in the global top-N. Without an
+    // ORDER BY the result set is unordered, so capping each branch is safe.
+    if plan.order.is_empty()
+        && let Some(limit) = final_limit
+    {
         branch_limit = plan.offset.map(|offset| limit.saturating_add(offset));
     }
 
@@ -1835,6 +1843,60 @@ fn compile_equality_filter(
     }
 }
 
+/// One side of an ordered comparison, plus whether it is statically known to be
+/// numeric (a numeric literal or an arithmetic expression).
+struct CompareOperand {
+    /// SQL yielding the operand's lexical (string) value.
+    lexical: String,
+    numeric: bool,
+}
+
+fn compile_comparison_operand(
+    expr: &Expression,
+    var_cols: &HashMap<String, String>,
+    sql: &mut SqlBuilder,
+    encoder: &TermEncoder,
+) -> Result<CompareOperand, String> {
+    match expr {
+        Expression::Literal(literal) => Ok(CompareOperand {
+            lexical: sql.push_text(literal.value()),
+            numeric: is_numeric_literal(literal, encoder),
+        }),
+        Expression::Variable(var) => {
+            let key = var_key(var);
+            let col = var_cols.get(&key).ok_or_else(|| {
+                format!("SPARQL comparison variable is not bound in WHERE: {key}")
+            })?;
+            // A variable's runtime type is unknown at compile time.
+            Ok(CompareOperand {
+                lexical: term_lexical_sql(col),
+                numeric: false,
+            })
+        }
+        Expression::Add(..)
+        | Expression::Subtract(..)
+        | Expression::Multiply(..)
+        | Expression::Divide(..)
+        | Expression::UnaryPlus(..)
+        | Expression::UnaryMinus(..) => Ok(CompareOperand {
+            lexical: compile_numeric_expression(expr, var_cols, sql, encoder)?,
+            numeric: true,
+        }),
+        _ => Ok(CompareOperand {
+            lexical: compile_value_expression(expr, var_cols, sql, encoder)?,
+            numeric: false,
+        }),
+    }
+}
+
+/// SQL predicate: true when `e`'s lexical value looks like an xsd numeric
+/// literal. Restricts a sign to the leading position so ISO dateTimes such as
+/// `2020-01-01` are treated as strings (and compared lexically/chronologically)
+/// rather than truncated to `2020.0` by an unconditional `cast(... as real)`.
+fn sql_is_numeric(e: &str) -> String {
+    format!("(length({e}) > 0 and ({e}) not glob '*[^0-9.eE+-]*' and ({e}) not glob '?*[-+]*')")
+}
+
 fn compile_comparison_filter(
     left: &Expression,
     right: &Expression,
@@ -1843,9 +1905,25 @@ fn compile_comparison_filter(
     sql: &mut SqlBuilder,
     encoder: &TermEncoder,
 ) -> Result<String, String> {
-    let left = compile_numeric_expression(left, var_cols, sql, encoder)?;
-    let right = compile_numeric_expression(right, var_cols, sql, encoder)?;
-    Ok(format!("({left}) {op} ({right})"))
+    let left = compile_comparison_operand(left, var_cols, sql, encoder)?;
+    let right = compile_comparison_operand(right, var_cols, sql, encoder)?;
+    let l = &left.lexical;
+    let r = &right.lexical;
+    // If either side is statically numeric, compare numerically (SPARQL numeric
+    // promotion). Otherwise both sides' types are only known at runtime: compare
+    // numerically when both lexical values are numbers, else lexically — which
+    // keeps numeric comparisons correct while fixing string/date ordering that
+    // the unconditional numeric cast silently broke.
+    if left.numeric || right.numeric {
+        return Ok(format!("(cast({l} as real)) {op} (cast({r} as real))"));
+    }
+    let l_num = sql_is_numeric(l);
+    let r_num = sql_is_numeric(r);
+    Ok(format!(
+        "case when {l_num} and {r_num} \
+         then (cast({l} as real)) {op} (cast({r} as real)) \
+         else ({l}) {op} ({r}) end"
+    ))
 }
 
 fn compile_in_filter(

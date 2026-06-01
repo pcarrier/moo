@@ -1127,18 +1127,25 @@ const facts: Moo["facts"] = {
     assertFactObjects(encodedAdds);
     host.swapFacts(store, JSON.stringify(encodedRemoves), JSON.stringify(encodedAdds));
     invalidateChatFactsSummary(store);
-    return factReceipt(store, encodedAdds.length, encodedRemoves.length);
+    // Report the logical requested count, not the candidate expansion
+    // (removeFactQuadCandidates fans one quad out into 2-3 encodings).
+    return factReceipt(store, encodedAdds.length, removes.length);
   },
   async update(args) {
     const { fn } = args;
     const store = factStore(args, "facts.update");
     const removes: Quad[] = [];
     const adds: Quad[] = [];
+    // Track logical remove requests separately from the candidate expansion so
+    // the receipt reports how many quads the caller asked to remove, not how
+    // many encodings removeFactQuadCandidates produced.
+    let removeCount = 0;
     await fn({
       add({ graph, subject, predicate, object }) {
         adds.push([graph, subject, predicate, encodeObject(object)]);
       },
       remove({ graph, subject, predicate, object }) {
+        removeCount += 1;
         removes.push(...removeFactQuadCandidates({ graph, subject, predicate, object }));
       },
     });
@@ -1146,7 +1153,7 @@ const facts: Moo["facts"] = {
     assertFactObjects(adds);
     host.swapFacts(store, JSON.stringify(removes), JSON.stringify(adds));
     invalidateChatFactsSummary(store);
-    return factReceipt(store, adds.length, removes.length);
+    return factReceipt(store, adds.length, removeCount);
   },
   async clearStore(args) {
     const store = factStore(args, "facts.clearStore");

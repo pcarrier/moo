@@ -119,6 +119,16 @@ pub fn handle(
         let base_url = base_url.clone();
         thread::spawn(move || {
             let mut s = read_clone;
+            // Bound the number of in-flight background `run` workers per
+            // connection so a client streaming `run` frames faster than the pool
+            // drains them can't spawn unbounded OS threads. Pre-fill a permit
+            // bucket; acquiring blocks the reader once the cap is reached, which
+            // is the backpressure we want.
+            const MAX_INFLIGHT_RUNS: usize = 64;
+            let (run_permits_tx, run_permits_rx) = mpsc::sync_channel::<()>(MAX_INFLIGHT_RUNS);
+            for _ in 0..MAX_INFLIGHT_RUNS {
+                let _ = run_permits_tx.try_send(());
+            }
             loop {
                 match read_text_frame(&mut s) {
                     Ok(Some(text)) => {
@@ -183,7 +193,21 @@ pub fn handle(
                             if run_inline {
                                 run();
                             } else {
-                                thread::spawn(run);
+                                // Block until a permit frees up, then release it
+                                // when the worker finishes (success or panic).
+                                if run_permits_rx.recv().is_err() {
+                                    break;
+                                }
+                                let release_tx = run_permits_tx.clone();
+                                let guarded = move || {
+                                    run();
+                                    let _ = release_tx.send(());
+                                };
+                                if thread::Builder::new().spawn(guarded).is_err() {
+                                    // Spawn failed: return the permit so we don't
+                                    // leak capacity.
+                                    let _ = run_permits_tx.send(());
+                                }
                             }
                         }
                     }

@@ -102,6 +102,11 @@ pub fn handle_ws(mut stream: TcpStream, sec_key: &str) -> std::io::Result<()> {
     alive.store(false, Ordering::Relaxed);
     let _ = write_ws_binary(&mut ws_writer, &[0x0C]);
     let _ = write_ws_close(&mut ws_writer);
+    // The reader thread may be parked in read_ws_message on a socket with no read
+    // timeout; an idle client that ignores our close frame would never unblock
+    // it and join() would hang forever (leaking the thread, both fds, and the
+    // connection-limiter permit). Shut the socket down so the read returns.
+    let _ = ws_writer.shutdown(std::net::Shutdown::Both);
     let _ = ws_to_blit.join();
     Ok(())
 }

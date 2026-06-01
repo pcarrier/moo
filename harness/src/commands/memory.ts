@@ -104,10 +104,16 @@ export async function graphSummariesCommand(input: Input) {
     const current = await moo.facts.match({ store, ...{ graph } });
     const currentKeys = new Set((current as Array<[string, string, string, string]>).map((row) => row.join("\u0000")));
     const rows = await moo.facts.history({ store, ...{ graph } });
+    const seenRemovedProject = new Set<string>();
     if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
+        // Dedupe on quad identity so a quad removed more than once (distinct
+        // created_at per event) is summarized once, not per remove event.
+        const dedupKey = row.slice(0, 4).join("\u0000") + "\u0000removed";
+        if (seenRemovedProject.has(dedupKey)) continue;
+        seenRemovedProject.add(dedupKey);
         add(row[0], row[1]);
       }
     }
@@ -131,7 +137,9 @@ export async function graphSummariesCommand(input: Input) {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
-        const key = row.join("\u0000");
+        // Quad identity, not the 6-tuple event row (which includes created_at):
+        // a quad removed -> re-added -> removed again must not yield two rows.
+        const key = row.slice(0, 4).join("\u0000") + "\u0000removed";
         if (seenRemoved.has(key)) continue;
         seenRemoved.add(key);
         add(row[0], row[1]);
@@ -166,8 +174,12 @@ export async function triplesCommand(input: Input) {
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 100_000) : 100_000;
   const graph = typeof input.graph === "string" && input.graph.length > 0 ? input.graph : undefined;
   let total = 0;
-  const pushTriple = (triples: Array<[string, string, string, string, string?, string?]>, row: [string, string, string, string, string?, string?]) => {
-    if (graph && row[0] !== graph) return;
+  // The effective graph filter is passed explicitly: in project mode the rows
+  // are scoped to the project graph (a different binding than the outer
+  // input-derived `graph`), and filtering against the outer one dropped every
+  // project row when a caller also passed `input.graph`.
+  const pushTriple = (effectiveGraph: string | undefined, triples: Array<[string, string, string, string, string?, string?]>, row: [string, string, string, string, string?, string?]) => {
+    if (effectiveGraph && row[0] !== effectiveGraph) return;
     total += 1;
     if (!limit || triples.length < limit) triples.push(row);
   };
@@ -212,18 +224,24 @@ export async function triplesCommand(input: Input) {
       object: input.object ?? null,
     } });
     const triples: Array<[string, string, string, string, string?, string?]> = [];
+    const seenRemovedProject = new Set<string>();
     if (input.removed === "include" || input.removed === "only") {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
-        pushTriple(triples, row);
+        // Dedupe on quad identity (a quad removed more than once carries a
+        // distinct created_at per event) so it is listed once, not per event.
+        const dedupKey = row.slice(0, 4).join("\u0000") + "\u0000removed";
+        if (seenRemovedProject.has(dedupKey)) continue;
+        seenRemovedProject.add(dedupKey);
+        pushTriple(graph, triples, row);
       }
     }
     if (input.removed !== "only") {
       const latestAddAt = latestAddTimes(rows as Array<[string, string, string, string, string, string]>);
       for (const row of current as Array<[string, string, string, string]>) {
         const rowKey = row.join("\u0000");
-        pushTriple(triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
+        pushTriple(graph, triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
       }
     }
     return { ok: true, value: { triples, truncated: Boolean(limit && total > triples.length), limit: limit || undefined, total } };
@@ -254,7 +272,7 @@ export async function triplesCommand(input: Input) {
         const key = rowKey + "\u0000present";
         if (seen.has(key)) continue;
         seen.add(key);
-        pushTriple(triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
+        pushTriple(graph, triples, [row[0], row[1], row[2], row[3], "present", latestAddAt.get(rowKey) ?? ""]);
       }
     }
     const truncated = Boolean(limit && triples.length >= limit);
@@ -280,10 +298,12 @@ export async function triplesCommand(input: Input) {
       for (const row of rows as Array<[string, string, string, string, string, string]>) {
         if (row[4] !== "remove") continue;
         if (currentKeys.has(row.slice(0, 4).join("\u0000"))) continue;
-        const key = row.join("\u0000");
+        // Quad identity, not the 6-tuple event row (which includes created_at):
+        // a quad removed -> re-added -> removed again must not yield two rows.
+        const key = row.slice(0, 4).join("\u0000") + "\u0000removed";
         if (seen.has(key)) continue;
         seen.add(key);
-        pushTriple(triples, row);
+        pushTriple(graph, triples, row);
       }
     }
     if (removedMode === "only") continue;
@@ -301,7 +321,7 @@ export async function triplesCommand(input: Input) {
       const key = rowKey + "\u0000present";
       if (seen.has(key)) continue;
       seen.add(key);
-      pushTriple(triples, event);
+      pushTriple(graph, triples, event);
     }
   }
   return { ok: true, value: { triples, truncated: Boolean(limit && total > triples.length), limit: limit || undefined, total } };

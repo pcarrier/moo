@@ -146,6 +146,39 @@ fn validate_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A ureq resolver that performs DNS resolution exactly once and rejects any
+/// address that fails the SSRF policy. ureq connects to the `SocketAddr`s this
+/// returns (it does not resolve again), so the address that was checked is
+/// guaranteed to be the address connected to. This closes the DNS-rebinding
+/// TOCTOU that the up-front `validate_url` resolve cannot: there, the host is
+/// resolved once for the check and then independently re-resolved by the
+/// transport at connect time, so a host that flips between a public and a
+/// blocked address slips through.
+#[derive(Debug, Default)]
+struct SsrfResolver {
+    inner: ureq::unversioned::resolver::DefaultResolver,
+}
+
+impl ureq::unversioned::resolver::Resolver for SsrfResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.inner.resolve(uri, config, timeout)?;
+        for addr in addrs.iter() {
+            if ip_is_blocked(&addr.ip()) {
+                return Err(ureq::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("blocked address {} (SSRF protection)", addr.ip()),
+                )));
+            }
+        }
+        Ok(addrs)
+    }
+}
+
 /// Execute an HTTP request, validating the target against SSRF rules on every
 /// hop and following redirects manually (the agent has redirects disabled).
 ///
@@ -287,7 +320,14 @@ fn op_http_fetch(
         // re-validating each hop's resolved IP.
         .max_redirects(0)
         .build();
-    let agent = ureq::Agent::new_with_config(config);
+    // Use a validating resolver so the SSRF address check happens at the single
+    // point of DNS resolution that the transport then connects to (no rebinding
+    // window between check and connect).
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        SsrfResolver::default(),
+    );
     let http_method = method
         .parse::<ureq::http::Method>()
         .unwrap_or(ureq::http::Method::GET);
@@ -460,7 +500,14 @@ fn op_http_stream_open(
         // re-validating each hop's resolved IP.
         .max_redirects(0)
         .build();
-    let agent = ureq::Agent::new_with_config(config);
+    // Use a validating resolver so the SSRF address check happens at the single
+    // point of DNS resolution that the transport then connects to (no rebinding
+    // window between check and connect).
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        SsrfResolver::default(),
+    );
     let http_method = method
         .parse::<ureq::http::Method>()
         .unwrap_or(ureq::http::Method::GET);

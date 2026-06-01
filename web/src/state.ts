@@ -3298,8 +3298,13 @@ export function createState() {
       // actively running; mirror that into the client-side set so
       // thinking() and the stop button work on cold load without relying on
       // local dispatch locks.
+      // Use the same delete-tombstone filter as the sidebar list above: a
+      // locally deleted chat the driver still reports as Running must not be
+      // re-inserted into activeChats (it has no sidebar row and no future
+      // step-end to clear it).
       const runningChats = r.value.chats.filter(
-        (c) => c.status === "agent:Running",
+        (c) =>
+          c.status === "agent:Running" && !chatDeleteSeqByChat.has(c.chatId),
       );
       const live = new Set(runningChats.map((c) => c.chatId));
       const staleActiveChats = new Set<string>();
@@ -4380,6 +4385,11 @@ export function createState() {
       setChats(previousChats);
       if (wasSelected && previousChatId) void selectChat(previousChatId);
       reportError(`remove ${id}`, r.error);
+    } else if (chatDeleteSeqByChat.get(id) === deleteSeq) {
+      // Delete confirmed server-side; drop the tombstone so the map doesn't
+      // grow without bound. Guard on deleteSeq so a newer delete of a
+      // recreated id isn't cleared out from under us.
+      chatDeleteSeqByChat.delete(id);
     }
   }
 

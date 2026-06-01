@@ -434,7 +434,10 @@ export class Effect<A, E = ErrorInfo> {
       try {
         await release(resource);
       } catch (e) {
-        if (used.ok) errorInfo(e, "release failed");
+        // Surface a release/finalizer failure as the result (matching ensuring()
+        // and scoped()); the bare errorInfo() call discarded its value, so a
+        // failed cleanup was silently reported as success.
+        if (used.ok) used = errorInfoResult(e, "release failed");
       }
       return used;
     });

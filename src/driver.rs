@@ -1367,10 +1367,14 @@ async fn drive_loop(
                         clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                     }
                     _ = &mut background_poll => {
-                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                         let step_id = foreground_step_id.clone();
                         let label = runts_tool_label(&value);
                         let detached_result = detached_runts_tool_result(&value);
+                        // Register the background entry before clearing the
+                        // foreground one so the step stays continuously
+                        // discoverable to cancel_runts (the two registries use
+                        // separate mutexes; clearing first opens a window where a
+                        // cancel finds the step in neither and is silently lost).
                         background_runts_tool_handle(
                             chat_id.to_string(),
                             step_id,
@@ -1380,6 +1384,7 @@ async fn drive_loop(
                             run,
                             "user",
                         );
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                         step_span.finish(
                             "ok",
                             json!({
@@ -1398,10 +1403,12 @@ async fn drive_loop(
                         continue;
                     }
                     _ = &mut auto_background => {
-                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                         let step_id = foreground_step_id.clone();
                         let label = runts_tool_label(&value);
                         let detached_result = detached_runts_tool_result(&value);
+                        // Register background before clearing foreground so a
+                        // concurrent cancel_runts can't slip through the gap
+                        // between the two registries (see background_poll arm).
                         background_runts_tool_handle(
                             chat_id.to_string(),
                             step_id,
@@ -1411,6 +1418,7 @@ async fn drive_loop(
                             run,
                             "timer",
                         );
+                        clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                         step_span.finish(
                             "ok",
                             json!({
