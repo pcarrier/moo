@@ -337,8 +337,8 @@ impl TraceWriteQueue {
             .expect("spawn trace writer");
         Self { tx }
     }
-    fn enqueue(&self, write: TraceWrite) -> Result<(), String> {
-        self.tx.send(write).map_err(|e| e.to_string())
+    fn enqueue(&self, write: TraceWrite) -> Result<(), (String, TraceWrite)> {
+        self.tx.send(write).map_err(|e| (e.to_string(), e.0))
     }
 }
 
@@ -372,8 +372,17 @@ fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
 }
 
 fn enqueue_trace_write(write: TraceWrite) -> Result<(), String> {
+    // Register before enqueue (race-free on the success path), then roll the
+    // registration back if enqueue fails (writer thread gone), recovering the
+    // moved value from SendError so the in-flight row count doesn't leak.
     register_trace_in_flight_write(&write);
-    TRACE_WRITE_QUEUE.enqueue(write)
+    match TRACE_WRITE_QUEUE.enqueue(write) {
+        Ok(()) => Ok(()),
+        Err((message, write)) => {
+            complete_trace_in_flight_writes(std::slice::from_ref(&write));
+            Err(message)
+        }
+    }
 }
 
 fn register_trace_in_flight_write(write: &TraceWrite) {

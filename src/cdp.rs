@@ -1227,9 +1227,21 @@ fn handle_conn(mut stream: TcpStream, context: CdpConnContext) -> std::io::Resul
     let read_clone = stream.try_clone()?;
     let mut reader = BufReader::new(read_clone);
 
+    // Cap how many bytes a single line read may consume so a client sending a
+    // request/header line with no newline can't drive unbounded heap
+    // allocation (a post-read len() check is too late — read_line already
+    // allocated the whole line).
+    const MAX_HEADER_LINE: u64 = 8192;
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    if (&mut reader)
+        .take(MAX_HEADER_LINE)
+        .read_line(&mut request_line)?
+        == 0
+    {
         return Ok(());
+    }
+    if !request_line.ends_with('\n') {
+        return Err(std::io::Error::other("cdp: request line too long"));
     }
     let trimmed = request_line.trim_end_matches(['\r', '\n']);
     let mut parts = trimmed.splitn(3, ' ');
@@ -1240,8 +1252,12 @@ fn handle_conn(mut stream: TcpStream, context: CdpConnContext) -> std::io::Resul
     let mut ws_key: Option<String> = None;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let n = (&mut reader).take(MAX_HEADER_LINE).read_line(&mut line)?;
+        if n == 0 {
             break;
+        }
+        if !line.ends_with('\n') {
+            return Err(std::io::Error::other("cdp: header line too long"));
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {

@@ -1259,6 +1259,15 @@ fn op_facts_snapshot_copy(
                        and fl.subject = q.subject
                        and fl.predicate = q.predicate
                        and fl.object = q.object
+                       and fl.id = (
+                         select max(fl2.id) from fact_log fl2
+                         where fl2.ref_name = q.ref_name
+                           and fl2.graph = q.graph
+                           and fl2.subject = q.subject
+                           and fl2.predicate = q.predicate
+                           and fl2.object = q.object
+                       )
+                       and fl.action in ('+', 'add', 'added')
                    )",
                 params![&target_ref, now],
             )

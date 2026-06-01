@@ -723,8 +723,18 @@ function accumulateLlmStreamEvent(
     typeof response.model === "string" ? response.model : "";
   if (!state.model && topModel) state.model = topModel;
   if (!state.model && responseModel) state.model = responseModel;
-  if (parsed?.usage != null) state.usage = parsed.usage;
-  if (response.usage != null) state.usage = response.usage;
+  // Merge (don't replace) so usage fields captured earlier — e.g. input_tokens
+  // from an Anthropic message_start — survive a later event that only carries
+  // output_tokens at the top level. For OpenAI (one complete usage snapshot)
+  // merge and replace are equivalent.
+  if (parsed?.usage != null)
+    state.usage = isObject(parsed.usage)
+      ? { ...(isObject(state.usage) ? state.usage : {}), ...parsed.usage }
+      : parsed.usage;
+  if (response.usage != null)
+    state.usage = isObject(response.usage)
+      ? { ...(isObject(state.usage) ? state.usage : {}), ...response.usage }
+      : response.usage;
   if (parsed?.error != null) state.error = parsed;
 
   const type = typeof parsed?.type === "string" ? parsed.type : "";
