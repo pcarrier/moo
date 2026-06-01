@@ -130,6 +130,7 @@ const RIGHT_SIDEBAR_CHAT_MAX = 24;
 const MISSING_REPO_FILE_REFRESH_MS = 2000;
 const STALE_ACTIVE_CHAT_REFRESH_GRACE_MS = 2000;
 const STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS = 5000;
+const STALE_LOCAL_OPEN_TURN_QUEUE_GRACE_MS = 2000;
 
 const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:apps",
@@ -1095,6 +1096,8 @@ export function createState() {
   const [runTSQueueUnblockedChats, setRunTSQueueUnblockedChats] = createSignal<
     Set<string>
   >(new Set());
+  const localOpenTurnQueueBlockStartedAt = new Map<string, number>();
+  const localOpenTurnQueueWatchdogs = new Set<string>();
   const setHas = (set: Set<string>, id: string) => set.has(id);
   const isTerminalStepStatus = (status: string | undefined) =>
     status === "agent:Done" ||
@@ -1160,6 +1163,33 @@ export function createState() {
     dispatchingChatStartedAt.delete(id);
     dispatchingChatWatchdogs.delete(id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
+  }
+  function clearLocalOpenTurnQueueBlock(id: string) {
+    localOpenTurnQueueBlockStartedAt.delete(id);
+    localOpenTurnQueueWatchdogs.delete(id);
+  }
+  function watchLocalOpenTurnQueueBlock(id: string) {
+    const startedAt = localOpenTurnQueueBlockStartedAt.get(id);
+    if (startedAt == null || localOpenTurnQueueWatchdogs.has(id)) return;
+    localOpenTurnQueueWatchdogs.add(id);
+    window.setTimeout(() => {
+      if (localOpenTurnQueueBlockStartedAt.get(id) !== startedAt) return;
+      localOpenTurnQueueWatchdogs.delete(id);
+      void refreshChats().finally(() => {
+        if (chatId() === id) {
+          void refreshTimeline({ showRefreshing: false }).finally(() => {
+            if (localOpenTurnQueueBlockStartedAt.get(id) === startedAt)
+              drainSoon();
+          });
+          return;
+        }
+        if (localOpenTurnQueueBlockStartedAt.get(id) === startedAt)
+          drainSoon();
+      });
+    }, Math.max(
+      0,
+      startedAt + STALE_LOCAL_OPEN_TURN_QUEUE_GRACE_MS - Date.now(),
+    ));
   }
   function staleDispatchingChatIds(live: Set<string>, requestStartedAt: number) {
     const stale: string[] = [];
@@ -1229,6 +1259,7 @@ export function createState() {
     nextActiveModels.delete(id);
     setActiveChatModel(nextActiveModels);
     clearDispatchingChat(id);
+    clearLocalOpenTurnQueueBlock(id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
   }
   function unblockRunTSQueue(id: string) {
@@ -3692,11 +3723,19 @@ export function createState() {
     clearActiveChatRuntime(id);
     settleRunningTimelineRows(id);
     clearRunTSQueueUnblock(id);
+    clearLocalOpenTurnQueueBlock(id);
     updateChatSummary(id, {
       status: "agent:Done",
       runningStartedAt: null,
     });
     if (pending().some((p) => p.chatId === id)) drainSoon();
+  }
+
+  function releaseQueuedLocalOpenTurn(id: string) {
+    clearLocalOpenTurnQueueBlock(id);
+    dismissCurrentDraftReply(id);
+    clearDraftReply(id);
+    releaseSettledChatRuntime(id);
   }
 
   function mergeTimelineUpdateRows(
@@ -4802,6 +4841,8 @@ export function createState() {
   }
 
   async function interruptQueuedChatForSteer(id: string) {
+    const shouldInterruptBackend =
+      setHas(activeChats(), id) || setHas(dispatchingChats(), id);
     if (
       !chatHasInFlightTurn(id) &&
       !setHas(dispatchingChats(), id) &&
@@ -4809,10 +4850,8 @@ export function createState() {
     ) {
       return;
     }
-    clearActiveChatRuntime(id);
-    settleRunningTimelineRows(id);
-    dismissCurrentDraftReply(id);
-    clearDraftReply(id);
+    releaseQueuedLocalOpenTurn(id);
+    if (!shouldInterruptBackend) return;
     addToSet(setInterruptingChats, interruptingChats, id);
     addToSet(setInterruptedChats, interruptedChats, id);
     updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
@@ -4940,6 +4979,68 @@ export function createState() {
     }
   }
 
+  function queuedMessageBlockedOnlyByLocalOpenTurn(
+    pen: {
+      id: string;
+      text: string;
+      chatId: string;
+      attachments?: ImageAttachment[];
+    }[],
+    index: number,
+    paused: Set<string>,
+    editing: Set<string>,
+  ) {
+    const item = pen[index]!;
+    return (
+      !editing.has(item.id) &&
+      !paused.has(item.chatId) &&
+      !isMcpSetupMessage(item.text) &&
+      !chatHasServerRun(item.chatId) &&
+      chatHasLocalOpenTurn(item.chatId) &&
+      !setHas(dispatchingChats(), item.chatId) &&
+      !setHas(interruptingChats(), item.chatId) &&
+      !pen
+        .slice(0, index)
+        .some((earlier) => earlier.chatId === item.chatId)
+    );
+  }
+
+  function releaseStaleLocalOpenTurnQueueBlocks(
+    pen: {
+      id: string;
+      text: string;
+      chatId: string;
+      attachments?: ImageAttachment[];
+    }[],
+    paused: Set<string>,
+    editing: Set<string>,
+  ) {
+    const now = Date.now();
+    const blocked = new Set<string>();
+    let released = false;
+    for (let i = 0; i < pen.length; i++) {
+      if (!queuedMessageBlockedOnlyByLocalOpenTurn(pen, i, paused, editing))
+        continue;
+      const id = pen[i]!.chatId;
+      blocked.add(id);
+      let startedAt = localOpenTurnQueueBlockStartedAt.get(id);
+      if (startedAt == null) {
+        startedAt = now;
+        localOpenTurnQueueBlockStartedAt.set(id, startedAt);
+      }
+      if (startedAt + STALE_LOCAL_OPEN_TURN_QUEUE_GRACE_MS <= now) {
+        releaseQueuedLocalOpenTurn(id);
+        released = true;
+      } else {
+        watchLocalOpenTurnQueueBlock(id);
+      }
+    }
+    for (const id of Array.from(localOpenTurnQueueBlockStartedAt.keys())) {
+      if (!blocked.has(id)) clearLocalOpenTurnQueueBlock(id);
+    }
+    return released;
+  }
+
   async function drain() {
     if (draining) {
       drainRequested = true;
@@ -4961,8 +5062,13 @@ export function createState() {
             (isMcpSetupMessage(p.text) ||
               !pen.slice(0, i).some((earlier) => earlier.chatId === p.chatId)),
         );
-        if (idx < 0) break;
+        if (idx < 0) {
+          if (releaseStaleLocalOpenTurnQueueBlocks(pen, paused, editing))
+            continue;
+          break;
+        }
         const head = pen[idx]!;
+        clearLocalOpenTurnQueueBlock(head.chatId);
         setPending([...pen.slice(0, idx), ...pen.slice(idx + 1)]);
         await dispatchQueuedMessage(head);
       }

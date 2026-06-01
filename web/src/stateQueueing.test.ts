@@ -309,9 +309,9 @@ describe("chat message queueing", () => {
     expect(steerInterrupt).toContain("chatHasInFlightTurn(id)");
     expect(steerInterrupt).toContain("setHas(dispatchingChats(), id)");
     expect(steerInterrupt).toContain("setHas(interruptingChats(), id)");
-    expect(steerInterrupt).toContain("clearActiveChatRuntime(id);");
-    expect(steerInterrupt).toContain("settleRunningTimelineRows(id);");
-    expect(steerInterrupt).toContain("clearDraftReply(id);");
+    expect(steerInterrupt).toContain("const shouldInterruptBackend =");
+    expect(steerInterrupt).toContain("releaseQueuedLocalOpenTurn(id);");
+    expect(steerInterrupt).toContain("if (!shouldInterruptBackend) return;");
     expect(steerInterrupt).toContain(
       'updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });',
     );
@@ -323,5 +323,44 @@ describe("chat message queueing", () => {
     );
     expect(steerPending).not.toContain("activeChats().has(item.chatId)");
     expect(steerPending).not.toContain("setChatId(item.chatId)");
+  });
+
+  test("stale selected local turns self-wake queued messages", () => {
+    const queueHelpers = stateSource.slice(
+      stateSource.indexOf("function queuedMessageBlockedOnlyByLocalOpenTurn"),
+      stateSource.indexOf("async function drain()"),
+    );
+    const drain = stateSource.slice(
+      stateSource.indexOf("async function drain()"),
+      stateSource.indexOf("function touchModelMru"),
+    );
+    const watch = stateSource.slice(
+      stateSource.indexOf("function watchLocalOpenTurnQueueBlock"),
+      stateSource.indexOf("function staleDispatchingChatIds"),
+    );
+
+    expect(stateSource).toContain(
+      "const STALE_LOCAL_OPEN_TURN_QUEUE_GRACE_MS = 2000;",
+    );
+    expect(stateSource).toContain(
+      "const localOpenTurnQueueBlockStartedAt = new Map<string, number>();",
+    );
+    expect(stateSource).toContain("function releaseQueuedLocalOpenTurn");
+    expect(stateSource).toContain("dismissCurrentDraftReply(id);");
+    expect(stateSource).toContain("clearDraftReply(id);");
+    expect(queueHelpers).toContain("!chatHasServerRun(item.chatId)");
+    expect(queueHelpers).toContain("chatHasLocalOpenTurn(item.chatId)");
+    expect(queueHelpers).toContain("watchLocalOpenTurnQueueBlock(id);");
+    expect(queueHelpers).toContain("releaseQueuedLocalOpenTurn(id);");
+    expect(watch).toContain("void refreshChats().finally");
+    expect(watch).toContain(
+      "void refreshTimeline({ showRefreshing: false }).finally",
+    );
+    expect(watch).toContain("drainSoon();");
+    expect(drain).toContain(
+      "if (releaseStaleLocalOpenTurnQueueBlocks(pen, paused, editing))",
+    );
+    expect(drain).toContain("continue;");
+    expect(drain).toContain("clearLocalOpenTurnQueueBlock(head.chatId);");
   });
 });
