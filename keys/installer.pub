@@ -1,0 +1,6 @@
+untrusted comment: PLACEHOLDER — replace with the real minisign public key before release.
+untrusted comment: 1) minisign -G -W -p keys/installer.pub -s minisign.key   (passwordless key)
+untrusted comment: 2) commit the regenerated keys/installer.pub
+untrusted comment: 3) gh secret set MINISIGN_SECRET_KEY < minisign.key
+untrusted comment: Until then, `moo upgrade` fails closed (no parseable key here).
+REPLACE_WITH_REAL_MINISIGN_PUBLIC_KEY

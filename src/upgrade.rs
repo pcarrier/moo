@@ -5,12 +5,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
+use minisign_verify::{PublicKey, Signature};
 
 #[cfg(not(windows))]
 const INSTALLER_URL: &str = "https://moo.pcarrier.com/install";
 #[cfg(windows)]
 const INSTALLER_URL: &str = "https://moo.pcarrier.com/install.ps1";
+
+// Detached minisign signature, served alongside the installer script.
+#[cfg(not(windows))]
+const INSTALLER_SIG_URL: &str = "https://moo.pcarrier.com/install.minisig";
+#[cfg(windows)]
+const INSTALLER_SIG_URL: &str = "https://moo.pcarrier.com/install.ps1.minisig";
 
 #[cfg(not(windows))]
 const INSTALLER_SUFFIX: &str = "sh";
@@ -20,14 +26,15 @@ const INSTALLER_SUFFIX: &str = "ps1";
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_INSTALLER_BYTES: u64 = 1024 * 1024;
 
-// Integrity pin for the downloaded installer. Set at build time (e.g.
-// `MOO_INSTALLER_SHA256=<hex> cargo build`) so the expected digest is baked
-// into the binary out-of-band — TLS to the installer host provides transport
-// security, but the pin is what protects against a compromised host/CDN, a
-// mis-issued certificate, or a MITM with a trusted-but-rogue CA. Without a pin
-// we still verify nothing can downgrade integrity below transport, but we warn
-// loudly so release builds are expected to set it.
-const PINNED_INSTALLER_SHA256: Option<&str> = option_env!("MOO_INSTALLER_SHA256");
+// Compiled-in minisign (ed25519) public key used to verify the self-upgrade
+// installer script. It is public and version-controlled (rotatable via PR). The
+// matching secret key signs the installer in CI at site-deploy time
+// (.github/workflows/pages.yml), so the script can be edited freely without
+// stranding older binaries — only the rarely-changed key matters. TLS provides
+// transport security; the signature is what protects against a compromised
+// host/CDN or a MITM with a trusted-but-rogue CA. The file may hold a full
+// minisign `.pub` (comment line + key line) or a bare base64 key.
+const INSTALLER_PUBKEY: &str = include_str!("../keys/installer.pub");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InstallLocation {
@@ -112,46 +119,57 @@ fn fetch_installer(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-// Verify the downloaded installer against the compiled-in SHA-256 pin before
-// it is ever written to disk or executed. The pin is baked into the binary at
-// build time, so it is trusted independently of the TLS channel used to fetch
-// the script — defending against a compromised host/CDN or a MITM with a
-// trusted CA. If no pin was compiled in, refuse to run by default (a release
-// build is expected to set MOO_INSTALLER_SHA256); an explicit opt-out lets
-// developers run unpinned builds.
+// Verify the downloaded installer's detached minisign signature against the
+// compiled-in public key before it is ever written to disk or executed. The key
+// is baked into the binary at build time, so trust is independent of the TLS
+// channel used to fetch the script — defending against a compromised host/CDN or
+// a MITM with a trusted CA. If no usable key was compiled in, refuse to run by
+// default (a release build is expected to ship one); an explicit opt-out lets
+// developers run unverified builds.
 fn verify_installer(bytes: &[u8]) -> Result<(), String> {
-    let Some(expected) = PINNED_INSTALLER_SHA256 else {
+    let Some(pubkey) = compiled_pubkey() else {
         if env::var_os("MOO_UPGRADE_ALLOW_UNVERIFIED").is_some() {
             eprintln!(
-                "warning: installer integrity NOT verified (no MOO_INSTALLER_SHA256 pinned at build time; \
+                "warning: installer signature NOT verified (no installer public key compiled in; \
                  MOO_UPGRADE_ALLOW_UNVERIFIED is set)"
             );
             return Ok(());
         }
         return Err(
-            "refusing to run unverified installer: this build has no pinned installer digest \
-             (set MOO_INSTALLER_SHA256 at build time, or MOO_UPGRADE_ALLOW_UNVERIFIED=1 to override)"
+            "refusing to run unverified installer: this build has no compiled-in installer public key \
+             (provide keys/installer.pub at build time, or MOO_UPGRADE_ALLOW_UNVERIFIED=1 to override)"
                 .to_string(),
         );
     };
-    let expected = expected.trim();
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let actual = hex_encode(&hasher.finalize());
-    if !actual.eq_ignore_ascii_case(expected) {
-        return Err(format!(
-            "installer integrity check failed: expected sha256 {expected}, got {actual}"
-        ));
-    }
-    Ok(())
+    let sig_bytes = fetch_installer(INSTALLER_SIG_URL)?;
+    let sig_text = String::from_utf8(sig_bytes)
+        .map_err(|e| format!("installer signature is not valid UTF-8: {e}"))?;
+    verify_detached(&pubkey, bytes, &sig_text)
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+// Parse the compiled-in key material, tolerating either a full minisign `.pub`
+// file (an "untrusted comment:" line followed by the base64 key) or a bare
+// base64 key. Returns None when no line parses as a key — treated as "unpinned".
+fn compiled_pubkey() -> Option<PublicKey> {
+    compiled_pubkey_from(INSTALLER_PUBKEY)
+}
+
+fn compiled_pubkey_from(material: &str) -> Option<PublicKey> {
+    material
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("untrusted comment"))
+        .find_map(|l| PublicKey::from_base64(l).ok())
+}
+
+fn verify_detached(pubkey: &PublicKey, bytes: &[u8], sig_text: &str) -> Result<(), String> {
+    let signature =
+        Signature::decode(sig_text).map_err(|e| format!("malformed installer signature: {e}"))?;
+    // allow_legacy = false: require a prehashed signature (modern minisign
+    // default), rejecting the streamable-but-weaker legacy format.
+    pubkey
+        .verify(bytes, &signature, false)
+        .map_err(|e| format!("installer signature verification failed: {e}"))
 }
 
 fn write_temp_installer(script: &str) -> Result<PathBuf, String> {
@@ -227,13 +245,35 @@ fn exit_code(status: ExitStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallLocation, hex_encode, infer_install_location};
+    use super::{InstallLocation, compiled_pubkey_from, infer_install_location, verify_detached};
+    use minisign_verify::PublicKey;
     use std::path::Path;
 
+    // Known-good minisign test vector (prehashed signature of b"test").
+    const TEST_PUBKEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    const TEST_SIG: &str = "untrusted comment: signature from minisign secret key\n\
+RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
+trusted comment: timestamp:1633700835\tfile:test\tprehashed\n\
+wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJAgAooBQ==";
+
     #[test]
-    fn hex_encode_is_lowercase_padded() {
-        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
-        assert_eq!(hex_encode(&[]), "");
+    fn verifies_valid_signature_and_rejects_tampering() {
+        let pk = PublicKey::from_base64(TEST_PUBKEY).unwrap();
+        assert!(verify_detached(&pk, b"test", TEST_SIG).is_ok());
+        // Tampered payload must not verify.
+        assert!(verify_detached(&pk, b"tesT", TEST_SIG).is_err());
+        // Garbage signature text must be rejected, not panic.
+        assert!(verify_detached(&pk, b"test", "not a signature").is_err());
+    }
+
+    #[test]
+    fn parses_pubkey_from_full_pub_file_or_bare_key() {
+        let full = format!("untrusted comment: minisign public key ABC\n{TEST_PUBKEY}\n");
+        assert!(compiled_pubkey_from(&full).is_some());
+        assert!(compiled_pubkey_from(TEST_PUBKEY).is_some());
+        // A placeholder with no parseable key line is treated as unpinned.
+        assert!(compiled_pubkey_from("untrusted comment: REPLACE ME\nnot-a-real-key").is_none());
+        assert!(compiled_pubkey_from("").is_none());
     }
 
     #[test]

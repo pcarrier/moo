@@ -13,27 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  verify-installer-pins:
-    name: Verify installer pins
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Installer scripts must match acknowledged digests
-        run: |
-          if ! sha256sum -c docs/install.sha256sum; then
-            echo "::error::Installer script changed without updating docs/install.sha256sum."
-            echo "Editing docs/install or docs/install.ps1 changes MOO_INSTALLER_SHA256 baked"
-            echo "into release binaries, so 'moo upgrade' will REFUSE the new script for every"
-            echo "previously-released binary (until reinstall or MOO_UPGRADE_ALLOW_UNVERIFIED=1)."
-            echo "If this change is intentional, acknowledge it deliberately:"
-            echo "    sha256sum docs/install docs/install.ps1 > docs/install.sha256sum"
-            exit 1
-          fi
-
   build:
     name: Build ${{ matrix.target }}
-    needs: verify-installer-pins
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -83,8 +64,6 @@ jobs:
         run: |
           (cd web && bun install --frozen-lockfile)
           bun install --cwd harness --frozen-lockfile --no-progress
-          # Windows binaries fetch /install.ps1; pin its digest at build time.
-          export MOO_INSTALLER_SHA256="$(sha256sum docs/install.ps1 | cut -d' ' -f1)"
           cargo build --release --locked --target "${{ matrix.target }}"
 
       - name: Package Unix binary

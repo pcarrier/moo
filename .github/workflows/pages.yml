@@ -27,6 +27,32 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Sign installer scripts
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY not set — publishing installer scripts WITHOUT signatures."
+            echo "'moo upgrade' fails closed until the key is configured. Set it up:"
+            echo "  minisign -G -W -p keys/installer.pub -s minisign.key   # passwordless key"
+            echo "  git add keys/installer.pub && git commit && git push"
+            echo "  gh secret set MINISIGN_SECRET_KEY < minisign.key"
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          for f in docs/install docs/install.ps1; do
+            # Passwordless key: no prompt. </dev/null guards a stray tty read.
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -m "$f" \
+              -x "$f.minisig" -t "moo installer signed for ${GITHUB_SHA}" < /dev/null
+            # Self-check against the committed public key before publishing, so a
+            # key/secret mismatch fails the deploy instead of shipping bad sigs.
+            minisign -V -p keys/installer.pub -m "$f" -x "$f.minisig"
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+
       - name: Upload static site
         uses: actions/upload-pages-artifact@v3
         with:

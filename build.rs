@@ -7,9 +7,9 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    // upgrade.rs reads this via option_env! to pin the installer digest; without
-    // this, an incremental build keeps a stale pin when the env var changes.
-    println!("cargo:rerun-if-env-changed=MOO_INSTALLER_SHA256");
+    // upgrade.rs embeds this via include_str! to verify the installer signature;
+    // track it so a key rotation isn't left stale in an incremental build.
+    println!("cargo:rerun-if-changed=keys/installer.pub");
 
     // Both web/ and harness/ tsconfigs `extends` this shared base, which carries
     // load-bearing options (target/module/moduleResolution); track it so an edit
