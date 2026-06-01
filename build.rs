@@ -7,6 +7,11 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
+    // Both web/ and harness/ tsconfigs `extends` this shared base, which carries
+    // load-bearing options (target/module/moduleResolution); track it so an edit
+    // doesn't leave a stale embedded bundle.
+    println!("cargo:rerun-if-changed=tsconfig.base.json");
+
     println!("cargo:rerun-if-changed=harness/package.json");
     println!("cargo:rerun-if-changed=harness/bun.lock");
     println!("cargo:rerun-if-changed=harness/tsconfig.json");
