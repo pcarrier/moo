@@ -654,8 +654,14 @@ function collectHjsonComments(text: string): HjsonCommentMap | null {
     const trimmed = rawLine.trim();
     if (!trimmed) continue;
     if (inBlockComment) {
-      pending.push(trimmed);
-      if (trimmed.includes("*/")) inBlockComment = false;
+      const endIdx = trimmed.indexOf("*/");
+      if (endIdx === -1) {
+        pending.push(trimmed);
+      } else {
+        // Don't let value text after the closing */ leak into the comment.
+        pending.push(trimmed.slice(0, endIdx + 2));
+        inBlockComment = false;
+      }
       continue;
     }
     while (/^[}\]]/.test(trimmed) && stack.length) stack.pop();
@@ -874,9 +880,17 @@ function highlightYamlWithEmbeddedBlocks(text: string, depth: number): string {
 
 function yamlBlockScalarHeader(line: string): { indent: number } | null {
   const content = line.replace(/[\r\n]+$/, "");
-  const match = /^( *)(?:-\s*)?(?:[^#\r\n]*:\s*)?[|>][-+0-9]*\s*(?:#.*)?$/.exec(content);
-  if (!match || !content.includes(":")) return null;
-  return { indent: match[1]!.length };
+  // Strip the leading indent with a linear scan instead of letting ( *) overlap
+  // the body matcher. Overlapping space-eating quantifiers (( *), \s*,
+  // [^#\r\n]*) caused O(n^2) backtracking on lines of long space runs.
+  const indent = leadingSpaceCount(content);
+  const tail = content.slice(indent);
+  const isHeader =
+    /^(?:[^#\r\n]*:[^\S\r\n]*)?[|>][-+0-9]*[^\S\r\n]*(?:#.*)?$|^-[^\S\r\n]*[|>][-+0-9]*[^\S\r\n]*(?:#.*)?$/.test(
+      tail,
+    );
+  if (!isHeader || !content.includes(":")) return null;
+  return { indent };
 }
 
 function highlightJsWithEmbeddedTemplates(text: string, language: string, depth: number): string {

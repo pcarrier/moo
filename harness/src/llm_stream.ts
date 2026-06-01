@@ -981,7 +981,10 @@ function accumulateLlmStreamEvent(
     for (const rawTc of delta.tool_calls) {
       const tc = isObject(rawTc) ? rawTc : {};
       const fn = isObject(tc.function) ? tc.function : {};
-      const i = Number.isFinite(Number(tc.index)) ? Number(tc.index) : 0;
+      const i =
+        Number.isFinite(Number(tc.index)) && Number(tc.index) >= 0
+          ? Math.floor(Number(tc.index))
+          : 0;
       while (state.toolCalls.length <= i) {
         state.toolCalls.push({
           id: syntheticToolCallId(state),

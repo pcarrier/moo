@@ -4347,6 +4347,10 @@ export function createState() {
     forgetTokensForChat(id);
     forgetTodosForChat(id);
     forgetRightSidebarForChat(id);
+    // A chat deleted mid-stream would otherwise leak its in-flight draft and
+    // live tool-call overlay, since no future event ever clears them.
+    clearDraftReply(id);
+    liveTimelineOverlayByChat.delete(id);
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setCompactingChats, compactingChats, id);
     deleteFromSet(setDispatchingChats, dispatchingChats, id);
@@ -5691,6 +5695,9 @@ export function createState() {
       // missed notifications while the socket was down.
       refreshChats();
       refreshTimeline();
+      // runts-background-start/end frames aren't replayed across reconnects, so
+      // reconcile background RunTS jobs against the server's authoritative list.
+      void refreshBackgroundRunTS();
       if (view() === "facts") {
         refreshFactsView();
         refreshVocabulary();
