@@ -88,9 +88,12 @@ function decodeTag(tag: string): { chatId: string } | null {
 }
 
 function viewportHeightPx(): number {
+  // Prefer the visual viewport so the terminal cap shrinks with the Safari soft
+  // keyboard (clientHeight tracks the keyboard-independent layout viewport, and
+  // disagrees with App.tsx's --app-viewport-h).
   return (
-    document.documentElement?.clientHeight ||
     window.visualViewport?.height ||
+    document.documentElement?.clientHeight ||
     window.innerHeight ||
     0
   );
@@ -608,11 +611,19 @@ export function ChatTerminals(props: {
     });
     syncTerminalTheme();
     window.addEventListener("resize", refreshTerminalCellSize);
+    // Safari fires visualViewport 'resize' (not window 'resize') when the soft
+    // keyboard opens; re-clamp rows so the terminal does not overshoot the
+    // shrunken viewport and push the composer behind the keyboard.
+    window.visualViewport?.addEventListener("resize", refreshTerminalCellSize);
     document.fonts?.addEventListener("loadingdone", refreshTerminalCellSize);
     onCleanup(() => {
       media?.removeEventListener?.("change", syncTerminalTheme);
       observer.disconnect();
       window.removeEventListener("resize", refreshTerminalCellSize);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        refreshTerminalCellSize,
+      );
       document.fonts?.removeEventListener(
         "loadingdone",
         refreshTerminalCellSize,

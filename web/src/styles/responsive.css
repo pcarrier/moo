@@ -30,6 +30,11 @@
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
+    /* Bound to the visual viewport so lower content/inputs are not pushed
+       behind the Safari soft keyboard (which leaves the layout viewport,
+       and thus inset:0, full-height). */
+    bottom: auto;
+    height: var(--app-viewport-h);
     z-index: 40;
     width: min(var(--sidebar-mobile-w, 20rem), calc(100vw - 3.25rem));
     max-width: 88vw;
@@ -56,6 +61,8 @@
     display: none;
     position: fixed;
     inset: 0;
+    bottom: auto;
+    height: var(--app-viewport-h);
     z-index: 35;
     border: 0;
     padding: 0;
@@ -94,6 +101,8 @@
   .right-sidebar {
     position: fixed;
     inset: 0 0 0 auto;
+    bottom: auto;
+    height: var(--app-viewport-h);
     z-index: 40;
     width: min(var(--right-sidebar-mobile-w, 24rem), calc(100vw - 2rem));
     max-width: calc(100vw - 2rem);
@@ -103,6 +112,8 @@
 
   #app.right-sidebar-maximized .right-sidebar {
     inset: 0;
+    bottom: auto;
+    height: var(--app-viewport-h);
     width: 100vw;
     max-width: none;
     border-left: 0;
@@ -302,8 +313,11 @@
   }
 
   #input-bar {
+    /* Drop the bottom safe-area inset while the keyboard is open: the home
+       indicator is covered by the keyboard, so reserving it just leaves a
+       dead gap between the input and the keyboard. */
     padding: 0.55rem calc(0.55rem + env(safe-area-inset-right))
-      calc(0.55rem + env(safe-area-inset-bottom))
+      calc(0.55rem + (1 - var(--keyboard-open, 0)) * env(safe-area-inset-bottom))
       calc(0.55rem + env(safe-area-inset-left));
   }
 
@@ -500,7 +514,9 @@
   .message-input,
   .facts-search input,
   .facts-page-size select,
-  .facts-removed-mode select {
+  .facts-removed-mode select,
+  .diff-file-jump-search {
+    /* iOS Safari force-zooms the page when a focused field is under 16px. */
     font-size: 16px;
   }
 

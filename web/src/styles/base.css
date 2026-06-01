@@ -417,7 +417,9 @@ pre,
   position: relative;
   block-size: var(--chat-terminal-h);
   min-block-size: 0;
-  max-block-size: 75vh;
+  /* Cap against the keyboard-aware viewport height, not 75vh (which on Safari
+     tracks the layout viewport and ignores the keyboard). */
+  max-block-size: calc(var(--app-viewport-h) * 0.75);
   overflow: hidden;
   background: var(--terminal-bg);
 }
@@ -524,7 +526,14 @@ pre,
 
 .psk-prompt-overlay {
   position: fixed;
-  inset: 0;
+  /* Anchor to the visual viewport, not inset:0. In Safari the soft keyboard
+     opened by the auto-focused password input shrinks only the visual
+     viewport; inset:0 would center the card on the full layout viewport,
+     putting the input behind the keyboard. */
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-viewport-h);
   z-index: 1100;
   display: grid;
   place-items: center;

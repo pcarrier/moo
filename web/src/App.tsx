@@ -117,10 +117,20 @@ export function App(props: { bag: Bag }) {
           visualViewport?.height ||
           window.innerHeight ||
           document.documentElement.clientHeight;
-        document.documentElement.style.setProperty(
+        const root = document.documentElement;
+        root.style.setProperty(
           "--app-viewport-h",
           `${Math.max(0, Math.round(height))}px`,
         );
+        // Safari ignores interactive-widget=resizes-content: the soft keyboard
+        // shrinks only the visual viewport, never the layout viewport. Detect
+        // that gap so layout can drop bottom safe-area padding that would
+        // otherwise be reserved behind the keyboard.
+        const layoutHeight =
+          window.innerHeight || root.clientHeight || height;
+        const keyboardOpen =
+          visualViewport && layoutHeight - height > 120 ? 1 : 0;
+        root.style.setProperty("--keyboard-open", `${keyboardOpen}`);
       });
     };
     const syncMobileMode = () => {
@@ -174,6 +184,7 @@ export function App(props: { bag: Bag }) {
       window.visualViewport?.removeEventListener("resize", syncViewportHeight);
       window.visualViewport?.removeEventListener("scroll", syncViewportHeight);
       document.documentElement.style.removeProperty("--app-viewport-h");
+      document.documentElement.style.removeProperty("--keyboard-open");
       window.removeEventListener("keydown", onKeyDown);
     });
   });

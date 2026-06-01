@@ -315,7 +315,12 @@
 
 .image-lightbox-backdrop {
   position: fixed;
-  inset: 0;
+  /* Track the visual viewport so the backdrop does not extend behind the
+     Safari soft keyboard (inset:0 anchors to the unshrunk layout viewport). */
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-viewport-h);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -328,7 +333,7 @@
 .image-lightbox-image {
   display: block;
   max-width: min(96vw, 120rem);
-  max-height: calc(100dvh - 7rem);
+  max-height: calc(var(--app-viewport-h) - 7rem);
   object-fit: contain;
   background: #000;
   box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.45);
