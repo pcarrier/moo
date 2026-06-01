@@ -449,6 +449,7 @@ type FileDiffPayload = {
   hash?: string;
 };
 
+const FILE_DIFF_PAYLOAD_CACHE_LIMIT = 500;
 const fileDiffPayloadCache = new Map<string, Promise<FileDiffPayload | null>>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -559,6 +560,12 @@ async function fileDiffPayloadForHash(
         result.ok ? parseFileDiffPayloadObject(result.value.object) : null,
       )
       .catch(() => null);
+    // Bound the cache (FIFO via Map insertion order) so a long session that
+    // views many distinct diffs can't retain their full payloads forever.
+    if (fileDiffPayloadCache.size >= FILE_DIFF_PAYLOAD_CACHE_LIMIT) {
+      const oldest = fileDiffPayloadCache.keys().next().value;
+      if (oldest !== undefined) fileDiffPayloadCache.delete(oldest);
+    }
     fileDiffPayloadCache.set(normalized, cached);
   }
   return cached;
@@ -2373,7 +2380,20 @@ export function RightSidebar(props: { bag: Bag }) {
   );
 }
 
+const BROWSER_FILE_CACHE_MAX = 100;
 const browserFileCache = new Map<string, OpenRepoFile>();
+// Bounded LRU set: re-inserting moves a key to the newest position, and the
+// first key is the least-recently-used, so a long browsing session can't retain
+// every visited file's full contents forever.
+const browserFileCacheSet = (key: string, value: OpenRepoFile) => {
+  browserFileCache.delete(key);
+  browserFileCache.set(key, value);
+  while (browserFileCache.size > BROWSER_FILE_CACHE_MAX) {
+    const oldest = browserFileCache.keys().next().value;
+    if (oldest === undefined) break;
+    browserFileCache.delete(oldest);
+  }
+};
 
 function BrowserTab(props: {
   bag: Bag;
@@ -2600,7 +2620,7 @@ function BrowserTab(props: {
           loading: false,
           error: null,
         };
-        browserFileCache.set(cacheKey(path), nextFile);
+        browserFileCacheSet(cacheKey(path), nextFile);
         rememberFileSizeBytes(path, root, r.value.size, revision);
         rememberFileSizeBytes(r.value.path, root, r.value.size, revision);
         setOpenRepoFileIfChanged(setFile, nextFile);

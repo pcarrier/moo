@@ -46,14 +46,14 @@ pub fn verify(provided: &str, stored: &str) -> bool {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    // Fold the length difference into the accumulator and always scan the
+    // shorter slice instead of returning early on a length mismatch, so timing
+    // does not leak the stored secret's length. Mirrors the idiom in blit.rs.
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..a.len().min(b.len()) {
+        diff |= a[i] ^ b[i];
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    std::hint::black_box(diff) == 0
 }
 
 #[cfg(test)]

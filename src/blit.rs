@@ -559,6 +559,14 @@ fn read_ws_message(stream: &mut TcpStream) -> std::io::Result<Option<WsMessage>>
             0x8 => return Ok(Some(WsMessage::Close)),
             0x9 => return Ok(Some(WsMessage::Ping(payload))),
             0xA => return Ok(Some(WsMessage::Pong)),
+            0x1 | 0x2 if message_opcode.is_some() => {
+                // RFC 6455 §5.4: a new data frame while a fragmented message is
+                // in progress is a protocol violation; fail the connection
+                // instead of silently overwriting the partial buffer.
+                return Err(std::io::Error::other(
+                    "ws: unexpected data frame during fragmented message",
+                ));
+            }
             0x1 | 0x2 => {
                 message_opcode = Some(opcode);
                 message = payload;

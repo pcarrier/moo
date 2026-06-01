@@ -30,6 +30,9 @@ const WS_CONNECTION_IDLE_TTL: Duration = Duration::from_secs(600);
 const WS_MAX_CONNECTIONS_PER_KEY: usize = 4;
 const WS_COMMAND_CHANNEL_CAPACITY: usize = 32;
 const WS_EVENT_CHANNEL_CAPACITY: usize = 128;
+/// Cap the SSE reassembly buffer so a server that streams bytes without ever
+/// emitting an event boundary ("\n\n") can't grow the heap without bound.
+const SSE_BUFFER_LIMIT_BYTES: usize = 10_000_000;
 
 /// rustls can't auto-select a crypto provider when both `ring` and `aws-lc-rs`
 /// are in the dependency graph (reqwest pulls one, our WS path the other), so
@@ -284,6 +287,19 @@ pub async fn stream_chat(
         network_chunks = network_chunks.saturating_add(1);
         network_bytes =
             network_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if buffered.len().saturating_add(bytes.len()) > SSE_BUFFER_LIMIT_BYTES {
+            return transport_error(
+                &pool,
+                &bundle,
+                status,
+                format!(
+                    "stream: SSE buffer exceeded {SSE_BUFFER_LIMIT_BYTES} bytes without an event boundary"
+                ),
+                accumulator.clone(),
+                response_headers,
+            )
+            .await;
+        }
         buffered.extend_from_slice(&bytes);
 
         // SSE event boundary is a blank line. Only drain complete events so

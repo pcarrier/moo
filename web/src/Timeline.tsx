@@ -747,6 +747,7 @@ export function Timeline(props: {
   const visibleTimeline = createMemo(() => {
     const draft = bag.draftReply();
     const liveRunTSStepKeys = new Set<string>();
+    const liveDraftIds = new Set<string>();
     const rows = bag
       .timeline()
       .filter((item) => item.type !== "trail")
@@ -756,6 +757,7 @@ export function Timeline(props: {
           (item.kind === "agent:Reply" || item.kind === "agent:Compaction") &&
           item.draftId
         ) {
+          liveDraftIds.add(item.draftId);
           const proxy = draftStepProxies.get(item.draftId);
           if (proxy) {
             syncStepItem(proxy, item);
@@ -778,6 +780,13 @@ export function Timeline(props: {
       if (!liveRunTSStepKeys.has(proxyKey)) {
         liveRunTSStepProxies.delete(proxyKey);
       }
+    }
+    // The active streaming draft isn't a timeline row yet (it's inserted below),
+    // so keep its proxy alive across renders; then drop any draft proxy no
+    // longer referenced so the map doesn't grow for the component's lifetime.
+    if (draft && draft.chatId === bag.chatId()) liveDraftIds.add(draft.draftId);
+    for (const draftId of draftStepProxies.keys()) {
+      if (!liveDraftIds.has(draftId)) draftStepProxies.delete(draftId);
     }
     if (
       !draft ||

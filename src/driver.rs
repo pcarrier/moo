@@ -690,6 +690,11 @@ pub fn apply_driver_action(action: &Value, pool: &Arc<Pool>, bundle: &Arc<String
 }
 
 pub fn interrupt(chat_id: &str) -> bool {
+    // Serialize with dispatch_state()/finish_current_and_start_next() so we can't
+    // strand a freshly queued message: without this guard a concurrent
+    // dispatch_state() that already saw RUNNING could push to QUEUED after we
+    // clear RUNNING, leaving nothing to drain it.
+    let _dispatch_guard = dispatch_lock();
     queued_lock().remove(chat_id);
     let Some(running) = running_lock().remove(chat_id) else {
         return false;

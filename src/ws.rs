@@ -25,11 +25,21 @@ use crate::{driver, host, settings, util};
 
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const WS_IDLE_TICK: Duration = Duration::from_millis(500);
+/// Bound the writer queue so a stalled (non-reading) client can't grow the heap
+/// without limit. On overflow the newest frame is dropped.
+const WRITER_QUEUE_CAPACITY: usize = 1024;
 
 enum WsRecv<T> {
     Item(T),
     Idle,
     Closed,
+}
+
+/// Push a frame to the writer queue. Returns true when the writer is gone (the
+/// caller should stop). A full queue (slow client) drops the frame and keeps
+/// going rather than blocking the producer thread.
+fn forward_or_break(writer_tx: &mpsc::SyncSender<String>, msg: String) -> bool {
+    matches!(writer_tx.try_send(msg), Err(mpsc::TrySendError::Disconnected(_)))
 }
 
 fn recv_ws_tick<T>(rx: &mpsc::Receiver<T>) -> WsRecv<T> {
@@ -64,8 +74,10 @@ pub fn handle(
     let bcast_rx = subscription.rx;
 
     // Single channel feeding the writer (this thread). Both the broadcast
-    // forwarder and per-request worker threads drop frames here.
-    let (writer_tx, writer_rx) = mpsc::channel::<String>();
+    // forwarder and per-request worker threads drop frames here. Bounded so a
+    // stalled (non-reading) client can't grow the heap without limit; on
+    // overflow we drop the newest frame rather than block the producers.
+    let (writer_tx, writer_rx) = mpsc::sync_channel::<String>(WRITER_QUEUE_CAPACITY);
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // Forwarder: broadcast subscription → writer channel. Also injects ping
@@ -77,12 +89,12 @@ pub fn handle(
             while alive.load(std::sync::atomic::Ordering::Relaxed) {
                 match recv_ws_tick(&bcast_rx) {
                     WsRecv::Item(msg) => {
-                        if writer_tx.send(msg).is_err() {
+                        if forward_or_break(&writer_tx, msg) {
                             break;
                         }
                     }
                     WsRecv::Idle => {
-                        if writer_tx.send(r#"{"kind":"ping"}"#.to_string()).is_err() {
+                        if forward_or_break(&writer_tx, r#"{"kind":"ping"}"#.to_string()) {
                             break;
                         }
                     }
@@ -127,7 +139,7 @@ pub fn handle(
                                 },
                             );
                             for msg in replay {
-                                if writer_tx.send(msg).is_err() {
+                                if forward_or_break(&writer_tx, msg) {
                                     break;
                                 }
                             }
@@ -201,7 +213,7 @@ fn run_command(
     id: String,
     pool: Arc<Pool>,
     bundle: BundleProvider,
-    writer_tx: mpsc::Sender<String>,
+    writer_tx: mpsc::SyncSender<String>,
     db: String,
     base_url: Option<String>,
 ) {
@@ -364,13 +376,15 @@ fn run_ts_cancel_command(
     })
 }
 
-fn send_run_result(writer_tx: &mpsc::Sender<String>, id: &str, result: Value) {
+fn send_run_result(writer_tx: &mpsc::SyncSender<String>, id: &str, result: Value) {
     let frame = json!({
         "kind": "run-result",
         "id": id,
         "result": result,
     });
-    let _ = writer_tx.send(frame.to_string());
+    // try_send (not send) so a stalled client can't block this worker thread
+    // forever on a full queue; a dead client drops the reply and reconnects.
+    let _ = writer_tx.try_send(frame.to_string());
 }
 fn effective_server_base_url(db: &str, base_url: Option<&str>) -> Option<String> {
     let configured = host::open_settings_db(db)
@@ -1144,7 +1158,7 @@ fn handle_run_ts_tool_command(
     pool: &Arc<Pool>,
     bundle: Arc<String>,
     payload: Value,
-    writer_tx: &mpsc::Sender<String>,
+    writer_tx: &mpsc::SyncSender<String>,
     id: &str,
 ) -> bool {
     let Some(background_after_ns) = driver::runts_tool_background_after_ns(&payload) else {

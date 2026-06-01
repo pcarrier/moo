@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 
 use serde_json::Value;
 
@@ -49,9 +49,14 @@ impl Filter {
 
 struct Subscriber {
     id: u64,
-    tx: Sender<String>,
+    tx: SyncSender<String>,
     filter: Filter,
 }
+
+/// Bound per-subscriber queues so a stalled (non-reading) client can't grow the
+/// heap without limit. On overflow we drop the newest event; the client
+/// reconciles on its next refresh/reconnect since events are invalidation hints.
+const SUBSCRIBER_QUEUE_CAPACITY: usize = 1024;
 
 static SUBSCRIBERS: LazyLock<Mutex<Vec<Subscriber>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 static ACTIVE_DRAFTS: LazyLock<Mutex<HashMap<String, HashMap<String, String>>>> =
@@ -64,7 +69,7 @@ pub struct Subscription {
 }
 
 pub fn subscribe() -> Subscription {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_QUEUE_CAPACITY);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     SUBSCRIBERS.lock().unwrap().push(Subscriber {
         id,
@@ -96,7 +101,13 @@ pub fn publish_msg(msg: Message) {
         if !sub.filter.accepts(&msg) {
             return true; // not delivered, but subscriber stays alive
         }
-        sub.tx.send(msg.payload.clone()).is_ok()
+        match sub.tx.try_send(msg.payload.clone()) {
+            Ok(()) => true,
+            // Slow client: drop this event but keep the subscriber alive.
+            Err(mpsc::TrySendError::Full(_)) => true,
+            // Receiver gone: prune the subscriber.
+            Err(mpsc::TrySendError::Disconnected(_)) => false,
+        }
     });
 }
 
