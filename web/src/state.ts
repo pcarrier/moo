@@ -4866,6 +4866,30 @@ export function createState() {
     });
   }
 
+  // Wait for a chat's server run to actually register before interrupting it.
+  // A chat in the dispatching window has sent /step but the host hasn't yet
+  // inserted the run into its registry; an interrupt RPC now would race that
+  // registration (which the host does under the same dispatch lock the
+  // interrupt needs) and silently miss, so the turn would proceed uninterrupted.
+  // Waiting for step-start (or agent:Running) guarantees the subsequent
+  // interrupt finds the run. Bounded so a dispatch that never registers (e.g. a
+  // step error) can't hang the steer.
+  async function waitForServerRunRegistered(
+    id: string,
+    timeoutMs = 3000,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (chatHasServerRun(id)) return true;
+      // The dispatch resolved without registering a run (error/cancel cleared
+      // the dispatch lock): nothing left to wait for.
+      if (!setHas(dispatchingChats(), id) && !setHas(activeChats(), id))
+        return chatHasServerRun(id);
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    }
+    return chatHasServerRun(id);
+  }
+
   async function interruptQueuedChatForSteer(id: string) {
     const shouldInterruptBackend =
       setHas(activeChats(), id) || setHas(dispatchingChats(), id);
@@ -4875,6 +4899,12 @@ export function createState() {
       !setHas(interruptingChats(), id)
     ) {
       return;
+    }
+    // Dispatching-but-not-yet-running: let the run register so the interrupt
+    // below can't race past it (the chat stays paused in interruptedChats while
+    // we wait, set by the steer caller, so nothing drains for it meanwhile).
+    if (shouldInterruptBackend && !chatHasServerRun(id)) {
+      await waitForServerRunRegistered(id);
     }
     releaseQueuedLocalOpenTurn(id);
     if (!shouldInterruptBackend) return;

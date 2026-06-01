@@ -392,16 +392,23 @@ describe("chat message queueing", () => {
     expect(clearRuntime).toContain("chatsRequestSeq++;");
   });
 
-  test("reconciles server truth after steering a dispatching chat before re-draining", () => {
+  test("waits for run registration then reconciles when steering a dispatching chat", () => {
     const steerInterrupt = stateSource.slice(
       stateSource.indexOf("async function interruptQueuedChatForSteer(id: string)"),
       stateSource.indexOf("async function steerPending(id: string)"),
     );
-    // The interrupt can race the host run-registration for a dispatching-only
-    // chat and miss; refreshing rebinds activeChats from server truth so the
-    // re-enqueued steered message stays queued instead of dispatching off a
-    // stale "idle" snapshot.
+    // Run registration happens under the same dispatch lock the interrupt needs,
+    // so waiting for it before interrupting guarantees the interrupt can't race
+    // past an unregistered run and miss it.
+    expect(stateSource).toContain(
+      "async function waitForServerRunRegistered(",
+    );
+    expect(steerInterrupt).toContain(
+      "if (shouldInterruptBackend && !chatHasServerRun(id)) {",
+    );
+    expect(steerInterrupt).toContain("await waitForServerRunRegistered(id);");
     expect(steerInterrupt).toContain('const r = await api("interrupt", { chatId: id });');
+    // Reconcile with server truth afterwards before the caller re-drains.
     expect(steerInterrupt).toContain("await refreshChats();");
   });
 
