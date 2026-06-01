@@ -2665,7 +2665,18 @@ function invalidateChatFactsSummary(store: string): void {
 }
 
 async function summarizeAllChatFacts(): Promise<Map<string, ChatFactsSummary>> {
-  const raw = JSON.parse(host.chatFactSummaries()) as Record<string, ChatFactsSummary | undefined>;
+  // The host op throws on a DB/serialization error; don't let one transient
+  // failure abort the whole chat listing — degrade to no summaries instead.
+  const raw = ((): Record<string, ChatFactsSummary | undefined> => {
+    try {
+      return JSON.parse(host.chatFactSummaries()) as Record<
+        string,
+        ChatFactsSummary | undefined
+      >;
+    } catch {
+      return {};
+    }
+  })();
   const summaries = new Map<string, ChatFactsSummary>();
   for (const [chatId, summary] of Object.entries(raw)) {
     if (!summary) continue;

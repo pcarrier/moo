@@ -139,7 +139,7 @@ fn remember_active_draft(payload: &str) {
         return;
     };
     match kind {
-        "draft" | "reasoning-draft" => {
+        "draft" | "reasoning-draft" | "compaction-draft" => {
             let Some(chat_id) = value.get("chatId").and_then(Value::as_str) else {
                 return;
             };

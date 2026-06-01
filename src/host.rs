@@ -117,16 +117,15 @@ static TRACE_STORE: LazyLock<Mutex<TraceStore>> =
     LazyLock::new(|| Mutex::new(TraceStore::default()));
 
 fn trace_store_put_blob(hash: String, kind: String, bytes: Vec<u8>) {
-    let Ok(mut store) = TRACE_STORE.lock() else {
-        return;
-    };
+    // Recover from poison (and log) rather than silently dropping the write —
+    // every other TRACE_STORE consumer uses lock_recover, so a single panic
+    // shouldn't permanently stop persisting trace data here.
+    let mut store = lock_recover(&TRACE_STORE, "trace store");
     store.blobs.entry(hash).or_insert((kind, bytes));
 }
 
 fn trace_store_apply(row: TraceRow) {
-    let Ok(mut store) = TRACE_STORE.lock() else {
-        return;
-    };
+    let mut store = lock_recover(&TRACE_STORE, "trace store");
     store
         .rows
         .entry(row.id.clone())
@@ -386,9 +385,7 @@ fn enqueue_trace_write(write: TraceWrite) -> Result<(), String> {
 }
 
 fn register_trace_in_flight_write(write: &TraceWrite) {
-    let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() else {
-        return;
-    };
+    let mut rows = lock_recover(&TRACE_IN_FLIGHT_ROWS, "trace in-flight rows");
     match write {
         TraceWrite::Span(row) => {
             rows.entry(row.id.clone())
@@ -443,9 +440,7 @@ fn trace_write_row_id(write: &TraceWrite) -> Option<&str> {
 }
 
 fn complete_trace_in_flight_writes(writes: &[TraceWrite]) {
-    let Ok(mut rows) = TRACE_IN_FLIGHT_ROWS.lock() else {
-        return;
-    };
+    let mut rows = lock_recover(&TRACE_IN_FLIGHT_ROWS, "trace in-flight rows");
     for write in writes {
         let Some(id) = trace_write_row_id(write) else {
             continue;
