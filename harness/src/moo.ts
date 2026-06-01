@@ -1978,7 +1978,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.7.0" },
+    clientInfo: { name: "moo", version: "0.7.1" },
   };
 }
 
