@@ -32,6 +32,13 @@ static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQu
 static TRACE_IN_FLIGHT_ROWS: LazyLock<Mutex<HashMap<String, TraceInFlightRow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Test-only switch that enables trace gating without configuring a network
+/// exporter. Production `tracing_enabled()` is unaffected (this is compiled out
+/// of non-test builds).
+#[cfg(test)]
+static TRACE_FORCE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -632,7 +639,31 @@ pub fn apply_trace_config(config: &settings::TraceConfig) -> Result<(), String> 
 }
 
 pub fn tracing_enabled() -> bool {
+    #[cfg(test)]
+    if TRACE_FORCE_ENABLED.load(Ordering::Relaxed) {
+        return true;
+    }
     otel_reporting_enabled()
+}
+
+/// RAII switch letting tests exercise the trace pipeline without a network
+/// exporter. Tracing is gated on while the guard lives; export is still skipped
+/// because no `OtelTraceExporter` is configured, so trace writes only land in
+/// the in-memory store / in-flight maps that tests read back.
+#[cfg(test)]
+pub struct TracingTestGuard;
+
+#[cfg(test)]
+pub fn enable_tracing_for_test() -> TracingTestGuard {
+    TRACE_FORCE_ENABLED.store(true, Ordering::Relaxed);
+    TracingTestGuard
+}
+
+#[cfg(test)]
+impl Drop for TracingTestGuard {
+    fn drop(&mut self) {
+        TRACE_FORCE_ENABLED.store(false, Ordering::Relaxed);
+    }
 }
 
 pub fn otel_reporting_enabled() -> bool {

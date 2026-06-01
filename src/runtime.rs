@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -55,6 +56,21 @@ pub struct RunReport {
 const PROMISE_PUMP_YIELD_EVERY: u32 = 64;
 const ASYNC_RECV_MAX_SLICE: Duration = Duration::from_millis(50);
 
+// Maximum delay accepted for a tool-authored timer. The JS shim clamps to
+// 0x7fffffff (~24.8 days); the host additionally caps the real sleep to a
+// sane upper bound so a single timer cannot pin a wheel slot for weeks.
+const MAX_TIMER_DELAY: Duration = Duration::from_secs(60 * 60); // 1 hour
+// Upper bound on the number of concurrently-outstanding timers per job. A
+// runaway loop that creates timers without ever resolving/clearing them is
+// rejected past this point so it cannot exhaust host resources.
+const MAX_PENDING_TIMERS_PER_JOB: usize = 1024;
+
+// Maximum wall-clock time the synchronous (non async-tool) await loop will
+// spin before giving up. Synchronous commands have no host async ops backing
+// their promises, so a promise that is still pending after this deadline can
+// never settle; bailing lets the worker recycle instead of pinning a core.
+const SYNC_AWAIT_DEADLINE: Duration = Duration::from_secs(30);
+
 pub struct AsyncOpCompletion {
     pub id: u64,
     pub result: Result<String, String>,
@@ -83,6 +99,135 @@ struct AsyncHostState {
 thread_local! {
     static ASYNC_HOST_STATE: RefCell<Option<AsyncHostState>> = const { RefCell::new(None) };
     static TRACE_STATE: RefCell<Option<TraceState>> = const { RefCell::new(None) };
+}
+
+// A single process-wide timer wheel backs every setTimeout/setImmediate so we
+// never spawn one OS thread per timer (which would let a tight JS loop exhaust
+// the process thread limit). Timers are kept in a min-heap keyed by deadline;
+// the cancel path sets the entry's `cancelled` flag and notifies the condvar so
+// a cleared timer is dropped promptly instead of leaking a sleeping thread.
+struct TimerEntry {
+    deadline: Instant,
+    seq: u64,
+    id: u64,
+    cancelled: Arc<AtomicBool>,
+    completion_tx: Sender<AsyncOpCompletion>,
+}
+
+impl PartialEq for TimerEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.seq == other.seq
+    }
+}
+impl Eq for TimerEntry {}
+impl PartialOrd for TimerEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TimerEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.deadline
+            .cmp(&other.deadline)
+            .then_with(|| self.seq.cmp(&other.seq))
+    }
+}
+
+struct TimerWheel {
+    // Reverse so BinaryHeap (a max-heap) yields the earliest deadline first.
+    heap: BinaryHeap<Reverse<TimerEntry>>,
+}
+
+static TIMER_WHEEL: OnceLock<(Mutex<TimerWheel>, Condvar)> = OnceLock::new();
+static TIMER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn timer_wheel() -> &'static (Mutex<TimerWheel>, Condvar) {
+    TIMER_WHEEL.get_or_init(|| {
+        let pair = (
+            Mutex::new(TimerWheel {
+                heap: BinaryHeap::new(),
+            }),
+            Condvar::new(),
+        );
+        thread::Builder::new()
+            .name("moo-timer-wheel".to_string())
+            .spawn(timer_wheel_loop)
+            .expect("failed to spawn timer wheel thread");
+        pair
+    })
+}
+
+fn timer_wheel_loop() {
+    let (lock, cvar) = timer_wheel();
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        // Drop any cancelled timers sitting at the front of the heap.
+        while let Some(Reverse(entry)) = guard.heap.peek() {
+            if entry.cancelled.load(Ordering::SeqCst) {
+                guard.heap.pop();
+            } else {
+                break;
+            }
+        }
+        let now = Instant::now();
+        match guard.heap.peek() {
+            None => {
+                // Nothing pending: wait until a timer is registered.
+                guard = cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+            }
+            Some(Reverse(entry)) if entry.deadline <= now => {
+                let Reverse(entry) = guard.heap.pop().expect("peeked entry must pop");
+                if !entry.cancelled.load(Ordering::SeqCst) {
+                    let _ = entry.completion_tx.send(AsyncOpCompletion {
+                        id: entry.id,
+                        result: Ok("null".to_string()),
+                    });
+                }
+            }
+            Some(Reverse(entry)) => {
+                let wait = entry.deadline.saturating_duration_since(now);
+                let (g, _) = cvar
+                    .wait_timeout(guard, wait)
+                    .unwrap_or_else(|e| e.into_inner());
+                guard = g;
+            }
+        }
+    }
+}
+
+fn timer_wheel_register(
+    delay: Duration,
+    id: u64,
+    cancelled: Arc<AtomicBool>,
+    completion_tx: Sender<AsyncOpCompletion>,
+) {
+    let (lock, cvar) = timer_wheel();
+    let seq = TIMER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let deadline = Instant::now()
+        .checked_add(delay)
+        .unwrap_or_else(|| Instant::now() + MAX_TIMER_DELAY);
+    {
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        guard.heap.push(Reverse(TimerEntry {
+            deadline,
+            seq,
+            id,
+            cancelled,
+            completion_tx,
+        }));
+    }
+    // Wake the wheel so it re-evaluates the earliest deadline (or this is the
+    // only/earliest timer).
+    cvar.notify_one();
+}
+
+// Called by the cancel path (clearTimeout / job teardown) to wake the wheel so
+// a now-cancelled entry is dropped promptly rather than holding a slot until
+// its original deadline.
+fn timer_wheel_wake() {
+    if let Some((_, cvar)) = TIMER_WHEEL.get() {
+        cvar.notify_one();
+    }
 }
 
 #[derive(Debug)]
@@ -687,9 +832,33 @@ fn await_and_stringify(
     if value.is_promise() {
         let promise = v8::Local::<v8::Promise>::try_from(value)
             .map_err(|_| "script returned a non-promise value".to_string())?;
+        let cancel_token = current_cancel_token();
+        let deadline = Instant::now() + SYNC_AWAIT_DEADLINE;
         let mut spins = 0u32;
         while promise.state() == v8::PromiseState::Pending {
             scope.perform_microtask_checkpoint();
+            if promise.state() != v8::PromiseState::Pending {
+                break;
+            }
+            // The synchronous path installs no host async state, so a promise
+            // that is still pending after a microtask checkpoint has no backing
+            // op that could ever settle it (e.g. `new Promise(() => {})`). Bail
+            // immediately so the worker can recycle instead of spinning forever.
+            if pending_async_ops() == 0 {
+                return Err(
+                    "JavaScript promise is pending with no host async operations".to_string(),
+                );
+            }
+            if cancel_token
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::SeqCst))
+                || scope.is_execution_terminating()
+            {
+                return Err("execution cancelled".to_string());
+            }
+            if Instant::now() >= deadline {
+                return Err("synchronous promise await timed out".to_string());
+            }
             spins = spins.wrapping_add(1);
             if spins.is_multiple_of(PROMISE_PUMP_YIELD_EVERY) {
                 std::thread::yield_now();
@@ -1881,36 +2050,35 @@ fn op_timer_start(
         0
     };
 
+    // Cap the real sleep to a sane upper bound; the JS shim already clamps to
+    // 0x7fffffff ms, but a multi-week host sleep serves no tool use case.
+    let delay = Duration::from_millis(delay_ms).min(MAX_TIMER_DELAY);
+
     let resolver_global = v8::Global::new(scope.as_ref(), resolver);
     let start = ASYNC_HOST_STATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let Some(state) = borrow.as_mut() else {
             return Err("timers are only available while executing runTS".to_string());
         };
+        if state.pending.len() >= MAX_PENDING_TIMERS_PER_JOB {
+            return Err(format!(
+                "too many outstanding timers (limit {MAX_PENDING_TIMERS_PER_JOB})"
+            ));
+        }
         let id = state.next_id;
         state.next_id = state.next_id.saturating_add(1);
         let completion_tx = state.completion_tx.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_for_thread = cancelled.clone();
-        thread::spawn(move || {
-            if delay_ms > 0 {
-                thread::sleep(Duration::from_millis(delay_ms));
-            } else {
-                thread::yield_now();
-            }
-            if !cancelled_for_thread.load(Ordering::SeqCst) {
-                let _ = completion_tx.send(AsyncOpCompletion {
-                    id,
-                    result: Ok("null".to_string()),
-                });
-            }
-        });
+        // Register with the shared timer wheel instead of spawning a thread.
+        timer_wheel_register(delay, id, cancelled.clone(), completion_tx);
         state.pending.insert(
             id,
             PendingAsyncOp {
                 resolver: resolver_global,
                 cancel: Arc::new(move || {
                     cancelled.store(true, Ordering::SeqCst);
+                    // Wake the wheel so the cancelled entry is dropped promptly.
+                    timer_wheel_wake();
                 }),
                 trace_event_id: None,
             },
@@ -2117,6 +2285,7 @@ mod tests {
     #[test]
     fn trace_ops_create_tree_and_reset_between_runs() {
         let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-traces-{}-{}",
             std::process::id(),
@@ -2275,6 +2444,7 @@ globalThis.main = () => {
     #[test]
     fn trace_enter_missing_target_attaches_to_requested_root() {
         let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-trace-enter-missing-{}-{}",
             std::process::id(),
@@ -2328,6 +2498,7 @@ globalThis.main = () => {
     #[test]
     fn trace_state_finishes_open_spans_on_shutdown_and_startup() {
         let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-trace-cleanup-{}-{}",
             std::process::id(),
