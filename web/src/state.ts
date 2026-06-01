@@ -129,6 +129,7 @@ const MAX_DISMISSED_REPLIES = 24;
 const RIGHT_SIDEBAR_CHAT_MAX = 24;
 const MISSING_REPO_FILE_REFRESH_MS = 2000;
 const STALE_ACTIVE_CHAT_REFRESH_GRACE_MS = 2000;
+const STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS = 5000;
 
 const RIGHT_SIDEBAR_VIEW_SCOPE_IDS = [
   "view:apps",
@@ -1079,6 +1080,8 @@ export function createState() {
   const [dispatchingChats, setDispatchingChats] = createSignal<Set<string>>(
     new Set(),
   );
+  const dispatchingChatStartedAt = new Map<string, number>();
+  const dispatchingChatWatchdogs = new Set<string>();
   // Chat IDs with an interrupt request in flight. While present, new user
   // messages must stay queued: otherwise they can start a fresh driver turn
   // just before the interrupt RPC reaches Rust, and that interrupt aborts the
@@ -1149,6 +1152,43 @@ export function createState() {
     next.delete(id);
     setter(next);
   }
+  function markDispatchingChat(id: string) {
+    dispatchingChatStartedAt.set(id, Date.now());
+    addToSet(setDispatchingChats, dispatchingChats, id);
+  }
+  function clearDispatchingChat(id: string) {
+    dispatchingChatStartedAt.delete(id);
+    dispatchingChatWatchdogs.delete(id);
+    deleteFromSet(setDispatchingChats, dispatchingChats, id);
+  }
+  function staleDispatchingChatIds(live: Set<string>, requestStartedAt: number) {
+    const stale: string[] = [];
+    for (const id of dispatchingChats()) {
+      if (live.has(id)) continue;
+      const startedAt = dispatchingChatStartedAt.get(id);
+      if (
+        startedAt == null ||
+        startedAt + STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS <=
+          requestStartedAt
+      ) {
+        stale.push(id);
+      }
+    }
+    return stale;
+  }
+  function watchDispatchingChat(id: string) {
+    const startedAt = dispatchingChatStartedAt.get(id);
+    if (startedAt == null || dispatchingChatWatchdogs.has(id)) return;
+    dispatchingChatWatchdogs.add(id);
+    window.setTimeout(() => {
+      if (dispatchingChatStartedAt.get(id) !== startedAt) return;
+      dispatchingChatWatchdogs.delete(id);
+      void refreshChats().finally(() => {
+        if (dispatchingChatStartedAt.get(id) === startedAt)
+          watchDispatchingChat(id);
+      });
+    }, STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS);
+  }
   const thinking = () => {
     const id = chatId();
     return id ? activeChats().has(id) : false;
@@ -1188,7 +1228,7 @@ export function createState() {
     const nextActiveModels = new Map(activeChatModel());
     nextActiveModels.delete(id);
     setActiveChatModel(nextActiveModels);
-    deleteFromSet(setDispatchingChats, dispatchingChats, id);
+    clearDispatchingChat(id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
   }
   function unblockRunTSQueue(id: string) {
@@ -3346,6 +3386,9 @@ export function createState() {
         for (const id of live) if (current.has(id)) next.add(id);
         return next;
       });
+      for (const id of staleDispatchingChatIds(live, requestStartedAt)) {
+        clearDispatchingChat(id);
+      }
       const currentChatId = chatId();
       if (currentChatId && !live.has(currentChatId)) {
         if (hasRunningTimelineRowForChat(currentChatId)) {
@@ -4358,7 +4401,7 @@ export function createState() {
     liveTimelineOverlayByChat.delete(id);
     deleteFromSet(setActiveChats, activeChats, id);
     deleteFromSet(setCompactingChats, compactingChats, id);
-    deleteFromSet(setDispatchingChats, dispatchingChats, id);
+    clearDispatchingChat(id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
     deleteFromSet(setInterruptedChats, interruptedChats, id);
     deleteChatStartedAt(id);
@@ -4857,7 +4900,7 @@ export function createState() {
     // for the same chat cannot be picked before the step-start WS event.
     // Do not mark the chat active here: the visible thinking state should
     // wait for the server-confirmed step-start event or running status.
-    addToSet(setDispatchingChats, dispatchingChats, head.chatId);
+    markDispatchingChat(head.chatId);
 
     appendOptimisticUserInput(head.chatId, head.id, head.text, attachments);
     // /api/run now returns immediately; the chat driver runs the agent
@@ -4865,7 +4908,7 @@ export function createState() {
     // step-start/step-end (or an error) so follow-up messages remain
     // queued/editable without showing the thinking indicator early.
     if (!(await waitForChatCreation(head.chatId))) {
-      deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
+      clearDispatchingChat(head.chatId);
       return;
     }
     await waitForChatSettingsWrites(head.chatId);
@@ -4876,7 +4919,9 @@ export function createState() {
     });
     if (!r.ok) {
       reportError(`step ${head.chatId}`, r.error);
-      deleteFromSet(setDispatchingChats, dispatchingChats, head.chatId);
+      clearDispatchingChat(head.chatId);
+    } else {
+      watchDispatchingChat(head.chatId);
     }
   }
 
@@ -5401,13 +5446,15 @@ export function createState() {
     }
     if (activeChats().has(id) || dispatchingChats().has(id)) return;
     deleteFromSet(setInterruptedChats, interruptedChats, id);
-    addToSet(setDispatchingChats, dispatchingChats, id);
+    markDispatchingChat(id);
     await waitForChatSettingsWrites(id);
     const r = await api("compact", { chatId: id });
     if (!r.ok) {
-      deleteFromSet(setDispatchingChats, dispatchingChats, id);
+      clearDispatchingChat(id);
       deleteFromSet(setInterruptingChats, interruptingChats, id);
       reportError(`compact ${id}`, r.error);
+    } else {
+      watchDispatchingChat(id);
     }
   }
 
@@ -5416,12 +5463,14 @@ export function createState() {
     if (!id) return;
     if (activeChats().has(id) || dispatchingChats().has(id)) return;
     deleteFromSet(setInterruptedChats, interruptedChats, id);
-    addToSet(setDispatchingChats, dispatchingChats, id);
+    markDispatchingChat(id);
     await waitForChatSettingsWrites(id);
     const r = await api("resume", { chatId: id });
     if (!r.ok) {
-      deleteFromSet(setDispatchingChats, dispatchingChats, id);
+      clearDispatchingChat(id);
       reportError(`resume ${id}`, r.error);
+    } else {
+      watchDispatchingChat(id);
     }
   }
 
@@ -5435,7 +5484,7 @@ export function createState() {
     // cancel immediately; step-end from the aborted task will arrive shortly
     // and idempotently keep it removed.
     deleteFromSet(setActiveChats, activeChats, id);
-    deleteFromSet(setDispatchingChats, dispatchingChats, id);
+    clearDispatchingChat(id);
     addToSet(setInterruptingChats, interruptingChats, id);
     if (options.resumeQueued)
       deleteFromSet(setInterruptedChats, interruptedChats, id);
@@ -6140,7 +6189,7 @@ export function createState() {
         addToSet(setCompactingChats, compactingChats, ev.chatId);
       }
       setChatStartedAt(ev.chatId, ev.at);
-      deleteFromSet(setDispatchingChats, dispatchingChats, ev.chatId);
+      clearDispatchingChat(ev.chatId);
       deleteFromSet(setInterruptingChats, interruptingChats, ev.chatId);
       clearRunTSQueueUnblock(ev.chatId);
       updateChatSummary(ev.chatId, {

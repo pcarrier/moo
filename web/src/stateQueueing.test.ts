@@ -264,4 +264,35 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain("Only this server-confirmed state drives");
     expect(stateSource).toContain('the visible "thinking" UI.');
   });
+
+  test("clears stale dispatch locks when chat-list proves the chat is idle", () => {
+    const refreshChats = stateSource.slice(
+      stateSource.indexOf("async function refreshChats()"),
+      stateSource.indexOf("async function refreshChatMemory"),
+    );
+    const dispatchHelpers = stateSource.slice(
+      stateSource.indexOf("function markDispatchingChat"),
+      stateSource.indexOf("const thinking = () =>"),
+    );
+    const dispatchQueued = stateSource.slice(
+      stateSource.indexOf("async function dispatchQueuedMessage"),
+      stateSource.indexOf("async function drain()"),
+    );
+
+    expect(stateSource).toContain(
+      "const STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS = 5000;",
+    );
+    expect(dispatchHelpers).toContain("function staleDispatchingChatIds");
+    expect(dispatchHelpers).toContain("if (live.has(id)) continue;");
+    expect(dispatchHelpers).toContain(
+      "startedAt + STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS <=",
+    );
+    expect(dispatchHelpers).toContain("function watchDispatchingChat");
+    expect(dispatchHelpers).toContain("void refreshChats().finally");
+    expect(refreshChats).toContain(
+      "for (const id of staleDispatchingChatIds(live, requestStartedAt))",
+    );
+    expect(refreshChats).toContain("clearDispatchingChat(id);");
+    expect(dispatchQueued).toContain("watchDispatchingChat(head.chatId);");
+  });
 });
