@@ -363,4 +363,67 @@ describe("chat message queueing", () => {
     expect(drain).toContain("continue;");
     expect(drain).toContain("clearLocalOpenTurnQueueBlock(head.chatId);");
   });
+
+  test("clears the RunTS server-run bypass on every runtime teardown (step-end inlines clearActiveChatRuntime)", () => {
+    const clearRuntime = stateSource.slice(
+      stateSource.indexOf("function clearActiveChatRuntime(id: string)"),
+      stateSource.indexOf("function unblockRunTSQueue(id: string)"),
+    );
+    // Without this, the one-shot bypass set when a foreground RunTS backgrounds
+    // stays set after step-end and later lets a follow-up drain into a live
+    // server turn.
+    expect(clearRuntime).toContain("clearRunTSQueueUnblock(id);");
+  });
+
+  test("discards a stale chats refresh that a runtime teardown superseded", () => {
+    const refresh = stateSource.slice(
+      stateSource.indexOf("async function refreshChats()"),
+      stateSource.indexOf("async function refreshChatMemory("),
+    );
+    const clearRuntime = stateSource.slice(
+      stateSource.indexOf("function clearActiveChatRuntime(id: string)"),
+      stateSource.indexOf("function unblockRunTSQueue(id: string)"),
+    );
+    expect(refresh).toContain("const requestSeq = ++chatsRequestSeq;");
+    expect(refresh).toContain("if (requestSeq !== chatsRequestSeq) return;");
+    // The teardown bump is the load-bearing half: it discards a refresh issued
+    // before step-end so a stale agent:Running snapshot can't resurrect the
+    // chat and strand its queued follow-ups.
+    expect(clearRuntime).toContain("chatsRequestSeq++;");
+  });
+
+  test("reconciles server truth after steering a dispatching chat before re-draining", () => {
+    const steerInterrupt = stateSource.slice(
+      stateSource.indexOf("async function interruptQueuedChatForSteer(id: string)"),
+      stateSource.indexOf("async function steerPending(id: string)"),
+    );
+    // The interrupt can race the host run-registration for a dispatching-only
+    // chat and miss; refreshing rebinds activeChats from server truth so the
+    // re-enqueued steered message stays queued instead of dispatching off a
+    // stale "idle" snapshot.
+    expect(steerInterrupt).toContain('const r = await api("interrupt", { chatId: id });');
+    expect(steerInterrupt).toContain("await refreshChats();");
+  });
+
+  test("serializes concurrent mcp setup dispatches for one chat", () => {
+    const dispatch = stateSource.slice(
+      stateSource.indexOf("async function dispatchQueuedMessage("),
+      stateSource.indexOf("function queuedMessageBlockedOnlyByLocalOpenTurn"),
+    );
+    const drain = stateSource.slice(
+      stateSource.indexOf("async function drain()"),
+      stateSource.indexOf("function touchModelMru"),
+    );
+    expect(stateSource).toContain(
+      "const mcpDispatchingChats = new Set<string>();",
+    );
+    // shouldSendImmediately and the in-flight dispatch both gate on the marker.
+    expect(stateSource).toContain("!mcpDispatchingChats.has(chat)");
+    expect(dispatch).toContain("mcpDispatchingChats.add(head.chatId);");
+    expect(dispatch).toContain("mcpDispatchingChats.delete(head.chatId);");
+    // drain selects an MCP setup only when no same-chat setup is in flight.
+    expect(drain).toContain(
+      "? !mcpDispatchingChats.has(p.chatId)",
+    );
+  });
 });

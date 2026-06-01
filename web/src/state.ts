@@ -369,6 +369,10 @@ export function createState() {
   >({});
   let chatMemoryRequestSeq = 0;
   let chatModelRequestSeq = 0;
+  // Monotonic guard for refreshChats: bumped both by a newer refresh and by any
+  // local runtime teardown (clearActiveChatRuntime), so a chats response that
+  // resolves after the state it described was superseded is discarded.
+  let chatsRequestSeq = 0;
   let chatArchiveWriteVersion = 0;
   const chatModelWriteSeqByChat = new Map<string, number>();
   const chatEffortWriteSeqByChat = new Map<string, number>();
@@ -1083,6 +1087,11 @@ export function createState() {
   );
   const dispatchingChatStartedAt = new Map<string, number>();
   const dispatchingChatWatchdogs = new Set<string>();
+  // Chats with an `mcp setup` dispatch in flight. MCP setup deliberately
+  // bypasses chatBusy (it may need to run while the chat looks server-busy),
+  // so it needs its own in-flight guard to avoid double-dispatching the same
+  // chat's setup back-to-back.
+  const mcpDispatchingChats = new Set<string>();
   // Chat IDs with an interrupt request in flight. While present, new user
   // messages must stay queued: otherwise they can start a fresh driver turn
   // just before the interrupt RPC reaches Rust, and that interrupt aborts the
@@ -1260,7 +1269,16 @@ export function createState() {
     setActiveChatModel(nextActiveModels);
     clearDispatchingChat(id);
     clearLocalOpenTurnQueueBlock(id);
+    // Clear the one-shot RunTS server-run bypass on every runtime teardown.
+    // step-end inlines this teardown (not releaseSettledChatRuntime), so
+    // without clearing here the flag could stay set after the turn ended and
+    // later let a follow-up drain into a genuinely-running server turn.
+    clearRunTSQueueUnblock(id);
     deleteFromSet(setInterruptingChats, interruptingChats, id);
+    // A chat just settled locally; discard any in-flight `chats` refresh that
+    // was issued before this teardown, so a stale agent:Running snapshot can't
+    // resurrect the chat and strand its queued follow-ups.
+    chatsRequestSeq++;
   }
   function unblockRunTSQueue(id: string) {
     addToSet(setRunTSQueueUnblockedChats, runTSQueueUnblockedChats, id);
@@ -3333,6 +3351,7 @@ export function createState() {
   // -- fetchers ----------------------------------------------------------
 
   async function refreshChats() {
+    const requestSeq = ++chatsRequestSeq;
     const requestStartedAt = Date.now();
     const archiveRefreshGuard = captureChatArchiveRefreshGuard();
     const keepHiddenChatId = chatId();
@@ -3343,6 +3362,10 @@ export function createState() {
       ? withExpectedChatWorktreePath(existingHidden)
       : null;
     const r = await api("chats", {});
+    // Discard a stale response: a newer refresh, or a step-end/settle that tore
+    // down a chat's runtime while this request was in flight, bumped the seq.
+    // Applying it would re-assert an outdated running snapshot.
+    if (requestSeq !== chatsRequestSeq) return;
     if (r.ok) {
       const listedChats = withExpectedChatWorktreePaths(r.value.chats).filter(
         (chat) => !chatDeleteSeqByChat.has(chat.chatId),
@@ -4780,6 +4803,9 @@ export function createState() {
     return (
       (pendingLoaded || locallyCreatedChats.has(chat)) &&
       !chatBusy(chat) &&
+      // An in-flight MCP-setup dispatch doesn't set chatBusy, so guard it
+      // explicitly: otherwise two quick `mcp setup` sends both go direct.
+      !mcpDispatchingChats.has(chat) &&
       !pending().some((message) => message.chatId === chat)
     );
   }
@@ -4858,6 +4884,13 @@ export function createState() {
     const r = await api("interrupt", { chatId: id });
     deleteFromSet(setInterruptingChats, interruptingChats, id);
     if (!r.ok) reportError(`interrupt ${id}`, r.error);
+    // We tore down this chat's local dispatch lock above (releaseQueuedLocalOpenTurn),
+    // and the interrupt can race the host run-registration for a chat that was
+    // only dispatching (step sent, not yet running). If it missed, the run is
+    // still live. Reconcile with server truth before the caller re-enqueues and
+    // re-drains, so the steered message stays queued (the host serializes it
+    // behind the live run) instead of dispatching off a stale "idle" snapshot.
+    await refreshChats();
   }
 
   async function steerPending(id: string) {
@@ -4946,7 +4979,15 @@ export function createState() {
     const attachments = head.attachments || [];
     if (isMcpSetupMessage(head.text)) {
       deleteFromSet(setInterruptedChats, interruptedChats, head.chatId);
-      void dispatchMessageNow(head.chatId, head.text, attachments, "MCP setup");
+      // Hold an in-flight marker for the duration of the dispatch so a second
+      // queued/typed `mcp setup` for the same chat can't be dispatched
+      // concurrently; release it (and re-drain any follow-up) when it settles.
+      mcpDispatchingChats.add(head.chatId);
+      void dispatchMessageNow(head.chatId, head.text, attachments, "MCP setup")
+        .finally(() => {
+          mcpDispatchingChats.delete(head.chatId);
+          drainSoon();
+        });
       return;
     }
 
@@ -5058,7 +5099,13 @@ export function createState() {
           (p, i) =>
             !editing.has(p.id) &&
             !paused.has(p.chatId) &&
-            (isMcpSetupMessage(p.text) || !chatBusy(p.chatId)) &&
+            // MCP setup keeps its server-busy and ordering bypasses (it may run
+            // promptly even while the chat looks busy), but must still wait
+            // behind an in-flight MCP-setup dispatch for the same chat — that
+            // marker alone serializes two same-chat setups without forcing FIFO.
+            (isMcpSetupMessage(p.text)
+              ? !mcpDispatchingChats.has(p.chatId)
+              : !chatBusy(p.chatId)) &&
             (isMcpSetupMessage(p.text) ||
               !pen.slice(0, i).some((earlier) => earlier.chatId === p.chatId)),
         );
