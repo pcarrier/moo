@@ -204,6 +204,12 @@
             RUSTY_V8_ARCHIVE = rustyV8Archive;
             MOO_HARNESS_BUNDLE = "${harnessBundle}/harness.js";
             MOO_VITE_DIST = webDist;
+            # Pin the self-upgrade installer script (served at
+            # moo.pcarrier.com/install) so `moo upgrade` refuses a tampered
+            # script. Unix binaries fetch /install; the digest is computed from
+            # the in-repo copy. Editing docs/install changes this hash and is a
+            # deliberate, CI-guarded action (see docs/install.sha256sum).
+            MOO_INSTALLER_SHA256 = builtins.hashFile "sha256" ./docs/install;
           };
 
           # Dep-only build (cached separately from the workspace build).
