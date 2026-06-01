@@ -3,7 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     crane.url = "github:ipetkov/crane";
   };
 
@@ -316,9 +319,8 @@
               pkgs.bun
               pkgs.cargo-watch
               pkgs.cargo-zigbuild
-              pkgs.duckdb
+              pkgs.minisign
               pkgs.nodejs
-              pkgs.pkg-config
               pkgs.process-compose
               pkgs.zig
             ];
