@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 rusty_v8 = { package = "v8", version = "147.1.0" }
 rusqlite = { version = "0.39", features = ["bundled"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 spargebra = "0.4.6"
 sha2 = "0.11"
