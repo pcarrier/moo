@@ -1136,8 +1136,12 @@ export function createState() {
     chatHasServerRun(id) || chatHasLocalOpenTurn(id);
   const chatHasLocalOpenTurn = (id: string) =>
     hasRunningTimelineRowForChat(id) || chatHasUnendedDraft(id);
+  // Sidebar status dots should show the chat's working state, not merely that
+  // the opened timeline still contains a local nonterminal row used to block
+  // queue draining. Otherwise an idle selected chat can stay blue while other
+  // idle chats correctly show the gray done status.
   const chatVisiblyActive = (id: string) =>
-    setHas(activeChats(), id) || chatHasLocalOpenTurn(id);
+    setHas(activeChats(), id) || chatHasUnendedDraft(id);
   const chatBusy = (id: string) =>
     (chatHasServerRun(id) && !setHas(runTSQueueUnblockedChats(), id)) ||
     // Queue unblocks only bypass stale server-running state after a foreground

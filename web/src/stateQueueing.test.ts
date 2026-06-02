@@ -30,6 +30,18 @@ describe("chat message queueing", () => {
     );
   });
 
+  test("does not color selected idle chats as running", () => {
+    const visibleActive = stateSource.slice(
+      stateSource.indexOf("const chatVisiblyActive = (id: string)"),
+      stateSource.indexOf("const chatBusy = (id: string)"),
+    );
+
+    expect(visibleActive).toContain(
+      "setHas(activeChats(), id) || chatHasUnendedDraft(id)",
+    );
+    expect(visibleActive).not.toContain("chatHasLocalOpenTurn(id)");
+  });
+
   test("holds follow-up messages while a streamed draft is active", () => {
     const draftBusy = stateSource.slice(
       stateSource.indexOf("const chatHasUnendedDraft = (id: string)"),
@@ -50,7 +62,7 @@ describe("chat message queueing", () => {
     expect(inFlight).toContain("chatHasUnendedDraft(id)");
     expect(stateSource).toContain("const chatVisiblyActive = (id: string)");
     expect(stateSource).toContain(
-      "setHas(activeChats(), id) || chatHasLocalOpenTurn(id)",
+      "setHas(activeChats(), id) || chatHasUnendedDraft(id)",
     );
     expect(stateSource).toContain("isChatActive: chatVisiblyActive");
     expect(draftEnd).toContain(
