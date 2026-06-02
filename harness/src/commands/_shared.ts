@@ -257,6 +257,7 @@ export type ProviderAuthConfigInput = {
   openai?: ProviderAuthInput;
   anthropic?: ProviderAuthInput;
   qwen?: ProviderAuthInput;
+  glm?: ProviderAuthInput;
   xai?: ProviderAuthInput;
   deepseek?: ProviderAuthInput;
   kimi?: ProviderAuthInput;

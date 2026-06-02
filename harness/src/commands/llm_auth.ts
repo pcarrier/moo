@@ -80,6 +80,7 @@ function defaultSettings(): LlmAuthSettings {
       openai: defaultProviderSettings(),
       anthropic: defaultProviderSettings(),
       qwen: defaultProviderSettings(),
+      glm: defaultProviderSettings(),
       xai: defaultProviderSettings(),
       deepseek: defaultProviderSettings(),
       kimi: defaultProviderSettings(),
@@ -117,6 +118,7 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
       openai: normalizeProviderSettings(raw.providers?.openai, "openai"),
       anthropic: normalizeProviderSettings(raw.providers?.anthropic, "anthropic"),
       qwen: normalizeProviderSettings(raw.providers?.qwen, "qwen"),
+      glm: normalizeProviderSettings(raw.providers?.glm, "glm"),
       xai: normalizeProviderSettings(raw.providers?.xai, "xai"),
       deepseek: normalizeProviderSettings(raw.providers?.deepseek, "deepseek"),
       kimi: normalizeProviderSettings(raw.providers?.kimi, "kimi"),
@@ -165,11 +167,24 @@ async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAut
     openai: "OPENAI_MODEL",
     anthropic: "ANTHROPIC_MODEL",
     qwen: "QWEN_MODEL",
+    glm: "GLM_MODEL",
     xai: "XAI_MODEL",
     deepseek: "DEEPSEEK_MODEL",
     kimi: "KIMI_MODEL",
   };
-  return (await moo.env.get({ name: modelEnv[id] })) || (id === "kimi" ? await moo.env.get({ name: "MOONSHOT_MODEL" }) : null) || providerFallback;
+  const primary = await moo.env.get({ name: modelEnv[id] });
+  if (primary) return primary;
+  if (id === "kimi") return (await moo.env.get({ name: "MOONSHOT_MODEL" })) || providerFallback;
+  if (id === "glm") {
+    return (
+      (await moo.env.get({ name: "ZAI_MODEL" })) ||
+      (await moo.env.get({ name: "ZHIPUAI_MODEL" })) ||
+      (await moo.env.get({ name: "ZHIPU_MODEL" })) ||
+      (await moo.env.get({ name: "BIGMODEL_MODEL" })) ||
+      providerFallback
+    );
+  }
+  return providerFallback;
 }
 
 
@@ -177,7 +192,12 @@ export async function providerConfiguredCredential(id: LlmAuthProviderId): Promi
   const settings = await readLlmAuthSettings();
   const provider = settings.providers[id];
   const meta = PROVIDERS[id];
-  const baseUrl = provider.baseUrl || (await moo.env.get({ name: meta.baseUrlEnv })) || meta.defaultBaseUrl;
+  let envBaseUrl = await moo.env.get({ name: meta.baseUrlEnv });
+  for (const alt of meta.baseUrlAltEnvs ?? []) {
+    if (envBaseUrl) break;
+    envBaseUrl = await moo.env.get({ name: alt });
+  }
+  const baseUrl = provider.baseUrl || envBaseUrl || meta.defaultBaseUrl;
   const requestedAuthMode = provider.authMode;
   const model = await fallbackModelForProvider(id, requestedAuthMode);
   if (id === "openai" && provider.authMode === "oauth") {
@@ -213,6 +233,7 @@ function redact(settings: LlmAuthSettings) {
       openai: redactProvider(settings.providers.openai),
       anthropic: redactProvider(settings.providers.anthropic),
       qwen: redactProvider(settings.providers.qwen),
+      glm: redactProvider(settings.providers.glm),
       xai: redactProvider(settings.providers.xai),
       deepseek: redactProvider(settings.providers.deepseek),
       kimi: redactProvider(settings.providers.kimi),

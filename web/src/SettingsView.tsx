@@ -34,6 +34,7 @@ const PROVIDERS: ProviderMeta[] = [
   { id: "openai", title: "OpenAI", envLabel: "OPENAI_API_KEY", defaultBaseUrl: "https://api.openai.com/v1", supportsOAuth: true },
   { id: "anthropic", title: "Anthropic", envLabel: "ANTHROPIC_API_KEY", defaultBaseUrl: "https://api.anthropic.com/v1" },
   { id: "qwen", title: "Qwen", envLabel: "QWEN_API_KEY or DASHSCOPE_API_KEY", defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
+  { id: "glm", title: "GLM", envLabel: "ZAI_API_KEY or GLM_API_KEY", defaultBaseUrl: "https://api.z.ai/api/paas/v4" },
   { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
   { id: "deepseek", title: "DeepSeek", envLabel: "DEEPSEEK_API_KEY", defaultBaseUrl: "https://api.deepseek.com" },
   { id: "kimi", title: "Kimi", envLabel: "MOONSHOT_API_KEY or KIMI_API_KEY", defaultBaseUrl: "https://api.moonshot.ai/v1" },
@@ -105,6 +106,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     openai: blankDraft(),
     anthropic: blankDraft(),
     qwen: blankDraft(),
+    glm: blankDraft(),
     xai: blankDraft(),
     deepseek: blankDraft(),
     kimi: blankDraft(),
@@ -126,7 +128,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
 
   function hydrate(next: LlmAuthSettings) {
     setSettings(next);
-    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), xai: blankDraft(), deepseek: blankDraft(), kimi: blankDraft() };
+    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), glm: blankDraft(), xai: blankDraft(), deepseek: blankDraft(), kimi: blankDraft() };
     for (const meta of PROVIDERS) {
       const p = next.providers[meta.id];
       providerDrafts[meta.id] = {
@@ -184,6 +186,11 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           authMode: d.qwen.authMode,
           apiKey: d.qwen.apiKey === "••••" ? undefined : d.qwen.apiKey,
           baseUrl: d.qwen.baseUrl,
+        },
+        glm: {
+          authMode: d.glm.authMode,
+          apiKey: d.glm.apiKey === "••••" ? undefined : d.glm.apiKey,
+          baseUrl: d.glm.baseUrl,
         },
         xai: {
           authMode: d.xai.authMode,

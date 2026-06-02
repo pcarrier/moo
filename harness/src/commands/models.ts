@@ -34,9 +34,11 @@ export type ModelOption = {
 
 export function splitModelId(value: unknown): { provider: ProviderName | null; model: string } {
   const raw = String(value ?? "").trim();
-  const match = /^(openai|qwen|anthropic|xai|deepseek|kimi):(.*)$/i.exec(raw);
-  if (!match) return { provider: null, model: raw };
-  return { provider: normalizeProvider(match[1]), model: match[2].trim() };
+  const sep = raw.indexOf(":");
+  if (sep < 0) return { provider: null, model: raw };
+  const provider = normalizeProvider(raw.slice(0, sep));
+  if (!provider) return { provider: null, model: raw };
+  return { provider, model: raw.slice(sep + 1).trim() };
 }
 
 export function modelOptionId(provider: ProviderName, model: string): string {
@@ -273,6 +275,8 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   }
   for (const model of configuredModelsFrom(await moo.env.get({ name: "OPENAI_MODELS" }))) addWithFastMode("openai", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "QWEN_MODELS" }))) addWithFastMode("qwen", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "GLM_MODELS" }))) addWithFastMode("glm", splitModelId(model).model);
+  for (const model of configuredModelsFrom(await moo.env.get({ name: "ZAI_MODELS" }))) addWithFastMode("glm", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "ANTHROPIC_MODELS" }))) addWithFastMode("anthropic", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "XAI_MODELS" }))) addWithFastMode("xai", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) addWithFastMode("deepseek", splitModelId(model).model);

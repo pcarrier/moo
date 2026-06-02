@@ -44,6 +44,11 @@ describe("OpenAI-compatible provider support", () => {
     expect(splitModelId("deepseek:deepseek-v4-pro")).toEqual({ provider: "deepseek", model: "deepseek-v4-pro" });
   });
 
+  test("infers and parses GLM-prefixed models", () => {
+    expect(inferProviderForModel("glm-5.1")).toBe("glm");
+    expect(splitModelId("glm:glm-5.1")).toEqual({ provider: "glm", model: "glm-5.1" });
+  });
+
   test("includes Grok defaults in model options", async () => {
     const options = await modelOptionsFor("xai", "grok-4-fast");
     expect(options.map((option) => option.id)).toContain("xai:grok-4-fast");
@@ -57,6 +62,15 @@ describe("OpenAI-compatible provider support", () => {
     expect(modelSupportsToolCalls("deepseek-chat")).toBe(true);
     expect(modelSupportsAttachments("deepseek", "deepseek-v4-flash")).toBe(false);
     expect(options.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(false);
+  });
+
+  test("includes GLM defaults in model options", async () => {
+    const options = await modelOptionsFor("glm", "glm-5.1");
+    expect(options.map((option) => option.id)).toContain("glm:glm-5.1");
+    expect(options.map((option) => option.id)).toContain("glm:glm-4.7-flashx");
+    expect(modelSupportsToolCalls("glm-4.6")).toBe(true);
+    expect(modelSupportsAttachments("glm", "glm-5.1")).toBe(false);
+    expect(options.find((option) => option.id === "glm:glm-5.1")?.supportsAttachments).toBe(false);
   });
 
 
@@ -100,10 +114,28 @@ describe("OpenAI-compatible provider support", () => {
     expect(provider).toMatchObject({ name: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", effort: null });
   });
 
+  test("defaults GLM credentials to Z.AI API and GLM 5.1", async () => {
+    const provider = await resolveProvider(null, null, "glm");
+    expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.1", effort: null });
+  });
+
+  test("reads GLM key, model, and base URL aliases", async () => {
+    envValues = new Map([
+      ["GLM_API_KEY", "glm-key"],
+      ["GLM_BASE_URL", "https://proxy.example/glm"],
+      ["GLM_MODEL", "glm-4.6"],
+    ]);
+
+    const provider = await resolveProvider(null, null, "glm");
+
+    expect(provider).toMatchObject({ name: "glm", apiKey: "glm-key", baseUrl: "https://proxy.example/glm", model: "glm-4.6", keyEnvHint: "ZAI_API_KEY" });
+  });
+
   test("redacted auth settings include xAI provider", async () => {
     const result = await llmAuthGetCommand();
     expect(result.value.settings.providers.xai).toMatchObject({ authMode: "env" });
     expect(result.value.settings.providers.deepseek).toMatchObject({ authMode: "env" });
+    expect(result.value.settings.providers.glm).toMatchObject({ authMode: "env" });
   });
 
   test("preserves OpenAI OAuth credentials across auth mode changes", async () => {
@@ -159,6 +191,20 @@ describe("OpenAI-compatible provider support", () => {
     expect(base && modelMatches(base, "gpt-5.5-pro")).toBe(false);
     const options = await modelOptionsFor("openai", "gpt-5.5");
     expect(options.find((option) => option.id === "openai:gpt-5.5")?.availability).toBe(base?.availability);
+  });
+
+  test("uses GLM-specific context windows and request options", async () => {
+    expect(modelContextBudget({ name: "glm", model: "glm-5.1" })).toBe(200_000);
+    expect(modelContextBudget({ name: "glm", model: "glm-4.5-air" })).toBe(128_000);
+    const provider = await resolveProvider("glm-5.1", null, "glm");
+    const request = buildStreamingLLMRequest(provider, [{ role: "user", content: "hello" }], [
+      { type: "function", function: { name: "lookup", description: "Lookup a value.", parameters: { type: "object", properties: {} } } },
+    ]);
+
+    expect(request.url).toBe("https://api.z.ai/api/paas/v4/chat/completions");
+    expect(request.transport).toBe("sse");
+    expect(request.body).toMatchObject({ model: "glm-5.1", stream: true, tool_choice: "auto" });
+    expect((request.body as any).tools?.[0]?.function?.name).toBe("lookup");
   });
 
   test("uses DeepSeek-specific context windows and request options", async () => {
@@ -244,6 +290,15 @@ describe("OpenAI-compatible provider support", () => {
     expect(modelLongContextUsageKey("grok-4-fast", 128_001)).toBe("grok-4-fast#long-context");
     expect(modelSupportsToolCalls("grok-4-fast")).toBe(true);
     expect(estimateCostUsd({ models: { "grok-4-fast": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.75);
+  });
+
+  test("tracks GLM pricing and capabilities", async () => {
+    const pricing = await loadPricing();
+    expect(priceFor("glm-5.1", pricing)).toEqual({ input: 1.4, cachedInput: 0.26, output: 4.4 });
+    expect(priceFor("glm-4.7", pricing)).toEqual({ input: 0.6, cachedInput: 0.11, output: 2.2 });
+    expect(priceFor("glm-4.7-flash", pricing)).toEqual({ input: 0, cachedInput: 0, output: 0 });
+    expect(modelMetadataFor("glm", "glm-4.6")?.maxOutputTokens).toBe(128_000);
+    expect(estimateCostUsd({ models: { "glm-5.1": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(6.06);
   });
 
   test("tracks DeepSeek pricing, aliases, and cache usage", async () => {

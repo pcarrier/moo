@@ -1,4 +1,4 @@
-export type ProviderName = "openai" | "qwen" | "anthropic" | "xai" | "deepseek" | "kimi";
+export type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek" | "kimi";
 
 export type ModelPrice = {
   /** USD per million regular input tokens. */
@@ -52,6 +52,7 @@ export type ProviderMetadata = {
   envKey: string;
   envAltKeys?: string[];
   baseUrlEnv: string;
+  baseUrlAltEnvs?: string[];
   defaultBaseUrl: string;
   fallbackModel: string;
   inferPrefixes: string[];
@@ -62,7 +63,7 @@ export const DEFAULT_CONTEXT_TOKENS = 128_000;
 export const OPENAI_FAST_MODEL_SUFFIX = "#fast";
 export const OPENAI_FAST_SERVICE_TIER = "priority";
 
-export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "xai", "deepseek", "kimi"];
+export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "glm", "xai", "deepseek", "kimi"];
 
 export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
   openai: {
@@ -132,6 +133,31 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
       { id: "qwen-turbo-latest", defaultOption: true },
       { id: "qwen-flash", defaultOption: true },
       { id: "qwen", pricing: { input: 0.4, cachedInput: 0.04, output: 1.2 } },
+    ],
+  },
+  glm: {
+    id: "glm",
+    title: "GLM",
+    envKey: "ZAI_API_KEY",
+    envAltKeys: ["GLM_API_KEY", "ZHIPUAI_API_KEY", "ZHIPU_API_KEY", "BIGMODEL_API_KEY"],
+    baseUrlEnv: "ZAI_BASE_URL",
+    baseUrlAltEnvs: ["GLM_BASE_URL", "ZHIPUAI_BASE_URL", "ZHIPU_BASE_URL", "BIGMODEL_BASE_URL"],
+    defaultBaseUrl: "https://api.z.ai/api/paas/v4",
+    fallbackModel: "glm-5.1",
+    inferPrefixes: ["glm-"],
+    models: [
+      { id: "glm-5.1", match: "^glm-5\\.1(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1.4, cachedInput: 0.26, output: 4.4 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-5-turbo", match: "^glm-5-turbo(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1.2, cachedInput: 0.24, output: 4 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-5", match: "^glm-5(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1, cachedInput: 0.2, output: 3.2 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.7-flashx", match: "^glm-4\\.7-flashx(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 0.07, cachedInput: 0.01, output: 0.4 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.7-flash", match: "^glm-4\\.7-flash(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 0, cachedInput: 0, output: 0 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.7", match: "^glm-4\\.7(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 0.6, cachedInput: 0.11, output: 2.2 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.6", match: "^glm-4\\.6(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 0.6, cachedInput: 0.11, output: 2.2 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.5-x", match: "^glm-4\\.5-x(?:[-.]|$)", contextWindow: 128_000, maxOutputTokens: 96_000, pricing: { input: 2.2, cachedInput: 0.45, output: 8.9 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.5-airx", match: "^glm-4\\.5-airx(?:[-.]|$)", contextWindow: 128_000, maxOutputTokens: 96_000, pricing: { input: 1.1, cachedInput: 0.22, output: 4.5 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.5-air", match: "^glm-4\\.5-air(?:[-.]|$)", contextWindow: 128_000, maxOutputTokens: 96_000, pricing: { input: 0.2, cachedInput: 0.03, output: 1.1 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.5-flash", match: "^glm-4\\.5-flash(?:[-.]|$)", contextWindow: 128_000, maxOutputTokens: 96_000, pricing: { input: 0, cachedInput: 0, output: 0 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
+      { id: "glm-4.5", match: "^glm-4\\.5(?:[-.]|$)", contextWindow: 128_000, maxOutputTokens: 96_000, pricing: { input: 0.6, cachedInput: 0.11, output: 2.2 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
     ],
   },
   xai: {
@@ -315,6 +341,10 @@ export function modelSupportsTools(provider: ProviderName | null | undefined, mo
     if (/(?:omni|vl|audio|image|asr|tts|embedding|rerank|long)/.test(id)) return false;
     return /^qwen3(?:[.-]|$)/.test(id) || /^qwen-(?:plus|max|turbo|flash)(?:[-.]|$)/.test(id);
   }
+  if (id.startsWith("glm-")) {
+    if (/^glm-\d+(?:\.\d+)?v(?:[-.]|$)/.test(id) || /(?:^|[-.])(?:audio|image|asr|tts|embedding|rerank|vision|vl)(?:[-.]|$)/.test(id)) return false;
+    return true;
+  }
   if (id.startsWith("grok")) return metadata?.capabilities?.toolCalls === true;
   if (id.startsWith("deepseek")) return metadata?.capabilities?.toolCalls === true;
   if (/(?:^|[-.])(?:audio|realtime|image|transcribe|tts|search|embedding|moderation|whisper|dall-e|deep-research)(?:[-.]|$)/.test(id)) return false;
@@ -328,6 +358,7 @@ export function modelSupportsVision(provider: ProviderName | null | undefined, m
   if (!id) return false;
   if (id.startsWith("deepseek")) return false;
   if (id.startsWith("grok")) return metadata?.capabilities?.vision === true;
+  if (id.startsWith("glm-")) return /^glm-\d+(?:\.\d+)?v(?:[-.]|$)/.test(id) || /(?:^|[-.])(?:vision|vl)(?:[-.]|$)/.test(id);
   if (id.startsWith("claude-")) return true;
   if (id.startsWith("qwen")) return /(?:omni|vl)/.test(id);
   if (/(?:^|[-.])(?:audio|realtime|image|transcribe|tts|search|embedding|moderation|whisper|dall-e|deep-research)(?:[-.]|$)/.test(id)) return false;

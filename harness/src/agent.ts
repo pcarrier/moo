@@ -1264,6 +1264,14 @@ export function normalizeUsage(usage: any): RawUsage | null {
 async function defaultProviderName(): Promise<ProviderName> {
   if (await moo.env.get({ name: "OPENAI_MODEL" })) return "openai";
   if (await moo.env.get({ name: "QWEN_MODEL" })) return "qwen";
+  if (
+    (await moo.env.get({ name: "GLM_MODEL" })) ||
+    (await moo.env.get({ name: "ZAI_MODEL" })) ||
+    (await moo.env.get({ name: "ZHIPUAI_MODEL" })) ||
+    (await moo.env.get({ name: "ZHIPU_MODEL" })) ||
+    (await moo.env.get({ name: "BIGMODEL_MODEL" }))
+  )
+    return "glm";
   if (await moo.env.get({ name: "ANTHROPIC_MODEL" })) return "anthropic";
   if (await moo.env.get({ name: "XAI_MODEL" })) return "xai";
   if (await moo.env.get({ name: "DEEPSEEK_MODEL" })) return "deepseek";
@@ -1276,6 +1284,14 @@ async function defaultProviderName(): Promise<ProviderName> {
     (await moo.env.get({ name: "DASHSCOPE_API_KEY" }))
   )
     return "qwen";
+  if (
+    (await moo.env.get({ name: "ZAI_API_KEY" })) ||
+    (await moo.env.get({ name: "GLM_API_KEY" })) ||
+    (await moo.env.get({ name: "ZHIPUAI_API_KEY" })) ||
+    (await moo.env.get({ name: "ZHIPU_API_KEY" })) ||
+    (await moo.env.get({ name: "BIGMODEL_API_KEY" }))
+  )
+    return "glm";
   if (
     (await moo.env.get({ name: "XAI_API_KEY" })) ||
     (await moo.env.get({ name: "GROK_API_KEY" }))
@@ -1318,6 +1334,18 @@ export async function resolveProvider(
     const configured = await providerConfiguredCredential("qwen");
     return {
       name: "qwen",
+      apiKey: configured.apiKey,
+      baseUrl: configured.baseUrl,
+      model: modelOverride || configured.model,
+      effort: null,
+      keyEnvHint: configured.keyEnvHint,
+      authMode: configured.authMode,
+    };
+  }
+  if (which === "glm") {
+    const configured = await providerConfiguredCredential("glm");
+    return {
+      name: "glm",
       apiKey: configured.apiKey,
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
