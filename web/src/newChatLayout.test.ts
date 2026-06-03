@@ -87,6 +87,10 @@ describe("new chat layout", () => {
     expect(sidebar).toContain('class="fs-branch-step-topline"');
     expect(sidebar).toContain('class="fs-branch-back"');
     expect(sidebar).toContain('class="fs-start-action fs-branch-start"');
+    expect(sidebar).toContain('class="fs-start-action fs-branch-start-here"');
+    expect(sidebar).toContain("Start in scratch");
+    expect(sidebar).toContain("Start here");
+    expect(sidebar).toContain("createChatInSelectedWorktree");
     expect(sidebar).not.toContain('class="fs-branch-actions"');
     expect(sidebar).toContain('aria-label="Back to project selection"');
     expect(sidebar).toContain("←");
@@ -115,7 +119,10 @@ describe("new chat layout", () => {
     expect(sidebar).toContain('when={repoKind() === "jj"}');
     expect(sidebar).toContain('id="new-chat-jj-revision"');
     expect(sidebar).toContain(
-      "await bag.createChat(expandHome(path), { branch });",
+      "await bag.createChat(expandHome(path), { branch, useExistingWorktree });",
+    );
+    expect(sidebar).toContain(
+      "await createChatAtPath(path, branchStartValue(path), true);",
     );
     expect(sidebar).toContain(
       'if (repoKind() === "jj") return selectedJjRevision();',

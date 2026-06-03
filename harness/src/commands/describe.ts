@@ -571,6 +571,7 @@ async function chatOverview(chatId: string) {
     head,
     title,
     path,
+    explicitWorktreePath,
     baseBranch,
     createdAt,
     lastAt,
@@ -581,6 +582,7 @@ async function chatOverview(chatId: string) {
     moo.pointers.get({ name: c.head }),
     moo.pointers.get({ name: `chat/${chatId}/title` }),
     moo.pointers.get({ name: `chat/${chatId}/path` }),
+    moo.pointers.get({ name: `chat/${chatId}/worktree-path` }),
     moo.pointers.get({ name: c.startBranch }),
     moo.pointers.get({ name: `chat/${chatId}/created-at` }),
     moo.pointers.get({ name: `chat/${chatId}/last-at` }),
@@ -592,7 +594,7 @@ async function chatOverview(chatId: string) {
     .trim()
     .replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
-  const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
+  const worktreePath = explicitWorktreePath || worktreeBase + "/" + chatId.replace(/^\/+/, "");
   const [
     totalFacts,
     totalSteps,
@@ -705,11 +707,12 @@ async function loadTimelineSnapshot(
   const c = chatRefs(chatId);
   const includeTrail = options.includeTrail;
   const sinceAt = Number(options.sinceAt ?? 0);
-  const [head, title, path, createdAt, lastAt, hiddenRaw, parentChatId] =
+  const [head, title, path, explicitWorktreePath, createdAt, lastAt, hiddenRaw, parentChatId] =
     await Promise.all([
       moo.pointers.get({ name: c.head }),
       moo.pointers.get({ name: `chat/${chatId}/title` }),
       moo.pointers.get({ name: `chat/${chatId}/path` }),
+      moo.pointers.get({ name: `chat/${chatId}/worktree-path` }),
       moo.pointers.get({ name: `chat/${chatId}/created-at` }),
       moo.pointers.get({ name: `chat/${chatId}/last-at` }),
       moo.pointers.get({ name: `chat/${chatId}/hidden` }),
@@ -719,7 +722,7 @@ async function loadTimelineSnapshot(
     .trim()
     .replace(/\/+$/, "");
   const worktreeBase = home ? home + "/moo" : "moo";
-  const worktreePath = worktreeBase + "/" + chatId.replace(/^\/+/, "");
+  const worktreePath = explicitWorktreePath || worktreeBase + "/" + chatId.replace(/^\/+/, "");
   const totalFacts = await moo.facts.count({ store: c.facts });
 
   // Loading a long chat should not require formatting every historical step

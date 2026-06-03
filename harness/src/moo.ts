@@ -2772,6 +2772,8 @@ async function chatScratchRoot(chatId: string): Promise<string | null> {
 }
 
 async function chatWorktreePath(chatId: string): Promise<string> {
+  const existing = await pointers.get({ name: `chat/${chatId}/worktree-path` });
+  if (existing && existing.trim()) return existing.trim();
   const home = ((await env.get({ name: "HOME" })) || "").trim();
   const base = home ? joinPath(home, "moo") : "moo";
   return joinPath(base, chatId);
@@ -2922,7 +2924,7 @@ const chat: Moo["chat"] = {
         // repos with many chats. chat.scratch() still resolves/creates the path
         // lazily when code actually needs it, and chat-new returns it when a new
         // chat is explicitly materialized.
-        const worktreePath = null;
+        const worktreePath = refsForChat["worktree-path"] || null;
         const status = summary.status === "ui:Pending"
           ? "ui:Pending"
           : running.has(cid)
@@ -2990,7 +2992,7 @@ const chat: Moo["chat"] = {
     return chats.sort((a, b) => (b.lastAt || b.createdAt || 0) - (a.lastAt || a.createdAt || 0));
   },
   async create(args = {}) {
-    const { chatId, path = null, branch = null } = args;
+    const { chatId, path = null, branch = null, useExistingWorktree = false } = args;
     const opts = { branch };
     let cid = chatId;
     if (!cid) {
@@ -3000,19 +3002,37 @@ const chat: Moo["chat"] = {
     }
     if (path && String(path).trim()) {
       await pointers.set({ name: `chat/${cid}/path`, target: String(path).trim() });
+      if (useExistingWorktree) {
+        await pointers.set({ name: `chat/${cid}/worktree-path`, target: await canonicalDir(String(path).trim()) });
+      }
     }
     if (opts.branch && String(opts.branch).trim()) {
       await pointers.set({ name: `chat/${cid}/start-branch`, target: String(opts.branch).trim() });
     }
     await chat.touch({ chatId: cid });
-    await chat.scratch({ chatId: cid });
+    if (!useExistingWorktree || !path || !String(path).trim()) {
+      await chat.scratch({ chatId: cid });
+    }
     return cid;
   },
   async remove({ chatId }) {
     if (!chatId) throw new Error("remove requires chatId");
     const root = await chatScratchRoot(chatId);
     const path = await chatWorktreePath(chatId);
+    const explicitWorktree = await pointers.get({ name: `chat/${chatId}/worktree-path` });
     forgetCanonicalDir(path);
+    if (explicitWorktree) {
+      const all = await pointers.list({ prefix: `chat/${chatId}/` });
+      let clearedQuads = 0;
+      for (const name of all) {
+        if (name.endsWith("/facts")) {
+          clearedQuads += (await facts.deleteStore({ store: name })).removed;
+        }
+        await pointers.delete({ name: name });
+      }
+      clearedQuads += (await facts.deleteStore({ store: `chat/${chatId}/facts` })).removed;
+      return { chatId, refsDeleted: all.length, quadsCleared: clearedQuads };
+    }
     // If this scratch was set up as a git worktree, the directory contains a
     // .git *file* (not a dir) pointing back at the main repo. Clean it via
     // the git CLI so we don't leave dangling worktree metadata.

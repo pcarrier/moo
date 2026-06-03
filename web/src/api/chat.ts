@@ -32,7 +32,7 @@ export type ChatCommands =
   | ApiCommand<"submit", { chatId: ChatId; requestId: string; values?: Record<string, unknown>; cancelled?: true }, { chatId: ChatId; requestId: string; kind: string }>
   | ApiCommand<"chats", Record<string, never>, { chats: ChatSummary[]; homeDir: string | null }>
   | ApiCommand<"chat-autocomplete", { query: string; limit?: number }, { suggestions: ChatAutocompleteSuggestion[] }>
-  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; baseBranch?: string | null; worktreePath?: string | null; recent?: string[] }>
+  | ApiCommand<"chat-new", { chatId?: ChatId; path?: string; branch?: string | null; useExistingWorktree?: boolean; model?: string | null; effort?: string | null }, { chatId: ChatId; path?: string | null; branch?: string | null; baseBranch?: string | null; worktreePath?: string | null; recent?: string[] }>
   | ApiCommand<"chat-recent-paths", { includeRepos?: boolean }, { paths: string[]; repos?: Array<{ path: string; repoKind: RepoKind }> }>
   | ApiCommand<"chat-remove-recent-path", { path: string }, { removed: boolean; paths: string[] }>
   | ApiCommand<"chat-rm", { chatId: ChatId }, { chatId: ChatId; refsDeleted: number; quadsCleared: number }>

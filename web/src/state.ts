@@ -4325,7 +4325,11 @@ export function createState() {
 
   async function createChat(
     path?: string,
-    opts?: { select?: boolean; branch?: string | null },
+    opts?: {
+      select?: boolean;
+      branch?: string | null;
+      useExistingWorktree?: boolean;
+    },
   ): Promise<string | null> {
     // New chats are empty; don't block navigation on backend metadata writes,
     // path normalization, or branch checks. Pick the ID client-side, render the
@@ -4345,10 +4349,12 @@ export function createState() {
       title: null,
       path: path ?? null,
       baseBranch: opts?.branch ?? null,
-      worktreePath: expectedChatWorktreePath({
-        chatId: requestedChatId,
-        path: path ?? null,
-      }),
+      worktreePath: opts?.useExistingWorktree
+        ? (path ?? null)
+        : expectedChatWorktreePath({
+            chatId: requestedChatId,
+            path: path ?? null,
+          }),
       status: "agent:Done",
       totalFacts: 0,
       totalTurns: 0,
@@ -4372,6 +4378,7 @@ export function createState() {
         chatId: requestedChatId,
         path,
         branch: opts?.branch ?? undefined,
+        useExistingWorktree: opts?.useExistingWorktree || undefined,
       });
       if (!r.ok) {
         reportError("new chat", r.error);

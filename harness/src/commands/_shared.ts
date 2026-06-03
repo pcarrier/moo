@@ -80,6 +80,7 @@ export type ChatCommandInput = {
   effort?: string | null;
   path?: string;
   branch?: string;
+  useExistingWorktree?: boolean;
   query?: string;
   includeRepos?: boolean;
   basePath?: string;

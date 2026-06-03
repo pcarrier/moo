@@ -719,7 +719,7 @@ export type Moo = {
         childUsageIncluded?: number;
       }>
     >;
-    create(args?: { chatId?: string; path?: string | null; branch?: string | null }): Promise<string>;
+    create(args?: { chatId?: string; path?: string | null; branch?: string | null; useExistingWorktree?: boolean }): Promise<string>;
     remove(args: { chatId: string }): Promise<{ chatId: string; refsDeleted: number; quadsCleared: number }>;
     setTitle(args: { chatId: string; title: string | null; manual?: boolean }): Promise<ChatTitleReceipt>;
     recordSummary(args: { chatId?: string; summary: string; title: string }): Promise<ChatSummaryReceipt>;

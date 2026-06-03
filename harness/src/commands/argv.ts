@@ -155,6 +155,8 @@ function newChatPayload(command: "chat-new", args: string[]): Input {
       index += 1;
     } else if (arg.startsWith("--branch=")) {
       payload.branch = arg.slice("--branch=".length);
+    } else if (arg === "--use-existing-worktree") {
+      payload.useExistingWorktree = true;
     } else if (arg === "--path") {
       payload.path = optionArgs.slice(index + 1).join(" ");
       break;

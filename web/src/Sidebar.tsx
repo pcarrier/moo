@@ -1124,11 +1124,15 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     setRecentPaths(r.value.recent.map((p) => collapseHome(p)));
   }
 
-  async function createChatAtPath(path: string, branch: string | null = null) {
+  async function createChatAtPath(
+    path: string,
+    branch: string | null = null,
+    useExistingWorktree = false,
+  ) {
     if (creatingProjectChat()) return;
     setCreatingProjectChat(true);
     try {
-      await bag.createChat(expandHome(path), { branch });
+      await bag.createChat(expandHome(path), { branch, useExistingWorktree });
     } finally {
       setCreatingProjectChat(false);
     }
@@ -1171,6 +1175,12 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const path = pendingProjectPath();
     if (!path) return;
     await createChatAtPath(path, branchStartValue(path));
+  }
+
+  async function createChatInSelectedWorktree() {
+    const path = pendingProjectPath();
+    if (!path) return;
+    await createChatAtPath(path, branchStartValue(path), true);
   }
 
   function backToProjectPicker() {
@@ -1446,7 +1456,16 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   onClick={createChatWithBranch}
                   disabled={creatingProjectChat() || branchesPulling()}
                 >
-                  Start
+                  Start in scratch
+                </button>
+                <button
+                  type="button"
+                  class="fs-start-action fs-branch-start-here"
+                  onClick={createChatInSelectedWorktree}
+                  disabled={creatingProjectChat() || branchesPulling()}
+                  title="Use the selected repository/worktree directly"
+                >
+                  Start here
                 </button>
               </div>
               <Show when={repoKind() === "jj"}>

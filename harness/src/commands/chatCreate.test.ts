@@ -85,4 +85,21 @@ describe("chat creation", () => {
     expect(result.value.worktreePath).toBe("/home/test/moo/early");
     expect(scratchDirs).toEqual(["/home/test/moo/early"]);
   });
+
+  test("can start directly in the selected worktree", async () => {
+    dirs.add("/repo/worktree");
+
+    const result = await chatNewCommand({
+      chatId: "here",
+      path: "/repo/worktree",
+      useExistingWorktree: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.value.chatId).toBe("here");
+    expect(result.value.path).toBe("/repo/worktree");
+    expect(result.value.worktreePath).toBe("/repo/worktree");
+    expect(refs.get("chat/here/worktree-path")).toBe("/repo/worktree");
+    expect(scratchDirs).toEqual([]);
+  });
 });

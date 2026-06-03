@@ -1271,7 +1271,8 @@ export async function chatNewCommand(input: Input) {
     }
   }
   const branch = path && typeof input.branch === "string" && input.branch.trim() ? input.branch.trim() : null;
-  const cid = await moo.chat.create({ chatId: input.chatId, path: path, ...{ branch } });
+  const useExistingWorktree = Boolean(path && input.useExistingWorktree === true);
+  const cid = await moo.chat.create({ chatId: input.chatId, path: path, branch, useExistingWorktree });
   const hasModel = Object.prototype.hasOwnProperty.call(input, "model");
   const hasEffort = Object.prototype.hasOwnProperty.call(input, "effort");
   if (!hasModel && !hasEffort) {
@@ -1288,7 +1289,7 @@ export async function chatNewCommand(input: Input) {
   }
   let recent: string[] = [];
   if (path) recent = await rememberChatPath(path, true);
-  return { ok: true, value: { chatId: cid, path, branch, baseBranch: branch, worktreePath: await moo.chat.scratch({ chatId: cid }), recent } };
+  return { ok: true, value: { chatId: cid, path, branch, baseBranch: branch, worktreePath: useExistingWorktree ? path : await moo.chat.scratch({ chatId: cid }), recent } };
 }
 
 
