@@ -1180,7 +1180,7 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   async function createChatInSelectedWorktree() {
     const path = pendingProjectPath();
     if (!path) return;
-    await createChatAtPath(path, branchStartValue(path), true);
+    await createChatAtPath(path, null, true);
   }
 
   function backToProjectPicker() {

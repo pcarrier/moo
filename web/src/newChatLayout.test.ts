@@ -122,7 +122,7 @@ describe("new chat layout", () => {
       "await bag.createChat(expandHome(path), { branch, useExistingWorktree });",
     );
     expect(sidebar).toContain(
-      "await createChatAtPath(path, branchStartValue(path), true);",
+      "await createChatAtPath(path, null, true);",
     );
     expect(sidebar).toContain(
       'if (repoKind() === "jj") return selectedJjRevision();',
