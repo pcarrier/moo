@@ -88,6 +88,10 @@ describe("new chat layout", () => {
     expect(sidebar).toContain('class="fs-branch-back"');
     expect(sidebar).toContain('class="fs-start-action fs-branch-start"');
     expect(sidebar).toContain('class="fs-start-action fs-branch-start-here"');
+    expect(sidebar).toContain('class="fs-checkout-card"');
+    expect(sidebar).toContain('class="fs-branch-card-action"');
+    expect(sidebar).toContain("Use this checkout as-is");
+    expect(sidebar).toContain("without assigning a base");
     expect(sidebar).toContain("Start in scratch");
     expect(sidebar).toContain("Start here");
     expect(sidebar).toContain("createChatInSelectedWorktree");
@@ -137,13 +141,21 @@ describe("new chat layout", () => {
     expect(branchStep).not.toContain("border-top");
 
     const branchStepTopline = cssBlock(".fs-branch-step-topline");
-    expect(branchStepTopline).toContain("justify-content: space-between");
+    expect(branchStepTopline).toContain("justify-content: flex-start");
 
     const branchBack = cssBlock(".fs-branch-back");
     expect(branchBack).toContain("flex: 0 0 auto");
 
     const branchStartButton = cssBlock(".fs-branch-start");
-    expect(branchStartButton).toContain("margin-left: auto");
+    expect(branchStartButton).toContain("flex: 0 0 auto");
+
+    const checkoutCard = cssBlock(".fs-checkout-card");
+    expect(checkoutCard).toContain(
+      "grid-template-columns: minmax(0, 1fr) max-content",
+    );
+
+    const branchCardAction = cssBlock(".fs-branch-card-action");
+    expect(branchCardAction).toContain("justify-content: flex-end");
 
     const branchTitle = cssBlock(".fs-branch-project");
     expect(branchTitle).toContain("text-overflow: ellipsis");

@@ -232,7 +232,7 @@
 .fs-branch-step-topline {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.65rem;
 }
 
@@ -259,11 +259,6 @@
   font-size: 1rem;
 }
 
-.fs-branch-start {
-  margin-left: auto;
-  flex: 0 0 auto;
-}
-
 .fs-branch-card {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
@@ -271,6 +266,42 @@
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+}
+
+.fs-checkout-card {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  background: var(--button-bg);
+}
+
+.fs-checkout-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.fs-checkout-title {
+  font-weight: 600;
+}
+
+.fs-branch-card-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.2rem;
+}
+
+.fs-branch-start {
+  flex: 0 0 auto;
+}
+
+.fs-branch-start-here {
+  flex: 0 0 auto;
 }
 
 .fs-branch-header {

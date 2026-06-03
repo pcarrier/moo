@@ -1450,14 +1450,15 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   </h2>
                   <div class="fs-repo-kind">{repoKindLabel(repoKind())}</div>
                 </div>
-                <button
-                  type="button"
-                  class="fs-start-action fs-branch-start"
-                  onClick={createChatWithBranch}
-                  disabled={creatingProjectChat() || branchesPulling()}
-                >
-                  Start in scratch
-                </button>
+              </div>
+              <div class="fs-checkout-card" aria-label="current checkout">
+                <div class="fs-checkout-copy">
+                  <div class="fs-checkout-title">Use this checkout as-is</div>
+                  <div class="fs-branch-hint">
+                    Start in the selected directory without assigning a base
+                    branch.
+                  </div>
+                </div>
                 <button
                   type="button"
                   class="fs-start-action fs-branch-start-here"
@@ -1499,6 +1500,16 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                   <div class="fs-branch-hint">
                     Choose the jj change, bookmark, or trunk revision the new
                     workspace should start from.
+                  </div>
+                  <div class="fs-branch-card-action">
+                    <button
+                      type="button"
+                      class="fs-start-action fs-branch-start"
+                      onClick={createChatWithBranch}
+                      disabled={creatingProjectChat() || branchesPulling()}
+                    >
+                      Start in scratch
+                    </button>
                   </div>
                   <Show when={branchesError()}>
                     <div class="fs-branch-error">{branchesError()}</div>
@@ -1555,6 +1566,16 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
                         : "Choose a branch to start from, or start using this directory as-is."}
                     </div>
                   </Show>
+                  <div class="fs-branch-card-action">
+                    <button
+                      type="button"
+                      class="fs-start-action fs-branch-start"
+                      onClick={createChatWithBranch}
+                      disabled={creatingProjectChat() || branchesPulling()}
+                    >
+                      Start in scratch
+                    </button>
+                  </div>
                   <Show when={branchesError()}>
                     <div class="fs-branch-error">{branchesError()}</div>
                   </Show>
