@@ -260,8 +260,8 @@ describe("timeline thinking status", () => {
       "if (hasReplyReasoning(item)) keys.push(timelineThoughtKey(item));",
     );
     expect(timeline).toContain('entry.kind === "thought" ? (');
-    expect(timeline).toContain("<ThoughtBox");
-    expect(timeline).toContain("streaming={bag.thinking()}");
+    expect(timeline).toContain("<ThoughtBox item={entry.item} />");
+    expect(timeline).not.toContain("streaming={bag.thinking()}");
     expect(timeline).toContain('class="step reply-thinking"');
     expect(timeline).toContain("data-timeline-key={props.timelineKey}");
     expect(timeline).toContain("const html = () => renderMarkdown(text());");

@@ -977,10 +977,7 @@ export function Timeline(props: {
                         onUpdateRunTSBlock={updateRunTSBlockLightbox}
                       />
                     ) : entry.kind === "thought" ? (
-                      <ThoughtBox
-                        item={entry.item}
-                        streaming={bag.thinking()}
-                      />
+                      <ThoughtBox item={entry.item} />
                     ) : (
                       <Item
                         item={entry.item}
