@@ -889,11 +889,14 @@ export function NewChatView(props: { bag: Bag; onToggleSidebar: () => void }) {
   >(null);
   const [branchPath, setBranchPath] = createSignal<string | null>(null);
   const [branches, setBranches] = createSignal<GitBranchItem[]>([]);
-  const [selectedBranch, setSelectedBranch] = createSignal<string | null>(null);
+  const [selectedBranch, setSelectedBranch] = createSignal<string | null>(
+    null,
+    { equals: false },
+  );
   const [jjRevisions, setJjRevisions] = createSignal<JjRevisionItem[]>([]);
   const [selectedJjRevision, setSelectedJjRevision] = createSignal<
     string | null
-  >(null);
+  >(null, { equals: false });
   const [repoKind, setRepoKind] =
     createSignal<GitBranchesValue["repoKind"]>(null);
   const [isGitRepo, setIsGitRepo] = createSignal(false);

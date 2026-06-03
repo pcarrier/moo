@@ -165,6 +165,12 @@ describe("new chat layout", () => {
     expect(pullBranches).toContain(
       "applyBranchValue(r.value, path, { selectedBranch: branchChoice });",
     );
+    expect(sidebar).toContain(
+      "const [selectedBranch, setSelectedBranch] = createSignal<string | null>(\n    null,\n    { equals: false },\n  );",
+    );
+    expect(sidebar).toContain(
+      "const [selectedJjRevision, setSelectedJjRevision] = createSignal<\n    string | null\n  >(null, { equals: false });",
+    );
 
     const applyStart = sidebar.indexOf("function applyBranchValue(");
     expect(applyStart).toBeGreaterThanOrEqual(0);
