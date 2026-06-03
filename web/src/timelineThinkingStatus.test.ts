@@ -267,6 +267,13 @@ describe("timeline thinking status", () => {
     expect(timeline).toContain("const html = () => renderMarkdown(text());");
     expect(timeline).toContain('class="body markdown reply-thinking-body"');
     expect(timeline).toContain('label="streaming thinking"');
+    expect(timeline).toContain('streamingLabel?: string;');
+    expect(timeline).toContain(
+      'props.streaming ? (props.streamingLabel ?? "Thinking") : "Thought"',
+    );
+    expect(timeline).toContain(
+      "streamingLabel={activeThinkingLabel(props.item.model, props.item.effort)}",
+    );
     expect(timeline).toContain("const thoughtStreaming = () =>");
     expect(timeline).toContain(
       "props.item.reasoningStreaming ?? !isTerminalStepStatus(props.item.status)",

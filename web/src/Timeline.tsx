@@ -2760,6 +2760,7 @@ function showStandardStepFooter(item: StepItem): boolean {
 function ReasoningBlock(props: {
   content: string;
   streaming: boolean;
+  streamingLabel?: string;
   timelineKey: string;
 }) {
   const text = () => props.content.trim();
@@ -2773,7 +2774,7 @@ function ReasoningBlock(props: {
         open={open()}
       >
         <summary>
-          <span>{props.streaming ? "Thinking" : "Thought"}</span>
+          <span>{props.streaming ? (props.streamingLabel ?? "Thinking") : "Thought"}</span>
           <Show when={props.streaming}>
             <LoadingDots
               class="reply-thinking-dots"
@@ -2795,6 +2796,7 @@ function ThoughtBox(props: { item: StepItem; streaming?: boolean }) {
     <ReasoningBlock
       content={props.item.reasoningContent ?? ""}
       streaming={thoughtStreaming()}
+      streamingLabel={activeThinkingLabel(props.item.model, props.item.effort)}
       timelineKey={timelineThoughtKey(props.item)}
     />
   );
