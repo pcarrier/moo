@@ -1293,6 +1293,16 @@ export async function stepContinueToolCallsCommand(input: Input) {
       { chatId, usedModel, requestEffort, ...toolCallForTrace(tc) },
       () => executeToolCall(chatId, tc, usedModel, requestEffort),
     );
+    if (tc?.function?.name === "respond" && (exec as any).responded === true) {
+      await traceMark("tool.respond.done", {
+        chatId,
+        index: i,
+        toolCallId: tc.id ?? null,
+      });
+      await setChatOngoing(chatId, false);
+      await resetConsecutiveCompactions(chatId);
+      return { ok: true, value: { kind: "done" } };
+    }
     await traceMark("tool.result.ready", {
       chatId,
       index: i,

@@ -1145,6 +1145,9 @@ async function loadTimelineSnapshot(
       if (typeof reasoningContent === "string" && reasoningContent.trim()) {
         item.reasoningContent = reasoningContent;
       }
+      if (payload?.value?.explicitResponse === true) {
+        item.explicitResponse = true;
+      }
     }
     return item;
   };

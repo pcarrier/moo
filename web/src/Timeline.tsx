@@ -2712,6 +2712,8 @@ function stepClass(item: StepItem): string {
   if (item.status === "agent:Cancelled") c += " cancelled";
   if (item.kind === "agent:Reply" && item.status !== "agent:Done")
     c += " draft";
+  if (item.kind === "agent:Reply" && item.explicitResponse === true)
+    c += " explicit-response";
   if (item.kind === "agent:UserInput" && item.deletedAt) c += " message-hidden";
   return c;
 }

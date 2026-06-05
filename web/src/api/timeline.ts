@@ -78,6 +78,8 @@ export type StepItem = {
   draftId?: string;
   // Reasoning/thinking streamed before the final reply content, when available.
   reasoningContent?: string;
+  // True when the reply was recorded from an explicit respond tool call.
+  explicitResponse?: boolean;
   // True while the reasoning/thinking stream itself is still receiving deltas.
   reasoningStreaming?: boolean;
   // Present when a user message is hidden from future LLM prompts.
