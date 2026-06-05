@@ -729,6 +729,12 @@
   align-self: flex-start;
 }
 
+.step.reply.explicit-response {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bubble-reply));
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
 .reply-thinking {
   align-self: stretch;
   inline-size: 100%;

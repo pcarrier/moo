@@ -92,6 +92,26 @@ export const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "respond",
+      description:
+        "Finish the assistant turn with the user-visible answer. Always call this after any needed runTS/tool work instead of emitting final text directly.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            description:
+              "Markdown answer to display to the user as the final response for this turn.",
+          },
+        },
+        required: ["message"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 function contextInterfaceForProvider(
@@ -274,8 +294,10 @@ export async function reply(
   thoughtDurationNs?: number | null,
   draftId?: string | null,
   reasoningContent?: string | null,
+  explicitResponse?: boolean,
 ) {
   const payloadBody: any = { text, at: await moo.time.nowMs({}) };
+  if (explicitResponse === true) payloadBody.explicitResponse = true;
   if (Number.isFinite(thoughtDurationNs) && thoughtDurationNs! >= 0) {
     payloadBody.thoughtDurationNs = Math.round(thoughtDurationNs!);
   }
@@ -290,6 +312,7 @@ export async function reply(
     hasReasoningContent:
       typeof reasoningContent === "string" &&
       reasoningContent.trim().length > 0,
+    explicitResponse: explicitResponse === true,
     model: model ?? null,
     effort: normalizeEffort(effort) ?? null,
   });
@@ -3083,6 +3106,33 @@ function protectHjsonMultilineIndent(line: string): string {
   );
 }
 
+async function toolRespond(
+  chatId: string,
+  toolArgs: any,
+  model?: string | null,
+  effort?: string | null,
+): Promise<{ toolText: string; responded: true }> {
+  const message =
+    typeof toolArgs?.message === "string" ? toolArgs.message.trim() : "";
+  await traceMark("tool.respond", {
+    chatId,
+    chars: message.length,
+    model: model ?? null,
+    effort: normalizeEffort(effort) ?? null,
+  });
+  await reply(
+    chatId,
+    message,
+    model,
+    effort,
+    null,
+    null,
+    null,
+    true,
+  );
+  return { toolText: message, responded: true };
+}
+
 async function toolRunTS(
   chatId: string,
   toolArgs: any,
@@ -3350,6 +3400,19 @@ export async function executeToolCall(
     args = JSON.parse(tc?.function?.arguments || "{}");
   } catch {
     args = {};
+  }
+  if (name === "respond") {
+    return await traceSpan(
+      "tool.respond",
+      {
+        chatId,
+        model: model ?? null,
+        effort: normalizeEffort(effort) ?? null,
+        ...toolCallForTrace(tc),
+        args,
+      },
+      () => toolRespond(chatId, args, model, effort),
+    );
   }
   if (name === "runTS") {
     return await traceSpan(
