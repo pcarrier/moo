@@ -249,14 +249,14 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
       ]
     : [];
   return [
-    "agent=moo. tools: runTS({label,description,code,args?}) for work; respond({message}) for the final user-visible answer. Always finish every assistant turn by calling respond; do not emit final prose directly.",
+    "agent=moo. tools: runTS({label,description,code,args?}) for work; respond({message}) to record a user-visible answer as a normal tool call. Prefer finishing turns with respond; do not emit final prose directly.",
     "runTS → TypeScript 6 + ES2025 async body; `moo`, `chatId`, `repo`, `scratch` & optional `args` in scope.",
     "label+description: Markdown for the tool-call row. label ≤6 words, imperative, sentence case. description: one concrete sentence (paths/predicates/why); use links/code when useful.",
     "code: TypeScript body compiled with bundled Moo type definitions; await freely; `return` value for visible output; `args` is JSON supplied via `args?`.",
     "args: pass complex strings/data (patches, scripts, JSON blobs) via `args` instead of embedding/escaping them in `code`.",
     "runtime: harness V8 ES2025 only; TypeScript 6 type-checks against bundled ES2025 + Moo definitions; no Node APIs (no fs/path/process/require/import); no ICU/Intl (avoid localeCompare/Intl.Collator).",
     "runTS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside TypeScript strings. Backgrounded runTS returns an id; cancel with `await moo.tools.cancel({id})`",
-    "respond: call exactly once at the end of the turn with concise Markdown; after respond, stop. Use it for all user-facing answers, including errors/blockers/questions after any tool work.",
+    "respond: call with concise Markdown for user-facing answers, including errors/blockers/questions after any tool work. It is non-terminal like other tool calls; continue if more work is needed.",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "When asked to tweak/fix/update code or a named file/path, edit the code; do not merely remember the request or acknowledge a preference.",
     "moo.todos: optional; use `moo.todos` only for substantial multi-step work where tracking helps. Keep items terse; don't update guessed/stale IDs. Method signatures are in the moo.todos API line below.",
