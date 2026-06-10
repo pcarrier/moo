@@ -95,6 +95,7 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     inferPrefixes: ["claude"],
     models: [
       // Keep Claude 4.x context/output caps aligned with Anthropic's Models overview.
+      { id: "claude-fable-5", match: "^claude-fable-5(?:[.-]|$)", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: { input: 10, cachedInput: 1, cacheWriteInput: 12.5, output: 50 }, capabilities: { toolCalls: true }, defaultOption: true },
       { id: "claude-opus-4", match: "^claude-opus-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 32_000, pricing: { input: 15, cachedInput: 1.5, cacheWriteInput: 18.75, output: 75 }, capabilities: { toolCalls: true } },
       { id: "claude-sonnet-4", match: "^claude-sonnet-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: { input: 3, cachedInput: 0.3, cacheWriteInput: 3.75, output: 15 }, capabilities: { toolCalls: true } },
       { id: "claude-haiku-4", match: "^claude-haiku-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: { input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 5 }, capabilities: { toolCalls: true } },
