@@ -122,6 +122,20 @@ export function App(props: { bag: Bag }) {
           "--app-viewport-h",
           `${Math.max(0, Math.round(height))}px`,
         );
+        // iPadOS/Safari scroll the *layout* viewport when the soft keyboard
+        // opens so the focused field stays visible, shifting the visual viewport
+        // down/right within it (offsetTop/offsetLeft > 0). The app shell and its
+        // fixed overlays are anchored to the layout viewport, so without
+        // compensation they slide off-screen behind/above the keyboard. Expose
+        // the offset so CSS can translate the shell to track the visual viewport.
+        root.style.setProperty(
+          "--app-viewport-offset-top",
+          `${Math.max(0, Math.round(visualViewport?.offsetTop ?? 0))}px`,
+        );
+        root.style.setProperty(
+          "--app-viewport-offset-left",
+          `${Math.max(0, Math.round(visualViewport?.offsetLeft ?? 0))}px`,
+        );
         // Safari ignores interactive-widget=resizes-content: the soft keyboard
         // shrinks only the visual viewport, never the layout viewport. Detect
         // that gap so layout can drop bottom safe-area padding that would
@@ -184,6 +198,10 @@ export function App(props: { bag: Bag }) {
       window.visualViewport?.removeEventListener("resize", syncViewportHeight);
       window.visualViewport?.removeEventListener("scroll", syncViewportHeight);
       document.documentElement.style.removeProperty("--app-viewport-h");
+      document.documentElement.style.removeProperty("--app-viewport-offset-top");
+      document.documentElement.style.removeProperty(
+        "--app-viewport-offset-left",
+      );
       document.documentElement.style.removeProperty("--keyboard-open");
       window.removeEventListener("keydown", onKeyDown);
     });

@@ -2,6 +2,11 @@
 
 :root {
   --app-viewport-h: 100dvh;
+  /* Offset of the visual viewport within the layout viewport. Non-zero when an
+     on-screen keyboard (iPadOS/Safari) scrolls the layout viewport; the shell is
+     translated by this so it tracks the visual viewport instead of sliding off. */
+  --app-viewport-offset-top: 0px;
+  --app-viewport-offset-left: 0px;
   --top-bar-h: 2.25rem;
   --top-bar-button-size: 1.75rem;
   --top-bar-button-mobile-size: var(--top-bar-button-size);
@@ -109,6 +114,14 @@
   background-clip: content-box;
 }
 
+/* The layout viewport is the clip container: the keyboard never resizes it, so
+   pin it and hide overflow. The shell (body) is sized to the visual viewport and
+   translated to follow it. */
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family:
@@ -122,6 +135,14 @@ body {
   color: var(--fg);
   height: var(--app-viewport-h);
   overflow: hidden;
+  /* Follow the visual viewport when the soft keyboard shifts it. At rest both
+     offsets are 0px (a no-op translate). The transform also makes body the
+     containing block for its position:fixed overlays, so they ride along with
+     the shell rather than staying anchored to the layout viewport. */
+  transform: translate(
+    var(--app-viewport-offset-left, 0px),
+    var(--app-viewport-offset-top, 0px)
+  );
 }
 
 button {
