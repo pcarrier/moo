@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 
 const prompt = readFileSync(new URL("./prompt.ts", import.meta.url), "utf8");
 
-describe("TODO prompt", () => {
-  test("keeps TODO tracking optional and lightweight", () => {
-    expect(prompt).toContain("todos: optional");
-    expect(prompt).toContain("use `moo.todos` only for substantial multi-step work");
+describe("task prompt", () => {
+  test("keeps task tracking optional and lightweight", () => {
+    expect(prompt).toContain("tasks: optional");
+    expect(prompt).toContain("use `moo.tasks` only for substantial multi-step work");
+    expect(prompt).toContain("Cut big problems into small orthogonal pieces and delegate them to subagents with tasks");
+    expect(prompt).toContain("moo.tasks{list,add,update,done,drop,setValidation,validate,patch,clear}");
     expect(prompt).not.toContain("immediately mark meaningful completions/blockers before reporting");
-    expect(prompt).not.toContain("the current TODO list is shown to you separately");
+    expect(prompt).not.toContain("the current task list is shown to you separately");
   });
 });
 

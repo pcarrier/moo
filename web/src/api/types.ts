@@ -96,9 +96,9 @@ export type {
   InputResponseItem,
   LogItem,
   MemoryDiffItem,
-  TodoDiffItem,
-  TodoDiffChange,
-  AgentTodo,
+  TaskDiffItem,
+  TaskDiffChange,
+  AgentTask,
   MemoryFactChange,
   RunTSDetails,
   StepItem,
@@ -164,7 +164,7 @@ export type DescribeOverviewValue = {
   totalSteps: number;
   totalCodeCalls?: number;
   tokens: TokenPressure;
-  todos?: import("./timeline").AgentTodo[];
+  tasks?: import("./timeline").AgentTask[];
   totalTimelineItems?: number;
   compaction?: string | null;
 };

@@ -6,9 +6,9 @@
 
 import { getPsk } from "./auth";
 import type {
-  AgentTodo,
+  AgentTask,
   MemoryFactChange,
-  TodoDiffChange,
+  TaskDiffChange,
   V8Event,
 } from "./api";
 
@@ -50,13 +50,13 @@ export type Event =
       at: number;
     }
   | {
-      kind: "todo-diff";
+      kind: "task-diff";
       chatId: string;
-      changes?: TodoDiffChange[];
+      changes?: TaskDiffChange[];
       hash?: string;
       stepId?: string;
       at: number;
-      todos?: AgentTodo[];
+      tasks?: AgentTask[];
     }
   | {
       kind: "memory-diff";
@@ -170,7 +170,7 @@ const EVENT_KINDS = new Set<string>([
   "facts",
   "ui-open",
   "file-diff",
-  "todo-diff",
+  "task-diff",
   "memory-diff",
   "blob-add",
   "tokens",
@@ -291,7 +291,7 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
-function isTodoStatus(value: unknown): value is AgentTodo["status"] {
+function isTaskStatus(value: unknown): value is AgentTask["status"] {
   return (
     value === "todo" ||
     value === "doing" ||
@@ -301,26 +301,26 @@ function isTodoStatus(value: unknown): value is AgentTodo["status"] {
   );
 }
 
-function isAgentTodo(value: unknown): value is AgentTodo {
+function isAgentTask(value: unknown): value is AgentTask {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === "string" &&
     typeof value.text === "string" &&
-    isTodoStatus(value.status)
+    isTaskStatus(value.status)
   );
 }
 
-function isTodoDiffChange(value: unknown): value is TodoDiffChange {
+function isTaskDiffChange(value: unknown): value is TaskDiffChange {
   if (!isRecord(value)) return false;
   switch (value.kind) {
     case "added":
-      return isAgentTodo(value.after);
+      return isAgentTask(value.after);
     case "removed":
-      return isAgentTodo(value.before);
+      return isAgentTask(value.before);
     case "updated":
       return (
-        isAgentTodo(value.before) &&
-        isAgentTodo(value.after) &&
+        isAgentTask(value.before) &&
+        isAgentTask(value.after) &&
         (value.fields === undefined || isStringArray(value.fields))
       );
     default:
@@ -432,18 +432,18 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
         at,
       };
     }
-    case "todo-diff": {
+    case "task-diff": {
       const chatId = stringField(frame, "chatId");
       const at = optionalNumber(frame, "at");
       if (!chatId || at == null) return null;
       return {
-        kind: "todo-diff",
+        kind: "task-diff",
         chatId,
-        changes: arrayField(frame, "changes", isTodoDiffChange),
+        changes: arrayField(frame, "changes", isTaskDiffChange),
         hash: optionalString(frame, "hash"),
         stepId: optionalString(frame, "stepId"),
         at,
-        todos: arrayField(frame, "todos", isAgentTodo),
+        tasks: arrayField(frame, "tasks", isAgentTask),
       };
     }
     case "memory-diff": {

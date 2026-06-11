@@ -46,7 +46,7 @@ describe("right sidebar layout", () => {
     expect(state).toContain("readRepoFileIntoSidebarScope(");
     const fileDiffBlock = state.slice(
       state.indexOf('if (ev.kind === "file-diff")'),
-      state.indexOf('if (ev.kind === "todo-diff")'),
+      state.indexOf('if (ev.kind === "task-diff")'),
     );
     expect(fileDiffBlock).toContain("refreshMatchingRepoFilesSoon(ev.path, ev.chatId);");
     expect(

@@ -75,6 +75,7 @@ import {
 } from "../driver/step";
 import { llmAttempt, llmRetryDecisionFromSchedule } from "../core/retry";
 import { currentLlmRetryPolicy } from "./llm_auth";
+import { getTasks, outstandingTaskCount } from "../tasks";
 import type { ProviderName } from "../llm_models";
 import {
   defaultChatEffort,
@@ -2632,6 +2633,16 @@ export async function stepHandleLlmCommand(input: Input) {
     budget: pressureBudget,
     threshold: pressureThreshold,
   });
+  const remainingTasks = outstandingTaskCount(await getTasks(chatId));
+  if (remainingTasks > 0) {
+    await traceMark("llm.final_reply.tasks_remain", { chatId, remainingTasks, usedModel });
+    postReplyMessages.push({
+      role: "user",
+      content:
+        `Outstanding tasks remain (${remainingTasks}). Continue working on them now; use tools/subagents as needed, update task status/validation when appropriate, and do not stop until tasks are done, dropped, or blocked with a reason.`,
+    });
+    return { ok: true, value: { kind: "iterate", messages: postReplyMessages } };
+  }
   await setChatOngoing(chatId, false);
   await resetConsecutiveCompactions(chatId);
   await traceMark("llm.final_reply.done", { chatId, usedModel });

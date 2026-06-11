@@ -12,7 +12,7 @@ import {
   readLastTokenPressure,
 } from "../agent";
 import type { Input } from "./_shared";
-import { activeTodos, getTodos } from "../todos";
+import { activeTasks, getTasks } from "../tasks";
 import { defaultModelPricing, type ModelPrice } from "../llm_models";
 import { chatModelInfo } from "./models";
 
@@ -43,7 +43,7 @@ function timelineTypeOrder(type: string): number {
     case "file-diff":
     case "blob-add":
     case "memory-diff":
-    case "todo-diff":
+    case "task-diff":
       return 60;
     case "compaction":
       return 70;
@@ -210,14 +210,14 @@ function diffPayloadSummary(
   payloadHash?: string,
 ) {
   if (
-    value?.type === "todo-diff" &&
+    value?.type === "task-diff" &&
     (!Array.isArray(value?.changes) || value.changes.length === 0)
   )
     return null;
   return {
     type:
-      value?.type === "todo-diff"
-        ? "todo-diff"
+      value?.type === "task-diff"
+        ? "task-diff"
         : value?.store || value?.graph || value?.changes
           ? "memory-diff"
           : "file-diff",
@@ -444,12 +444,12 @@ async function loadTrailStepItems(
   // The main timeline can be limited to the newest N rows for responsiveness,
   // but the Trails sidebar is just a navigation index. Load only the newest
   // historical step kinds it renders instead of resolving every old subagent
-  // payload/result on every chat switch. File diffs stay out of the trail; TODO
+  // payload/result on every chat switch. File diffs stay out of the trail; task
   // diffs are kept here so the trail remains a useful work-state index.
   const trailStepRows = newestByAt(
     rows.filter(
       (row) =>
-        row["?kind"] === "agent:TodoDiff" || row["?kind"] === "agent:Subagent",
+        row["?kind"] === "agent:TaskDiff" || row["?kind"] === "agent:Subagent",
     ),
     limit,
     (row) => factTimestamp(row["?at"]),
@@ -503,7 +503,7 @@ async function loadTrailStepItems(
     const payload = lookupObject(meta.payload[0]?.[3]);
     const result = lookupObject(meta.result[0]?.[3]);
     const at = factTimestamp(row["?at"]);
-    if (row["?kind"] === "agent:TodoDiff" && payload?.value) {
+    if (row["?kind"] === "agent:TaskDiff" && payload?.value) {
       const diffItem = diffPayloadSummary(
         payload.value,
         stepId,
@@ -750,7 +750,7 @@ async function loadTimelineSnapshot(
     totalTrailEntries,
     compactionSteps,
     fileDiffTrailRows,
-    todoDiffTrailRows,
+    taskDiffTrailRows,
     subagentTrailRows,
     inputResponses,
     logs,
@@ -772,7 +772,7 @@ async function loadTimelineSnapshot(
     ),
     loadStepRowsByKind(
       c,
-      "agent:TodoDiff",
+      "agent:TaskDiff",
       0,
     ),
     loadStepRowsByKind(
@@ -786,7 +786,7 @@ async function loadTimelineSnapshot(
   ]);
   const inputs = await loadInputRows(c, inputResponses, boundedScanLimit);
   const trailStepRows = newestByAt(
-    [...fileDiffTrailRows, ...todoDiffTrailRows, ...subagentTrailRows] as Array<
+    [...fileDiffTrailRows, ...taskDiffTrailRows, ...subagentTrailRows] as Array<
       Record<string, string>
     >,
     0,
@@ -1095,7 +1095,7 @@ async function loadTimelineSnapshot(
     if (
       (s["?kind"] === "agent:FileDiff" ||
         s["?kind"] === "agent:MemoryDiff" ||
-        s["?kind"] === "agent:TodoDiff") &&
+        s["?kind"] === "agent:TaskDiff") &&
       payload?.value
     )
       return diffPayloadSummary(
@@ -1305,7 +1305,7 @@ async function loadTimelineSnapshot(
   // Token pressure surfaced for the UI bar. Use the provider's real
   // prompt + completion tokens from the most recent call.
   const tokens = await tokenPressure(chatId);
-  const todos = activeTodos(await getTodos(chatId));
+  const tasks = activeTasks(await getTasks(chatId));
 
   return {
     overview: {
@@ -1323,7 +1323,7 @@ async function loadTimelineSnapshot(
       totalSteps,
       totalCodeCalls,
       tokens,
-      todos,
+      tasks,
       totalTimelineItems,
     },
     timeline: {

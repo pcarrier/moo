@@ -557,7 +557,7 @@ type ChatRefs = {
     startBranch: string;
     startBranchRef?: string;
 };
-type StepKind = "agent:UserInput" | "agent:Reply" | "agent:ShellCommand" | "agent:RunTS" | "agent:Subagent" | "agent:ToolCall" | "agent:FileDiff" | "agent:MemoryDiff" | "agent:TodoDiff" | "agent:BlobAdd" | "agent:Tick" | "agent:Final" | "agent:Error" | "agent:Compaction";
+type StepKind = "agent:UserInput" | "agent:Reply" | "agent:ShellCommand" | "agent:RunTS" | "agent:Subagent" | "agent:ToolCall" | "agent:FileDiff" | "agent:MemoryDiff" | "agent:TaskDiff" | "agent:BlobAdd" | "agent:Tick" | "agent:Final" | "agent:Error" | "agent:Compaction";
 type StepClass = "agent:Message" | "agent:ToolInvocation" | "agent:LifecycleMarker" | "agent:ErrorEvent";
 type StepStatus = "agent:Queued" | "agent:Running" | "agent:Done" | "agent:Failed" | "agent:Cancelled";
 type AppendStepArgs = {
@@ -571,6 +571,7 @@ type AppendStepArgs = {
 type SubagentSpec = {
     label: string;
     task: string;
+    tasks?: TaskAddInput[];
     context?: string;
     expectedOutput?: string;
     maxSteps?: number;
@@ -578,6 +579,7 @@ type SubagentSpec = {
     model?: string;
     effort?: string;
     worktree?: "isolated" | "inherit";
+  scratch?: string;
 };
 type SubagentResult = {
     status: "done" | "failed" | "cancelled" | "timeout" | "wait-input";
@@ -734,45 +736,54 @@ type TraceSpanOptions = {
     input?: unknown;
     data?: Record<string, unknown>;
 } | Record<string, unknown>;
-type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-type TodoIdInput = string | number;
-type AgentTodo = {
+type TaskStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+type TaskIdInput = string | number;
+type TaskValidationInput = string | (() => unknown);
+type TaskValidationResult = {
+    ok: boolean;
+    error?: string | null;
+};
+type AgentTask = {
     id: string;
     text: string;
-    status: TodoStatus;
+    status: TaskStatus;
     note?: string;
+    validation?: string;
     createdAt: string;
     updatedAt: string;
 };
-type AgentTodoState = {
+type AgentTaskState = {
     version: 1;
     updatedAt: string;
     nextId: number;
-    items: AgentTodo[];
+    items: AgentTask[];
 };
-type TodoAddInput = {
+type TaskAddInput = {
     text: string;
-    status?: TodoStatus;
+    status?: TaskStatus;
     note?: string;
+    validation?: TaskValidationInput | null;
 };
-type TodoUpdateInput = {
-    id: TodoIdInput;
+type TaskUpdateInput = {
+    id: TaskIdInput;
     text?: string;
-    status?: TodoStatus;
+    status?: TaskStatus;
     note?: string | null;
+    validation?: TaskValidationInput | null;
 };
-type AgentTodoPatch = {
-    id?: TodoIdInput;
+type AgentTaskPatch = {
+    id?: TaskIdInput;
     text?: string;
-    status?: TodoStatus;
+    status?: TaskStatus;
     note?: string | null;
+    validation?: TaskValidationInput | null;
 };
-type TodoPatch = {
-    items?: AgentTodoPatch[];
-    add?: TodoAddInput[];
-    update?: TodoUpdateInput[];
+type TaskPatch = {
+    items?: AgentTaskPatch[];
+    add?: TaskAddInput[];
+    update?: TaskUpdateInput[];
     clearDone?: boolean;
-    clearStatuses?: TodoStatus[];
+    clearStatuses?: TaskStatus[];
 };
 type MooTracesApi = {
     current(args?: {}): Promise<TraceCurrent | null>;
@@ -1091,22 +1102,29 @@ type Moo = {
             value: V;
         } | null>;
     };
-    todos: {
-        list(): Promise<AgentTodoState>;
-        add(args: TodoAddInput): Promise<AgentTodo>;
-        update(args: TodoUpdateInput): Promise<AgentTodo>;
+    tasks: {
+        list(): Promise<AgentTaskState>;
+        add(args: TaskAddInput): Promise<AgentTask>;
+        update(args: TaskUpdateInput): Promise<AgentTask>;
         done(args: {
-            id: TodoIdInput;
+            id: TaskIdInput;
             note?: string;
-        }): Promise<AgentTodo>;
+        }): Promise<AgentTask>;
         drop(args: {
-            id: TodoIdInput;
+            id: TaskIdInput;
             note?: string;
-        }): Promise<AgentTodo>;
-        patch(args: TodoPatch): Promise<AgentTodoState>;
+        }): Promise<AgentTask>;
+        setValidation(args: {
+            id: TaskIdInput;
+            validation?: TaskValidationInput | null;
+        }): Promise<AgentTask>;
+        validate(args: {
+            id: TaskIdInput;
+        }): Promise<TaskValidationResult>;
+        patch(args: TaskPatch): Promise<AgentTaskState>;
         clear(args?: {
-            statuses?: TodoStatus[];
-        }): Promise<AgentTodoState>;
+            statuses?: TaskStatus[];
+        }): Promise<AgentTaskState>;
     };
     skills: MooSkillsApi;
     pointers: {
@@ -1221,7 +1239,15 @@ type Moo = {
             root?: string | null;
         }): Promise<WorkspaceScope>;
     };
-    http: {
+  scratch: Moo["scratches"];
+  scratches: {
+    current(args?: {}): Promise<string>;
+    list(args?: {}): Promise<Array<{ name: string; path: string; exists: boolean }>>;
+    create(args?: { name?: string; path?: string; fromCurrent?: boolean }): Promise<{ name: string; path: string }>;
+    get(args: { name: string }): Promise<string | null>;
+    delete(args: { name: string; recursive?: boolean }): Promise<{ name: string; path: string | null; deletedRef: boolean; deletedPath: boolean }>;
+  };
+  http: {
         fetch(opts: {
             method?: string;
             url: string;

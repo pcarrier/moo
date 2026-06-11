@@ -15,7 +15,7 @@ import {
   type StepId,
   type CompactionsValue,
   type ImageAttachment,
-  type AgentTodo,
+  type AgentTask,
   type FsEntry,
   type Predicate,
   type ChatModelInfo,
@@ -29,7 +29,7 @@ import {
   type LogItem,
   type DescribeTrailPage,
   type MemoryDiffItem,
-  type TodoDiffItem,
+  type TaskDiffItem,
   type StoreObject,
   type PointerEntry,
   type Triple,
@@ -329,20 +329,20 @@ export function createState() {
     if (chatId() === id) showTokensForChat(id);
   }
 
-  const [todos, setTodos] = createSignal<AgentTodo[]>([]);
-  const todosByChat = new Map<string, AgentTodo[]>();
+  const [tasks, setTasks] = createSignal<AgentTask[]>([]);
+  const tasksByChat = new Map<string, AgentTask[]>();
 
-  function currentTodosForChat(id: string): AgentTodo[] {
-    return todosByChat.get(id) ?? [];
+  function currentTasksForChat(id: string): AgentTask[] {
+    return tasksByChat.get(id) ?? [];
   }
 
-  function applyTodosForChat(id: string, next: AgentTodo[]) {
-    todosByChat.set(id, next);
-    if (chatId() === id) setTodos(next);
+  function applyTasksForChat(id: string, next: AgentTask[]) {
+    tasksByChat.set(id, next);
+    if (chatId() === id) setTasks(next);
   }
 
-  function showTodosForChat(id: string | null) {
-    setTodos(id ? currentTodosForChat(id) : []);
+  function showTasksForChat(id: string | null) {
+    setTasks(id ? currentTasksForChat(id) : []);
   }
   const [triples, setTriples] = createSignal<Triple[]>([]);
   const [graphSummaries, setGraphSummaries] = createSignal<
@@ -794,7 +794,7 @@ export function createState() {
     applyTokensForChat(id, value.tokens, {
       active: id === chatId() && activeChats().has(id),
     });
-    applyTodosForChat(id, Array.isArray(value.todos) ? value.todos : []);
+    applyTasksForChat(id, Array.isArray(value.tasks) ? value.tasks : []);
     setLoadedChatId(id);
   }
 
@@ -1008,9 +1008,9 @@ export function createState() {
     persistChatCacheSoon();
   }
 
-  function forgetTodosForChat(id: string) {
-    todosByChat.delete(id);
-    if (chatId() === id) showTodosForChat(id);
+  function forgetTasksForChat(id: string) {
+    tasksByChat.delete(id);
+    if (chatId() === id) showTasksForChat(id);
   }
 
   function forgetRightSidebarForChat(id: string) {
@@ -4119,7 +4119,7 @@ export function createState() {
     if (resolved.chatId && resolved.chatId !== chatId()) {
       setChatId(resolved.chatId);
       showTokensForChat(resolved.chatId);
-      showTodosForChat(resolved.chatId);
+      showTasksForChat(resolved.chatId);
       restoreDraftReplyForChat(resolved.chatId);
       forgetServerTimelineWatermark(resolved.chatId);
       const summary = chats().find((c) => c.chatId === resolved.chatId);
@@ -4169,7 +4169,7 @@ export function createState() {
   ) {
     setChatId(id);
     showTokensForChat(id);
-    showTodosForChat(id);
+    showTasksForChat(id);
     restoreDraftReplyForChat(id);
     forgetServerTimelineWatermark(id);
     // A sidebar chat click should always return to the chat itself, not carry
@@ -4338,7 +4338,7 @@ export function createState() {
     locallyCreatedChats.add(requestedChatId);
     forgetChatCache(requestedChatId);
     forgetTokensForChat(requestedChatId);
-    forgetTodosForChat(requestedChatId);
+    forgetTasksForChat(requestedChatId);
     forgetRightSidebarForChat(requestedChatId);
     const now = Date.now();
     const summary: ChatSummary = {
@@ -4419,7 +4419,7 @@ export function createState() {
     if (opts?.select === false) {
       setChatId(requestedChatId);
       showTokensForChat(requestedChatId);
-      showTodosForChat(requestedChatId);
+      showTasksForChat(requestedChatId);
       clearDraftReply(requestedChatId);
       setTimeline([]);
       setTrail([]);
@@ -4466,7 +4466,7 @@ export function createState() {
     setChats(nextChats);
     forgetChatCache(id);
     forgetTokensForChat(id);
-    forgetTodosForChat(id);
+    forgetTasksForChat(id);
     forgetRightSidebarForChat(id);
     // A chat deleted mid-stream would otherwise leak its in-flight draft and
     // live tool-call overlay, since no future event ever clears them.
@@ -4761,7 +4761,7 @@ export function createState() {
   ) {
     if (opts.clearChatId) setChatId(null);
     showTokensForChat(null);
-    showTodosForChat(null);
+    showTasksForChat(null);
     clearDraftReply();
     setTimeline([]);
     setTrail([]);
@@ -5350,7 +5350,7 @@ export function createState() {
         fraction: 0,
         estimated: true,
       },
-      todos: currentTodosForChat(sourceChatId),
+      tasks: currentTasksForChat(sourceChatId),
       totalTimelineItems: page.hiddenItems + page.items.length,
       compaction: null,
     };
@@ -5378,7 +5378,7 @@ export function createState() {
       activeTrailKey: trailKey,
       ...(model ? { model: { ...model, chatId: forkChatId } } : {}),
     });
-    applyTodosForChat(forkChatId, currentTodosForChat(sourceChatId));
+    applyTasksForChat(forkChatId, currentTasksForChat(sourceChatId));
   }
 
   async function forkChatAtStep(step: string) {
@@ -5436,7 +5436,7 @@ export function createState() {
           current.filter((chat) => chat.chatId !== requestedChatId),
         );
         forgetChatCache(requestedChatId);
-        forgetTodosForChat(requestedChatId);
+        forgetTasksForChat(requestedChatId);
         if (chatId() === requestedChatId) void selectChat(id);
         return false;
       }
@@ -6012,24 +6012,24 @@ export function createState() {
       refreshMatchingRepoFilesSoon(ev.path, ev.chatId);
       return;
     }
-    if (ev.kind === "todo-diff") {
+    if (ev.kind === "task-diff") {
       const cid = chatId();
-      if (Array.isArray(ev.todos)) applyTodosForChat(ev.chatId, ev.todos);
+      if (Array.isArray(ev.tasks)) applyTasksForChat(ev.chatId, ev.tasks);
       if (!Array.isArray(ev.changes) || ev.changes.length === 0) return;
       if (cid && ev.chatId === cid) {
-        const id = ev.stepId || ev.hash || `todo-diff-${ev.at}`;
+        const id = ev.stepId || ev.hash || `task-diff-${ev.at}`;
         setTimeline((items) =>
           compactTimelineRows([
             ...items.filter(
-              (item) => !(item.type === "todo-diff" && item.id === id),
+              (item) => !(item.type === "task-diff" && item.id === id),
             ),
             {
-              type: "todo-diff",
+              type: "task-diff",
               id,
               step: ev.stepId,
               chatId: ev.chatId,
               changes: ev.changes,
-              todos: ev.todos,
+              tasks: ev.tasks,
               hash: ev.hash,
               at: ev.at || Date.now(),
             } as TimelineItem,
@@ -6760,7 +6760,7 @@ export function createState() {
           if (list.length === 0) return;
           setChatId(list[0]!.chatId);
           showTokensForChat(list[0]!.chatId);
-          showTodosForChat(list[0]!.chatId);
+          showTasksForChat(list[0]!.chatId);
           loadWipText(list[0]!.chatId);
         };
         void chatsLoad
@@ -6885,7 +6885,7 @@ export function createState() {
     totalSteps,
     totalCodeCalls,
     tokens,
-    todos,
+    tasks,
     chatModel,
     modelMru,
     chatMemory,

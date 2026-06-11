@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import type { TimelineItem, TodoDiffChange } from "./api";
+import type { TimelineItem, TaskDiffChange } from "./api";
 import {
   buildTrailItems,
   formatTrailDuration,
-  todoChangeTextForTrail,
+  taskChangeTextForTrail,
   trailSourceItems,
   trailSourceKey,
 } from "./sidebar/trail";
@@ -14,7 +14,7 @@ const baseCss = readFileSync(new URL("./styles/base.css", import.meta.url), "utf
 
 type StepItem = Extract<TimelineItem, { type: "step" }>;
 type TrailTimelineItem = Extract<TimelineItem, { type: "trail" }>;
-type TodoDiffTimelineItem = Extract<TimelineItem, { type: "todo-diff" }>;
+type TaskDiffTimelineItem = Extract<TimelineItem, { type: "task-diff" }>;
 
 function step(
   partial: Partial<StepItem> & Pick<StepItem, "step" | "kind" | "text">,
@@ -37,10 +37,10 @@ function trail(
   };
 }
 
-function todoChange(
-  kind: TodoDiffChange["kind"],
+function taskChange(
+  kind: TaskDiffChange["kind"],
   status: "todo" | "doing" | "done" | "blocked" | "dropped" = "todo",
-): TodoDiffChange {
+): TaskDiffChange {
   const before = { id: "1", text: "old", status };
   const after = { id: "1", text: "new", status };
   if (kind === "added") return { kind, after };
@@ -48,10 +48,10 @@ function todoChange(
   return { kind, before, after, fields: ["text"] };
 }
 
-function todoDiff(changes: TodoDiffChange[]): TodoDiffTimelineItem {
+function taskDiff(changes: TaskDiffChange[]): TaskDiffTimelineItem {
   return {
-    type: "todo-diff",
-    id: "todo-step",
+    type: "task-diff",
+    id: "task-step",
     chatId: "chat1",
     changes,
     at: 5,
@@ -60,14 +60,14 @@ function todoDiff(changes: TodoDiffChange[]): TodoDiffTimelineItem {
 
 describe("sidebar trail helpers", () => {
   test("live timeline rows replace stale trail rows with matching source keys", () => {
-    const stale = todoDiff([todoChange("added", "todo")]);
-    const fresh = todoDiff([todoChange("updated", "done")]);
+    const stale = taskDiff([taskChange("added", "todo")]);
+    const fresh = taskDiff([taskChange("updated", "done")]);
     const items = trailSourceItems({ trail: [stale], timeline: [fresh] });
     expect(items).toEqual([fresh]);
-    expect(trailSourceKey(fresh)).toBe("todo-diff:todo-step");
+    expect(trailSourceKey(fresh)).toBe("task-diff:task-step");
   });
 
-  test("builds title, summary, TODO, and subagent trail items in time order", () => {
+  test("builds title, summary, task, and subagent trail items in time order", () => {
     const items = buildTrailItems({
       trail: [
         trail({
@@ -85,7 +85,7 @@ describe("sidebar trail helpers", () => {
         }),
       ],
       timeline: [
-        todoDiff([todoChange("updated", "done")]),
+        taskDiff([taskChange("updated", "done")]),
         step({
           step: "sub1",
           kind: "agent:Subagent",
@@ -106,8 +106,8 @@ describe("sidebar trail helpers", () => {
       "Child",
       "Daily",
     ]);
-    expect(items[0]?.tone).toBe("todo");
-    expect(items[0]?.todoStatus).toBe("done");
+    expect(items[0]?.tone).toBe("task");
+    expect(items[0]?.taskStatus).toBe("done");
     expect(items[2]?.targetChatId).toBe("chat-child");
     expect(items[2]?.status).toBe("done");
     expect(items[2]?.detail).toContain("2.5s");
@@ -129,11 +129,11 @@ describe("sidebar trail helpers", () => {
     expect(items[0]?.status).toBe("cancelled");
   });
 
-  test("formats TODO action markers and durations", () => {
-    expect(todoChangeTextForTrail(todoChange("added", "todo"))).toBe("+");
-    expect(todoChangeTextForTrail(todoChange("updated", "blocked"))).toBe("!");
-    expect(todoChangeTextForTrail(todoChange("updated", "done"))).toBe("-");
-    expect(todoChangeTextForTrail(todoChange("removed", "dropped"))).toBe("X");
+  test("formats task action markers and durations", () => {
+    expect(taskChangeTextForTrail(taskChange("added", "todo"))).toBe("+");
+    expect(taskChangeTextForTrail(taskChange("updated", "blocked"))).toBe("!");
+    expect(taskChangeTextForTrail(taskChange("updated", "done"))).toBe("-");
+    expect(taskChangeTextForTrail(taskChange("removed", "dropped"))).toBe("X");
     expect(formatTrailDuration(250)).toBe("0.3s");
     expect(formatTrailDuration(12_000)).toBe("12s");
     expect(formatTrailDuration(75_000)).toBe("1m 15s");

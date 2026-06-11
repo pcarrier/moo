@@ -3096,9 +3096,9 @@ function AgentTrailRow(props: {
       classList={{
         title: props.item.tone === "title",
         summary: props.item.tone === "summary",
-        todo: props.item.tone === "todo",
+        task: props.item.tone === "task",
         subagent: props.item.tone === "subagent",
-        [`todo-status-${props.item.todoStatus}`]: !!props.item.todoStatus,
+        [`task-status-${props.item.taskStatus}`]: !!props.item.taskStatus,
       }}
     >
       <span class="agent-trail-dot" aria-hidden="true" />

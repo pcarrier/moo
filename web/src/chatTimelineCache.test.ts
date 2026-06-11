@@ -104,10 +104,10 @@ describe("chat timeline LRU cache", () => {
     const createBlock = stateSource.slice(createStart, createEnd);
     expect(createBlock).toContain("forgetChatCache(requestedChatId);");
     expect(createBlock).toContain("forgetTokensForChat(requestedChatId);");
-    expect(createBlock).toContain("forgetTodosForChat(requestedChatId);");
+    expect(createBlock).toContain("forgetTasksForChat(requestedChatId);");
     expect(createBlock).toContain("forgetRightSidebarForChat(requestedChatId);");
     expect(createBlock).toContain("showTokensForChat(requestedChatId);");
-    expect(createBlock).toContain("showTodosForChat(requestedChatId);");
+    expect(createBlock).toContain("showTasksForChat(requestedChatId);");
     expect(createBlock).toContain("setChatUiApps([]);");
     expect(createBlock).toContain("setUiInstances([]);");
   });

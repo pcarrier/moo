@@ -27,7 +27,7 @@
 }
 
 .conversation-main > .conv-header,
-.conversation-main > .ongoing-todos,
+.conversation-main > .ongoing-tasks,
 .conversation-main > .pending-list,
 .conversation-main > #input-bar {
   flex: 0 0 auto;

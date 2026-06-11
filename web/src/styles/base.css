@@ -31,7 +31,7 @@
   --bubble-shell: color-mix(in srgb, orange 16%, transparent);
   --bubble-runts: color-mix(in srgb, gold 16%, transparent);
   --bubble-file-diff: color-mix(in srgb, deepskyblue 14%, transparent);
-  --bubble-todo-diff: color-mix(in srgb, orchid 16%, transparent);
+  --bubble-task-diff: color-mix(in srgb, orchid 16%, transparent);
   --bubble-log: color-mix(in srgb, slategray 12%, transparent);
   --bubble-compact: color-mix(in srgb, mediumpurple 14%, transparent);
   --bubble-error: color-mix(in srgb, crimson 16%, transparent);
@@ -1836,13 +1836,13 @@ pre,
 .agent-trail-item.summary .agent-trail-dot {
   background: mediumseagreen;
 }
-.agent-trail-item.todo .agent-trail-dot {
+.agent-trail-item.task .agent-trail-dot {
   background: mediumorchid;
 }
-.agent-trail-item.todo-status-doing .agent-trail-title {
+.agent-trail-item.task-status-doing .agent-trail-title {
   font-weight: 700;
 }
-.agent-trail-item.todo-status-done .agent-trail-title {
+.agent-trail-item.task-status-done .agent-trail-title {
   color: var(--muted);
   text-decoration: line-through;
 }

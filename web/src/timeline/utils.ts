@@ -28,7 +28,7 @@ export function timelineTypeOrder(item: TimelineItem): number {
     case "trail":
       return 50;
     case "file-diff":
-    case "todo-diff":
+    case "task-diff":
     case "blob-add":
     case "memory-diff":
       return 60;
@@ -62,7 +62,7 @@ export function timelineExpansionKey(item: TimelineItem): string {
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
   if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
+  if (item.type === "task-diff") return `task-diff:${item.id}`;
   if (item.type === "blob-add") return `blob-add:${item.id}`;
   return `file-diff:${item.id}`;
 }
@@ -83,7 +83,7 @@ export function timelineItemKey(item: TimelineItem): string {
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
   if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
+  if (item.type === "task-diff") return `task-diff:${item.id}`;
   if (item.type === "blob-add") return `blob-add:${item.id}`;
   return `file-diff:${item.id}`;
 }
@@ -105,7 +105,7 @@ export function timelineJumpKeys(item: TimelineItem): string[] {
   if (
     (item.type === "file-diff" ||
       item.type === "memory-diff" ||
-      item.type === "todo-diff" ||
+      item.type === "task-diff" ||
       item.type === "blob-add") &&
     item.step
   ) {
