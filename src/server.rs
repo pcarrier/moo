@@ -45,9 +45,9 @@ impl ConnLimiter {
     }
 
     fn acquire(self: &Arc<Self>) -> ConnPermit {
-        let mut count = self.count.lock().unwrap();
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
         while *count >= self.cap {
-            count = self.cv.wait(count).unwrap();
+            count = self.cv.wait(count).unwrap_or_else(|e| e.into_inner());
         }
         *count += 1;
         ConnPermit {
@@ -58,7 +58,7 @@ impl ConnLimiter {
 
 impl Drop for ConnPermit {
     fn drop(&mut self) {
-        let mut count = self.limiter.count.lock().unwrap();
+        let mut count = self.limiter.count.lock().unwrap_or_else(|e| e.into_inner());
         *count = count.saturating_sub(1);
         self.limiter.cv.notify_one();
     }

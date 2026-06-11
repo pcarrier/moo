@@ -7,7 +7,9 @@ bun install --cwd shared --frozen-lockfile --no-progress
 bun install --cwd web --frozen-lockfile --no-progress
 bun install --cwd harness --frozen-lockfile --no-progress
 
-cargo check
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked --no-deps -- -D warnings
+cargo test --workspace --locked
 bun --cwd shared typecheck --pretty false
 bun --cwd web typecheck --pretty false
 bun --cwd web typecheck:test --pretty false

@@ -303,7 +303,12 @@ function isRepoFileHref(href: string): boolean {
 
 export function repoFilePathFromHref(href: string): string | null {
   if (!isRepoFileHref(href)) return null;
-  return decodeURIComponent(href.split("#")[0].split("?")[0]);
+  const path = href.split("#")[0].split("?")[0];
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return null;
+  }
 }
 
 export function resolveRepoFileHref(href: string, basePath: string | null | undefined): string | null {
@@ -514,9 +519,35 @@ function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: numbe
 function safeLinkHref(href: string): string {
   const trimmed = (href || "").trim();
   if (!trimmed) return "";
-  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return "";
+  const protocolCandidate = stripProtocolObfuscation(trimmed);
+  if (/^(https?:|mailto:)/i.test(protocolCandidate)) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(protocolCandidate) || trimmed.startsWith("//")) return "";
   return trimmed;
+}
+
+function stripProtocolObfuscation(value: string): string {
+  let out = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (ch === "%" && i + 2 < value.length) {
+      const decoded = hexByte(value.slice(i + 1, i + 3));
+      if (decoded !== null) {
+        i += 2;
+        if (decoded <= 0x20 || decoded === 0x7f) continue;
+        out += String.fromCharCode(decoded);
+        continue;
+      }
+    }
+    const code = ch.charCodeAt(0);
+    if (code <= 0x20 || code === 0x7f) continue;
+    out += ch;
+  }
+  return out;
+}
+
+function hexByte(value: string): number | null {
+  if (!/^[0-9a-f]{2}$/i.test(value)) return null;
+  return parseInt(value, 16);
 }
 
 function externalLinkAttributes(href: string): string {
@@ -524,7 +555,7 @@ function externalLinkAttributes(href: string): string {
 }
 
 function isExternalLinkHref(href: string): boolean {
-  return /^(https?:|mailto:)/i.test(href.trim());
+  return /^(https?:|mailto:)/i.test(stripProtocolObfuscation(href.trim()));
 }
 
 function escapeMarkdownLinkText(value: string): string {

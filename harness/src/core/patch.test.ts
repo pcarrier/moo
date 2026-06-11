@@ -66,4 +66,19 @@ describe("patchText", () => {
     const diff = "@@ -1,4 +1,5 @@\n a\n stale\n b\n+added\n c\n";
     expect(patchText("a\nb\nc\n", diff)).toBe("a\nb\nadded\nc\n");
   });
+
+  test("handles pure insertion hunks at file boundaries", () => {
+    expect(patchText("a\nb\n", "@@ -3,0 +3,2 @@\n+c\n+d\n")).toBe("a\nb\nc\nd\n");
+    expect(patchText("a\n", "@@ -1,0 +1,3 @@\n+inserted_line1\n+inserted_line2\n a\n")).toBe("inserted_line1\ninserted_line2\na\n");
+  });
+
+  test("relocates stale hunks while preserving idempotency failures", () => {
+    expect(patchText("line1\nline2\nline3\n", "@@ -1,2 +1,3 @@\n line1\n line2\n+inserted\n")).toBe("line1\nline2\ninserted\nline3\n");
+    expect(patchText("a\nb\nc\n", "@@ -1,2 +1,3 @@\n a\n b\n+inserted\n")).toBe("a\nb\ninserted\nc\n");
+
+    const diff = "@@ -1,3 +1,4 @@\n a\n b\n+inserted\n c\n";
+    const once = patchText("a\nb\nc\n", diff);
+    expect(once).toBe("a\nb\ninserted\nc\n");
+    expect(() => patchText(once, diff)).toThrow();
+  });
 });

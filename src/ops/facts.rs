@@ -711,7 +711,7 @@ fn op_facts_graph_summaries(
                   where ref_name = ?1 and graph = ?2
                   group by graph
                   order by graph",
-                vec![SqlValue::Text(ref_name.clone().unwrap()), SqlValue::Text(graph.clone().unwrap())],
+                vec![SqlValue::Text(ref_name.clone().unwrap_or_default()), SqlValue::Text(graph.clone().unwrap_or_default())],
             ),
             (Some(_), None) => (
                 "select graph, count(*) as facts, count(distinct subject) as subjects
@@ -719,14 +719,14 @@ fn op_facts_graph_summaries(
                   where ref_name = ?1
                   group by graph
                   order by graph",
-                vec![SqlValue::Text(ref_name.clone().unwrap())],
+                vec![SqlValue::Text(ref_name.clone().unwrap_or_default())],
             ),
             (None, Some(_)) => (
                 "select graph, count(*) as facts, count(distinct subject) as subjects
                    from (select distinct graph, subject, predicate, object from quads where graph = ?1)
                   group by graph
                   order by graph",
-                vec![SqlValue::Text(graph.clone().unwrap())],
+                vec![SqlValue::Text(graph.clone().unwrap_or_default())],
             ),
             (None, None) => (
                 "select graph, count(*) as facts, count(distinct subject) as subjects

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderMarkdown, renderMarkdownInline, renderMarkdownWithBreaks, renderUserMessage } from "./markdown";
+import { repoFilePathFromHref, renderMarkdown, renderMarkdownInline, renderMarkdownWithBreaks, renderUserMessage } from "./markdown";
 
 describe("renderUserMessage", () => {
   test("preserves single newlines in user input", () => {
@@ -34,6 +34,12 @@ describe("renderUserMessage", () => {
       .toBe('<p><a href="">bad</a> <img src="" alt="x"></p>\n');
     expect(renderMarkdown('[bad](//evil.test/path) [ok](https://example.test/path)'))
       .toBe('<p><a href="">bad</a> <a href="https://example.test/path" target="_blank" rel="noopener noreferrer">ok</a></p>\n');
+    expect(renderMarkdown('[bad](java%0ascript:alert(1)) [also-bad](vbscript:msgbox(1))'))
+      .toBe('<p><a href="">bad</a> <a href="">also-bad</a></p>\n');
+  });
+
+  test("ignores malformed percent-encoded repo links", () => {
+    expect(repoFilePathFromHref("src/%E0%A4%A.ts")).toBeNull();
   });
 
   test("opens external markdown links in new tabs", () => {

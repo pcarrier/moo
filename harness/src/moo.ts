@@ -918,6 +918,17 @@ async function scratchNamedPath(chatId: string, name: string): Promise<string | 
   return ref && ref.trim() ? ref.trim() : null;
 }
 
+function parentDir(path: string): string {
+  const trimmed = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  if (slash <= 0) return "/";
+  return trimmed.slice(0, slash);
+}
+
+async function defaultNamedScratchRoot(chatId: string, name: string): Promise<string> {
+  return joinPath(parentDir(await defaultScratchRoot(chatId)), name);
+}
+
 const scratches: Moo["scratches"] = {
   async current(_args = {}) {
     return await defaultScratchRoot(requireActiveScratchChat());
@@ -938,7 +949,7 @@ const scratches: Moo["scratches"] = {
     const n = String(name || (await id.new({ prefix: "scratch" })).replace(/^scratch:/, "")).trim();
     const root = path && String(path).trim()
       ? String(path).trim()
-      : joinPath(await defaultScratchRoot(chatId), `.scratch/${n}`);
+      : await defaultNamedScratchRoot(chatId, n);
     await fs.ensureDir({ path: root });
     if (fromCurrent) {
       await proc.run({ cmd: ["sh", "-c", "cp -a \"$1\"/. \"$2\"/", "sh", await defaultScratchRoot(chatId), root], timeoutMs: 30_000 });
@@ -3247,6 +3258,7 @@ const MAX_SUBAGENT_TIMEOUT_MS = 30 * 60_000;
 type NormalizedSubagentSpec = Required<Pick<SubagentSpec, "label" | "task" | "worktree">> & Omit<SubagentSpec, "label" | "task" | "worktree"> & {
   maxSteps: number;
   timeoutMs: number;
+  scratchName?: string;
 };
 
 function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
@@ -3259,6 +3271,9 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
   const maxSteps = Math.max(1, Math.floor(Number(spec.maxSteps ?? DEFAULT_SUBAGENT_STEPS) || DEFAULT_SUBAGENT_STEPS));
   const timeoutMs = Math.max(1_000, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.floor(Number(spec.timeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS) || DEFAULT_SUBAGENT_TIMEOUT_MS)));
   const worktree = spec.worktree === "inherit" ? "inherit" : "isolated";
+  const scratchName = typeof spec.scratchName === "string" && spec.scratchName.trim()
+    ? spec.scratchName.trim()
+    : undefined;
   return {
     ...spec,
     label,
@@ -3333,12 +3348,14 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
 
   const parentChatId = ctx.chatId;
   const parentRoot = await pointers.get({ name: `chat/${parentChatId}/path` });
-  let selectedScratch = await chat.scratch({ chatId: parentChatId });
+  let selectedScratch: string;
   if (typeof spec.scratchName === "string" && spec.scratchName.trim()) {
     const scratchName = spec.scratchName.trim();
     const namedScratch = await scratchNamedPath(parentChatId, scratchName);
     if (!namedScratch) throw new Error(`unknown scratchName "${scratchName}"; create it with moo.scratches.create({ name: "${scratchName}" }) first`);
     selectedScratch = namedScratch;
+  } else {
+    selectedScratch = await chat.scratch({ chatId: parentChatId });
   }
   const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
   await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
