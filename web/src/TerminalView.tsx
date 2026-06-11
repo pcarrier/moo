@@ -580,11 +580,6 @@ export function ChatTerminals(props: {
       open() && selected && session ? [selected] : [],
     );
   });
-
-  createEffect(() => {
-    if (open() && selectedSession()) focusTerminalSoon();
-  });
-
   const cycleSession = (direction: -1 | 1) => {
     const sessions = chatSessions();
     if (sessions.length === 0) return;
