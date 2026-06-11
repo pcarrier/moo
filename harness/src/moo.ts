@@ -3350,12 +3350,15 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
 
   const parentChatId = ctx.chatId;
   const parentRoot = await pointers.get({ name: `chat/${parentChatId}/path` });
-  let selectedScratch = await chat.scratch({ chatId: parentChatId });
+  let selectedScratch: string;
   if (typeof spec.scratchName === "string" && spec.scratchName.trim()) {
     const scratchName = spec.scratchName.trim();
     const namedScratch = await scratchNamedPath(parentChatId, scratchName);
     if (!namedScratch) throw new Error(`unknown scratchName "${scratchName}"; create it with moo.scratches.create({ name: "${scratchName}" }) first`);
     selectedScratch = namedScratch;
+  } else {
+    selectedScratch = await chat.scratch({ chatId: parentChatId });
+  }
   }
   const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
   await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
