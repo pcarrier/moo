@@ -79,11 +79,14 @@ pub struct Subscription {
 pub fn subscribe() -> Subscription {
     let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_QUEUE_CAPACITY);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    SUBSCRIBERS.lock().unwrap().push(Subscriber {
-        id,
-        tx,
-        filter: Filter::default(),
-    });
+    SUBSCRIBERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Subscriber {
+            id,
+            tx,
+            filter: Filter::default(),
+        });
     Subscription { id, rx }
 }
 

@@ -1,4 +1,4 @@
-name: Rust checks
+name: CI
 
 on:
   pull_request:
@@ -28,8 +28,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  clippy:
-    name: cargo clippy
+  check:
+    name: cargo clippy + test
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -43,13 +43,11 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Install web dependencies
+      - name: Install dependencies
         run: |
-          cd web
-          bun install --frozen-lockfile
-
-      - name: Install harness dependencies
-        run: bun install --cwd harness --frozen-lockfile --no-progress
+          bun install --cwd shared --frozen-lockfile --no-progress
+          bun install --cwd web --frozen-lockfile --no-progress
+          bun install --cwd harness --frozen-lockfile --no-progress
 
       - name: Run Clippy
         run: |
@@ -61,3 +59,19 @@ jobs:
             --no-deps \
             -- \
             -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+      - name: TypeScript typecheck
+        run: |
+          bun --cwd shared typecheck --pretty false
+          bun --cwd web typecheck --pretty false
+          bun --cwd web typecheck:test --pretty false
+          bun --cwd harness typecheck --pretty false
+
+      - name: Run web tests
+        run: bun --cwd web test
+
+      - name: Run harness tests
+        run: bun --cwd harness test

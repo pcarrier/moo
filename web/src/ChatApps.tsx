@@ -312,6 +312,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
               class="ui-frame"
               classList={{ loading: !!pendingFrameDoc() }}
               data-ui-frame-key={doc.key}
+              sandbox="allow-scripts"
               srcdoc={doc.doc}
             />
           )}
@@ -322,6 +323,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
               ref={pendingFrame}
               class="ui-frame pending"
               data-ui-frame-key={doc.key}
+              sandbox="allow-scripts"
               srcdoc={doc.doc}
               onLoad={() => {
                 setVisibleFrameDoc(doc);

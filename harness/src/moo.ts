@@ -3273,9 +3273,7 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
   const worktree = spec.worktree === "inherit" ? "inherit" : "isolated";
   const scratchName = typeof spec.scratchName === "string" && spec.scratchName.trim()
     ? spec.scratchName.trim()
-    : typeof spec.scratch === "string" && spec.scratch.trim()
-      ? spec.scratch.trim()
-      : undefined;
+    : undefined;
   return {
     ...spec,
     label,
