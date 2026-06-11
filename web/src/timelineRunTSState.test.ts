@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const state = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
+const timeline = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+const timelineCss = readFileSync(new URL("./styles/timeline.css", import.meta.url), "utf8");
 const timelineRows = readFileSync(new URL("./state/timelineRows.ts", import.meta.url), "utf8");
 
 describe("timeline runTS state merging", () => {
@@ -233,3 +235,10 @@ test("timeline rows do not shrink when the scrollback overflows", () => {
   expect(runtsBlock).not.toContain("overflow: hidden;");
 });
 
+
+  test("backgrounded runTS panel jobs jump to their timeline rows", () => {
+    expect(timeline).toContain('class="background-runts-jump"');
+    expect(timeline).toContain('props.bag.jumpToTimeline({ key: `step:${job.stepId}` })');
+    expect(timelineCss).toContain(".background-runts-jump:hover .background-runts-label");
+    expect(timelineCss).toContain("cursor: pointer;");
+  });

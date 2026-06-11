@@ -1323,11 +1323,19 @@ function BackgroundRunTSPanel(props: { bag: Bag }) {
         <For each={jobs()}>
           {(job) => (
             <div class="background-runts-job">
-              <RunTSMarkdown
-                class="background-runts-label"
-                content={job.label || "runTS"}
-                inline
-              />
+              <button
+                type="button"
+                class="background-runts-jump"
+                title={`jump to ${job.label || "runTS"}`}
+                aria-label={`jump to ${job.label || "runTS"}`}
+                onClick={() => props.bag.jumpToTimeline({ key: `step:${job.stepId}` })}
+              >
+                <RunTSMarkdown
+                  class="background-runts-label"
+                  content={job.label || "runTS"}
+                  inline
+                />
+              </button>
               <button
                 type="button"
                 class="background-runts-cancel"
