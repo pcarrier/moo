@@ -327,7 +327,8 @@ export type SubagentSpec = {
   model?: string;
   effort?: string;
   worktree?: "isolated" | "inherit";
-  scratch?: string;
+  /** Named scratch created with moo.scratches.create/get; paths are not accepted. */
+  scratchName?: string;
 };
 
 export type SubagentResult = {

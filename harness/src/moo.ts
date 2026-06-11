@@ -3271,7 +3271,7 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
     ...(typeof spec.expectedOutput === "string" && spec.expectedOutput.trim() ? { expectedOutput: spec.expectedOutput } : {}),
     ...(typeof spec.model === "string" && spec.model.trim() ? { model: spec.model.trim() } : {}),
     ...(typeof spec.effort === "string" && spec.effort.trim() ? { effort: spec.effort.trim() } : {}),
-    ...(typeof spec.scratch === "string" && spec.scratch.trim() ? { scratch: spec.scratch.trim() } : {}),
+    ...(typeof spec.scratchName === "string" && spec.scratchName.trim() ? { scratchName: spec.scratchName.trim() } : {}),
   };
 }
 
@@ -3333,9 +3333,13 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
 
   const parentChatId = ctx.chatId;
   const parentRoot = await pointers.get({ name: `chat/${parentChatId}/path` });
-  const selectedScratch = typeof spec.scratch === "string" && spec.scratch.trim()
-    ? ((await scratchNamedPath(parentChatId, spec.scratch.trim())) || spec.scratch.trim())
-    : await chat.scratch({ chatId: parentChatId });
+  let selectedScratch = await chat.scratch({ chatId: parentChatId });
+  if (typeof spec.scratchName === "string" && spec.scratchName.trim()) {
+    const scratchName = spec.scratchName.trim();
+    const namedScratch = await scratchNamedPath(parentChatId, scratchName);
+    if (!namedScratch) throw new Error(`unknown scratchName "${scratchName}"; create it with moo.scratches.create({ name: "${scratchName}" }) first`);
+    selectedScratch = namedScratch;
+  }
   const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
   await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
   await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });
@@ -3358,7 +3362,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
     task: spec.task,
     context: spec.context ?? null,
     expectedOutput: spec.expectedOutput ?? null,
-    scratch: spec.scratch ?? null,
+    scratchName: spec.scratchName ?? null,
     childChatId,
     parentRunTsStepId: ctx.runTsStepId,
   } });

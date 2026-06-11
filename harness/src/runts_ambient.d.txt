@@ -579,7 +579,8 @@ type SubagentSpec = {
     model?: string;
     effort?: string;
     worktree?: "isolated" | "inherit";
-  scratch?: string;
+    /** Named scratch created with moo.scratches.create/get; paths are not accepted. */
+    scratchName?: string;
 };
 type SubagentResult = {
     status: "done" | "failed" | "cancelled" | "timeout" | "wait-input";
