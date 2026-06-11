@@ -2681,7 +2681,10 @@ mod serde_json_order_tests {
 
     #[test]
     fn serde_json_round_trip_preserves_object_key_order() {
-        let parsed: Value = serde_json::from_str(r#"{"z":0,"a":1,"runJS":{"label":"x","args":{"beta":2,"alpha":1}}}"#).unwrap();
+        let parsed: Value = serde_json::from_str(
+            r#"{"z":0,"a":1,"runJS":{"label":"x","args":{"beta":2,"alpha":1}}}"#,
+        )
+        .unwrap();
         assert_eq!(
             serde_json::to_string(&parsed).unwrap(),
             r#"{"z":0,"a":1,"runJS":{"label":"x","args":{"beta":2,"alpha":1}}}"#

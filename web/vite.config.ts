@@ -1,7 +1,10 @@
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 
-const BACKEND = process.env.MOO_BACKEND || "http://127.0.0.1:7777";
+const PORT = Number(process.env.MOO_WEB_PORT) || 7777;
+const BACKEND =
+  process.env.MOO_BACKEND ||
+  `http://127.0.0.1:${process.env.MOO_PORT || 7778}`;
 
 export default defineConfig({
   plugins: [solid()],
@@ -23,7 +26,7 @@ export default defineConfig({
   },
   server: {
     allowedHosts: true,
-    port: 5173,
+    port: PORT,
     strictPort: true,
     proxy: {
       "/api": {

@@ -42,7 +42,7 @@ struct Cli {
 enum Cmd {
     /// Start the local web shell.
     Serve {
-        #[arg(long, default_value_t = 7777)]
+        #[arg(long, default_value_t = 7777, env = "MOO_PORT")]
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,

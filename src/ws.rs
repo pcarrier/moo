@@ -843,7 +843,15 @@ fn otel_config_test(_db: &str, payload: &Value) -> Value {
 
 const LLM_AUTH_SETTINGS_REF: &str = "settings";
 const LLM_AUTH_SETTINGS_KIND: &str = "llm:AuthSettings";
-const LLM_PROVIDERS: [&str; 7] = ["openai", "anthropic", "qwen", "glm", "xai", "deepseek", "kimi"];
+const LLM_PROVIDERS: [&str; 7] = [
+    "openai",
+    "anthropic",
+    "qwen",
+    "glm",
+    "xai",
+    "deepseek",
+    "kimi",
+];
 
 fn clamp_i64(value: Option<i64>, fallback: i64, min: i64, max: i64) -> i64 {
     value.unwrap_or(fallback).clamp(min, max)
