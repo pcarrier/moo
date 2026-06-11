@@ -115,6 +115,42 @@ describe("llm retry policy", () => {
     expect(retryAfterDelayMs({ headers: { "retry-after": "120" } }, policy)).toBe(30_000);
   });
 
+  test("honors rate-limit reset windows when no explicit retry-after", () => {
+    const policy = { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100, maxRetryAfterMs: 30 * 60_000, jitterMs: 0 };
+    // OpenAI surfaces Go-style durations on reset headers.
+    expect(retryAfterDelayMs({ headers: { "x-ratelimit-reset-tokens": "6m0s" } }, policy)).toBe(360_000);
+    expect(retryAfterDelayMs({ headers: { "x-ratelimit-reset": "1m30s" } }, policy)).toBe(90_000);
+    // Anthropic surfaces an absolute reset timestamp.
+    const at = new Date(Date.now() + 90_000).toISOString();
+    const delay = retryAfterDelayMs({ headers: { "anthropic-ratelimit-requests-reset": at } }, policy);
+    expect(delay).not.toBeNull();
+    expect(Math.abs((delay as number) - 90_000)).toBeLessThan(2_000);
+    // Unix epoch reset (seconds) is treated as absolute, not a 60M-second delay.
+    const epoch = Math.floor(Date.now() / 1000) + 45;
+    const epochDelay = retryAfterDelayMs({ headers: { "x-ratelimit-reset-requests": String(epoch) } }, policy);
+    expect(epochDelay).not.toBeNull();
+    expect(Math.abs((epochDelay as number) - 45_000)).toBeLessThan(2_000);
+    // Explicit retry-after still wins over reset headers.
+    expect(retryAfterDelayMs({ headers: { "retry-after": "5", "x-ratelimit-reset": "10m0s" } }, policy)).toBe(5_000);
+  });
+
+  test("mid-stream HTTP 200 decode failures retry and wait for the reset window", () => {
+    const policy = { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100, maxRetryAfterMs: 30 * 60_000, jitterMs: 0 };
+    const decision = llmRetryDecision(
+      {
+        ok: false,
+        status: 200,
+        errorBody: "stream: error decoding response body",
+        headers: { "anthropic-ratelimit-requests-reset": new Date(Date.now() + 120_000).toISOString() },
+      },
+      1,
+      policy,
+    );
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("stream");
+    expect(decision.delayMs).toBeGreaterThan(60_000);
+  });
+
   test("retries provider errors surfaced inside streaming responses", () => {
     const policy = { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100, jitterMs: 0 };
     expect(llmRetryDecision({

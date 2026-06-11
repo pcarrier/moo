@@ -121,17 +121,42 @@ function llmRetryDelayMs(result: RetryableLlmResult | null | undefined, attempt:
   return retryAfter == null ? backoff : Math.max(backoff, retryAfter);
 }
 
+// Providers signal backoff windows through several headers. `retry-after` is the
+// canonical, authoritative one, but rate-limit resets (OpenAI `x-ratelimit-reset*`,
+// Anthropic `anthropic-ratelimit-*-reset`) carry the real window and are surfaced
+// in the error display. Honor them here too: otherwise a mid-stream HTTP 200
+// failure that carried only a rate-limit reset retries on plain exponential
+// backoff, hammers the still-closed window, burns its attempts, and fails
+// permanently — even though we printed exactly when to retry.
+const RATELIMIT_RESET_HEADER_NAMES = [
+  "x-ratelimit-reset",
+  "x-ratelimit-reset-requests",
+  "x-ratelimit-reset-tokens",
+  "anthropic-ratelimit-requests-reset",
+  "anthropic-ratelimit-tokens-reset",
+];
+
 export function retryAfterDelayMs(
   result: RetryableLlmResult | null | undefined,
   policy: RetryPolicy = DEFAULT_LLM_RETRY_POLICY,
 ): number | null {
-  const values = [headerValue(result?.headers, "retry-after"), retryAfterFromBody(result?.errorBody)].filter((v): v is string => !!v);
-  for (const value of values) {
+  const max = Math.max(0, policy.maxRetryAfterMs ?? policy.maxDelayMs);
+  const clamp = (ms: number): number => (max > 0 ? Math.min(ms, max) : ms);
+
+  // Explicit Retry-After (header or error body) is the provider's instruction; honor it first.
+  for (const value of [headerValue(result?.headers, "retry-after"), retryAfterFromBody(result?.errorBody)]) {
+    if (!value) continue;
     const parsed = parseRetryAfterMs(value);
-    if (parsed == null) continue;
-    const max = Math.max(0, policy.maxRetryAfterMs ?? policy.maxDelayMs);
-    return max > 0 ? Math.min(parsed, max) : parsed;
+    if (parsed != null) return clamp(parsed);
   }
+
+  // Otherwise wait for the longest rate-limit reset window so the binding limit
+  // has actually cleared before we retry.
+  const resets = RATELIMIT_RESET_HEADER_NAMES
+    .map((name) => parseRetryAfterMs(headerValue(result?.headers, name) ?? ""))
+    .filter((v): v is number => v != null);
+  if (resets.length) return clamp(Math.max(...resets));
+
   return null;
 }
 
@@ -150,10 +175,40 @@ function parseRetryAfterMs(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const seconds = Number(trimmed);
-  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  if (Number.isFinite(seconds)) {
+    // Large bare numbers are Unix epoch reset timestamps (seconds), not relative
+    // delays. Anything beyond ~116 days as a "delay" is really an absolute time.
+    if (seconds > 1e7) return Math.max(0, Math.round(seconds * 1000) - Date.now());
+    return Math.max(0, Math.round(seconds * 1000));
+  }
+  const duration = parseDurationMs(trimmed);
+  if (duration != null) return duration;
   const at = Date.parse(trimmed);
   if (Number.isFinite(at)) return Math.max(0, at - Date.now());
   return null;
+}
+
+// Go-style duration strings used by OpenAI rate-limit reset headers, e.g.
+// "1s", "6m0s", "1m30s", "13ms", "1h2m3s". Longer unit tokens are matched before
+// their single-letter prefixes so "ms" is not mistaken for "m".
+function parseDurationMs(raw: string): number | null {
+  const text = raw.trim().toLowerCase();
+  if (!/^(?:\d+(?:\.\d+)?(?:h|ms|ns|us|µs|m|s))+$/.test(text)) return null;
+  let total = 0;
+  const re = /(\d+(?:\.\d+)?)(h|ms|ns|us|µs|m|s)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const n = Number(m[1]);
+    switch (m[2]) {
+      case "h": total += n * 3_600_000; break;
+      case "m": total += n * 60_000; break;
+      case "s": total += n * 1_000; break;
+      case "ms": total += n; break;
+      case "us": case "µs": total += n / 1_000; break;
+      case "ns": total += n / 1_000_000; break;
+    }
+  }
+  return Math.max(0, Math.round(total));
 }
 
 function retryAfterFromBody(body: unknown): string | null {
