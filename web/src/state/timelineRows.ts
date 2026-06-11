@@ -13,7 +13,7 @@ export type TimelineRowCompactionOptions = {
 
 export function shouldShowTimelineItem(item: TimelineItem): boolean {
   return (
-    item.type !== "todo-diff" ||
+    item.type !== "task-diff" ||
     (Array.isArray(item.changes) && item.changes.length > 0)
   );
 }
@@ -45,7 +45,7 @@ export function timelineItemKey(item: TimelineItem): string {
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
   if (item.type === "memory-diff") return `memory-diff:${item.id}`;
-  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
+  if (item.type === "task-diff") return `task-diff:${item.id}`;
   if (item.type === "blob-add") return `blob-add:${item.id}`;
   return `file-diff:${item.id}`;
 }

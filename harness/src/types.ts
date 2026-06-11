@@ -292,7 +292,7 @@ export type StepKind =
   | "agent:ToolCall"
   | "agent:FileDiff"
   | "agent:MemoryDiff"
-  | "agent:TodoDiff"
+  | "agent:TaskDiff"
   | "agent:BlobAdd"
   | "agent:Tick"
   | "agent:Final"
@@ -319,6 +319,7 @@ export type AppendStepArgs = {
 export type SubagentSpec = {
   label: string;
   task: string;
+  tasks?: TaskAddInput[];
   context?: string;
   expectedOutput?: string;
   maxSteps?: number;
@@ -326,6 +327,7 @@ export type SubagentSpec = {
   model?: string;
   effort?: string;
   worktree?: "isolated" | "inherit";
+  scratch?: string;
 };
 
 export type SubagentResult = {
@@ -459,14 +461,16 @@ export type TraceDiagnosisGroup = { category: TraceErrorCategory | string; count
 export type TraceDiagnosis = { total?: number; groups?: TraceDiagnosisGroup[]; recentFailures?: TraceSummary[]; slowRecent?: TraceSummary[]; slowestSpans?: Array<Record<string, unknown>>; sideEffects?: Array<Record<string, unknown>>; failureGroups?: TraceDiagnosisGroup[] };
 export type TraceDiagnostic = TraceDiagnosis;
 export type TraceSpanOptions = { input?: unknown; data?: Record<string, unknown> } | Record<string, unknown>;
-export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export type TodoIdInput = string | number;
-export type AgentTodo = { id: string; text: string; status: TodoStatus; note?: string; createdAt: string; updatedAt: string };
-export type AgentTodoState = { version: 1; updatedAt: string; nextId: number; items: AgentTodo[] };
-export type TodoAddInput = { text: string; status?: TodoStatus; note?: string };
-export type TodoUpdateInput = { id: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null };
-export type AgentTodoPatch = { id?: TodoIdInput; text?: string; status?: TodoStatus; note?: string | null };
-export type TodoPatch = { items?: AgentTodoPatch[]; add?: TodoAddInput[]; update?: TodoUpdateInput[]; clearDone?: boolean; clearStatuses?: TodoStatus[] };
+export type TaskStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+export type TaskIdInput = string | number;
+export type TaskValidationInput = string | (() => unknown);
+export type TaskValidationResult = { ok: boolean; error?: string | null };
+export type AgentTask = { id: string; text: string; status: TaskStatus; note?: string; validation?: string; createdAt: string; updatedAt: string };
+export type AgentTaskState = { version: 1; updatedAt: string; nextId: number; items: AgentTask[] };
+export type TaskAddInput = { text: string; status?: TaskStatus; note?: string; validation?: TaskValidationInput | null };
+export type TaskUpdateInput = { id: TaskIdInput; text?: string; status?: TaskStatus; note?: string | null; validation?: TaskValidationInput | null };
+export type AgentTaskPatch = { id?: TaskIdInput; text?: string; status?: TaskStatus; note?: string | null; validation?: TaskValidationInput | null };
+export type TaskPatch = { items?: AgentTaskPatch[]; add?: TaskAddInput[]; update?: TaskUpdateInput[]; clearDone?: boolean; clearStatuses?: TaskStatus[] };
 
 export type MooTracesApi = {
   current(args?: {}): Promise<TraceCurrent | null>;
@@ -598,14 +602,16 @@ export type Moo = {
     getText(args: { hash: string }): Promise<{ kind: string; text: string } | null>;
     getJSON<V = unknown>(args: { hash: string }): Promise<{ kind: string; value: V } | null>;
   };
-  todos: {
-    list(): Promise<AgentTodoState>;
-    add(args: TodoAddInput): Promise<AgentTodo>;
-    update(args: TodoUpdateInput): Promise<AgentTodo>;
-    done(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
-    drop(args: { id: TodoIdInput; note?: string }): Promise<AgentTodo>;
-    patch(args: TodoPatch): Promise<AgentTodoState>;
-    clear(args?: { statuses?: TodoStatus[] }): Promise<AgentTodoState>;
+  tasks: {
+    list(): Promise<AgentTaskState>;
+    add(args: TaskAddInput): Promise<AgentTask>;
+    update(args: TaskUpdateInput): Promise<AgentTask>;
+    done(args: { id: TaskIdInput; note?: string }): Promise<AgentTask>;
+    drop(args: { id: TaskIdInput; note?: string }): Promise<AgentTask>;
+    setValidation(args: { id: TaskIdInput; validation?: TaskValidationInput | null }): Promise<AgentTask>;
+    validate(args: { id: TaskIdInput }): Promise<TaskValidationResult>;
+    patch(args: TaskPatch): Promise<AgentTaskState>;
+    clear(args?: { statuses?: TaskStatus[] }): Promise<AgentTaskState>;
   };
   skills: MooSkillsApi;
   pointers: {
@@ -657,6 +663,14 @@ export type Moo = {
   };
   workspace: {
     current(args?: { chatId?: string | null; root?: string | null }): Promise<WorkspaceScope>;
+  };
+  scratch: Moo["scratches"];
+  scratches: {
+    current(args?: {}): Promise<string>;
+    list(args?: {}): Promise<Array<{ name: string; path: string; exists: boolean }>>;
+    create(args?: { name?: string; path?: string; fromCurrent?: boolean }): Promise<{ name: string; path: string }>;
+    get(args: { name: string }): Promise<string | null>;
+    delete(args: { name: string; recursive?: boolean }): Promise<{ name: string; path: string | null; deletedRef: boolean; deletedPath: boolean }>;
   };
   http: {
     fetch(opts: {
@@ -752,6 +766,10 @@ export type Moo = {
       status: "cancelled" | "not-found";
       message: string;
     }>;
+  };
+  judge: {
+    check(args: { claim: string; evidence?: string; criteria?: string }): Promise<{ ok: boolean; score: number; reason: string }>;
+    assert(args: { claim: string; evidence?: string; criteria?: string }): Promise<{ ok: boolean; score: number; reason: string }>;
   };
   agent: {
     claim(args: { store: string; graph: string; runId: string | null; leaseMs?: number }): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;

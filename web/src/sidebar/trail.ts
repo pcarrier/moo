@@ -1,8 +1,8 @@
 import type {
   StepItem,
   TimelineItem,
-  TodoDiffChange,
-  TodoDiffItem,
+  TaskDiffChange,
+  TaskDiffItem,
   TrailItem,
 } from "../api";
 
@@ -13,8 +13,8 @@ export type AgentTrailItem = {
   timelineKey?: string;
   detail?: string;
   kind: string;
-  tone?: "title" | "summary" | "todo" | "subagent";
-  todoStatus?: "todo" | "doing" | "done" | "blocked" | "dropped";
+  tone?: "title" | "summary" | "task" | "subagent";
+  taskStatus?: "todo" | "doing" | "done" | "blocked" | "dropped";
   path?: string;
   targetChatId?: string;
   stats?: { added: number; removed: number };
@@ -31,7 +31,7 @@ export type AgentTrailSource = {
 export function trailSourceItems(source: AgentTrailSource): TimelineItem[] {
   const byKey = new Map<string, TimelineItem>();
   // `trail` can lag behind websocket-pushed timeline updates. Seed it first,
-  // then let live timeline rows replace stale rows with the same key so TODO
+  // then let live timeline rows replace stale rows with the same key so TASK
   // trail entries refresh immediately.
   for (const item of source.trail) byKey.set(trailSourceKey(item), item);
   for (const item of source.timeline) byKey.set(trailSourceKey(item), item);
@@ -42,7 +42,7 @@ export function buildTrailItems(source: AgentTrailSource): AgentTrailItem[] {
   return trailSourceItems(source)
     .flatMap((item) => {
       if (item.type === "trail") return trailTimelineItem(item);
-      if (item.type === "todo-diff") return todoTrailItems(item);
+      if (item.type === "task-diff") return taskTrailItems(item);
       if (item.type === "step" && item.kind === "agent:Subagent")
         return subagentTimelineItem(item);
       return null;
@@ -58,7 +58,7 @@ export function trailSourceKey(item: TimelineItem): string {
     return `input-response:${item.responseId}`;
   if (item.type === "log") return `log:${item.id}`;
   if (item.type === "trail") return `trail:${item.id}`;
-  if (item.type === "todo-diff") return `todo-diff:${item.id}`;
+  if (item.type === "task-diff") return `task-diff:${item.id}`;
   return `file-diff:${item.id}`;
 }
 
@@ -152,8 +152,8 @@ export function formatTrailDuration(ms: number): string {
   return `${minutes}m ${remaining}s`;
 }
 
-export function todoChangeTextForTrail(change: TodoDiffChange): string {
-  const item = todoFromChange(change);
+export function taskChangeTextForTrail(change: TaskDiffChange): string {
+  const item = taskFromChange(change);
   if (item.status === "dropped") return "X";
   if (item.status === "blocked") return "!";
   if (item.status === "done") return "-";
@@ -161,38 +161,38 @@ export function todoChangeTextForTrail(change: TodoDiffChange): string {
   return "~";
 }
 
-export function todoFromChange(change: TodoDiffChange) {
+export function taskFromChange(change: TaskDiffChange) {
   return change.kind === "removed" ? change.before : change.after;
 }
 
-export function previousTodoFromChange(change: TodoDiffChange) {
+export function previousTaskFromChange(change: TaskDiffChange) {
   return change.kind === "updated" ? change.before : undefined;
 }
 
-export function todoTrailItems(item: TodoDiffItem): AgentTrailItem[] {
+export function taskTrailItems(item: TaskDiffItem): AgentTrailItem[] {
   const changes = Array.isArray(item.changes) ? item.changes : [];
   return changes.map((change, index) => {
-    const todo = todoFromChange(change);
-    const previous = previousTodoFromChange(change);
-    const action = todoChangeTextForTrail(change);
-    const todoText = `${todo.id}. ${todo.text}`;
-    const note = todo.note ? String(todo.note).trim() : "";
+    const task = taskFromChange(change);
+    const previous = previousTaskFromChange(change);
+    const action = taskChangeTextForTrail(change);
+    const taskText = `${task.id}. ${task.text}`;
+    const note = task.note ? String(task.note).trim() : "";
     const previousText =
-      previous && previous.text !== todo.text
+      previous && previous.text !== task.text
         ? `was: ${previous.id}. ${previous.text}`
         : "";
     const detail = [note, previousText].filter(Boolean).join("\n");
     return {
       id: changes.length === 1 ? item.id : `${item.id}:${index}`,
       at: item.at,
-      title: `${action} ${todoText}`,
-      timelineKey: `todo-diff:${item.id}`,
-      kind: "todo-diff",
-      tone: "todo",
+      title: `${action} ${taskText}`,
+      timelineKey: `task-diff:${item.id}`,
+      kind: "task-diff",
+      tone: "task",
       detail,
       titleMarkdown: true,
       detailMarkdown: true,
-      todoStatus: todo.status,
+      taskStatus: task.status,
     };
   });
 }

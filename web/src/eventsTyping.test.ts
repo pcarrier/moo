@@ -90,35 +90,35 @@ describe("typed WS events", () => {
     expect(tokens.compactionsInARow).toBe(2);
   });
 
-  test("guards structured TODO and memory diff arrays", () => {
-    const todo = {
+  test("guards structured task and memory diff arrays", () => {
+    const task = {
       id: "1",
       text: "Fix events",
       status: "done",
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:01Z",
     };
-    const todoDiff = parseWsFrame({
-      kind: "todo-diff",
+    const taskDiff = parseWsFrame({
+      kind: "task-diff",
       chatId: "chat1",
-      changes: [{ kind: "added", after: todo }],
-      todos: [todo],
+      changes: [{ kind: "added", after: task }],
+      tasks: [task],
       at: 10,
     });
-    expect(todoDiff?.kind).toBe("todo-diff");
-    if (todoDiff?.kind !== "todo-diff") throw new Error("TODO diff did not parse");
-    expect(todoDiff.changes?.[0]?.kind).toBe("added");
-    expect(todoDiff.todos?.[0]?.text).toBe("Fix events");
+    expect(taskDiff?.kind).toBe("task-diff");
+    if (taskDiff?.kind !== "task-diff") throw new Error("task diff did not parse");
+    expect(taskDiff.changes?.[0]?.kind).toBe("added");
+    expect(taskDiff.tasks?.[0]?.text).toBe("Fix events");
 
-    const rejectedTodo = parseWsFrame({
-      kind: "todo-diff",
+    const rejectedTask = parseWsFrame({
+      kind: "task-diff",
       chatId: "chat1",
-      changes: [{ kind: "updated", before: todo, after: todo, fields: ["text", 1] }],
+      changes: [{ kind: "updated", before: task, after: task, fields: ["text", 1] }],
       at: 11,
     });
-    expect(rejectedTodo?.kind).toBe("todo-diff");
-    if (rejectedTodo?.kind !== "todo-diff") throw new Error("TODO diff with bad changes still returns an event");
-    expect(rejectedTodo.changes).toBeUndefined();
+    expect(rejectedTask?.kind).toBe("task-diff");
+    if (rejectedTask?.kind !== "task-diff") throw new Error("task diff with bad changes still returns an event");
+    expect(rejectedTask.changes).toBeUndefined();
 
     const memoryDiff = parseWsFrame({
       kind: "memory-diff",

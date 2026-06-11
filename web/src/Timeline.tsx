@@ -116,9 +116,9 @@ import type {
   ImageAttachment,
   FileDiffItem,
   MemoryDiffItem,
-  TodoDiffItem,
-  AgentTodo,
-  TodoDiffChange,
+  TaskDiffItem,
+  AgentTask,
+  TaskDiffChange,
   InputItem,
   InputResponseItem,
   LogItem,
@@ -1016,7 +1016,7 @@ export function Timeline(props: {
             </Show>
           </Show>
         </main>
-        <OngoingTodos todos={bag.todos()} />
+        <OngoingTasks tasks={bag.tasks()} />
         <Portal mount={document.body}>
           <Show when={lightboxImage()}>
             {(att) => (
@@ -1220,85 +1220,85 @@ const imageAttachmentsFromFiles = async (files: File[], bag: Bag) => {
   );
 };
 
-function TodoMetaBubbles(props: { item: AgentTodo }) {
+function TaskMetaBubbles(props: { item: AgentTask }) {
   return (
-    <span class="todo-bubbles" aria-label="TODO metadata">
-      <span class="todo-bubble todo-status-bubble">{props.item.status}</span>
+    <span class="task-bubbles" aria-label="task metadata">
+      <span class="task-bubble task-status-bubble">{props.item.status}</span>
     </span>
   );
 }
 
-function TodoMarkdownInline(props: { content: string; className?: string }) {
+function TaskMarkdownInline(props: { content: string; className?: string }) {
   const className = () =>
     (props.className ? props.className + " " : "") +
-    "markdown todo-markdown-inline";
+    "markdown task-markdown-inline";
   const html = () => renderMarkdownInline(props.content.replace(/\n+/g, " "));
   return <span class={className()} innerHTML={html()} />;
 }
 
-function TodoMarkdownBlock(props: { content: string; className?: string }) {
+function TaskMarkdownBlock(props: { content: string; className?: string }) {
   const className = () =>
     (props.className ? props.className + " " : "") +
-    "markdown todo-markdown-block";
+    "markdown task-markdown-block";
   return <div class={className()} innerHTML={renderMarkdown(props.content)} />;
 }
 
-function TodoNote(props: { item: AgentTodo; className: string }) {
+function TaskNote(props: { item: AgentTask; className: string }) {
   const note = () => props.item.note || "";
   return (
     <Show when={note()}>
-      <TodoMarkdownBlock
-        className={`${props.className} todo-note`}
+      <TaskMarkdownBlock
+        className={`${props.className} task-note`}
         content={note()}
       />
     </Show>
   );
 }
 
-function OngoingTodos(props: { todos: AgentTodo[] }) {
+function OngoingTasks(props: { tasks: AgentTask[] }) {
   const [showDone, setShowDone] = createSignal(false);
-  const items = () => props.todos.filter((item) => item.status !== "dropped");
+  const items = () => props.tasks.filter((item) => item.status !== "dropped");
   const doneItems = () => items().filter((item) => item.status === "done");
   const visibleItems = () =>
     showDone() ? items() : items().filter((item) => item.status !== "done");
-  const label = (item: AgentTodo) => `${item.id}. ${item.text}`;
+  const label = (item: AgentTask) => `${item.id}. ${item.text}`;
   return (
     <Show when={items().length > 0}>
       <section
-        class="ongoing-todos"
+        class="ongoing-tasks"
         classList={{
           "only-done":
             !showDone() &&
             visibleItems().length === 0 &&
             doneItems().length > 0,
         }}
-        aria-label="ongoing TODOs"
+        aria-label="ongoing tasks"
       >
         <Show when={doneItems().length > 0}>
           <button
             type="button"
-            class="ongoing-todos-toggle"
+            class="ongoing-tasks-toggle"
             aria-expanded={showDone()}
             onClick={() => setShowDone((value) => !value)}
           >
             {showDone() ? "Hide" : "Show"} {doneItems().length} done
           </button>
         </Show>
-        <ul class="ongoing-todos-list">
+        <ul class="ongoing-tasks-list">
           <For each={visibleItems()}>
             {(item) => (
               <li
-                class="ongoing-todo"
-                classList={{ [`todo-${item.status}`]: true }}
+                class="ongoing-task"
+                classList={{ [`task-${item.status}`]: true }}
               >
-                <div class="ongoing-todo-line">
-                  <TodoMarkdownInline
-                    className="ongoing-todo-text"
+                <div class="ongoing-task-line">
+                  <TaskMarkdownInline
+                    className="ongoing-task-text"
                     content={label(item)}
                   />
-                  <TodoMetaBubbles item={item} />
+                  <TaskMetaBubbles item={item} />
                 </div>
-                <TodoNote item={item} className="ongoing-todo-details" />
+                <TaskNote item={item} className="ongoing-task-details" />
               </li>
             )}
           </For>
@@ -2415,7 +2415,7 @@ function Item(props: {
             <Show
               when={
                 props.item.type === "file-diff" ||
-                props.item.type === "todo-diff" ||
+                props.item.type === "task-diff" ||
                 props.item.type === "memory-diff"
               }
               fallback={
@@ -2454,7 +2454,7 @@ function Item(props: {
             >
               <DiffItem
                 item={
-                  props.item as FileDiffItem | MemoryDiffItem | TodoDiffItem
+                  props.item as FileDiffItem | MemoryDiffItem | TaskDiffItem
                 }
                 bag={props.bag}
                 expansion={expansion()}
@@ -2522,19 +2522,19 @@ function BlobAdd(props: { item: BlobAddItem; bag: Bag; timelineKey: string }) {
 }
 
 function DiffItem(props: {
-  item: FileDiffItem | MemoryDiffItem | TodoDiffItem;
+  item: FileDiffItem | MemoryDiffItem | TaskDiffItem;
   bag: Bag;
   expansion: TimelineExpansionStore;
   timelineKey: string;
 }) {
-  if (props.item.type === "todo-diff") {
+  if (props.item.type === "task-diff") {
     if (!Array.isArray(props.item.changes) || props.item.changes.length === 0) {
       return null;
     }
     return (
-      <div class="step todo-diff" data-timeline-key={props.timelineKey}>
-        <div class="todo-diff-body" role="log" aria-label="TODO changes">
-          <TodoDiffBody item={props.item} />
+      <div class="step task-diff" data-timeline-key={props.timelineKey}>
+        <div class="task-diff-body" role="log" aria-label="task changes">
+          <TaskDiffBody item={props.item} />
         </div>
       </div>
     );
@@ -2607,11 +2607,11 @@ function DiffItem(props: {
   );
 }
 
-function todoLabel(item: AgentTodo) {
+function taskLabel(item: AgentTask) {
   return `${item.id}. ${item.text}`;
 }
 
-function todoChangeText(change: TodoDiffChange) {
+function taskChangeText(change: TaskDiffChange) {
   const item = change.kind === "removed" ? change.before : change.after;
   if (item.status === "dropped") return "X";
   if (item.status === "blocked") return "!";
@@ -2620,10 +2620,10 @@ function todoChangeText(change: TodoDiffChange) {
   return "~";
 }
 
-function TodoDiffBody(props: { item: TodoDiffItem }) {
+function TaskDiffBody(props: { item: TaskDiffItem }) {
   const changes = () => props.item.changes || [];
   return (
-    <ul class="todo-diff-list" aria-label="TODO changes">
+    <ul class="task-diff-list" aria-label="task changes">
       <For each={changes()}>
         {(change) => {
           const item = () =>
@@ -2636,28 +2636,28 @@ function TodoDiffBody(props: { item: TodoDiffItem }) {
             change.kind === "updated" ? change.before : undefined;
           return (
             <li
-              class="todo-diff-change"
+              class="task-diff-change"
               classList={{
-                [`todo-change-${change.kind}`]: true,
-                [`todo-status-${item().status}`]: true,
+                [`task-change-${change.kind}`]: true,
+                [`task-status-${item().status}`]: true,
               }}
             >
-              <span class="todo-diff-main">
-                <span class="todo-diff-action">{todoChangeText(change)}</span>
-                <TodoMarkdownInline
-                  className="todo-diff-text"
-                  content={todoLabel(item())}
+              <span class="task-diff-main">
+                <span class="task-diff-action">{taskChangeText(change)}</span>
+                <TaskMarkdownInline
+                  className="task-diff-text"
+                  content={taskLabel(item())}
                 />
                 <Show when={change.kind !== "removed"}>
-                  <TodoMetaBubbles item={item()} />
+                  <TaskMetaBubbles item={item()} />
                 </Show>
               </span>
-              <TodoNote item={item()} className="todo-diff-details" />
+              <TaskNote item={item()} className="task-diff-details" />
               <Show when={previous() && previous()!.text !== item().text}>
-                <div class="todo-diff-previous">
-                  <TodoMarkdownInline
-                    className="todo-diff-previous-text"
-                    content={`was: ${todoLabel(previous()!)}`}
+                <div class="task-diff-previous">
+                  <TaskMarkdownInline
+                    className="task-diff-previous-text"
+                    content={`was: ${taskLabel(previous()!)}`}
                   />
                 </div>
               </Show>
@@ -3125,7 +3125,7 @@ function CompactionBody(props: { item: StepItem }) {
 type StepFooterItem =
   | StepItem
   | FileDiffItem
-  | TodoDiffItem
+  | TaskDiffItem
   | MemoryDiffItem
   | BlobAddItem
   | LogItem;

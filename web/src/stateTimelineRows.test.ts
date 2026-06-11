@@ -12,7 +12,7 @@ import {
 
 type StepItem = Extract<TimelineItem, { type: "step" }>;
 type FileDiff = Extract<TimelineItem, { type: "file-diff" }>;
-type TodoDiff = Extract<TimelineItem, { type: "todo-diff" }>;
+type TaskDiff = Extract<TimelineItem, { type: "task-diff" }>;
 
 function step(partial: Partial<StepItem> & Pick<StepItem, "step" | "kind" | "text">): StepItem {
   return {
@@ -34,9 +34,9 @@ function fileDiff(id: string, at: number): FileDiff {
   };
 }
 
-function todoDiff(id: string, changes: TodoDiff["changes"]): TodoDiff {
+function taskDiff(id: string, changes: TaskDiff["changes"]): TaskDiff {
   return {
-    type: "todo-diff",
+    type: "task-diff",
     id,
     chatId: "chat1",
     changes,
@@ -86,11 +86,11 @@ describe("timeline row helpers", () => {
     ])).toBe(25);
   });
 
-  test("compacts hidden TODO diffs and remembers visible row keys", () => {
+  test("compacts hidden task diffs and remembers visible row keys", () => {
     const remembered = new Map<string, number>();
     const rows = compactTimelineRows([
       fileDiff("old", 1),
-      todoDiff("empty", []),
+      taskDiff("empty", []),
       fileDiff("new", 3),
     ], {
       limit: 1,
@@ -101,7 +101,7 @@ describe("timeline row helpers", () => {
     });
     expect(rows.map((item) => item.type === "file-diff" ? item.id : item.type)).toEqual(["new"]);
     expect(remembered.has("file-diff:new")).toBe(true);
-    expect(remembered.has("todo-diff:empty")).toBe(false);
+    expect(remembered.has("task-diff:empty")).toBe(false);
   });
 
   test("merges full pages while preserving unconfirmed optimistic user input", () => {

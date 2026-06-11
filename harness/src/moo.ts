@@ -7,8 +7,9 @@ import { encodeObject, stringBytes, term, validate } from "./core/terms";
 import { Term, MooApiError } from "./types";
 import { assertFactObject, assertFactObjects, chatRefs, decodeJsonPointer, encodeJsonPointer, unpackQuad, stringifyForLog } from "./lib";
 import { appendStep } from "./steps";
-import { addTodo, clearTodos, getTodos, patchTodos, updateTodo, withTodoDiffBatch } from "./todos";
+import { addTask, clearTasks, getTasks, patchTasks, setTaskValidation, updateTask, validateTask, withTaskDiffBatch, setTaskValidationRunner } from "./tasks";
 import { setSkillRootProvider, skills } from "./skills";
+import { compileRunTS } from "./runts";
 import { applyDefaultChatSettings } from "./commands/models";
 
 const time: Moo["time"] = {
@@ -96,7 +97,7 @@ export async function withMooRunTSContext<T>(
   activeChatId = chatId;
   activeRunTSContext = { chatId, runTsStepId, depth, outstanding: new Set(), traceId: null };
   try {
-    return await withTodoDiffBatch(chatId, fn);
+    return await withTaskDiffBatch(chatId, fn);
   } finally {
     const ctx = activeRunTSContext;
     activeRunTSContext = previousRunTS;
@@ -860,33 +861,150 @@ const objects: Moo["objects"] = {
   },
 };
 
-function requireActiveTodoChat(): string {
+function requireActiveTaskChat(): string {
   const chatId = activeChatId;
-  if (!chatId) throw new Error("moo.todos requires an active chat context");
+  if (!chatId) throw new Error("moo.tasks requires an active chat context");
   return chatId;
 }
 
-const todos: Moo["todos"] = {
+const tasks: Moo["tasks"] = {
   async list() {
-    return await getTodos(requireActiveTodoChat());
+    return await getTasks(requireActiveTaskChat());
   },
   async add(args) {
-    return await addTodo(requireActiveTodoChat(), args);
+    return await addTask(requireActiveTaskChat(), args);
   },
   async update(args) {
-    return await updateTodo(requireActiveTodoChat(), args);
+    return await updateTask(requireActiveTaskChat(), args);
   },
   async done(args) {
-    return await updateTodo(requireActiveTodoChat(), { id: args.id, status: "done", note: args.note });
+    return await updateTask(requireActiveTaskChat(), { id: args.id, status: "done", note: args.note });
   },
   async drop(args) {
-    return await updateTodo(requireActiveTodoChat(), { id: args.id, status: "dropped", note: args.note });
+    return await updateTask(requireActiveTaskChat(), { id: args.id, status: "dropped", note: args.note });
+  },
+  async setValidation(args) {
+    return await setTaskValidation(requireActiveTaskChat(), args);
+  },
+  async validate(args) {
+    return await validateTask(requireActiveTaskChat(), args);
   },
   async patch(args) {
-    return await patchTodos(requireActiveTodoChat(), args);
+    return await patchTasks(requireActiveTaskChat(), args);
   },
   async clear(args) {
-    return await clearTodos(requireActiveTodoChat(), args);
+    return await clearTasks(requireActiveTaskChat(), args);
+  },
+};
+
+function requireActiveScratchChat(): string {
+  const chatId = activeChatId;
+  if (!chatId) throw new Error("moo.scratches requires an active chat context");
+  return chatId;
+}
+
+function scratchPointerName(chatId: string, name: string): string {
+  const n = String(name || "").trim();
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(n)) throw new Error("scratch name must be 1-80 chars of letters, digits, dot, underscore, or dash");
+  return `chat/${chatId}/scratch/${n}`;
+}
+
+async function defaultScratchRoot(chatId: string): Promise<string> {
+  return await chat.scratch({ chatId });
+}
+
+async function scratchNamedPath(chatId: string, name: string): Promise<string | null> {
+  const ref = await pointers.get({ name: scratchPointerName(chatId, name) });
+  return ref && ref.trim() ? ref.trim() : null;
+}
+
+const scratches: Moo["scratches"] = {
+  async current(_args = {}) {
+    return await defaultScratchRoot(requireActiveScratchChat());
+  },
+  async list(_args = {}) {
+    const chatId = requireActiveScratchChat();
+    const entries = await pointers.entries({ prefix: `chat/${chatId}/scratch/` });
+    const out: Array<{ name: string; path: string; exists: boolean }> = [];
+    for (const [ref, target] of entries) {
+      const name = ref.slice(`chat/${chatId}/scratch/`.length);
+      out.push({ name, path: target, exists: await fs.exists({ path: target }) });
+    }
+    return out;
+  },
+  async create(args = {}) {
+    const { name, path, fromCurrent = false } = args ?? {};
+    const chatId = requireActiveScratchChat();
+    const n = String(name || (await id.new({ prefix: "scratch" })).replace(/^scratch:/, "")).trim();
+    const root = path && String(path).trim()
+      ? String(path).trim()
+      : joinPath(await defaultScratchRoot(chatId), `.scratch/${n}`);
+    await fs.ensureDir({ path: root });
+    if (fromCurrent) {
+      await proc.run({ cmd: ["sh", "-c", "cp -a \"$1\"/. \"$2\"/", "sh", await defaultScratchRoot(chatId), root], timeoutMs: 30_000 });
+    }
+    const canonical = await canonicalDir(root);
+    await pointers.set({ name: scratchPointerName(chatId, n), target: canonical });
+    return { name: n, path: canonical };
+  },
+  async get({ name }) {
+    return await scratchNamedPath(requireActiveScratchChat(), name);
+  },
+  async delete({ name, recursive = false } = {} as any) {
+    const chatId = requireActiveScratchChat();
+    const ref = scratchPointerName(chatId, name);
+    const path = await pointers.get({ name: ref });
+    const deletedRef = await pointers.delete({ name: ref });
+    let deletedPath = false;
+    if (recursive && path && await fs.exists({ path })) {
+      await proc.run({ cmd: ["rm", "-rf", path], timeoutMs: 10_000 });
+      forgetCanonicalDir(path);
+      deletedPath = true;
+    }
+    return { name: String(name), path: path || null, deletedRef, deletedPath };
+  },
+};
+
+const judge: Moo["judge"] = {
+  async check({ claim, evidence, criteria }) {
+    const c = String(claim ?? "").trim();
+    const ev = String(evidence ?? "").trim();
+    const cr = String(criteria ?? "").trim();
+    if (!c) return { ok: false, score: 0, reason: "missing claim" };
+    const result = await runSubagent({
+      label: "Judge claim",
+      task: [
+        "You are a strict review judge. Decide whether the claim is supported.",
+        "Return only JSON with this exact shape: {\"ok\":boolean,\"score\":number,\"reason\":string}.",
+        "Use score 1 for clearly supported, 0 for clearly unsupported or contradicted, and intermediate values for partial support.",
+        "Pass only when score >= 0.5 and the claim is materially supported by the evidence and criteria.",
+        "If evidence is absent, judge against criteria only; if neither evidence nor criteria are supplied, fail unless the claim is tautological.",
+      ].join("\n"),
+      context: JSON.stringify({ claim: c, evidence: ev || undefined, criteria: cr || undefined }, null, 2),
+      expectedOutput: "A single JSON object: {ok:boolean, score:number in [0,1], reason:string}.",
+      maxSteps: 1,
+      timeoutMs: 120_000,
+      worktree: "inherit",
+    }, { allowNested: true });
+    if (result.status !== "done") {
+      return { ok: false, score: 0, reason: result.error || result.output || `judge subagent ${result.status}` };
+    }
+    const text = String(result.output || "").trim();
+    const match = /\{[\s\S]*\}/.exec(text);
+    if (!match) return { ok: false, score: 0, reason: text || "judge subagent returned no JSON" };
+    try {
+      const parsed = JSON.parse(match[0]);
+      const score = Math.max(0, Math.min(1, Number(parsed?.score ?? 0)));
+      const reason = String(parsed?.reason ?? "").trim() || (score >= 0.5 ? "claim is supported" : "claim is not supported");
+      return { ok: Boolean(parsed?.ok) && score >= 0.5, score, reason };
+    } catch (err: any) {
+      return { ok: false, score: 0, reason: `judge subagent returned invalid JSON: ${err?.message || err}` };
+    }
+  },
+  async assert(args) {
+    const result = await judge.check(args);
+    if (!result.ok) throw new Error(result.reason || "judge assertion failed");
+    return result;
   },
 };
 
@@ -1201,6 +1319,25 @@ async function activeScratchRoot(): Promise<string | null> {
 }
 
 setSkillRootProvider(activeScratchRoot);
+
+setTaskValidationRunner(async (chatId: string, source: string) => {
+  const body = source.trim();
+  if (!body) return false;
+  const looksLikeFunction = /^(?:async\s+)?(?:function\b|\(?[\w\s,{}:[\]<>?=]*\)?\s*=>)/.test(body);
+  const code = looksLikeFunction
+    ? `const __taskValidation = ${body};\nreturn await __taskValidation();`
+    : body;
+  const compiled = compileRunTS(code);
+  if (compiled.diagnostics.length) throw new Error("TypeScript compile failed:\n" + compiled.diagnostics.join("\n"));
+  const fn = new Function("moo", "chatId", "repo", "scratch", "args", compiled.js + "\nreturn __runTS__();");
+  const repo = (await pointers.get({ name: `chat/${chatId}/path` })) || ".";
+  const scratchRoot = await chat.scratch({ chatId });
+  const rawDepth = Number(await pointers.get({ name: `chat/${chatId}/subagent-depth` }) ?? 0);
+  const depth = Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
+  return await withMooRunTSContext(chatId, `task-validation:${chatId}`, depth, () =>
+    withMooChatContext(chatId, () => fn(moo, chatId, repo, scratchRoot, {})),
+  );
+});
 
 function resolveWorkspacePath(root: string, path: string = "."): string {
   const raw = String(path || ".");
@@ -3118,6 +3255,7 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
   const task = String(spec.task ?? "").trim();
   if (!label) throw new Error("moo.agent.run requires spec.label");
   if (!task) throw new Error("moo.agent.run requires spec.task");
+  const tasks = Array.isArray(spec.tasks) ? spec.tasks : undefined;
   const maxSteps = Math.max(1, Math.floor(Number(spec.maxSteps ?? DEFAULT_SUBAGENT_STEPS) || DEFAULT_SUBAGENT_STEPS));
   const timeoutMs = Math.max(1_000, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.floor(Number(spec.timeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS) || DEFAULT_SUBAGENT_TIMEOUT_MS)));
   const worktree = spec.worktree === "inherit" ? "inherit" : "isolated";
@@ -3128,10 +3266,12 @@ function normalizeSubagentSpec(spec: SubagentSpec): NormalizedSubagentSpec {
     maxSteps,
     timeoutMs,
     worktree,
+    ...(tasks && tasks.length ? { tasks } : {}),
     ...(typeof spec.context === "string" && spec.context.trim() ? { context: spec.context } : {}),
     ...(typeof spec.expectedOutput === "string" && spec.expectedOutput.trim() ? { expectedOutput: spec.expectedOutput } : {}),
     ...(typeof spec.model === "string" && spec.model.trim() ? { model: spec.model.trim() } : {}),
     ...(typeof spec.effort === "string" && spec.effort.trim() ? { effort: spec.effort.trim() } : {}),
+    ...(typeof spec.scratch === "string" && spec.scratch.trim() ? { scratch: spec.scratch.trim() } : {}),
   };
 }
 
@@ -3183,17 +3323,21 @@ async function markOutstandingSubagentCancelled(parentChatId: string, childChatI
   await replaceStepStatus(parentChatId, stepId, "agent:Cancelled", [["agent:result", resultHash], ["agent:error", error]]);
 }
 
-async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
+async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { allowNested?: boolean } = {}) {
   const ctx = activeRunTSContext;
   if (!ctx) throw new Error("moo.agent.run is only available inside runTS");
-  if (ctx.depth >= MAX_SUBAGENT_DEPTH) throw new Error("subagent depth limit reached");
+  if (!opts.allowNested && ctx.depth >= MAX_SUBAGENT_DEPTH) throw new Error("subagent depth limit reached");
   if (ctx.outstanding.size >= MAX_OUTSTANDING_SUBAGENTS_PER_RUNTS) {
     throw new Error(`too many outstanding subagents; max is ${MAX_OUTSTANDING_SUBAGENTS_PER_RUNTS}`);
   }
 
   const parentChatId = ctx.chatId;
   const parentRoot = await pointers.get({ name: `chat/${parentChatId}/path` });
-  const childChatId = await chat.create({ path: parentRoot });
+  const selectedScratch = typeof spec.scratch === "string" && spec.scratch.trim()
+    ? ((await scratchNamedPath(parentChatId, spec.scratch.trim())) || spec.scratch.trim())
+    : await chat.scratch({ chatId: parentChatId });
+  const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
+  await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
   await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });
   await pointers.set({ name: `chat/${childChatId}/hidden`, target: "true" });
   await pointers.set({ name: `chat/${childChatId}/parent`, target: parentChatId });
@@ -3202,6 +3346,9 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
   await applyDefaultChatSettings(childChatId);
   if (spec.model) await pointers.set({ name: chatRefs(childChatId).model, target: spec.model });
   if (spec.effort) await pointers.set({ name: chatRefs(childChatId).effort, target: spec.effort });
+  if (Array.isArray(spec.tasks) && spec.tasks.length) {
+    await patchTasks(childChatId, { add: spec.tasks });
+  }
 
   const specHash = await objects.putJSON({ kind: "agent:SubagentSpec", value: spec });
   await pointers.set({ name: `chat/${childChatId}/subagent-spec`, target: specHash });
@@ -3211,6 +3358,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec) {
     task: spec.task,
     context: spec.context ?? null,
     expectedOutput: spec.expectedOutput ?? null,
+    scratch: spec.scratch ?? null,
     childChatId,
     parentRunTsStepId: ctx.runTsStepId,
   } });
@@ -3273,6 +3421,25 @@ async function failSubagentRun(childChatId: string | null, err: unknown) {
   await finishSubagentRun(childChatId, result);
 }
 
+async function runSubagent(spec: SubagentSpec, opts: { allowNested?: boolean } = {}): Promise<SubagentResult> {
+  const normalized = normalizeSubagentSpec(spec);
+  let request: Awaited<ReturnType<typeof createSubagentRunRequest>> | null = null;
+  try {
+    request = await createSubagentRunRequest(normalized, opts);
+    const raw = await host.runAgent(JSON.stringify(request));
+    const result = normalizeSubagentResult(JSON.parse(raw) as LegacySubagentResult);
+    await finishSubagentRun(request.childChatId, result);
+    return result;
+  } catch (err) {
+    try {
+      await failSubagentRun(request?.childChatId ?? null, err);
+    } catch {
+      // best-effort cleanup; don't let it mask the original failure
+    }
+    throw err;
+  }
+}
+
 const agent: Moo["agent"] = {
   async claim({ store, graph, runId, leaseMs = 60_000 }) {
     const queued = await facts.match({ store, ...{
@@ -3332,22 +3499,7 @@ const agent: Moo["agent"] = {
     return { chatId, runId, forkedFrom };
   },
   async run(spec: SubagentSpec): Promise<SubagentResult> {
-    const normalized = normalizeSubagentSpec(spec);
-    let request: Awaited<ReturnType<typeof createSubagentRunRequest>> | null = null;
-    try {
-      request = await createSubagentRunRequest(normalized);
-      const raw = await host.runAgent(JSON.stringify(request));
-      const result = normalizeSubagentResult(JSON.parse(raw) as LegacySubagentResult);
-      await finishSubagentRun(request.childChatId, result);
-      return result;
-    } catch (err) {
-      try {
-        await failSubagentRun(request?.childChatId ?? null, err);
-      } catch {
-        // best-effort cleanup; don't let it mask the original failure
-      }
-      throw err;
-    }
+    return await runSubagent(spec);
   },
 };
 
@@ -3645,7 +3797,7 @@ const rawMoo: Moo = {
   id,
   log,
   objects,
-  todos,
+  tasks,
   skills,
   pointers,
   sparql,
@@ -3653,6 +3805,8 @@ const rawMoo: Moo = {
   fs,
   proc,
   workspace,
+  scratch: scratches,
+  scratches,
   http,
   env,
   chat,
@@ -3660,6 +3814,7 @@ const rawMoo: Moo = {
   mcp,
   tools,
   agent,
+  judge,
   memory,
   vocab,
   events,

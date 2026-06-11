@@ -17,7 +17,7 @@ export const COMPACTION_CONTINUATION_USER_PROMPT =
 
 export function compactionContinuationSystemMessage(
   summary: string,
-  currentTodos?: string | null,
+  currentTasks?: string | null,
 ): string {
   const parts = [
     COMPACTION_CONTINUATION_INSTRUCTION,
@@ -25,9 +25,9 @@ export function compactionContinuationSystemMessage(
     "Summary of earlier conversation:",
     summary,
   ];
-  const todos = String(currentTodos ?? "").trim();
-  if (todos) {
-    parts.push("", "Current TODO reminders:", todos);
+  const tasks = String(currentTasks ?? "").trim();
+  if (tasks) {
+    parts.push("", "Current task reminders:", tasks);
   }
   return parts.join("\n");
 }
@@ -257,7 +257,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "runTS: put large code/patches/templates in `args`; avoid embedding backticks, `${...}`, or raw patches inside TypeScript strings. Backgrounded runTS returns an id; cancel with `await moo.tools.cancel({id})`",
     "out=Markdown. dense and concise. no restating. memory is silent context; don't dump it.",
     "When asked to tweak/fix/update code or a named file/path, edit the code; do not merely remember the request or acknowledge a preference.",
-    "moo.todos: optional; use `moo.todos` only for substantial multi-step work where tracking helps. Keep items terse; don't update guessed/stale IDs. Method signatures are in the moo.todos API line below.",
+    "moo.tasks: optional; use `moo.tasks` only for substantial multi-step work where tracking helps. When given an explicit goal/task, create/update tasks promptly. Cut big problems into small orthogonal pieces and delegate them to subagents with tasks. Tasks can include `validation` (function source or `() => boolean|Promise<boolean>`); if validation is bad or stale, update it with `moo.tasks.setValidation` before marking done. Keep items terse; don't update guessed/stale IDs. Method signatures are in the moo.tasks API line below.",
     "searches: run silently; don't expose chat-history/background-search progress text unless asking for input or reporting results.",
     "Markdown: specify info-string languages on fenced code blocks (e.g. ```ts, ```json, ```sh) so renderers can highlight them.",
     "Mermaid: for diagrams/flows/sequences, prefer native ```mermaid fences over ASCII art; keep diagrams small and label edges/nodes clearly.",
@@ -273,7 +273,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "moo.validate{pointerName,factStoreName,graphName,uiAppId,hash,relativePath}: pointerName({name})/factStoreName({name})/graphName({graph})/uiAppId({id})/hash({hash})/relativePath({path})→boolean.",
     "moo.id{new}: new({prefix?})→Promise<string>; moo.log({args:unknown[]})→void (diagnosis only).",
     "moo.objects{putText,putJSON,getText,getJSON}: putText({kind,text})/putJSON({kind,value})→Promise<string>; getText({hash})→Promise<{kind,text}|null>; getJSON<V>({hash})→Promise<{kind,value:V}|null>.",
-    "moo.todos{list,add,update,done,drop,patch,clear}: list()→Promise<{items:AgentTodo[]}>; add({text,status?,note?})/update({id,text?,status?,note?})/done({id,note?})/drop({id,note?})→Promise<AgentTodo>; patch({items?,add?,update?,clearDone?,clearStatuses?})/clear({statuses?})→Promise<{items:AgentTodo[]}>. Statuses todo|doing|done|blocked|dropped; AgentTodoPatch without id adds, with id updates.",
+    "moo.tasks{list,add,update,done,drop,setValidation,validate,patch,clear}: list()→Promise<{items:AgentTask[]}>; add({text,status?,note?,validation?})/update({id,text?,status?,note?,validation?})/done({id,note?})/drop({id,note?})/setValidation({id,validation?})→Promise<AgentTask>; validate({id})→Promise<{ok,error?}>; patch({items?,add?,update?,clearDone?,clearStatuses?})/clear({statuses?})→Promise<{items:AgentTask[]}>. Statuses todo|doing|done|blocked|dropped; AgentTaskPatch without id adds, with id updates; done fails if validation returns false/throws/does not compile.",
     "moo.skills{list,get,load,content,save,upsert,delete,remove,refresh,parseMarkdown}: list({enabled?,root?})→Promise<SkillSummary[]>; get/load/content(idOrName,{root?})→summary|skill|content|null; save/upsert({id?,name?,enabled?,url?,frontmatter?,content?})→Promise<Skill>; delete/remove(idOrName)→Promise<boolean>; refresh(idOrName,{timeoutMs?,root?})→Promise<SkillRefreshResult>; parseMarkdown(content)→{frontmatterRaw,frontmatter,body}.",
     ...skillsLines,
     "moo.pointers{get,set,cas,list,entries,delete}: get({name})→Promise<string|null>; set({name,target})→Promise<{name,target,previous,changed}>; cas({name,expected,next})→Promise<boolean>; list({prefix?})→Promise<string[]>; entries({prefix?})→Promise<Array<[string,string]>>; delete({name})→Promise<boolean>.",
@@ -287,6 +287,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "moo.proc{run,runChecked}: run({cmd,cwd?,stdin?,timeoutMs?,env?,check?,maxOutputBytes?})→Promise<{code,stdout,stderr,durationNs,timedOut,stdoutTruncated?,stderrTruncated?}> where cmd is a non-empty string[] with argv[0] as executable; runChecked({cmd,cwd?,stdin?,timeoutMs?,env?,maxOutputBytes?})→Promise<ProcResult>. Default cwd is scratch; relative cwd resolves under scratch; runChecked throws on nonzero.",
     ...repoLines,
     "moo.workspace{current}: current({chatId?,root?})→Promise<{root,fs:{read,partialRead,write,list,glob,stat,canonical,exists,ensureDir,patch,delete},proc:{run,runChecked}}>; scoped fs/proc use the workspace root.",
+    "moo.scratch/moo.scratches{current,list,create,get,delete}: current()→path; list()→[{name,path,exists}]; create({name?,path?,fromCurrent?})→{name,path}; get({name})→path|null; delete({name,recursive?})→{deletedRef,deletedPath}. Use named scratches for isolated experiments; subagents default to the current scratch and can receive `scratch`.",
     "moo.http{fetch,stream}: fetch({method?,url,headers?,body?,timeoutMs?})→Promise<{status,body,headers,bodyTruncated}>; stream({method?,url,headers?,body?,timeoutMs?})→Promise<{status,headers,next():Promise<string|null>,close():Promise<void>}>.",
     "moo.events{publish}: publish({payload})→void // ephemeral WS broadcast.",
     "moo.env{get,getMany}: get({name})→Promise<string|null>; getMany({names})→Promise<Record<string,string|null>>.",
@@ -301,7 +302,8 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "  moo.mcp auth: login(serverId,{origin?,redirectUri?,scope?,returnChatId?})→Promise<{serverId,authorizeUrl,state,redirectUri,expiresAt,returnChatId?}>; completeLogin(state,code)→Promise<McpOAuthStatus>; logout(serverId)→Promise<boolean>; authStatus(serverId)→Promise<McpOAuthStatus>.",
     "  moo.mcp setup: when the user asks to add/change an MCP, don't ask for URL if provider/server is named and its endpoint is well-known; infer id/title/url/transport, ask only for ambiguous/custom fields. Secrets: avoid raw tokens in LLM-visible chat when possible; prefer OAuth or direct manual entry at `/mcp`.",
     mcpNames,
-    "moo.agent{run,fork,claim,complete}: run({label,task,context?,expectedOutput?,maxSteps?,timeoutMs?,model?,effort?,worktree?})→Promise<{status:'done'|'failed'|'cancelled'|'timeout'|'wait-input',childChatId,output,error?,durationNs,usage?}>; fork({chatId,fromStepId?})→Promise<{chatId,runId,forkedFrom}>; claim({store,graph,runId,leaseMs?})/complete({store,graph,stepId,status?}) are internals.",
+    "moo.agent{run,fork,claim,complete}: run({label,task,tasks?,context?,expectedOutput?,maxSteps?,timeoutMs?,model?,effort?,worktree?,scratch?})→Promise<{status:'done'|'failed'|'cancelled'|'timeout'|'wait-input',childChatId,output,error?,durationNs,usage?}>; `tasks` seeds the subagent's initial moo.tasks list with TaskAddInput[]; seeded tasks may include `validation` functions that call `moo.judge`; subagents default to the current scratch; pass `scratch` as a scratch name or path for a specific scratch. fork({chatId,fromStepId?})→Promise<{chatId,runId,forkedFrom}>; claim({store,graph,runId,leaseMs?})/complete({store,graph,stepId,status?}) are internals.",
+    "moo.judge{check,assert}: LLM subagent judge. check({claim,evidence?,criteria?})→Promise<{ok,score,reason}>; assert(...) throws if not ok. Useful inside task validation, but prefer concrete tool/file/test checks when available.",
     "  subagents: in runTS, start independent work before awaiting for parallelism: const a=moo.agent.run({...}); const b=moo.agent.run({...}); return await Promise.all([a,b]). Only for substantial independent tasks.",
     ...traceLines,
     "",

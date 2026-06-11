@@ -122,28 +122,28 @@ export type FileDiffItem = {
   at: number;
 };
 
-export type TodoStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export type AgentTodo = {
+export type TaskStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+export type AgentTask = {
   id: string;
   text: string;
-  status: TodoStatus;
+  status: TaskStatus;
   note?: string;
   createdAt?: string;
   updatedAt?: string;
 };
 
-export type TodoDiffChange =
-  | { kind: "added"; after: AgentTodo }
-  | { kind: "removed"; before: AgentTodo }
-  | { kind: "updated"; before: AgentTodo; after: AgentTodo; fields?: string[] };
+export type TaskDiffChange =
+  | { kind: "added"; after: AgentTask }
+  | { kind: "removed"; before: AgentTask }
+  | { kind: "updated"; before: AgentTask; after: AgentTask; fields?: string[] };
 
-export type TodoDiffItem = {
-  type: "todo-diff";
+export type TaskDiffItem = {
+  type: "task-diff";
   id: string;
   step?: string;
   chatId: string;
-  changes?: TodoDiffChange[];
-  todos?: AgentTodo[];
+  changes?: TaskDiffChange[];
+  tasks?: AgentTask[];
   hash?: string;
   at: number;
 };
@@ -197,5 +197,5 @@ export type TrailItem = {
   summary?: string | null;
 };
 
-export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | TodoDiffItem | MemoryDiffItem | BlobAddItem | LogItem | TrailItem;
+export type TimelineItem = StepItem | InputItem | InputResponseItem | FileDiffItem | TaskDiffItem | MemoryDiffItem | BlobAddItem | LogItem | TrailItem;
 

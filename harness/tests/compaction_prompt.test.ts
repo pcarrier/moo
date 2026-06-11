@@ -211,21 +211,21 @@ describe("compaction prompts", () => {
     expect(large).toBeLessThan(1_200);
   });
 
-  test("continuation message can include current TODO reminders", () => {
+  test("continuation message can include current task reminders", () => {
     const message = compactionContinuationSystemMessage("Summary text.", "- doing 1: finish check");
 
-    expect(message).toContain("Current TODO reminders:\n- doing 1: finish check");
+    expect(message).toContain("Current task reminders:\n- doing 1: finish check");
   });
 
   test("strips legacy dynamic context instead of sending synthetic user turns", () => {
     const messages = stripDynamicContextMessages([
       { role: "system", content: "stable system" },
-      { role: DYNAMIC_CONTEXT_MESSAGE_ROLE, content: "legacy tail todos" },
+      { role: DYNAMIC_CONTEXT_MESSAGE_ROLE, content: "legacy tail tasks" },
       { role: "user", content: "hello" },
     ]);
 
     expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
-    expect(messages.map((message) => message.content).join("\n")).not.toContain("legacy tail todos");
+    expect(messages.map((message) => message.content).join("\n")).not.toContain("legacy tail tasks");
   });
 
 
@@ -287,18 +287,18 @@ describe("compaction prompts", () => {
     expect((request.body as any).messages[1].content[0]).toEqual({ type: "thinking", thinking: "summary", signature: "sig" });
   });
 
-  test("Anthropic keeps post-compaction TODO reminders in the system prompt", () => {
+  test("Anthropic keeps post-compaction task reminders in the system prompt", () => {
     const messages = [
       { role: "system", content: "stable system" },
-      { role: "system", content: compactionContinuationSystemMessage("Summary text.", "- todo 1: fix tests") },
+      { role: "system", content: compactionContinuationSystemMessage("Summary text.", "- task 1: fix tests") },
       { role: "user", content: "hello" },
     ];
 
     const anthropic = toAnthropicMessages(messages);
 
     expect(anthropic.system).toContain("stable system");
-    expect(anthropic.system).toContain("Current TODO reminders:\n- todo 1: fix tests");
-    expect(JSON.stringify(anthropic.messages)).not.toContain("todo 1: fix tests");
+    expect(anthropic.system).toContain("Current task reminders:\n- task 1: fix tests");
+    expect(JSON.stringify(anthropic.messages)).not.toContain("task 1: fix tests");
   });
 
   test("Anthropic uses explicit post-compaction user turn instead of generic Continue", () => {
@@ -314,11 +314,11 @@ describe("compaction prompts", () => {
     expect(JSON.stringify(anthropic.messages)).not.toContain("Continue.");
   });
 
-  test("OpenAI Responses keeps post-compaction TODO reminders in instructions", () => {
+  test("OpenAI Responses keeps post-compaction task reminders in instructions", () => {
     const provider = { name: "openai" as const, apiKey: "key", baseUrl: "https://llm.test/v1", model: "gpt-5", effort: null, keyEnvHint: "KEY" };
     const messages = [
       { role: "system", content: "stable system" },
-      { role: "system", content: compactionContinuationSystemMessage("Summary text.", "- todo 1: fix tests") },
+      { role: "system", content: compactionContinuationSystemMessage("Summary text.", "- task 1: fix tests") },
       { role: "user", content: "hello" },
     ];
 
@@ -331,8 +331,8 @@ describe("compaction prompts", () => {
     expect((request.body as any).type).toBe("response.create");
     const body = request.body as ResponsesRequestBody;
     expect(body.instructions).toContain("stable system");
-    expect(body.instructions).toContain("Current TODO reminders:\n- todo 1: fix tests");
-    expect(JSON.stringify(body.input)).not.toContain("todo 1: fix tests");
+    expect(body.instructions).toContain("Current task reminders:\n- task 1: fix tests");
+    expect(JSON.stringify(body.input)).not.toContain("task 1: fix tests");
   });
 
   test("image dimensions stay out of provider request bodies", () => {

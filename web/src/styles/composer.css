@@ -2,7 +2,7 @@
 
 /* -- pending queue + bottom bar ---------------------------------------- */
 
-.ongoing-todos {
+.ongoing-tasks {
   position: relative;
   border-top: 1px solid var(--line);
   background: var(--button-hover-bg);
@@ -11,12 +11,12 @@
   gap: 0.03em;
 }
 
-.ongoing-todos.only-done {
+.ongoing-tasks.only-done {
   min-block-size: 1.8em;
   padding-right: 7em;
 }
 
-.ongoing-todos-toggle {
+.ongoing-tasks-toggle {
   position: absolute;
   top: 0.25em;
   right: 0.5em;
@@ -30,12 +30,12 @@
   padding: 0 0.3em;
 }
 
-.ongoing-todos-toggle:hover {
+.ongoing-tasks-toggle:hover {
   border-color: var(--line-strong);
   color: var(--fg);
 }
 
-.ongoing-todos-list {
+.ongoing-tasks-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -43,7 +43,7 @@
   gap: 0.02em;
 }
 
-.ongoing-todo {
+.ongoing-task {
   display: flex;
   align-items: baseline;
   gap: 0.12em;
@@ -54,7 +54,7 @@
   font-size: 0.82rem;
 }
 
-.ongoing-todo-line {
+.ongoing-task-line {
   display: flex;
   align-items: baseline;
   flex: 0 0 auto;
@@ -62,8 +62,8 @@
   overflow: visible;
 }
 
-.ongoing-todo-text,
-.ongoing-todo-details {
+.ongoing-task-text,
+.ongoing-task-details {
   min-inline-size: 0;
   overflow: hidden;
   overflow-wrap: normal;
@@ -71,32 +71,32 @@
   white-space: nowrap;
 }
 
-.ongoing-todo .ongoing-todo-text {
+.ongoing-task .ongoing-task-text {
   display: block;
   flex: 0 0 auto;
 }
 
-.ongoing-todo-details {
+.ongoing-task-details {
   flex: 1 1 auto;
 }
 
-.ongoing-todo .todo-note.markdown > * {
+.ongoing-task .task-note.markdown > * {
   display: inline;
 }
 
-.ongoing-todo .todo-note.markdown > * + * {
+.ongoing-task .task-note.markdown > * + * {
   margin-left: 0.35em;
   margin-top: 0;
 }
 
-.todo-bubbles {
+.task-bubbles {
   align-items: baseline;
   display: inline-flex;
   flex: 0 0 auto;
   margin-inline: 0.33em;
 }
 
-.todo-bubble {
+.task-bubble {
   border: 0;
   border-radius: 0;
   color: var(--fg);
@@ -109,28 +109,28 @@
   text-transform: uppercase;
 }
 
-.todo-status-bubble {
+.task-status-bubble {
   color: var(--fg);
 }
 
 
-.ongoing-todo-details,
-.todo-diff-details {
+.ongoing-task-details,
+.task-diff-details {
   color: var(--muted);
   font-size: 0.9em;
   line-height: 1.15;
 }
 
-.ongoing-todo.todo-doing .ongoing-todo-text {
+.ongoing-task.task-doing .ongoing-task-text {
   font-weight: 700;
 }
 
-.ongoing-todo.todo-done .ongoing-todo-text {
+.ongoing-task.task-done .ongoing-task-text {
   color: var(--muted);
   text-decoration: line-through;
 }
 
-.ongoing-todo.todo-done .ongoing-todo-details {
+.ongoing-task.task-done .ongoing-task-details {
   color: var(--muted);
 }
 

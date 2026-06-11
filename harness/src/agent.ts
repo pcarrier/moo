@@ -26,7 +26,7 @@ import {
   COMPACTION_CONTINUATION_USER_PROMPT,
   compactionContinuationSystemMessage,
 } from "./prompt";
-import { formatTodosForPrompt } from "./todos";
+import { formatTasksForPrompt } from "./tasks";
 import {
   modelContextWindow,
   modelMetadataFor,
@@ -2824,7 +2824,7 @@ export async function buildLLMMessages(chatId: string): Promise<any[]> {
       role: "system",
       content: compactionContinuationSystemMessage(
         compactionSummary,
-        await formatTodosForPrompt(chatId),
+        await formatTasksForPrompt(chatId),
       ),
     });
   }
@@ -2932,7 +2932,7 @@ export async function buildCompactionMessages(chatId: string): Promise<any[]> {
       role: "system",
       content: compactionContinuationSystemMessage(
         compaction.summary,
-        await formatTodosForPrompt(chatId),
+        await formatTasksForPrompt(chatId),
       ),
     });
   }

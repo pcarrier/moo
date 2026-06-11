@@ -877,23 +877,23 @@
   }
 }
 
-/* -- TODO diffs ---------------------------------------------------------- */
+/* -- task diffs ---------------------------------------------------------- */
 
-.todo-diff {
-  background: var(--bubble-todo-diff);
+.task-diff {
+  background: var(--bubble-task-diff);
   inline-size: 100%;
   min-inline-size: 0;
   max-inline-size: 100%;
 }
 
-.todo-diff-body {
+.task-diff-body {
   margin: 0;
   padding: 0.18rem 0.3rem;
   font-family: inherit;
   white-space: normal;
 }
 
-.todo-diff-list {
+.task-diff-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -901,76 +901,76 @@
   gap: 0.03rem;
 }
 
-.todo-diff-change {
+.task-diff-change {
   display: grid;
   row-gap: 0;
   align-items: baseline;
 }
 
-.todo-diff-action {
+.task-diff-action {
   color: var(--muted);
   font-size: 0.85em;
   text-align: center;
   min-width: 1ch;
 }
 
-.todo-diff-main {
+.task-diff-main {
   display: inline-flex;
   gap: 0.18rem;
   align-items: baseline;
   min-width: 0;
 }
 
-.todo-diff-text {
+.task-diff-text {
   min-width: 0;
 }
 
-.todo-markdown-inline {
+.task-markdown-inline {
   display: inline;
 }
 
-.todo-note.markdown p {
+.task-note.markdown p {
   margin: 0;
 }
 
-.todo-note.markdown > * + * {
+.task-note.markdown > * + * {
   margin-top: 0.25em;
 }
 
-.todo-status-doing .todo-diff-text {
+.task-status-doing .task-diff-text {
   font-weight: 700;
 }
 
-.todo-status-done .todo-diff-text,
-.todo-status-dropped .todo-diff-text,
-.todo-change-removed .todo-diff-text {
+.task-status-done .task-diff-text,
+.task-status-dropped .task-diff-text,
+.task-change-removed .task-diff-text {
   color: var(--muted);
   text-decoration: line-through;
 }
 
-.todo-change-added .todo-diff-action {
+.task-change-added .task-diff-action {
   color: var(--diff-added-fg, #22863a);
 }
 
-.todo-change-updated .todo-diff-action {
+.task-change-updated .task-diff-action {
   color: var(--accent-fg);
 }
 
-.todo-change-removed .todo-diff-action,
-.todo-status-done .todo-diff-action {
+.task-change-removed .task-diff-action,
+.task-status-done .task-diff-action {
   color: var(--muted);
 }
 
-.todo-status-dropped .todo-diff-action {
+.task-status-dropped .task-diff-action {
   color: var(--danger-fg, #cf222e);
 }
 
-.todo-status-blocked .todo-diff-action {
+.task-status-blocked .task-diff-action {
   color: var(--warning-fg, #b08800);
 }
 
-.todo-diff-details,
-.todo-diff-previous {
+.task-diff-details,
+.task-diff-previous {
   margin-left: calc(1ch + 0.18rem);
   color: var(--muted);
   font-size: 0.9em;
