@@ -3357,7 +3357,6 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
   } else {
     selectedScratch = await chat.scratch({ chatId: parentChatId });
   }
-  }
   const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
   await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
   await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });

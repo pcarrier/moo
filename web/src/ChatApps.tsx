@@ -179,7 +179,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id)
       return;
     const reply = (payload: Record<string, unknown>) =>
-      source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
+      source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, window.location.origin);
     try {
       if (msg.method === "state:get") {
         const inst = activeInstanceId();
@@ -387,7 +387,7 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
           };
           window.addEventListener('message', onMessage);
           try {
-            parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, '*');
+            parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, window.location.origin);
           } catch (err) {
             window.removeEventListener('message', onMessage);
             reject(err);

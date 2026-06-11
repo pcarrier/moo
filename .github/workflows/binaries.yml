@@ -38,11 +38,11 @@ jobs:
 
       - name: Install Nix
         if: runner.os != 'Windows'
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@1d87d45818068401a10cf16bdc5f00b24994a83f
 
       - name: Magic Nix cache
         if: runner.os != 'Windows'
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@14645543c3b214bedad3b9b49775cb042f4c1fc7
 
       - name: Build Unix binary
         if: runner.os != 'Windows'
@@ -98,7 +98,7 @@ jobs:
           "$($hash.Hash.ToLower())  dist/$stem.zip" | Set-Content "dist/$stem.zip.sha256"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: moo-${{ matrix.target }}
           path: |
@@ -117,12 +117,12 @@ jobs:
       contents: write
     steps:
       - name: Download binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: dist/*

@@ -23,11 +23,13 @@ export function compactionContinuationSystemMessage(
     COMPACTION_CONTINUATION_INSTRUCTION,
     "",
     "Summary of earlier conversation:",
+    "<conversation_summary>",
     summary,
+    "</conversation_summary>",
   ];
   const tasks = String(currentTasks ?? "").trim();
   if (tasks) {
-    parts.push("", "Current task reminders:", tasks);
+    parts.push("", "Current task reminders:", "<current_tasks>", tasks, "</current_tasks>");
   }
   return parts.join("\n");
 }

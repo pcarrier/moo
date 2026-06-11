@@ -48,7 +48,7 @@ describe("compaction prompts", () => {
     expect(message).toContain("Execute `Next action:`");
     expect(message).toContain("Do not wait");
     expect(message).toContain("If done, report result");
-    expect(message).toContain("Summary of earlier conversation:\nUser asked to fix tests; patch is pending.");
+    expect(message).toContain("Summary of earlier conversation:\n<conversation_summary>\nUser asked to fix tests; patch is pending.\n</conversation_summary>");
   });
 
   test("continuation user turn forces action instead of readiness", () => {
@@ -214,7 +214,7 @@ describe("compaction prompts", () => {
   test("continuation message can include current task reminders", () => {
     const message = compactionContinuationSystemMessage("Summary text.", "- doing 1: finish check");
 
-    expect(message).toContain("Current task reminders:\n- doing 1: finish check");
+    expect(message).toContain("Current task reminders:\n<current_tasks>\n- doing 1: finish check\n</current_tasks>");
   });
 
   test("strips legacy dynamic context instead of sending synthetic user turns", () => {
@@ -297,7 +297,7 @@ describe("compaction prompts", () => {
     const anthropic = toAnthropicMessages(messages);
 
     expect(anthropic.system).toContain("stable system");
-    expect(anthropic.system).toContain("Current task reminders:\n- task 1: fix tests");
+    expect(anthropic.system).toContain("Current task reminders:\n<current_tasks>\n- task 1: fix tests\n</current_tasks>");
     expect(JSON.stringify(anthropic.messages)).not.toContain("task 1: fix tests");
   });
 
@@ -331,7 +331,7 @@ describe("compaction prompts", () => {
     expect((request.body as any).type).toBe("response.create");
     const body = request.body as ResponsesRequestBody;
     expect(body.instructions).toContain("stable system");
-    expect(body.instructions).toContain("Current task reminders:\n- task 1: fix tests");
+    expect(body.instructions).toContain("Current task reminders:\n<current_tasks>\n- task 1: fix tests\n</current_tasks>");
     expect(JSON.stringify(body.input)).not.toContain("task 1: fix tests");
   });
 
