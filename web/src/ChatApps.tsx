@@ -179,7 +179,11 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id)
       return;
     const reply = (payload: Record<string, unknown>) =>
-      source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, window.location.origin);
+      // The app iframe is sandboxed without allow-same-origin, so its origin is
+      // opaque ("null") and cannot be addressed by a concrete targetOrigin. Use
+      // "*" and rely on the ev.source/msg.source validation above; postMessage
+      // still targets only this specific frame's window.
+      source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
     try {
       if (msg.method === "state:get") {
         const inst = activeInstanceId();
@@ -387,7 +391,7 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
           };
           window.addEventListener('message', onMessage);
           try {
-            parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, window.location.origin);
+            parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, '*');
           } catch (err) {
             window.removeEventListener('message', onMessage);
             reject(err);
