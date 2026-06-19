@@ -99,6 +99,7 @@ type PendingMessage = {
   chatId: string;
   text: string;
   attachments?: PendingAttachment[];
+  dispatching?: boolean;
 };
 type LlmMessage = LlmMessageInput;
 const CHAT_PENDING_MESSAGES_REF = "chat/pending-messages";
@@ -129,30 +130,72 @@ function sanitizePendingMessage(value: unknown): PendingMessage | null {
   const id =
     String(record.id ?? "").trim() ||
     String(Date.now()) + "." + Math.random().toString(36).slice(2, 8);
-  return { id, chatId, text, ...(attachments.length ? { attachments } : {}) };
+  const dispatching = record.dispatching === true;
+  return {
+    id,
+    chatId,
+    text,
+    ...(attachments.length ? { attachments } : {}),
+    ...(dispatching ? { dispatching } : {}),
+  };
 }
 
 async function readPendingMessages(): Promise<PendingMessage[]> {
-  const target = await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF });
-  const decoded = target ? decodeJsonPointer(target) : null;
-  if (!Array.isArray(decoded)) return [];
-  return decoded
+  return pendingMessagesFromTarget(
+    await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF }),
+  );
+}
+
+function sanitizePendingMessages(messages: unknown[]): PendingMessage[] {
+  return messages
     .map(sanitizePendingMessage)
     .filter((m): m is PendingMessage => !!m);
 }
 
-async function writePendingMessages(messages: unknown[]) {
-  const clean = messages
-    .map(sanitizePendingMessage)
-    .filter((m): m is PendingMessage => !!m);
-  if (clean.length === 0)
-    await moo.pointers.delete({ name: CHAT_PENDING_MESSAGES_REF });
-  else
-    await moo.pointers.set({
+function pendingMessagesFromTarget(target: string | null): PendingMessage[] {
+  const decoded = target ? decodeJsonPointer(target) : null;
+  if (!Array.isArray(decoded)) return [];
+  return sanitizePendingMessages(decoded);
+}
+
+async function writePendingMessages(messages: unknown[], knownIdsInput?: unknown[]) {
+  const clean = sanitizePendingMessages(messages);
+  const knownIds = Array.isArray(knownIdsInput)
+    ? new Set(knownIdsInput.map((id) => String(id)).filter(Boolean))
+    : null;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const previousTarget = await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF });
+    let next = clean;
+    if (knownIds) {
+      const incomingIds = new Set(clean.map((message) => message.id));
+      const retainedUnknown = pendingMessagesFromTarget(previousTarget).filter(
+        (message) => !knownIds.has(message.id) && !incomingIds.has(message.id),
+      );
+      next = [...clean, ...retainedUnknown];
+    }
+    const nextTarget = encodeJsonPointer(next);
+    const changed = await moo.pointers.cas({
       name: CHAT_PENDING_MESSAGES_REF,
-      target: encodeJsonPointer(clean),
+      expected: previousTarget,
+      next: nextTarget,
     });
-  return clean;
+    if (changed) return next;
+  }
+
+  const latest = await readPendingMessages();
+  const incomingIds = new Set(clean.map((message) => message.id));
+  const retainedUnknown = knownIds
+    ? latest.filter(
+        (message) => !knownIds.has(message.id) && !incomingIds.has(message.id),
+      )
+    : [];
+  const next = knownIds ? [...clean, ...retainedUnknown] : clean;
+  await moo.pointers.set({
+    name: CHAT_PENDING_MESSAGES_REF,
+    target: encodeJsonPointer(next),
+  });
+  return next;
 }
 
 export async function pendingMessagesCommand(_input: Input) {
@@ -161,7 +204,56 @@ export async function pendingMessagesCommand(_input: Input) {
 
 export async function pendingMessagesSaveCommand(input: Input) {
   const raw = Array.isArray(input.messages) ? input.messages : [];
-  return { ok: true, value: { messages: await writePendingMessages(raw) } };
+  const knownIds = Array.isArray(input.knownIds) ? input.knownIds : undefined;
+  return {
+    ok: true,
+    value: { messages: await writePendingMessages(raw, knownIds) },
+  };
+}
+
+export async function chatQueueListCommand(input: Input) {
+  const chatId = String(input.chatId ?? "").trim();
+  const messages = await readPendingMessages();
+  return {
+    ok: true,
+    value: { messages: chatId ? messages.filter((m) => m.chatId === chatId) : messages },
+  };
+}
+
+export async function chatQueueSaveCommand(input: Input) {
+  return pendingMessagesSaveCommand(input);
+}
+
+export async function chatQueueRemoveCommand(input: Input) {
+  const id = String(input.id ?? "").trim();
+  const chatId = String(input.chatId ?? "").trim();
+  if (!id) return { ok: false, error: { message: "queue item id is required" } };
+  const messages = (await readPendingMessages()).filter(
+    (message) => message.id !== id || (chatId && message.chatId !== chatId),
+  );
+  return { ok: true, value: { messages: await writePendingMessages(messages) } };
+}
+
+export async function chatQueueRunNextCommand(input: Input) {
+  const id = String(input.id ?? "").trim();
+  const chatId = String(input.chatId ?? "").trim();
+  if (!id) return { ok: false, error: { message: "queue item id is required" } };
+  const messages = await readPendingMessages();
+  const idx = messages.findIndex((message) => message.id === id && (!chatId || message.chatId === chatId));
+  if (idx < 0) return { ok: true, value: { moved: false, messages } };
+  const item = messages[idx]!;
+  const next = [item, ...messages.slice(0, idx), ...messages.slice(idx + 1)];
+  return { ok: true, value: { moved: true, messages: await writePendingMessages(next) } };
+}
+
+export async function chatQueueEditCommand(input: Input) {
+  const id = String(input.id ?? "").trim();
+  const chatId = String(input.chatId ?? "").trim();
+  if (!id) return { ok: false, error: { message: "queue item id is required" } };
+  const messages = await readPendingMessages();
+  const item = messages.find((message) => message.id === id && (!chatId || message.chatId === chatId)) ?? null;
+  const next = messages.filter((message) => message.id !== id || (chatId && message.chatId !== chatId));
+  return { ok: true, value: { item, messages: await writePendingMessages(next) } };
 }
 
 function parseProviderErrorBody(raw: unknown): unknown {
@@ -487,12 +579,18 @@ export async function stepCommand(input: Input) {
   );
   if (unsupported) return { ok: false, error: unsupported };
 
+  const userStepId = host.newId("step");
   return {
     ok: true,
     value: {
       chatId,
+      userStepId,
       accepted: true,
-      driver: stepDriverAction(chatId, "step", { message, attachments }),
+      driver: stepDriverAction(chatId, "step", {
+        message,
+        attachments,
+        userStepId,
+      }),
     },
   };
 }
@@ -920,6 +1018,10 @@ export async function compactPreludeCommand(input: Input) {
   const chatId = input.chatId || "demo";
 
   await moo.chat.unarchive({ chatId: chatId });
+  // Manual compaction is an explicit user action; reset the automatic
+  // consecutive-compaction guard so the user can retry after two automatic
+  // compactions in a row failed to drop the chat below the threshold.
+  await resetConsecutiveCompactions(chatId);
   const selectedModel = await getChatModel(chatId);
   const selectedEffort = await getChatEffort(chatId);
   const selectedProvider = await getChatProvider(chatId);
@@ -977,10 +1079,15 @@ export async function stepPreludeCommand(input: Input) {
       ...(artificial ? { artificial: true } : {}),
     },
   });
+  const stepId =
+    typeof input.userStepId === "string" && input.userStepId.trim()
+      ? input.userStepId
+      : undefined;
   await appendStep(chatId, {
     kind: "agent:UserInput",
     status: "agent:Done",
     payloadHash,
+    ...(stepId ? { stepId } : {}),
     ...(artificial ? { extras: [["agent:artificial", "true"]] } : {}),
   });
 
@@ -1745,11 +1852,19 @@ export async function stepPrepareCommand(input: Input) {
         forceCompact,
         compactionTrigger,
       });
-      await reply(
+      await recordCompactionFailure(
         chatId,
         `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row. ` +
           `${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
           `(${readableTokenCount(estimatedPromptTokens)} / ${readableTokenCount(threshold)}).`,
+        {
+          trigger: compactionTrigger,
+          promptTokens: estimatedPromptTokens,
+          tokenBudget: budget,
+          tokenThreshold: threshold,
+          availableTokens,
+          compactionsInARow: previousConsecutiveCompactions,
+        },
       );
       await setChatOngoing(chatId, false);
       return { ok: true, value: { kind: "done" } };
@@ -1930,11 +2045,19 @@ export async function stepPrepareCommand(input: Input) {
           availableTokens,
           compactionsInARow: previousConsecutiveCompactions,
         });
-        await reply(
+        await recordCompactionFailure(
           chatId,
           `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row. ` +
             `${readableTokenCount(availableTokens)} tokens remain before the compaction threshold ` +
             `(${readableTokenCount(estimatedPromptTokens)} / ${readableTokenCount(threshold)}).`,
+          {
+            trigger: "automatic",
+            promptTokens: estimatedPromptTokens,
+            tokenBudget: budget,
+            tokenThreshold: threshold,
+            availableTokens,
+            compactionsInARow: previousConsecutiveCompactions,
+          },
         );
         await setChatOngoing(chatId, false);
         return { ok: true, value: { kind: "done" } };
@@ -2356,10 +2479,18 @@ export async function stepHandleLlmCommand(input: Input) {
         ),
       });
       if (previousConsecutiveCompactions >= MAX_CONSECUTIVE_COMPACTIONS) {
-        await reply(
+        await recordCompactionFailure(
           chatId,
           `Compaction paused: already compacted ${previousConsecutiveCompactions} times in a row after a context-length error. ` +
             `${readableTokenCount(input.availableTokens)} tokens remain before the compaction threshold.`,
+          {
+            trigger: "automatic",
+            promptTokens: Number(input.estimatedPromptTokens) || null,
+            tokenBudget: Number(input.tokenBudget) || null,
+            tokenThreshold: Number(input.tokenThreshold) || null,
+            availableTokens: Number(input.availableTokens) || null,
+            compactionsInARow: previousConsecutiveCompactions,
+          },
         );
         await setChatOngoing(chatId, false);
         return { ok: true, value: { kind: "done" } };

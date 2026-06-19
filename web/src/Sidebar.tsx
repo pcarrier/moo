@@ -4831,6 +4831,8 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
     const chat = new Proxy({} as Chat, {
       get: (_, prop) => chatById().get(chatId)?.[prop as keyof Chat],
     });
+    const status = () =>
+      effectiveStatus(chat.status, bag.isChatActive(chat.chatId));
     return (
       <li
         class="chat-row"
@@ -4868,24 +4870,9 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
         >
           <span class="chat-title-line">
             <span
-              class={
-                "chat-status " +
-                chatStatusClass(
-                  effectiveStatus(chat.status, bag.isChatActive(chat.chatId)),
-                )
-              }
-              title={
-                "status: " +
-                chatStatusLabel(
-                  effectiveStatus(chat.status, bag.isChatActive(chat.chatId)),
-                )
-              }
-              aria-label={
-                "status: " +
-                chatStatusLabel(
-                  effectiveStatus(chat.status, bag.isChatActive(chat.chatId)),
-                )
-              }
+              class={"chat-status " + chatStatusClass(status())}
+              title={"status: " + chatStatusLabel(status())}
+              aria-label={"status: " + chatStatusLabel(status())}
             />
             <span class="chat-title">
               {chat.title || displayChatId(chat.chatId)}

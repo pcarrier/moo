@@ -63,6 +63,28 @@ describe("step driver compaction", () => {
     expect(compactionThroughAt("manual", 2_000, 3_000)).toBe(3_000);
     expect(compactionThroughAt("automatic", 2_000, 3_000)).toBe(1_999);
   });
+
+  test("manual compaction resets consecutive compaction counter", () => {
+    const source = readFileSync(new URL("../src/commands/step.ts", import.meta.url), "utf8");
+
+    expect(source).toMatch(
+      /export async function compactPreludeCommand[\s\S]*?await resetConsecutiveCompactions\(chatId\);/,
+    );
+  });
+
+  test("compaction-paused limit messages are recorded as errors", () => {
+    const source = readFileSync(new URL("../src/commands/step.ts", import.meta.url), "utf8");
+
+    const pausedMatches = source.match(/Compaction paused:/g) || [];
+    expect(pausedMatches.length).toBeGreaterThan(0);
+    for (const match of source.matchAll(/Compaction paused:[^]*?\);/g)) {
+      const prefix = source.slice(0, match.index);
+      const lastAwait = prefix.lastIndexOf("await");
+      const snippet = source.slice(lastAwait, match.index! + match[0].length);
+      expect(snippet).toContain("recordCompactionFailure(");
+      expect(snippet).not.toContain("reply(");
+    }
+  });
 });
 
 describe("step driver tool result ids", () => {

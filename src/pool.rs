@@ -2290,6 +2290,10 @@ const FAST_READ_ONLY_COMMANDS: &[&str] = &[
     "chat-models",
     "schema",
     "compactions",
+    // Hydrate the shared queued-message list from the server immediately on
+    // page load, even while a chat driver owns that chat's write lock.
+    "pending-messages",
+    "chat-queue-list",
     "mcp-list",
     "mcp-tools",
     "ui-list",
@@ -2511,6 +2515,14 @@ mod tests {
         assert_eq!(
             chat_rm_chat_id(r#"{"argv":["chat-rm","from-argv"]}"#),
             Some("from-argv".to_string())
+        );
+    }
+
+    #[test]
+    fn pending_messages_hydrate_from_fast_read_lane_without_chat_lock() {
+        assert_eq!(
+            route_input(r#"{"command":"pending-messages","chatId":"c1"}"#),
+            (Lane::FastRead, None)
         );
     }
 

@@ -1,448 +1,89 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const stateSource = readFileSync(
-  new URL("./state.ts", import.meta.url),
-  "utf8",
-);
+const stateSource = readFileSync(new URL("./state.ts", import.meta.url), "utf8");
+const timelineSource = readFileSync(new URL("./Timeline.tsx", import.meta.url), "utf8");
+const stepSource = readFileSync(new URL("../../harness/src/commands/step.ts", import.meta.url), "utf8");
+const registrySource = readFileSync(new URL("../../harness/src/commands/registry.ts", import.meta.url), "utf8");
+const poolSource = readFileSync(new URL("../../src/pool.rs", import.meta.url), "utf8");
 
 describe("chat message queueing", () => {
+  test("hydrates queued messages through the explicit fast read command", () => {
+    expect(stateSource).toContain('api("chat-queue-list", {})');
+    expect(poolSource).toContain('"chat-queue-list"');
+    expect(registrySource).toContain('"chat-queue-list": chatQueueListCommand');
+  });
+
+  test("loads queued messages during startup before the composer is interactive", () => {
+    const startFn = stateSource.slice(
+      stateSource.indexOf("async function start()"),
+      stateSource.indexOf("// 1-second tick"),
+    );
+    expect(startFn).toContain("await loadPendingMessages()");
+  });
+
   test("sends idle messages directly instead of visibly queueing them first", () => {
-    expect(stateSource).toContain(
-      "function shouldSendImmediately(chat: string)",
-    );
-    expect(stateSource).toContain(
-      "pendingLoaded || locallyCreatedChats.has(chat)",
-    );
+    expect(stateSource).toContain("function shouldSendImmediately(chat: string)");
+    expect(stateSource).toContain("pendingLoaded || locallyCreatedChats.has(chat)");
     expect(stateSource).toContain("if (shouldSendImmediately(cid))");
-    expect(stateSource).toContain(
-      "dispatchQueuedMessage({ id, text, chatId: cid, attachments })",
-    );
+    expect(stateSource).toContain("dispatchQueuedMessage(item, { optimisticUserInput: true })");
   });
 
-  test("holds follow-up messages while the selected timeline has a running row", () => {
-    expect(stateSource).toContain("const hasRunningTimelineRowForChat");
-    expect(stateSource).toContain("chatId() === id &&");
-    expect(stateSource).toContain("timeline().some(");
-    expect(stateSource).toContain("!isTerminalStepStatus(item.status)");
-    expect(stateSource).toContain(
-      "!(item.runts && isRunTSBackgrounded(item.step, id))",
-    );
+  test("queued messages persist through server queue commands", () => {
+    expect(stateSource).toContain('async function savePendingMessages');
+    expect(stateSource).toContain('api("chat-queue-save", { messages: pending() })');
+    expect(stepSource).toContain('export async function chatQueueSaveCommand');
+    expect(stepSource).toContain('value: { messages: await writePendingMessages(raw, knownIds) }');
   });
 
-  test("does not color selected idle chats as running", () => {
-    const visibleActive = stateSource.slice(
-      stateSource.indexOf("const chatVisiblyActive = (id: string)"),
-      stateSource.indexOf("const chatBusy = (id: string)"),
+  test("editing a queued message dequeues it into the composer", () => {
+    const edit = stateSource.slice(
+      stateSource.indexOf("async function editPending("),
+      stateSource.indexOf("function addPendingAttachments"),
     );
-
-    expect(visibleActive).toContain(
-      "setHas(activeChats(), id) || chatHasUnendedDraft(id)",
-    );
-    expect(visibleActive).not.toContain("chatHasLocalOpenTurn(id)");
+    expect(edit).toContain("setPending(pending().filter((p) => p.id !== id))");
+    expect(edit).toContain("setWipText(item.text)");
+    expect(edit).toContain("await savePendingMessages()");
+    expect(edit).toContain("requestChatComposerFocus()");
+    expect(timelineSource).toContain("editQueuedMessage");
+    expect(timelineSource).toContain('aria-label="edit queued message"');
   });
 
-  test("holds follow-up messages while a streamed draft is active", () => {
-    const draftBusy = stateSource.slice(
-      stateSource.indexOf("const chatHasUnendedDraft = (id: string)"),
-      stateSource.indexOf("const chatHasServerRun = (id: string)"),
+  test("removing a queued message deletes only that item and saves", () => {
+    const remove = stateSource.slice(
+      stateSource.indexOf("async function removePending("),
+      stateSource.indexOf("async function steerPending("),
     );
-    const inFlight = stateSource.slice(
-      stateSource.indexOf("const chatHasInFlightTurn = (id: string)"),
-      stateSource.indexOf("const chatBusy = (id: string)"),
-    );
-    const draftEnd = stateSource.slice(
-      stateSource.indexOf('if (ev.kind === "draft-end")'),
-      stateSource.indexOf('if (ev.kind === "llm-auth-required")'),
-    );
-
-    expect(draftBusy).toContain("const draft = draftReply();");
-    expect(draftBusy).toContain("draft.chatId === id");
-    expect(draftBusy).toContain("!endedDraftReplyIds.has(draft.draftId)");
-    expect(inFlight).toContain("chatHasUnendedDraft(id)");
-    expect(stateSource).toContain("const chatVisiblyActive = (id: string)");
-    expect(stateSource).toContain(
-      "setHas(activeChats(), id) || chatHasUnendedDraft(id)",
-    );
-    expect(stateSource).toContain("isChatActive: chatVisiblyActive");
-    expect(draftEnd).toContain(
-      "endedDraftReplyIds.set(ev.draftId, Date.now());",
-    );
-    expect(draftEnd).toContain(
-      "pending().some((p) => p.chatId === cur.chatId)",
-    );
-    expect(draftEnd).toContain("drainSoon();");
+    expect(remove).toContain("setPending(pending().filter((p) => p.id !== id))");
+    expect(remove).toContain("pendingMessageStepIds.delete(id)");
+    expect(remove).toContain("await savePendingMessages()");
   });
 
-  test("settles queued visible rows on step-end before draining follow-ups", () => {
-    const settleRows = stateSource.slice(
-      stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
-      stateSource.indexOf("function settleTimelineStep"),
+  test("steering with a chosen queued message moves it to the front", () => {
+    const steer = stateSource.slice(
+      stateSource.indexOf("async function steerPending("),
+      stateSource.indexOf("async function savePendingMessages"),
     );
-    const stepEnd = stateSource.slice(
-      stateSource.indexOf('if (ev.kind === "step-end")'),
-      stateSource.indexOf('if (ev.kind === "driver-error")'),
-    );
-
-    expect(settleRows).toContain("isTerminalStepStatus(item.status)");
-    expect(settleRows).toContain(
-      'return { ...item, status: "agent:Done" } as TimelineItem;',
-    );
-    expect(
-      stepEnd.indexOf("settleRunningTimelineRows(ev.chatId);"),
-    ).toBeLessThan(stepEnd.indexOf("drainSoon();"));
+    expect(steer).toContain("setPending([item, ...pen.slice(0, idx), ...pen.slice(idx + 1)])");
+    expect(steer).toContain("await savePendingMessages()");
+    expect(steer).toContain("drainSoon()");
   });
 
-  test("does not release active turns while streamed tool rows are open", () => {
-    const helper = stateSource.slice(
-      stateSource.indexOf("function timelineHasOpenForegroundStepSince("),
-      stateSource.indexOf("function isManualCompactionStep"),
-    );
-    const settleActiveTurn = stateSource.slice(
-      stateSource.indexOf("function timelineRowsSettleActiveTurn("),
-      stateSource.indexOf("function settleRunningTimelineRows"),
-    );
-    const applyRows = stateSource.slice(
-      stateSource.indexOf("function applyTimelineRows("),
-      stateSource.indexOf("function applyOverviewValue"),
-    );
-
-    expect(helper).toContain("items.some(");
-    expect(helper).toContain("Number(item.at) >= since");
-    expect(helper).toContain("!isTerminalStepStatus(item.status)");
-    expect(helper).toContain('item.kind !== "agent:UserInput"');
-    expect(helper).toContain("!isBackgroundedRunTSTimelineItem(item, id)");
-    expect(settleActiveTurn).toContain(
-      "if (timelineHasOpenForegroundStepSince(id, items, startedAt)) return false;",
-    );
-    expect(settleActiveTurn).toContain("return false;");
-    expect(applyRows).toContain(
-      "const hasOpenForegroundStep = timelineHasOpenForegroundStepSince(",
-    );
-    expect(applyRows).toContain("currentDraft.at");
-    expect(applyRows).toContain(
-      'currentDraft.kind !== "compaction" && !hasOpenForegroundStep',
-    );
-  });
-
-  test("wakes queued messages when refresh proves the active turn is settled", () => {
-    const applyRows = stateSource.slice(
-      stateSource.indexOf("function applyTimelineRows("),
-      stateSource.indexOf("function applyOverviewValue"),
-    );
-    const release = stateSource.slice(
-      stateSource.indexOf("function releaseSettledChatRuntime(id: string)"),
-      stateSource.indexOf("function mergeTimelineUpdateRows"),
-    );
-    const refreshChats = stateSource.slice(
-      stateSource.indexOf("async function refreshChats()"),
-      stateSource.indexOf("async function refreshTimeline"),
-    );
-
-    expect(applyRows).toContain(
-      "timelineRowsSettleActiveTurn(id, displayedTimeline)",
-    );
-    expect(applyRows).toContain("releaseSettledChatRuntime(id);");
-    expect(release).toContain("clearActiveChatRuntime(id);");
-    expect(release).toContain("settleRunningTimelineRows(id);");
-    expect(release).toContain("clearRunTSQueueUnblock(id);");
-    expect(release).toContain('status: "agent:Done"');
-    expect(release).toContain("pending().some((p) => p.chatId === id)");
-    expect(release).toContain("drainSoon();");
-    expect(refreshChats).toContain("const currentChatId = chatId();");
-    expect(refreshChats).toContain("await refreshBackgroundRunTS();");
-    expect(refreshChats).toContain("if (!chatHasLocalOpenTurn(currentChatId))");
-    expect(refreshChats).toContain("releaseSettledChatRuntime(currentChatId);");
-  });
-
-  test("keeps sidebar active through stale chat-list refreshes", () => {
-    const refreshChats = stateSource.slice(
-      stateSource.indexOf("async function refreshChats()"),
-      stateSource.indexOf("async function refreshChatMemory"),
-    );
-    expect(refreshChats).toContain("const requestStartedAt = Date.now();");
-    expect(refreshChats).toContain(
-      "const staleActiveChats = new Set<string>();",
-    );
-    expect(refreshChats).toContain("for (const id of activeChats())");
-    expect(stateSource).toContain(
-      "const STALE_ACTIVE_CHAT_REFRESH_GRACE_MS = 2000;",
-    );
-    expect(refreshChats).toContain(
-      "activeStartedAt + STALE_ACTIVE_CHAT_REFRESH_GRACE_MS",
-    );
-    expect(refreshChats).toContain("requestStartedAt");
-    expect(refreshChats).toContain("live.add(id);");
-    expect(refreshChats).toContain("for (const id of staleActiveChats)");
-    expect(refreshChats).toContain("next.set(id, startedAt);");
-  });
-
-  test("does not settle backgrounded RunTS rows while unblocking queued chat sends", () => {
-    const settleRows = stateSource.slice(
-      stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
-      stateSource.indexOf("function settleTimelineStep"),
-    );
-    expect(stateSource).toContain("function isBackgroundedRunTSTimelineItem(");
-    expect(stateSource).toContain("isRunTSBackgrounded(item.step, id)");
-    expect(settleRows).toContain("isBackgroundedRunTSTimelineItem(item, id)");
-  });
-
-  test("wakes queued messages when refresh proves the active turn is settled", () => {
-    const applyRows = stateSource.slice(
-      stateSource.indexOf("function applyTimelineRows("),
-      stateSource.indexOf("function applyOverviewValue"),
-    );
-    const release = stateSource.slice(
-      stateSource.indexOf("function releaseSettledChatRuntime(id: string)"),
-      stateSource.indexOf("function mergeTimelineUpdateRows"),
-    );
-    const refreshChats = stateSource.slice(
-      stateSource.indexOf("async function refreshChats()"),
-      stateSource.indexOf("async function refreshTimeline"),
-    );
-
-    expect(applyRows).toContain(
-      "timelineRowsSettleActiveTurn(id, displayedTimeline)",
-    );
-    expect(applyRows).toContain("releaseSettledChatRuntime(id);");
-    expect(release).toContain("clearActiveChatRuntime(id);");
-    expect(release).toContain("settleRunningTimelineRows(id);");
-    expect(release).toContain("clearRunTSQueueUnblock(id);");
-    expect(release).toContain('status: "agent:Done"');
-    expect(release).toContain("pending().some((p) => p.chatId === id)");
-    expect(release).toContain("drainSoon();");
-    expect(refreshChats).toContain("const currentChatId = chatId();");
-    expect(refreshChats).toContain("await refreshBackgroundRunTS();");
-    expect(refreshChats).toContain("releaseSettledChatRuntime(currentChatId);");
-  });
-
-  test("does not settle backgrounded RunTS rows while unblocking queued chat sends", () => {
-    const settleRows = stateSource.slice(
-      stateSource.indexOf("function settleRunningTimelineRows(id: string)"),
-      stateSource.indexOf("function settleTimelineStep"),
-    );
-    expect(stateSource).toContain("function isBackgroundedRunTSTimelineItem(");
-    expect(stateSource).toContain("isRunTSBackgrounded(item.step, id)");
-    expect(settleRows).toContain("isBackgroundedRunTSTimelineItem(item, id)");
-  });
-
-  test("does not treat optimistic chat creation as an active agent run", () => {
-    expect(stateSource).toContain(
-      "const locallyCreatedChats = new Set<string>()",
-    );
-    expect(stateSource).toContain("locallyCreatedChats.add(requestedChatId)");
-    expect(stateSource).toContain("const chatHasServerRun = (id: string) =>");
-    expect(stateSource).toContain('chat.status === "agent:Running"');
-    expect(stateSource).toContain(
-      "const chatHasInFlightTurn = (id: string) =>",
-    );
-    expect(stateSource).toContain("chatHasServerRun(id) ||");
-    expect(stateSource).toContain("hasRunningTimelineRowForChat(id) ||");
-    expect(stateSource).toContain("chatHasUnendedDraft(id)");
-    expect(stateSource).not.toContain(
-      'currentChat()?.status === "agent:Queued"',
-    );
-  });
-
-  test("merges queued sends typed before pending-message storage loads", () => {
-    expect(stateSource).toContain("const local = pending()");
-    expect(stateSource).toContain(
-      "const localIds = new Set(local.map((message) => message.id))",
-    );
-    expect(stateSource).toContain(
-      "...r.value.messages.filter((message) => !localIds.has(message.id))",
-    );
-    expect(stateSource).toContain("...local,");
-    expect(stateSource).toContain("if (local.length > 0) {");
-    expect(stateSource).toContain(
-      'api("pending-messages-save", { messages: pending() })',
-    );
-  });
-
-  test("keeps dispatch locks as queue-only state, not visible thinking", () => {
-    expect(stateSource).toContain(
-      "chatHasServerRun(id) && !setHas(runTSQueueUnblockedChats(), id)",
-    );
-    expect(stateSource).toContain("chatHasLocalOpenTurn(id) ||");
-    expect(stateSource).toContain("setHas(dispatchingChats(), id)");
-    expect(stateSource).toContain("setHas(interruptingChats(), id)");
-    expect(stateSource).toContain(
-      "They must not dequeue follow-ups while the current",
-    );
-    expect(stateSource).toContain(
-      "chat still has streamed thinking/reply drafts or visible foreground rows.",
-    );
-    // the visible "thinking" UI.");
-    expect(stateSource).toContain("Only this server-confirmed state drives");
-    expect(stateSource).toContain('the visible "thinking" UI.');
-  });
-
-  test("clears stale dispatch locks when chat-list proves the chat is idle", () => {
-    const refreshChats = stateSource.slice(
-      stateSource.indexOf("async function refreshChats()"),
-      stateSource.indexOf("async function refreshChatMemory"),
-    );
-    const dispatchHelpers = stateSource.slice(
-      stateSource.indexOf("function markDispatchingChat"),
-      stateSource.indexOf("const thinking = () =>"),
-    );
-    const dispatchQueued = stateSource.slice(
-      stateSource.indexOf("async function dispatchQueuedMessage"),
-      stateSource.indexOf("async function drain()"),
-    );
-
-    expect(stateSource).toContain(
-      "const STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS = 5000;",
-    );
-    expect(dispatchHelpers).toContain("function staleDispatchingChatIds");
-    expect(dispatchHelpers).toContain("if (live.has(id)) continue;");
-    expect(dispatchHelpers).toContain(
-      "startedAt + STALE_DISPATCHING_CHAT_REFRESH_GRACE_MS <=",
-    );
-    expect(dispatchHelpers).toContain("function watchDispatchingChat");
-    expect(dispatchHelpers).toContain("void refreshChats().finally");
-    expect(refreshChats).toContain(
-      "for (const id of staleDispatchingChatIds(live, requestStartedAt))",
-    );
-    expect(refreshChats).toContain("clearDispatchingChat(id);");
-    expect(dispatchQueued).toContain("watchDispatchingChat(head.chatId);");
-  });
-
-  test("steer interrupts queue blockers beyond activeChats", () => {
-    const steerInterrupt = stateSource.slice(
-      stateSource.indexOf("async function interruptQueuedChatForSteer"),
-      stateSource.indexOf("async function steerPending"),
-    );
-    const steerPending = stateSource.slice(
-      stateSource.indexOf("async function steerPending"),
-      stateSource.indexOf("function beginPendingEdit"),
-    );
-
-    expect(steerInterrupt).toContain("chatHasInFlightTurn(id)");
-    expect(steerInterrupt).toContain("setHas(dispatchingChats(), id)");
-    expect(steerInterrupt).toContain("setHas(interruptingChats(), id)");
-    expect(steerInterrupt).toContain("const shouldInterruptBackend =");
-    expect(steerInterrupt).toContain("releaseQueuedLocalOpenTurn(id);");
-    expect(steerInterrupt).toContain("if (!shouldInterruptBackend) return;");
-    expect(steerInterrupt).toContain(
-      'updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });',
-    );
-    expect(steerInterrupt).toContain(
-      'const r = await api("interrupt", { chatId: id });',
-    );
-    expect(steerPending).toContain(
-      "await interruptQueuedChatForSteer(item.chatId);",
-    );
-    expect(steerPending).not.toContain("activeChats().has(item.chatId)");
-    expect(steerPending).not.toContain("setChatId(item.chatId)");
-  });
-
-  test("stale selected local turns self-wake queued messages", () => {
-    const queueHelpers = stateSource.slice(
-      stateSource.indexOf("function queuedMessageBlockedOnlyByLocalOpenTurn"),
-      stateSource.indexOf("async function drain()"),
-    );
+  test("drain dispatches the selected front item deterministically", () => {
     const drain = stateSource.slice(
       stateSource.indexOf("async function drain()"),
       stateSource.indexOf("function touchModelMru"),
     );
-    const watch = stateSource.slice(
-      stateSource.indexOf("function watchLocalOpenTurnQueueBlock"),
-      stateSource.indexOf("function staleDispatchingChatIds"),
-    );
-
-    expect(stateSource).toContain(
-      "const STALE_LOCAL_OPEN_TURN_QUEUE_GRACE_MS = 2000;",
-    );
-    expect(stateSource).toContain(
-      "const localOpenTurnQueueBlockStartedAt = new Map<string, number>();",
-    );
-    expect(stateSource).toContain("function releaseQueuedLocalOpenTurn");
-    expect(stateSource).toContain("dismissCurrentDraftReply(id);");
-    expect(stateSource).toContain("clearDraftReply(id);");
-    expect(queueHelpers).toContain("!chatHasServerRun(item.chatId)");
-    expect(queueHelpers).toContain("chatHasLocalOpenTurn(item.chatId)");
-    expect(queueHelpers).toContain("watchLocalOpenTurnQueueBlock(id);");
-    expect(queueHelpers).toContain("releaseQueuedLocalOpenTurn(id);");
-    expect(watch).toContain("void refreshChats().finally");
-    expect(watch).toContain(
-      "void refreshTimeline({ showRefreshing: false }).finally",
-    );
-    expect(watch).toContain("drainSoon();");
-    expect(drain).toContain(
-      "if (releaseStaleLocalOpenTurnQueueBlocks(pen, paused, editing))",
-    );
-    expect(drain).toContain("continue;");
-    expect(drain).toContain("clearLocalOpenTurnQueueBlock(head.chatId);");
+    expect(drain).toContain("const idx = pen.findIndex(");
+    expect(drain).toContain("await dispatchQueuedMessage(head)");
+    expect(drain).not.toContain("editingPendingIds");
   });
 
-  test("clears the RunTS server-run bypass on every runtime teardown (step-end inlines clearActiveChatRuntime)", () => {
-    const clearRuntime = stateSource.slice(
-      stateSource.indexOf("function clearActiveChatRuntime(id: string)"),
-      stateSource.indexOf("function unblockRunTSQueue(id: string)"),
-    );
-    // Without this, the one-shot bypass set when a foreground RunTS backgrounds
-    // stays set after step-end and later lets a follow-up drain into a live
-    // server turn.
-    expect(clearRuntime).toContain("clearRunTSQueueUnblock(id);");
-  });
-
-  test("discards a stale chats refresh that a runtime teardown superseded", () => {
-    const refresh = stateSource.slice(
-      stateSource.indexOf("async function refreshChats()"),
-      stateSource.indexOf("async function refreshChatMemory("),
-    );
-    const clearRuntime = stateSource.slice(
-      stateSource.indexOf("function clearActiveChatRuntime(id: string)"),
-      stateSource.indexOf("function unblockRunTSQueue(id: string)"),
-    );
-    expect(refresh).toContain("const requestSeq = ++chatsRequestSeq;");
-    expect(refresh).toContain("if (requestSeq !== chatsRequestSeq) return;");
-    // The teardown bump is the load-bearing half: it discards a refresh issued
-    // before step-end so a stale agent:Running snapshot can't resurrect the
-    // chat and strand its queued follow-ups.
-    expect(clearRuntime).toContain("chatsRequestSeq++;");
-  });
-
-  test("waits for run registration then reconciles when steering a dispatching chat", () => {
-    const steerInterrupt = stateSource.slice(
-      stateSource.indexOf("async function interruptQueuedChatForSteer(id: string)"),
-      stateSource.indexOf("async function steerPending(id: string)"),
-    );
-    // Run registration happens under the same dispatch lock the interrupt needs,
-    // so waiting for it before interrupting guarantees the interrupt can't race
-    // past an unregistered run and miss it.
-    expect(stateSource).toContain(
-      "async function waitForServerRunRegistered(",
-    );
-    expect(steerInterrupt).toContain(
-      "if (shouldInterruptBackend && !chatHasServerRun(id)) {",
-    );
-    expect(steerInterrupt).toContain("await waitForServerRunRegistered(id);");
-    expect(steerInterrupt).toContain('const r = await api("interrupt", { chatId: id });');
-    // Reconcile with server truth afterwards before the caller re-drains.
-    expect(steerInterrupt).toContain("await refreshChats();");
-  });
-
-  test("serializes concurrent mcp setup dispatches for one chat", () => {
-    const dispatch = stateSource.slice(
-      stateSource.indexOf("async function dispatchQueuedMessage("),
-      stateSource.indexOf("function queuedMessageBlockedOnlyByLocalOpenTurn"),
-    );
-    const drain = stateSource.slice(
-      stateSource.indexOf("async function drain()"),
-      stateSource.indexOf("function touchModelMru"),
-    );
-    expect(stateSource).toContain(
-      "const mcpDispatchingChats = new Set<string>();",
-    );
-    // shouldSendImmediately and the in-flight dispatch both gate on the marker.
-    expect(stateSource).toContain("!mcpDispatchingChats.has(chat)");
-    expect(dispatch).toContain("mcpDispatchingChats.add(head.chatId);");
-    expect(dispatch).toContain("mcpDispatchingChats.delete(head.chatId);");
-    // drain selects an MCP setup only when no same-chat setup is in flight.
-    expect(drain).toContain(
-      "? !mcpDispatchingChats.has(p.chatId)",
-    );
+  test("queue rows expose run-next edit and remove controls", () => {
+    expect(timelineSource).toContain("pending-steer-btn");
+    expect(timelineSource).toContain("edit queued message");
+    expect(timelineSource).toContain("remove queued message");
+    expect(timelineSource).toContain("props.bag.steerPending(props.item().id)");
+    expect(timelineSource).toContain("props.bag.removePending(props.item().id)");
   });
 });

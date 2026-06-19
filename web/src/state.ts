@@ -737,6 +737,7 @@ export function createState() {
       : mergeTimelineRows(page.items, baseCurrent);
     pruneLandedLiveTimelineOverlayRows(id, mergedTimeline);
     const displayedTimeline = applyLiveTimelineOverlayRows(id, mergedTimeline);
+    removeLandedDispatchingPendingMessages(id, mergedTimeline);
     setTimeline(displayedTimeline);
     rememberServerTimelineWatermark(id, page.items);
     pruneDismissedReplies(id, mergedTimeline);
@@ -4686,16 +4687,16 @@ export function createState() {
   //
   // Follow-up messages are mirrored to the harness DB so the queue survives
   // frontend reloads and is shared across clients. The frontend still owns
-  // editability and drain timing; Rust driver state does not own this queue.
+  // Server-backed queued-message list. Items stay visible until explicitly dispatched, edited, or removed.
 
-  const [pending, setPending] = createSignal<
-    {
-      id: string;
-      text: string;
-      chatId: string;
-      attachments?: ImageAttachment[];
-    }[]
-  >([]);
+  type LocalPendingMessage = {
+    id: string;
+    text: string;
+    chatId: string;
+    attachments?: ImageAttachment[];
+  };
+
+  const [pending, setPending] = createSignal<LocalPendingMessage[]>([]);
   // Current draft text in the input bar. Persisted per chat so switching
   // chats doesn't drop in-flight typing.
   const [wipText, setWipText] = createSignal("");
@@ -4705,13 +4706,38 @@ export function createState() {
   const [interruptedChats, setInterruptedChats] = createSignal<Set<string>>(
     new Set(),
   );
-  const [editingPendingIds, setEditingPendingIds] = createSignal<Set<string>>(
-    new Set(),
-  );
   let draining = false;
   let drainRequested = false;
   let pendingLoaded = false;
-  let suppressPendingSave = false;
+  let pendingRefreshInFlight = false;
+  let pendingRefreshAgain = false;
+  // Pending IDs currently being dispatched (not yet landed on the server).
+  // Kept separate from the message objects so queued messages remain editable
+  // and deletable while in flight, and so save/merge round-trips cannot
+  // resurrect a message that is already being sent.
+  const [dispatchingPendingIds, setDispatchingPendingIds] = createSignal<
+    Set<string>
+  >(new Set());
+  function addDispatchingPendingId(id: string) {
+    setDispatchingPendingIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }
+  function deleteDispatchingPendingId(id: string) {
+    setDispatchingPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
+  // Maps a pending message ID to the server userStepId returned by /step.
+  // Lets us remove a queued message as soon as its exact step lands instead
+  // of guessing by text (which breaks for edited or attachment messages).
+  const pendingMessageStepIds = new Map<string, StepId>();
 
   function drainSoon() {
     if (draining) {
@@ -4721,30 +4747,42 @@ export function createState() {
     queueMicrotask(drain);
   }
 
+  function prunePendingDispatchTracking(messages: LocalPendingMessage[]) {
+    const ids = new Set(messages.map((message) => message.id));
+    const current = dispatchingPendingIds();
+    for (const id of Array.from(current)) {
+      if (!ids.has(id)) {
+        deleteDispatchingPendingId(id);
+        pendingMessageStepIds.delete(id);
+      }
+    }
+  }
+
   async function loadPendingMessages() {
-    const r = await api("pending-messages", {});
-    if (!r.ok) {
-      reportError("load pending messages", r.error);
-      pendingLoaded = true;
+    if (pendingRefreshInFlight) {
+      pendingRefreshAgain = true;
       return;
     }
-    suppressPendingSave = true;
-    const local = pending();
-    const localIds = new Set(local.map((message) => message.id));
-    setPending([
-      ...r.value.messages.filter((message) => !localIds.has(message.id)),
-      ...local,
-    ]);
-    suppressPendingSave = false;
-    pendingLoaded = true;
-    if (local.length > 0) {
-      void api("pending-messages-save", { messages: pending() }).then(
-        (save) => {
-          if (!save.ok) reportError("save pending messages", save.error);
-        },
-      );
+    pendingRefreshInFlight = true;
+    try {
+      const r = await api("chat-queue-list", {});
+      if (!r.ok) {
+        reportError("load pending messages", r.error);
+        pendingLoaded = true;
+        return;
+      }
+      const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
+      setPending(messages);
+      prunePendingDispatchTracking(messages);
+      pendingLoaded = true;
+      drainSoon();
+    } finally {
+      pendingRefreshInFlight = false;
+      if (pendingRefreshAgain) {
+        pendingRefreshAgain = false;
+        void loadPendingMessages();
+      }
     }
-    drainSoon();
   }
 
   const wipKey = (id: string) => `moo.wip.${id}`;
@@ -4793,14 +4831,6 @@ export function createState() {
     else localStorage.setItem(wipKey(id), text);
   });
 
-  void loadPendingMessages();
-  createEffect(() => {
-    const pen = pending();
-    if (!pendingLoaded || suppressPendingSave) return;
-    void api("pending-messages-save", { messages: pen }).then((r) => {
-      if (!r.ok) reportError("save pending messages", r.error);
-    });
-  });
 
   function isMcpSetupMessage(text: string): boolean {
     return text.trim().toLowerCase() === "mcp setup";
@@ -4829,19 +4859,22 @@ export function createState() {
     }
     deleteFromSet(setInterruptedChats, interruptedChats, cid);
     const id = newPendingMessageId();
+    const item = { id, text, chatId: cid, ...(attachments.length ? { attachments } : {}) };
     if (shouldSendImmediately(cid)) {
-      dispatchQueuedMessage({ id, text, chatId: cid, attachments });
+      dispatchQueuedMessage(item, { optimisticUserInput: true });
       return;
     }
-    setPending([
-      ...pending(),
-      { id, text, chatId: cid, ...(attachments.length ? { attachments } : {}) },
-    ]);
-    drainSoon();
+    setPending([...pending(), item]);
+    void savePendingMessages().then(drainSoon);
   }
 
-  function editPending(id: string, text: string) {
-    setPending(pending().map((p) => (p.id === id ? { ...p, text } : p)));
+  async function editPending(id: string, _text?: string) {
+    const item = pending().find((p) => p.id === id);
+    if (!item || dispatchingPendingIds().has(id)) return;
+    setPending(pending().filter((p) => p.id !== id));
+    setWipText(item.text);
+    await savePendingMessages();
+    requestChatComposerFocus();
   }
 
   function addPendingAttachments(id: string, attachments: ImageAttachment[]) {
@@ -4867,108 +4900,45 @@ export function createState() {
     );
   }
 
-  function removePending(id: string) {
+  async function removePending(id: string) {
+    const item = pending().find((p) => p.id === id);
+    if (!item) return;
+    const wasDispatching = dispatchingPendingIds().has(id);
     setPending(pending().filter((p) => p.id !== id));
-    setEditingPendingIds((current) => {
-      if (!current.has(id)) return current;
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
-  }
-
-  // Wait for a chat's server run to actually register before interrupting it.
-  // A chat in the dispatching window has sent /step but the host hasn't yet
-  // inserted the run into its registry; an interrupt RPC now would race that
-  // registration (which the host does under the same dispatch lock the
-  // interrupt needs) and silently miss, so the turn would proceed uninterrupted.
-  // Waiting for step-start (or agent:Running) guarantees the subsequent
-  // interrupt finds the run. Bounded so a dispatch that never registers (e.g. a
-  // step error) can't hang the steer.
-  async function waitForServerRunRegistered(
-    id: string,
-    timeoutMs = 3000,
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (chatHasServerRun(id)) return true;
-      // The dispatch resolved without registering a run (error/cancel cleared
-      // the dispatch lock): nothing left to wait for.
-      if (!setHas(dispatchingChats(), id) && !setHas(activeChats(), id))
-        return chatHasServerRun(id);
-      await new Promise((resolve) => window.setTimeout(resolve, 40));
-    }
-    return chatHasServerRun(id);
-  }
-
-  async function interruptQueuedChatForSteer(id: string) {
-    const shouldInterruptBackend =
-      setHas(activeChats(), id) || setHas(dispatchingChats(), id);
-    if (
-      !chatHasInFlightTurn(id) &&
-      !setHas(dispatchingChats(), id) &&
-      !setHas(interruptingChats(), id)
-    ) {
-      return;
-    }
-    // Dispatching-but-not-yet-running: let the run register so the interrupt
-    // below can't race past it (the chat stays paused in interruptedChats while
-    // we wait, set by the steer caller, so nothing drains for it meanwhile).
-    if (shouldInterruptBackend && !chatHasServerRun(id)) {
-      await waitForServerRunRegistered(id);
-    }
-    releaseQueuedLocalOpenTurn(id);
-    if (!shouldInterruptBackend) return;
-    addToSet(setInterruptingChats, interruptingChats, id);
-    addToSet(setInterruptedChats, interruptedChats, id);
-    updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
-    const r = await api("interrupt", { chatId: id });
-    deleteFromSet(setInterruptingChats, interruptingChats, id);
-    if (!r.ok) reportError(`interrupt ${id}`, r.error);
-    // We tore down this chat's local dispatch lock above (releaseQueuedLocalOpenTurn),
-    // and the interrupt can race the host run-registration for a chat that was
-    // only dispatching (step sent, not yet running). If it missed, the run is
-    // still live. Reconcile with server truth before the caller re-enqueues and
-    // re-drains, so the steered message stays queued (the host serializes it
-    // behind the live run) instead of dispatching off a stale "idle" snapshot.
-    await refreshChats();
+    deleteDispatchingPendingId(id);
+    pendingMessageStepIds.delete(id);
+    await savePendingMessages();
+    if (!wasDispatching) drainSoon();
   }
 
   async function steerPending(id: string) {
-    const item = pending().find((p) => p.id === id);
-    if (!item) return;
-    setPending(pending().filter((p) => p.id !== id));
-    setEditingPendingIds((current) => {
-      if (!current.has(id)) return current;
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
-    addToSet(setInterruptedChats, interruptedChats, item.chatId);
-    await interruptQueuedChatForSteer(item.chatId);
-    deleteFromSet(setInterruptedChats, interruptedChats, item.chatId);
-    setPending([item, ...pending()]);
+    const pen = pending();
+    const idx = pen.findIndex((p) => p.id === id);
+    if (idx < 0) return;
+    const item = pen[idx]!;
+    if (dispatchingPendingIds().has(id)) return;
+    setPending([item, ...pen.slice(0, idx), ...pen.slice(idx + 1)]);
+    await savePendingMessages();
     drainSoon();
+  }
+
+  async function savePendingMessages() {
+    if (!pendingLoaded) return;
+    const r = await api("chat-queue-save", { messages: pending() });
+    if (!r.ok) {
+      reportError("save pending messages", r.error);
+      return;
+    }
+    const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
+    setPending(messages);
+    prunePendingDispatchTracking(messages);
   }
 
   function beginPendingEdit(id: string) {
-    setEditingPendingIds((current) => {
-      if (current.has(id)) return current;
-      const next = new Set(current);
-      next.add(id);
-      return next;
-    });
+    void editPending(id);
   }
 
-  function endPendingEdit(id: string) {
-    setEditingPendingIds((current) => {
-      if (!current.has(id)) return current;
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
-    drainSoon();
-  }
+  function endPendingEdit(_id: string) {}
 
   function appendOptimisticUserInput(
     chat: string,
@@ -4992,14 +4962,60 @@ export function createState() {
     forgetChatCache(chat);
   }
 
+  function clearPendingDispatching(id: string) {
+    deleteDispatchingPendingId(id);
+  }
+
+  function removeLandedDispatchingPendingMessages(
+    chat: string,
+    rows: TimelineItem[],
+  ) {
+    const landedStepIds = new Set<StepId>();
+    const landedTexts = new Map<string, number>();
+    for (const item of rows) {
+      if (item.type !== "step" || item.kind !== "agent:UserInput") continue;
+      landedStepIds.add(item.step);
+      landedTexts.set(item.text, (landedTexts.get(item.text) ?? 0) + 1);
+    }
+    if (landedStepIds.size === 0 && landedTexts.size === 0) return;
+    setPending((current) => {
+      let changed = false;
+      const next = current.filter((message) => {
+        if (
+          message.chatId !== chat ||
+          !dispatchingPendingIds().has(message.id)
+        )
+          return true;
+        const stepId = pendingMessageStepIds.get(message.id);
+        if (stepId != null && landedStepIds.has(stepId)) {
+          pendingMessageStepIds.delete(message.id);
+          deleteDispatchingPendingId(message.id);
+          changed = true;
+          return false;
+        }
+        const count = landedTexts.get(message.text) ?? 0;
+        if (count <= 0) return true;
+        landedTexts.set(message.text, count - 1);
+        pendingMessageStepIds.delete(message.id);
+        deleteDispatchingPendingId(message.id);
+        changed = true;
+        return false;
+      });
+      return changed ? next : current;
+    });
+  }
+
   async function dispatchMessageNow(
     chat: string,
     text: string,
     attachments: ImageAttachment[] = [],
     label = "step",
+    opts: { optimisticUserInput?: boolean } = { optimisticUserInput: true },
   ) {
     const id = newPendingMessageId();
-    appendOptimisticUserInput(chat, id, text, attachments);
+    if (opts.optimisticUserInput) {
+      appendOptimisticUserInput(chat, id, text, attachments);
+    }
     if (!(await waitForChatCreation(chat))) return;
     await waitForChatSettingsWrites(chat);
     const r = await api("step", {
@@ -5010,21 +5026,31 @@ export function createState() {
     if (!r.ok) reportError(`${label} ${chat}`, r.error);
   }
 
-  async function dispatchQueuedMessage(head: {
-    id: string;
-    text: string;
-    chatId: string;
-    attachments?: ImageAttachment[];
-  }) {
+  async function dispatchQueuedMessage(
+    head: {
+      id: string;
+      text: string;
+      chatId: string;
+      attachments?: ImageAttachment[];
+    },
+    opts: { optimisticUserInput?: boolean } = {},
+  ) {
     clearRunTSQueueUnblock(head.chatId);
     const attachments = head.attachments || [];
+    addDispatchingPendingId(head.id);
     if (isMcpSetupMessage(head.text)) {
       deleteFromSet(setInterruptedChats, interruptedChats, head.chatId);
       // Hold an in-flight marker for the duration of the dispatch so a second
       // queued/typed `mcp setup` for the same chat can't be dispatched
       // concurrently; release it (and re-drain any follow-up) when it settles.
       mcpDispatchingChats.add(head.chatId);
-      void dispatchMessageNow(head.chatId, head.text, attachments, "MCP setup")
+      void dispatchMessageNow(
+        head.chatId,
+        head.text,
+        attachments,
+        "MCP setup",
+        opts,
+      )
         .finally(() => {
           mcpDispatchingChats.delete(head.chatId);
           drainSoon();
@@ -5038,13 +5064,17 @@ export function createState() {
     // wait for the server-confirmed step-start event or running status.
     markDispatchingChat(head.chatId);
 
-    appendOptimisticUserInput(head.chatId, head.id, head.text, attachments);
+    if (opts.optimisticUserInput) {
+      appendOptimisticUserInput(head.chatId, head.id, head.text, attachments);
+    }
     // /api/run now returns immediately; the chat driver runs the agent
     // loop in the background. Keep the local dispatch lock until
     // step-start/step-end (or an error) so follow-up messages remain
     // queued/editable without showing the thinking indicator early.
     if (!(await waitForChatCreation(head.chatId))) {
       clearDispatchingChat(head.chatId);
+      deleteDispatchingPendingId(head.id);
+      pendingMessageStepIds.delete(head.id);
       return;
     }
     await waitForChatSettingsWrites(head.chatId);
@@ -5056,7 +5086,10 @@ export function createState() {
     if (!r.ok) {
       reportError(`step ${head.chatId}`, r.error);
       clearDispatchingChat(head.chatId);
+      deleteDispatchingPendingId(head.id);
+      pendingMessageStepIds.delete(head.id);
     } else {
+      pendingMessageStepIds.set(head.id, r.value.userStepId);
       watchDispatchingChat(head.chatId);
     }
   }
@@ -5135,10 +5168,9 @@ export function createState() {
       while (true) {
         const pen = pending();
         const paused = interruptedChats();
-        const editing = editingPendingIds();
         const idx = pen.findIndex(
           (p, i) =>
-            !editing.has(p.id) &&
+            !dispatchingPendingIds().has(p.id) &&
             !paused.has(p.chatId) &&
             // MCP setup keeps its server-busy and ordering bypasses (it may run
             // promptly even while the chat looks busy), but must still wait
@@ -5151,13 +5183,13 @@ export function createState() {
               !pen.slice(0, i).some((earlier) => earlier.chatId === p.chatId)),
         );
         if (idx < 0) {
-          if (releaseStaleLocalOpenTurnQueueBlocks(pen, paused, editing))
+          if (releaseStaleLocalOpenTurnQueueBlocks(pen, paused, new Set()))
             continue;
           break;
         }
         const head = pen[idx]!;
         clearLocalOpenTurnQueueBlock(head.chatId);
-        setPending([...pen.slice(0, idx), ...pen.slice(idx + 1)]);
+        addDispatchingPendingId(head.id);
         await dispatchQueuedMessage(head);
       }
     } finally {
@@ -6496,6 +6528,7 @@ export function createState() {
       refreshVocabularySoon();
     }
     if (ev.kind === "pointer") {
+      if (ref === "chat/pending-messages") void loadPendingMessages();
       refreshPointersSoon();
       if (
         typeof ref === "string" &&
@@ -6696,6 +6729,11 @@ export function createState() {
       startEvents();
       const initialView = parseLocation().view;
       refreshPointers();
+      // Hydrate the queued-message list early so enqueueMessage/save/drain can
+      // work as soon as the composer is interactive. Without this, messages sent
+      // before the first pointer-change WS event stay queued forever because
+      // pendingLoaded is false.
+      await loadPendingMessages();
       // If the user lands directly on /facts, start loading the data that backs
       // the memory stats immediately. Do not wait for the chat list first: that
       // request can be slow or blocked behind other work, leaving the page stuck
@@ -6932,6 +6970,7 @@ export function createState() {
     draftReply,
     dismissedReplies,
     pending,
+    dispatchingPendingIds,
     wipText,
     setWipText,
     sidebarW,

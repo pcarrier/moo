@@ -1386,8 +1386,10 @@ function PendingItem(props: {
   let fileInput: HTMLInputElement | undefined;
   let blurTimer: number | null = null;
   const [autocompleteEnabled, setAutocompleteEnabled] = createSignal(false);
+  const dispatching = () =>
+    props.bag.dispatchingPendingIds().has(props.item().id);
   const attachmentsSupported = () =>
-    props.bag.chatModel()?.supportsAttachments !== false;
+    !dispatching() && props.bag.chatModel()?.supportsAttachments !== false;
   const attachmentTitle = () =>
     attachmentsSupported()
       ? "attach image"
@@ -1444,27 +1446,13 @@ function PendingItem(props: {
     focus: focusMessageInput,
     enabled: autocompleteEnabled,
   });
-  const beginEditing = () => {
-    if (blurTimer !== null) {
-      window.clearTimeout(blurTimer);
-      blurTimer = null;
-    }
-    setAutocompleteEnabled(true);
-    props.bag.beginPendingEdit(props.item().id);
-  };
-  const finishEditingSoon = () => {
-    if (blurTimer !== null) window.clearTimeout(blurTimer);
-    blurTimer = window.setTimeout(() => {
-      blurTimer = null;
-      setAutocompleteEnabled(false);
-      autocomplete.closeAutocomplete();
-      props.bag.endPendingEdit(props.item().id);
-    }, 120);
+  const editQueuedMessage = () => {
+    if (dispatching()) return;
+    props.bag.editPending(props.item().id);
   };
   onCleanup(() => {
     if (blurTimer !== null) window.clearTimeout(blurTimer);
     setAutocompleteEnabled(false);
-    props.bag.endPendingEdit(props.item().id);
   });
   return (
     <li class="pending-item">
@@ -1489,9 +1477,10 @@ function PendingItem(props: {
                   class="attachment-remove"
                   title="remove image"
                   aria-label="remove image"
-                  onClick={() =>
-                    props.bag.removePendingAttachment(props.item().id, i)
-                  }
+                  onClick={() => {
+                    if (!dispatching()) editQueuedMessage();
+                  }}
+                  disabled={dispatching()}
                 >
                   ×
                 </button>
@@ -1534,29 +1523,20 @@ function PendingItem(props: {
             rows={1}
             autocomplete="off"
             value={props.item().text}
-            onInput={(e) => {
-              beginEditing();
-              props.bag.editPending(props.item().id, e.currentTarget.value);
-              autocomplete.updateComposerCursor();
-              autosize();
-            }}
-            onKeyDown={(e) => autocomplete.handleAutocompleteKey(e)}
-            onKeyUp={autocomplete.updateComposerCursor}
-            onClick={autocomplete.updateComposerCursor}
-            onSelect={autocomplete.updateComposerCursor}
-            onFocus={() => {
-              beginEditing();
-              autocomplete.updateComposerCursor();
-              autocomplete.openAutocomplete();
-            }}
-            onBlur={finishEditingSoon}
-            aria-label="queued message"
+            onFocus={editQueuedMessage}
+            onClick={editQueuedMessage}
+            aria-label={dispatching() ? "sending queued message" : "queued message"}
+            readOnly
           />
         </div>
         <button
           type="button"
           class="primary send-btn pending-steer-btn"
-          title="steer with this queued message now"
+          title={
+            dispatching()
+              ? "queued message is being sent"
+              : "steer with this queued message now"
+          }
           aria-label="steer with this queued message now"
           onClick={() => props.bag.steerPending(props.item().id)}
         >
@@ -1564,8 +1544,20 @@ function PendingItem(props: {
         </button>
         <button
           type="button"
+          class="primary send-btn pending-edit-btn"
+          title={dispatching() ? "queued message is being sent" : "edit queued message"}
+          aria-label="edit queued message"
+          onClick={editQueuedMessage}
+          disabled={dispatching()}
+        >
+          Edit
+        </button>
+        <button
+          type="button"
           class="primary send-btn pending-remove-btn"
-          title="remove queued message"
+          title={
+            dispatching() ? "queued message is being sent" : "remove queued message"
+          }
           aria-label="remove queued message"
           onClick={() => props.bag.removePending(props.item().id)}
         >

@@ -1,6 +1,6 @@
 [package]
 name = "moo"
-version = "0.8.0"
+version = "0.7.1"
 edition = "2024"
 description = "Local agent harness and UI"
 license = "MIT"
@@ -13,15 +13,15 @@ name = "moo"
 path = "src/main.rs"
 
 [dependencies]
-rusty_v8 = { package = "v8", version = "150" }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusty_v8 = { package = "v8", version = "147.1.0" }
+rusqlite = { version = "0.39", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 spargebra = "0.4.6"
 sha2 = "0.11"
 clap = { version = "4", features = ["derive", "env"] }
 ureq = "3"
-getrandom = "0.4"
+getrandom = "0.3"
 sha1 = "0.11"
 base64 = "0.22"
 argon2 = { version = "0.5", features = ["std"] }

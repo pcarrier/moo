@@ -221,9 +221,26 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     envAltKeys: ["KIMI_API_KEY"],
     baseUrlEnv: "MOONSHOT_BASE_URL",
     defaultBaseUrl: "https://api.moonshot.ai/v1",
-    fallbackModel: "kimi-k2.6",
+    fallbackModel: "kimi-k2.7-code",
     inferPrefixes: ["kimi-", "moonshot-"],
     models: [
+      {
+        id: "kimi-k2.7-code-highspeed",
+        match: "^kimi-k2\\.7-code-highspeed(?:[-.]|$)",
+        contextWindow: 262_144,
+        pricing: { input: 1.9, cachedInput: 0.38, output: 8 },
+        capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true },
+        defaultOption: true,
+      },
+      {
+        id: "kimi-k2.7-code",
+        aliases: ["kimi-k2.7"],
+        match: "^kimi-k2\\.7(?:-code)?(?:[-.]|$)",
+        contextWindow: 262_144,
+        pricing: { input: 0.95, cachedInput: 0.19, output: 4 },
+        capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true },
+        defaultOption: true,
+      },
       {
         id: "kimi-k2.6",
         match: "^kimi-k2\\.6(?:[-.]|$)",

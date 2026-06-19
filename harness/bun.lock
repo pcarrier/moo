@@ -5,8 +5,8 @@
     "": {
       "name": "moo-harness",
       "dependencies": {
-        "partial-json": "latest",
-        "typescript": "latest",
+        "partial-json": "^0.1.7",
+        "typescript": "^6.0.3",
       },
     },
   },

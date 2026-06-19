@@ -12,7 +12,7 @@ import type {
   RepoKind,
 } from "./types";
 
-export type PendingMessage = { id: string; chatId: ChatId; text: string; attachments?: ImageAttachment[] };
+export type PendingMessage = { id: string; chatId: ChatId; text: string; attachments?: ImageAttachment[]; dispatching?: boolean };
 
 export type DescribeSnapshotReq = { chatId: ChatId; mode: "snapshot"; limit?: number };
 export type DescribeUpdateReq = { chatId: ChatId; mode: "update"; limit?: number; sinceAt?: number; knownHead?: string | null; knownTotalTimelineItems?: number; knownCompaction?: string | null };
@@ -22,7 +22,12 @@ export type ChatCommands =
   | ApiCommand<"compactions", { chatId: ChatId }, CompactionsValue>
   | ApiCommand<"step", { chatId: ChatId; message: string; attachments?: ImageAttachment[] }, { chatId: ChatId; userStepId: StepId }>
   | ApiCommand<"pending-messages", Record<string, never>, { messages: PendingMessage[] }>
-  | ApiCommand<"pending-messages-save", { messages: PendingMessage[] }, { messages: PendingMessage[] }>
+  | ApiCommand<"pending-messages-save", { messages: PendingMessage[]; knownIds?: string[] }, { messages: PendingMessage[] }>
+  | ApiCommand<"chat-queue-list", { chatId?: ChatId }, { messages: PendingMessage[] }>
+  | ApiCommand<"chat-queue-save", { messages: PendingMessage[]; knownIds?: string[] }, { messages: PendingMessage[] }>
+  | ApiCommand<"chat-queue-remove", { chatId?: ChatId; id: string }, { messages: PendingMessage[] }>
+  | ApiCommand<"chat-queue-run-next", { chatId?: ChatId; id: string }, { moved: boolean; messages: PendingMessage[] }>
+  | ApiCommand<"chat-queue-edit", { chatId?: ChatId; id: string }, { item: PendingMessage | null; messages: PendingMessage[] }>
   | ApiCommand<"compact", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"resume", { chatId: ChatId }, { chatId: ChatId; accepted: boolean }>
   | ApiCommand<"interrupt", { chatId: ChatId }, { chatId: ChatId; aborted: boolean }>

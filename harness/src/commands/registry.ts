@@ -46,6 +46,11 @@ import {
   tickCommand,
   pendingMessagesCommand,
   pendingMessagesSaveCommand,
+  chatQueueListCommand,
+  chatQueueSaveCommand,
+  chatQueueRemoveCommand,
+  chatQueueRunNextCommand,
+  chatQueueEditCommand,
 } from "./step";
 import { dumpCommand } from "./dump";
 import { describeCommand } from "./describe";
@@ -119,6 +124,11 @@ const STEP_COMMANDS: Record<string, CommandHandler> = {
   submit: submitCommand,
   "pending-messages": pendingMessagesCommand,
   "pending-messages-save": pendingMessagesSaveCommand,
+  "chat-queue-list": chatQueueListCommand,
+  "chat-queue-save": chatQueueSaveCommand,
+  "chat-queue-remove": chatQueueRemoveCommand,
+  "chat-queue-run-next": chatQueueRunNextCommand,
+  "chat-queue-edit": chatQueueEditCommand,
 };
 
 const CHAT_COMMANDS: Record<string, CommandHandler> = {

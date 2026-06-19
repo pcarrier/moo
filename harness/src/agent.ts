@@ -853,11 +853,15 @@ export function toResponsesTools(tools: any[] | null): any[] | null {
 export function llmProviderHeaders(
   provider: LLMProvider,
 ): Record<string, string> {
+  const isOpenAISubscription =
+    provider.name === "openai" && provider.authMode === "oauth";
+
   if (provider.name === "anthropic") {
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",
     };
     headers["x-api-key"] = provider.apiKey || "";
+    headers["User-Agent"] = "moo";
     return headers;
   }
   const headers: Record<string, string> = {
@@ -869,8 +873,10 @@ export function llmProviderHeaders(
   if (provider.authMode === "oauth") {
     if (provider.oauthAccountId)
       headers["ChatGPT-Account-ID"] = provider.oauthAccountId;
-    headers["User-Agent"] = "codex_cli_rs/0.1.0";
     headers["originator"] = "codex_cli_rs";
+  }
+  if (!isOpenAISubscription) {
+    headers["User-Agent"] = "moo";
   }
   return headers;
 }

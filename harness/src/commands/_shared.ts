@@ -49,6 +49,7 @@ export type DriverStateInput = {
   mode?: "step" | "resume" | "compact" | string;
   message?: string;
   attachments?: AttachmentInput[];
+  userStepId?: string;
   artificial?: boolean;
   messages?: LlmMessageInput[];
   pendingToolCalls?: ToolCallInput[];
@@ -127,6 +128,7 @@ export type UserStepInput = {
   message?: string;
   attachments?: AttachmentInput[];
   artificial?: boolean;
+  userStepId?: string;
 };
 
 export type StepDriverInput = {
@@ -187,6 +189,8 @@ export type StepCommandInput = StepReferenceInput & UserStepInput & StepDriverIn
   availableTokens?: number | string;
   compactionsInARow?: number | string;
   retries?: RetryScheduleStateInput;
+  messages?: JsonValue[];
+  knownIds?: JsonValue[];
 };
 
 export type MemoryCommandInput = ProjectScopedInput & {
@@ -301,6 +305,11 @@ export type StepCommandName =
   | "tick"
   | "pending-messages"
   | "pending-messages-save"
+  | "chat-queue-list"
+  | "chat-queue-save"
+  | "chat-queue-remove"
+  | "chat-queue-run-next"
+  | "chat-queue-edit"
   | "message-delete"
   | "message-restore";
 

@@ -43,7 +43,7 @@
         "x86_64-linux" = "sha256-yw/kSgoX6ge5kydwnJfbHIfaWrU5+OFyje1zfSINvvU=";
         "aarch64-linux" = "sha256-tfaR3aK7Tnd5JKur+fefG6eO8v2UqI3MN0vW53VD1Fs=";
         "x86_64-darwin" = "sha256-fBgmnPOM2lTK9XBlEx4VJiL32H5zOaFxNQ3b8KExvhM=";
-        "aarch64-darwin" = "sha256-QBsIgZ+8Irr0tAjunisSDpF4HBJOH9jBXiX4UZq9pMU=";
+        "aarch64-darwin" = "sha256-PkxcahHPVA6kmIHc1QSrmbN1HQfo6tl5bSJnfED0SfI=";
       };
 
 
@@ -203,7 +203,7 @@
           commonArgs = {
             inherit src;
             pname = "moo";
-            version = "0.8.0";
+            version = "0.7.1";
             strictDeps = true;
             doCheck = false;
 
