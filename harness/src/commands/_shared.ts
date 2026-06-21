@@ -231,6 +231,7 @@ export type UiCommandInput = {
   id?: string;
   uiId?: string;
   instanceId?: string;
+  state?: JsonObject;
   input?: JsonObject;
   manifest?: UiManifestInput;
   bundle?: UiBundleInput;

@@ -1,3 +1,5 @@
+import { parseJson, terminalUiStateSchema } from "./schema";
+
 export type TerminalUiState = {
   open: boolean;
   selectedSessionId: string | null;
@@ -19,11 +21,11 @@ function cloneTerminalUiState(state: TerminalUiState): TerminalUiState {
 export function normalizeTerminalUiState(
   value: unknown,
 ): TerminalUiState | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const selected = record.selectedSessionId;
+  const result = terminalUiStateSchema.safeParse(value);
+  if (!result.success) return null;
+  const selected = result.data.selectedSessionId;
   return {
-    open: record.open === true,
+    open: result.data.open,
     selectedSessionId: typeof selected === "string" && selected ? selected : null,
   };
 }

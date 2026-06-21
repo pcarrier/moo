@@ -1,6 +1,12 @@
 import * as host from "./host_ops";
 import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
-import { parseJson } from "./core/json";
+import { parseJson, z } from "./core/json";
+import {
+  mcpOAuthPendingSchema,
+  mcpOAuthTokenSchema,
+  mcpServerConfigSchema,
+  mcpSessionSchema,
+} from "./core/schema";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
 import { PatchError, patchText, validatePatchEnvelopeTarget } from "./core/patch";
@@ -855,10 +861,10 @@ const objects: Moo["objects"] = {
     const row = host.getObject(hash);
     return row ? { kind: row.kind, text: row.content } : null;
   },
-  async getJSON({ hash }) {
+  async getJSON<V = unknown>({ hash, schema }: { hash: string; schema?: z.ZodType<V> }): Promise<{ kind: string; value: V } | null> {
     const row = host.getObject(hash);
     if (!row) return null;
-    return { kind: row.kind, value: parseJson(row.content, "objects.getJSON") };
+    return { kind: row.kind, value: parseJson(row.content, "objects.getJSON", schema) };
   },
 };
 
@@ -2051,7 +2057,7 @@ async function loadMcpOAuthToken(serverId: string): Promise<McpOAuthToken | null
   if (!clean) return null;
   const hash = await pointers.get({ name: mcpOAuthTokenRef(clean) });
   if (!hash) return null;
-  const row = await objects.getJSON<McpOAuthToken>({ hash: hash });
+  const row = await objects.getJSON<McpOAuthToken>({ hash, schema: mcpOAuthTokenSchema });
   return row?.value?.access_token ? row.value : null;
 }
 
@@ -2076,11 +2082,11 @@ async function loadMcpSession(serverId: string): Promise<McpSession | null> {
   if (!clean) return null;
   const target = await pointers.get({ name: mcpSessionRef(clean) });
   if (!target) return null;
-  const value = decodeJsonPointer<McpSession>(target);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const value = decodeJsonPointer<McpSession>(target, mcpSessionSchema);
+  if (!value) return null;
   const session: McpSession = {};
-  if (typeof value.id === "string" && value.id.trim()) session.id = value.id.trim();
-  if (Number.isFinite(value.initializedAt)) session.initializedAt = Number(value.initializedAt);
+  if (value.id?.trim()) session.id = value.id.trim();
+  if (Number.isFinite(value.initializedAt)) session.initializedAt = value.initializedAt;
   return session.id || session.initializedAt ? session : null;
 }
 
@@ -2266,7 +2272,7 @@ const mcpCore = {
     if (!clean) return null;
     const hash = await pointers.get({ name: mcpRef(clean) });
     if (!hash) return null;
-    const row = await objects.getJSON<McpServerConfig>({ hash: hash });
+    const row = await objects.getJSON<McpServerConfig>({ hash, schema: mcpServerConfigSchema });
     return row?.value ? normalizeMcpServer(row.value) : null;
   },
   async saveServer(config: McpServerConfig): Promise<McpServerConfig> {
@@ -2329,7 +2335,7 @@ const mcpCore = {
     const cleanState = String(state || "").trim();
     const hash = cleanState ? await pointers.get({ name: mcpOAuthPendingRef(cleanState) }) : null;
     if (!hash) throw new Error("unknown or expired MCP OAuth state");
-    const row = await objects.getJSON<McpOAuthPending>({ hash: hash });
+    const row = await objects.getJSON<McpOAuthPending>({ hash, schema: mcpOAuthPendingSchema });
     const pending = row?.value;
     if (!pending) throw new Error("invalid MCP OAuth state");
     if (pending.expiresAt < await time.nowMs({})) {

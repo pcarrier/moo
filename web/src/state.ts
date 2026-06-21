@@ -48,6 +48,7 @@ import { EventStream, type Event as WsEvent } from "./events";
 import { createChatSettingsWriteBarrier } from "./chatSettingsBarrier";
 import { checkPsk, getPsk, setPsk } from "./auth";
 import { storage } from "./storage";
+import { parseJson, chatCacheSchema, toolCallArgsSchema } from "./schema";
 import {
   mergedFileDiffs,
   mergedMemoryDiffs,
@@ -553,9 +554,7 @@ export function createState() {
     try {
       const raw = storage.getItem(CHAT_CACHE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as {
-        entries?: Array<[string, ChatCacheEntry]>;
-      };
+      const parsed = parseJson(raw, "chat cache", chatCacheSchema);
       for (const [id, rawEntry] of parsed.entries ?? []) {
         if (!id) continue;
         const entry = normalizeChatCacheEntry(rawEntry);
@@ -1592,7 +1591,7 @@ export function createState() {
     let streamedArgs: unknown = ev.args ?? "";
     if (typeof ev.args === "string") {
       try {
-        streamedArgs = JSON.parse(ev.args);
+        streamedArgs = parseJson(ev.args, "tool-call args", toolCallArgsSchema);
       } catch {
         streamedArgs = ev.args;
       }

@@ -1,4 +1,5 @@
-import { parseProjectArg, type ChatCommandName, type FileCommandName, type Input, type MemoryCommandName, type McpCommandName, type StepCommandName, type UiCommandName } from "./_shared";
+import { jsonObjectSchema, jsonValueSchema, parseJson, z } from "../core/json";
+import { parseProjectArg, type ChatCommandName, type FileCommandName, type Input, type MemoryCommandName, type McpCommandName, type ProviderAuthConfigInput, type StepCommandName, type UiCommandName } from "./_shared";
 
 type KnownArgvCommand = StepCommandName | ChatCommandName | FileCommandName | MemoryCommandName | McpCommandName | UiCommandName | "enqueue" | "submit" | "vocabulary" | "vocab-define" | "llm-auth-get" | "llm-auth-save" | "llm-auth-oauth-start" | "llm-auth-oauth-complete" | "llm-auth-oauth-device-start" | "llm-auth-oauth-device-poll" | "llm-auth-oauth-logout" | "mcp-oauth-complete" | "mcp-call";
 type ArgvParser<C extends string = KnownArgvCommand> = (command: C, args: string[]) => Input;
@@ -135,12 +136,12 @@ function stepReferencePayload(command: StepCommandName, args: string[]): Input {
 
 function enqueuePayload(command: "enqueue", args: string[]): Input {
   const payload: Input = { command, chatId: args[0] ?? DEFAULT_CHAT_ID, kind: args[1] ?? "agent:Tick" };
-  if (args[2]) payload.payload = parseJson(args[2], { raw: args[2] });
+  if (args[2]) payload.payload = parseJson(args[2], "enqueue payload", jsonValueSchema);
   return payload;
 }
 
 function submitPayload(command: "submit", args: string[]): Input {
-  return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, requestId: args[1], values: parseJsonStrict(args[2], {}, "submit values") };
+  return { command, chatId: args[0] ?? DEFAULT_CHAT_ID, requestId: args[1], values: parseJsonStrict(args[2], {}, "submit values", jsonObjectSchema) };
 }
 
 function newChatPayload(command: "chat-new", args: string[]): Input {
@@ -199,7 +200,7 @@ function effortSettingPayload(command: "chat-effort-set", args: string[]): Input
 }
 
 function jsonObjectPayload(command: "llm-auth-save", args: string[]): Input {
-  return { command, ...parseJson(args.join(" "), {}) as object };
+  return { command, ...(parseJson(args.join(" "), "llm-auth-save payload", z.record(z.unknown())) as ProviderAuthConfigInput) };
 }
 
 function triplesPayload(command: "triples", args: string[]): Input {
@@ -244,7 +245,7 @@ function mcpOAuthCompletePayload(command: "mcp-oauth-complete", args: string[]):
 }
 
 function mcpCallPayload(command: "mcp-call", args: string[]): Input {
-  return { command, serverId: args[0], name: args[1], arguments: parseJsonStrict(args.slice(2).join(" "), {}, "mcp-call arguments") };
+  return { command, serverId: args[0], name: args[1], arguments: parseJsonStrict(args.slice(2).join(" "), {}, "mcp-call arguments", jsonObjectSchema) };
 }
 
 function uiIdPayload(command: UiCommandName, args: string[]): Input {
@@ -262,32 +263,24 @@ function instancePayload(command: UiCommandName, args: string[]): Input {
 }
 
 function uiStatePayload(command: "ui-state-set", args: string[]): Input {
-  return { command, instanceId: args[0], state: parseJsonStrict(args[1], {}, "ui-state-set state") };
+  return { command, instanceId: args[0], state: parseJsonStrict(args[1], {}, "ui-state-set state", jsonObjectSchema) };
 }
 
 function uiCallPayload(command: "ui-call", args: string[]): Input {
-  return { command, uiId: args[0], name: args[1], input: parseJsonStrict(args.slice(2).join(" "), {}, "ui-call input") };
+  return { command, uiId: args[0], name: args[1], input: parseJsonStrict(args.slice(2).join(" "), {}, "ui-call input", jsonObjectSchema) };
 }
 
 function vocabDefinePayload(command: "vocab-define", args: string[]): Input {
   return { command, name: args[0], description: args.slice(1).join(" ") };
 }
 
-function parseJson(text: string | undefined, fallback: unknown) {
-  try { return JSON.parse(text || ""); } catch { return fallback; }
-}
-
 // Like parseJson, but only falls back when the argument was genuinely
 // omitted/empty. A present-but-unparseable JSON argument is a caller mistake
 // and must surface as an error rather than silently becoming the fallback
 // (which would run the command with empty arguments and wrong side effects).
-function parseJsonStrict(text: string | undefined, fallback: unknown, label: string) {
+function parseJsonStrict<T>(text: string | undefined, fallback: T, label: string, schema: z.ZodType<T>): T {
   if (text == null || text.trim() === "") return fallback;
-  try {
-    return parseJson(text, {});
-  } catch {
-    throw new Error(`invalid JSON for ${label}: ${text}`);
-  }
+  return parseJson(text, label, schema);
 }
 
 function isFalseArg(value: string | undefined): boolean {

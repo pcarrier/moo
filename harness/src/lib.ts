@@ -1,8 +1,11 @@
+import { z } from "zod";
 import type { ObjectInput, Quad } from "./types";
 
 const MAX_FACT_OBJECT_BYTES = 2048;
 const HASH_RE = /^(sha256:)?[a-f0-9]{64}$/i;
 export const JSON_POINTER_PREFIX = "json:";
+
+export { z };
 
 export function isSha256Hash(value: unknown): boolean {
   return typeof value === "string" && HASH_RE.test(value);
@@ -12,13 +15,20 @@ export function encodeJsonPointer(value: unknown): string {
   return JSON_POINTER_PREFIX + (JSON.stringify(value) ?? "null");
 }
 
-export function decodeJsonPointer<T = unknown>(target: string | null | undefined): T | null {
+export function decodeJsonPointer<T = unknown>(target: string | null | undefined, schema?: z.ZodType<T>): T | null {
   if (typeof target !== "string" || !target.startsWith(JSON_POINTER_PREFIX)) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(target.slice(JSON_POINTER_PREFIX.length)) as T;
+    parsed = JSON.parse(target.slice(JSON_POINTER_PREFIX.length));
   } catch (_) {
     return null;
   }
+  if (schema) {
+    const result = schema.safeParse(parsed);
+    if (!result.success) return null;
+    return result.data;
+  }
+  return parsed as T;
 }
 
 export function assertFactObject(object: string): void {

@@ -5,6 +5,7 @@
 // verify it on upgrade.
 
 import { storage } from "./storage";
+import { pskStatusSchema } from "./schema";
 
 const STORAGE_KEY = "moo.psk";
 let memoryPsk: string | null = null;
@@ -70,9 +71,6 @@ export async function checkPsk(
   if (!response.ok) {
     throw new Error(`PSK check failed: HTTP ${response.status}`);
   }
-  const data = await response.json();
-  return {
-    required: !!data?.required,
-    valid: !!data?.valid,
-  };
+  const data = pskStatusSchema.parse(await response.json());
+  return data;
 }

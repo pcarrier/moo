@@ -3,6 +3,7 @@ import { For, Show, createEffect, createSignal, onMount } from "solid-js";
 import { api, type ApiResult, type McpServerConfig, type McpTool } from "./api";
 import { renderToolDescriptionMarkdown } from "./markdown";
 import { highlightByPath } from "./syntax";
+import { parseJson, stringRecordSchema } from "./schema";
 import type { Bag } from "./state";
 import { RefreshIcon } from "./icons";
 import { ActionRow, Card, EmptyState, HeaderIconButton, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
@@ -178,11 +179,9 @@ function configFromDraft(draft: Draft): McpServerConfig {
   const headersText = draft.headers.trim();
   let headers: Record<string, string> | undefined;
   if (headersText) {
-    const parsed = JSON.parse(headersText);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("headers must be a JSON object");
-    }
-    headers = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+    headers = Object.fromEntries(
+      Object.entries(parseJson(headersText, "MCP headers", stringRecordSchema)).map(([k, v]) => [k, String(v)]),
+    );
   }
   const id = inferredId(draft);
   const title = draft.title.trim() || prettyTitleFromUrl(draft.url) || id;

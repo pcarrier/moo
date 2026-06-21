@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { parseJson, rightSidebarLayoutSchema } from "../schema";
 
 const SIDEBAR_KEY = "moo.sidebar.w";
 const COLLAPSED_KEY = "moo.sidebar.collapsed";
@@ -186,17 +187,13 @@ export function readRightSidebarLayout(): Record<string, RightSidebarLayoutState
   try {
     const raw = storage.getItem(RIGHT_SIDEBAR_LAYOUT_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
+    const parsed = parseJson(raw, "right sidebar layout", rightSidebarLayoutSchema);
     const out: Record<string, RightSidebarLayoutState> = {};
     for (const [id, value] of Object.entries(parsed)) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      const layout = value as Record<string, unknown>;
-      const width = parseRightSidebarWidth(layout.width);
+      const width = parseRightSidebarWidth(value.width);
       out[id] = {
         ...(width === undefined ? {} : { width }),
-        collapsed: layout.collapsed === true,
+        collapsed: value.collapsed === true,
       };
     }
     return out;

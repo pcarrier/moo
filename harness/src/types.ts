@@ -1,5 +1,6 @@
 import type { UiAppBundle, UiAppManifest } from "../../shared/src/ui";
 import type { ProviderName } from "./llm_models";
+import type { z } from "./core/json";
 export type Quad = [string, string, string, string]; // [graph, s, p, o]
 export type FactHistoryRow = [string, string, string, string, string, string]; // [graph, s, p, o, action, at]
 export type Triple = [string, string, string]; // [s, p, o]
@@ -601,7 +602,7 @@ export type Moo = {
     putText(args: { kind: string; text: string }): Promise<string>;
     putJSON(args: { kind: string; value: unknown }): Promise<string>;
     getText(args: { hash: string }): Promise<{ kind: string; text: string } | null>;
-    getJSON<V = unknown>(args: { hash: string }): Promise<{ kind: string; value: V } | null>;
+    getJSON<V = unknown>(args: { hash: string; schema?: z.ZodType<V> }): Promise<{ kind: string; value: V } | null>;
   };
   tasks: {
     list(): Promise<AgentTaskState>;

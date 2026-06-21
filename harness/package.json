@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "partial-json": "^0.1.7",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "zod": "^3"
   }
 }

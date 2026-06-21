@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { parseJson, stringArraySchema } from "../schema";
 
 const MODEL_MRU_KEY = "moo.model.mru.v1";
 const MODEL_MRU_MAX = 20;
@@ -18,8 +19,10 @@ export function normalizeModelMru(value: unknown): string[] {
 }
 
 export function readModelMru(): string[] {
+  const raw = storage.getItem(MODEL_MRU_KEY);
+  if (!raw) return [];
   try {
-    return normalizeModelMru(JSON.parse(storage.getItem(MODEL_MRU_KEY) || "[]"));
+    return normalizeModelMru(parseJson(raw, "model MRU", stringArraySchema));
   } catch {
     return [];
   }
