@@ -437,13 +437,16 @@ impl V8Observability {
             generation_started_at: now,
             ..Default::default()
         };
-        self.workers.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            key.clone(),
-            V8WorkerState {
-                snapshot,
-                current_started_instant: None,
-            },
-        );
+        self.workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                key.clone(),
+                V8WorkerState {
+                    snapshot,
+                    current_started_instant: None,
+                },
+            );
         self.push_event(V8Event {
             at: now,
             worker: key,
@@ -519,7 +522,12 @@ impl V8Observability {
     fn generation_started(&self, lane: &str, id: usize, generation: u64) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        if let Some(state) = self
+            .workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&key)
+        {
             state.snapshot.generation = generation;
             state.snapshot.status = "idle".to_string();
             state.snapshot.generation_started_at = now;
@@ -548,7 +556,12 @@ impl V8Observability {
     fn job_start(&self, lane: &str, id: usize, generation: u64, command: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        if let Some(state) = self
+            .workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&key)
+        {
             state.snapshot.status = "busy".to_string();
             state.snapshot.current_command = Some(command.to_string());
             state.snapshot.current_job_started_at = Some(now);
@@ -573,7 +586,12 @@ impl V8Observability {
         let key = worker_key(lane, id);
         let now = now_ms();
         let mut event_detail = None;
-        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        if let Some(state) = self
+            .workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&key)
+        {
             let snapshot = &mut state.snapshot;
             snapshot.status = "idle".to_string();
             snapshot.current_command = None;
@@ -661,7 +679,12 @@ impl V8Observability {
     fn recycle(&self, lane: &str, id: usize, generation: u64, reason: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        if let Some(state) = self
+            .workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&key)
+        {
             state.snapshot.recycles = state.snapshot.recycles.saturating_add(1);
             state.snapshot.status = "recycling".to_string();
             state.snapshot.last_recycle_reason = Some(reason.to_string());

@@ -2786,7 +2786,9 @@ mod tests {
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
     fn with_temp_host(test: impl FnOnce() -> Result<(), String>) {
-        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::host::TEST_DB_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "moo-sparql-test-{}-{}-{}",
             std::process::id(),
