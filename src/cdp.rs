@@ -209,7 +209,7 @@ impl CdpHandle {
         let attached = self
             .active_target
             .lock()
-            .expect("active_target lock")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         if attached
             .as_ref()
@@ -612,7 +612,7 @@ fn run_session(
     *session
         .active_target
         .lock()
-        .expect("active_target lock for session start") = Some(target.clone());
+        .unwrap_or_else(|e| e.into_inner()) = Some(target.clone());
     pump_messages(
         session.shared_ptr,
         session.inspect_rx,
@@ -621,7 +621,7 @@ fn run_session(
     *session
         .active_target
         .lock()
-        .expect("active_target lock for session end") = None;
+        .unwrap_or_else(|e| e.into_inner()) = None;
 
     session.shared.session.set(None);
     session.shared.set_paused(false);
@@ -1555,7 +1555,7 @@ fn json_list(
 ) -> String {
     let active = active_target
         .lock()
-        .expect("active_target lock for JSON list")
+        .unwrap_or_else(|e| e.into_inner())
         .clone();
     if active.is_none()
         && let Some(json) = cached_json_list(advertised_host, db_path, target_cache)
@@ -1591,9 +1591,7 @@ fn cached_json_list(
     target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> Option<String> {
     let now = Instant::now();
-    let mut cache = target_cache
-        .lock()
-        .expect("target_cache lock for JSON list");
+    let mut cache = target_cache.lock().unwrap_or_else(|e| e.into_inner());
     if cache
         .as_ref()
         .map(|cached| now.duration_since(cached.refreshed_at) >= JSON_LIST_CACHE_TTL)
@@ -1654,9 +1652,7 @@ fn cached_chat_targets(
     target_cache: &Arc<Mutex<Option<TargetCache>>>,
 ) -> Vec<TargetSpec> {
     let now = Instant::now();
-    let mut cache = target_cache
-        .lock()
-        .expect("target_cache lock for chat targets");
+    let mut cache = target_cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(cached) = cache.as_ref()
         && now.duration_since(cached.refreshed_at) < JSON_LIST_CACHE_TTL
     {

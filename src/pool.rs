@@ -463,7 +463,7 @@ impl V8Observability {
     fn register_pool(&self, lane: &str) {
         self.queues
             .lock()
-            .expect("queues lock")
+            .unwrap_or_else(|e| e.into_inner())
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
                 lane: lane.to_string(),
@@ -709,7 +709,7 @@ impl V8Observability {
         let snapshot = self
             .workers
             .lock()
-            .expect("workers lock")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&key)
             .map(|state| state.snapshot);
         if let Some(snapshot) = snapshot.as_ref() {
@@ -762,7 +762,7 @@ impl V8Observability {
         let mut workers: Vec<V8WorkerSnapshot> = self
             .workers
             .lock()
-            .expect("workers lock")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .map(|state| {
                 let mut snapshot = state.snapshot.clone();
@@ -776,7 +776,7 @@ impl V8Observability {
         let mut pool_map: HashMap<String, V8PoolQueueSnapshot> = self
             .queues
             .lock()
-            .expect("queues lock")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .map(|pool| (pool.lane.clone(), pool.clone()))
             .collect();
@@ -853,7 +853,7 @@ impl V8Observability {
         let events = self
             .events
             .lock()
-            .expect("events lock")
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .cloned()
             .collect();
@@ -918,7 +918,7 @@ fn worker_key(lane: &str, id: usize) -> String {
 fn config_value(name: &str) -> Option<String> {
     V8_CONFIG_OVERRIDES
         .lock()
-        .expect("v8 config overrides lock")
+        .unwrap_or_else(|e| e.into_inner())
         .get(name)
         .cloned()
         .or_else(|| std::env::var(name).ok())
@@ -942,7 +942,7 @@ fn read_bool_env(name: &str, default: bool) -> bool {
 pub fn apply_v8_env_text(text: &str) {
     let mut overrides = V8_CONFIG_OVERRIDES
         .lock()
-        .expect("v8 config overrides lock");
+        .unwrap_or_else(|e| e.into_inner());
     overrides.clear();
     for raw in text.lines() {
         let line = raw.trim();
@@ -966,7 +966,7 @@ pub fn apply_v8_runtime_settings(settings: &V8RuntimeSettings) {
     let settings = normalize_v8_runtime_settings(settings.clone());
     let mut overrides = V8_CONFIG_OVERRIDES
         .lock()
-        .expect("v8 config overrides lock");
+        .unwrap_or_else(|e| e.into_inner());
     overrides.clear();
     if let Some(value) = settings.max_workers {
         overrides.insert("MOO_V8_WORKERS".to_string(), value.to_string());
@@ -1349,7 +1349,7 @@ impl<T> DynamicPool<T> {
             let result = self
                 .rx
                 .lock()
-                .expect("rx lock")
+                .unwrap_or_else(|e| e.into_inner())
                 .recv_timeout(self.autoscale_window);
             match result {
                 Ok(job) => {
@@ -2625,7 +2625,7 @@ mod tests {
         assert_eq!(
             pool.state
                 .lock()
-                .expect("dynamic pool state")
+                .unwrap_or_else(|e| e.into_inner())
                 .active_workers,
             3
         );
@@ -2652,7 +2652,7 @@ mod tests {
         assert_eq!(
             pool.state
                 .lock()
-                .expect("dynamic pool state")
+                .unwrap_or_else(|e| e.into_inner())
                 .active_workers,
             2
         );
@@ -2673,7 +2673,7 @@ mod tests {
         assert_eq!(
             pool.state
                 .lock()
-                .expect("dynamic pool state")
+                .unwrap_or_else(|e| e.into_inner())
                 .active_workers,
             1
         );
