@@ -189,8 +189,12 @@ function cleanOptionalText(value: unknown): string | undefined {
   return text || undefined;
 }
 
+function isTaskStatus(value: string): value is TaskStatus {
+  return VALID_STATUSES.has(value as TaskStatus);
+}
+
 function cleanStatus(value: unknown, fallback: TaskStatus = "todo"): TaskStatus {
-  return typeof value === "string" && VALID_STATUSES.has(value as TaskStatus) ? value as TaskStatus : fallback;
+  return typeof value === "string" && isTaskStatus(value) ? value : fallback;
 }
 
 

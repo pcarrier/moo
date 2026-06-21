@@ -5,6 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+
 use crate::blit;
 use crate::driver;
 use crate::host;
@@ -610,29 +612,9 @@ fn base64_url_decode_string(s: &str) -> Option<String> {
 }
 
 fn base64_url_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let mut buf = 0u32;
-    let mut bits = 0u8;
-    for b in s.bytes() {
-        if b == b'=' {
-            break;
-        }
-        let val = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            _ => return None,
-        } as u32;
-        buf = (buf << 6) | val;
-        bits += 6;
-        while bits >= 8 {
-            bits -= 8;
-            out.push(((buf >> bits) & 0xff) as u8);
-        }
-    }
-    Some(out)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s.trim_end_matches('='))
+        .ok()
 }
 
 fn content_type_for_path(path: &Path) -> &'static str {
