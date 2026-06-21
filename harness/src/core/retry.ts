@@ -1,4 +1,5 @@
 import { Effect, Schedule, type Schedule as RetrySchedule, type ScheduleDecision } from "./effect";
+import { jsonValueSchema, parseJson } from "./json";
 
 export type RetryDecision = {
   retry: boolean;
@@ -280,7 +281,7 @@ function collectedBodyText(body: unknown): string {
 function parseBody(body: unknown): unknown {
   if (typeof body !== "string") return body;
   try {
-    return JSON.parse(body);
+    return parseJson(body, "retry.parseBody", jsonValueSchema);
   } catch {
     return body;
   }

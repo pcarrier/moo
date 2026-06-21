@@ -54,7 +54,7 @@ export function loadTerminalUiState(
   try {
     const raw = storage.getItem(key);
     if (!raw) return defaultTerminalUiState();
-    const parsed = normalizeTerminalUiState(JSON.parse(raw));
+    const parsed = normalizeTerminalUiState(parseJson(raw, "terminal UI state", terminalUiStateSchema));
     if (!parsed) throw new Error("invalid terminal UI state");
     terminalUiStateMemory.set(chatId, parsed);
     return cloneTerminalUiState(parsed);

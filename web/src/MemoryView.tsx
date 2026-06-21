@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onMount } from "soli
 
 import type { Bag } from "./state";
 import { type Triple } from "./api";
+import { jsonValueSchema, parseJson } from "./schema";
 import { ControlField, EmptyState, PageBody, PageHeader, PageToolbar, StatPill, ToolbarSection } from "./PageChrome";
 import { LoadingDots } from "./LoadingDots";
 import { RefreshIcon } from "./icons";
@@ -575,7 +576,7 @@ function pointerJsonPreview(target: string): PointerJsonPreview | null {
   if (!target.startsWith("json:")) return null;
   const raw = target.slice("json:".length);
   try {
-    const value = JSON.parse(raw);
+    const value = parseJson(raw, "pointerJsonPreview", jsonValueSchema);
     return {
       label: `json:${summarizePointerJson(value)}`,
       title: JSON.stringify(value, null, 2),

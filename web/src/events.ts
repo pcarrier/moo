@@ -5,6 +5,7 @@
 // flush on connect.
 
 import { getPsk } from "./auth";
+import { parseJson, recordUnknownSchema } from "./schema";
 import type {
   AgentTask,
   MemoryFactChange,
@@ -842,7 +843,7 @@ export class WSConnection {
       if (this.socket !== socket || this.closed) return;
       let raw: unknown;
       try {
-        raw = JSON.parse(e.data);
+        raw = parseJson(e.data, "ws message", recordUnknownSchema);
       } catch (_) {
         return;
       }

@@ -11,6 +11,7 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import { createMutable } from "solid-js/store";
+import { jsonValueSchema, parseJson } from "./schema";
 import {
   anchorFromEventTarget,
   renderMarkdown,
@@ -3374,7 +3375,7 @@ function parseStoreObjectJSON(object: unknown): unknown {
         : null;
   if (content == null) return null;
   try {
-    return JSON.parse(content);
+    return parseJson(content, "storeObjectJsonValue", jsonValueSchema);
   } catch {
     return null;
   }

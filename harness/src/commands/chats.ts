@@ -1,5 +1,10 @@
-import { parseJson } from "../core/json";
+import { parseJson, stringArraySchema, z } from "../core/json";
 import * as host from "../host_ops";
+
+const userInputPayloadSchema = z.object({
+  message: z.string().optional(),
+  artificial: z.boolean().optional(),
+});
 import { moo } from "../moo";
 import { chatRefs } from "../lib";
 import type { Input } from "./_shared";
@@ -167,7 +172,7 @@ async function buildChatAutocompleteIndex(meta: ChatAutocompleteChatMeta): Promi
     if (!payloadHash) return [];
     const object = objects[payloadHash];
     if (!object) return [];
-    const payload = parseJson(object.content, "chatsCommand object content") as { message?: string; artificial?: boolean };
+    const payload = parseJson(object.content, "chatsCommand object content", userInputPayloadSchema);
     if (payload.artificial === true) return [];
     const text = normalizeAutocompleteText(payload.message);
     if (!text) return [];
@@ -395,8 +400,8 @@ async function normalizeDirMaterializingChatWorktree(path: string): Promise<stri
 function parseRecentChatPaths(raw: string | null): string[] {
   if (!raw) return [];
   try {
-    const parsed = parseJson(raw, "chatQueueListCommand");
-    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+    const parsed = parseJson(raw, "parseRecentChatPaths", stringArraySchema);
+    return parsed.filter((x): x is string => typeof x === "string");
   } catch {
     return [];
   }

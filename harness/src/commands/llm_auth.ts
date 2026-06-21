@@ -1,5 +1,7 @@
 import * as host from "../host_ops";
 import { moo } from "../moo";
+import { jsonObjectSchema, parseJson } from "../core/json";
+import { openAiDeviceLoginSchema, openAiDevicePollSchema, openAiOAuthTokenSchema } from "../core/schema";
 import type { RetryPolicy } from "../core/retry";
 import { DEFAULT_LLM_RETRY_POLICY } from "../core/retry";
 import type { Input } from "./_shared";
@@ -318,7 +320,7 @@ function decodeJwtPayload(jwt: string): Record<string, any> | null {
     if (parts.length < 2) return null;
     const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
-    return JSON.parse(decodeBase64(padded));
+    return parseJson(decodeBase64(padded), "decodeJwtPayload", jsonObjectSchema);
   } catch { return null; }
 }
 
@@ -342,9 +344,9 @@ async function exchangeOpenAiOAuthTokens(saved: { clientId: string; redirectUri:
   const body = formEncode({ grant_type: "authorization_code", code, redirect_uri: saved.redirectUri, client_id: saved.clientId, code_verifier: saved.verifier });
   const resp = await moo.http.fetch({ method: "POST", url: OPENAI_TOKEN_URL, headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body, timeoutMs: 30_000 });
   if (resp.status >= 400) return { ok: false, error: { message: "OAuth token exchange failed (" + resp.status + ")", detail: resp.body } };
-  let token: any;
-  try { token = JSON.parse(resp.body); } catch { return { ok: false, error: { message: "OAuth token response was not JSON" } }; }
-  const idToken = typeof token.id_token === "string" ? token.id_token : "";
+  let token: { access_token: string; id_token?: string; refresh_token?: string; expires_in?: number };
+  try { token = parseJson(resp.body, "exchangeOpenAiOAuthTokens", openAiOAuthTokenSchema); } catch { return { ok: false, error: { message: "OAuth token response was not JSON" } }; }
+  const idToken = token.id_token ?? "";
   const loginAccessToken = typeof token.access_token === "string" ? token.access_token : "";
   const accessToken = loginAccessToken;
   if (!accessToken) return { ok: false, error: { message: "OpenAI OAuth did not produce a usable access token" } };
@@ -398,9 +400,9 @@ export async function llmAuthOAuthDeviceStartCommand(input: Input) {
   if (provider !== "openai") return { ok: false, error: { message: "OAuth is currently supported for OpenAI only" } };
   const resp = await moo.http.fetch({ method: "POST", url: OPENAI_ISSUER + "/api/accounts/deviceauth/usercode", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ client_id: CODEX_OPENAI_CLIENT_ID }), timeoutMs: 30_000 });
   if (resp.status >= 400) return { ok: false, error: { message: "OpenAI device login failed (" + resp.status + ")", detail: resp.body } };
-  let body: any;
-  try { body = JSON.parse(resp.body); } catch { return { ok: false, error: { message: "OpenAI device login response was not JSON" } }; }
-  const deviceAuthId = String(body.device_auth_id ?? "").trim();
+  let body: { device_auth_id: string; user_code?: string; usercode?: string; interval?: string | number };
+  try { body = parseJson(resp.body, "llmAuthOAuthDeviceStartCommand", openAiDeviceLoginSchema); } catch { return { ok: false, error: { message: "OpenAI device login response was not JSON" } }; }
+  const deviceAuthId = body.device_auth_id.trim();
   const userCode = String(body.user_code ?? body.usercode ?? "").trim();
   const interval = Math.max(1, Math.min(30, Number.parseInt(String(body.interval ?? "5"), 10) || 5));
   if (!deviceAuthId || !userCode) return { ok: false, error: { message: "OpenAI device login response was missing a code" } };
@@ -428,10 +430,10 @@ export async function llmAuthOAuthDevicePollCommand(input: Input) {
     await moo.pointers.delete({ name: ref });
     return { ok: false, error: { message: "OpenAI device login polling failed (" + resp.status + ")", detail: resp.body } };
   }
-  let body: any;
-  try { body = JSON.parse(resp.body); } catch { return { ok: false, error: { message: "OpenAI device login poll response was not JSON" } }; }
-  const code = String(body.authorization_code ?? "").trim();
-  const verifier = String(body.code_verifier ?? "").trim();
+  let body: { authorization_code: string; code_verifier: string };
+  try { body = parseJson(resp.body, "llmAuthOAuthDevicePollCommand", openAiDevicePollSchema); } catch { return { ok: false, error: { message: "OpenAI device login poll response was not JSON" } }; }
+  const code = body.authorization_code.trim();
+  const verifier = body.code_verifier.trim();
   if (!code || !verifier) return { ok: false, error: { message: "OpenAI device login completed without an authorization code" } };
   await moo.pointers.delete({ name: ref });
   const exchanged = await exchangeOpenAiOAuthTokens({ clientId: CODEX_OPENAI_CLIENT_ID, redirectUri: OPENAI_ISSUER + "/deviceauth/callback", verifier }, code);

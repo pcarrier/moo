@@ -1,4 +1,4 @@
-import { parseJson } from "../core/json";
+import { jsonObjectSchema, parseJson } from "../core/json";
 import { moo } from "../moo";
 import * as host from "../host_ops";
 import type { StepKind } from "../types";
@@ -263,7 +263,7 @@ function parseProviderErrorBody(raw: unknown): unknown {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   try {
-    return JSON.parse(trimmed);
+    return parseJson(trimmed, "parseProviderErrorBody", jsonObjectSchema);
   } catch {
     return trimmed;
   }
@@ -274,7 +274,7 @@ function parseToolArgs(toolCall: ToolCallInput | null | undefined): Record<strin
   if (raw == null || raw === "") return {};
   if (typeof raw !== "string") return asObject(raw);
   try {
-    return asObject(parseJson(raw, "chatQueueSaveCommand"));
+    return asObject(parseJson(raw, "parseToolArgs", jsonObjectSchema));
   } catch {
     return {};
   }

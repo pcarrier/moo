@@ -2,6 +2,7 @@ import { Effect, ok } from "./core/effect";
 import { moo, traceJsonValue } from "./moo";
 import * as host from "./host_ops";
 import { parse as parsePartialJSON } from "partial-json";
+import { jsonObjectSchema, parseJson, z } from "./core/json";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -620,7 +621,7 @@ function partialRunTSArgs(argsText: string): PartialRunTSArgs | null {
 
 function completeRunTSArgs(argsText: string): boolean {
   try {
-    const parsed = JSON.parse(argsText || "{}");
+    const parsed = parseJson(argsText || "{}", "completeRunTSArgs", jsonObjectSchema);
     return isObject(parsed);
   } catch {
     return false;
@@ -1204,8 +1205,7 @@ function parseStreamJsonEvent(raw: string): ParsedStreamEvent | null {
   const line = raw.startsWith("data: ") ? raw.slice(6).trimEnd() : raw.trim();
   if (!line || line === "[DONE]") return null;
   try {
-    const parsed = JSON.parse(line);
-    return parsed && typeof parsed === "object" ? parsed : null;
+    return parseJson(line, "parseStreamJsonEvent", z.record(z.unknown()));
   } catch {
     return null;
   }

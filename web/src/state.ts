@@ -48,7 +48,7 @@ import { EventStream, type Event as WsEvent } from "./events";
 import { createChatSettingsWriteBarrier } from "./chatSettingsBarrier";
 import { checkPsk, getPsk, setPsk } from "./auth";
 import { storage } from "./storage";
-import { parseJson, chatCacheSchema, toolCallArgsSchema } from "./schema";
+import { parseJson, chatCacheSchema, jsonValueSchema, runTSBackgroundKeySchema, toolCallArgsSchema } from "./schema";
 import {
   mergedFileDiffs,
   mergedMemoryDiffs,
@@ -1297,12 +1297,7 @@ export function createState() {
   ) => JSON.stringify([chat, stepId || ""]);
   function runTSBackgroundKeyParts(key: string): [string, string] | null {
     try {
-      const parsed = JSON.parse(key);
-      return Array.isArray(parsed) &&
-        typeof parsed[0] === "string" &&
-        typeof parsed[1] === "string"
-        ? [parsed[0], parsed[1]]
-        : null;
+      return parseJson(key, "runTSBackgroundKeyParts", runTSBackgroundKeySchema);
     } catch {
       return null;
     }
@@ -1785,7 +1780,7 @@ export function createState() {
     let value: unknown = null;
     let error: string | null = null;
     try {
-      value = JSON.parse(raw);
+      value = parseJson(raw, "decodeJsonPreviewTarget", jsonValueSchema);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       value = raw;

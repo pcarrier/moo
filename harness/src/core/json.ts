@@ -14,6 +14,8 @@ export const jsonObjectSchema: z.ZodType<JsonObject> = z.lazy(() =>
   z.record(z.union([jsonValueSchema, z.undefined()]))
 );
 
+export const stringArraySchema = z.array(z.unknown());
+
 export function parseJson<T>(text: string, context: string, schema?: z.ZodType<T>): T {
   let parsed: unknown;
   try {

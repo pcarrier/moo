@@ -1,4 +1,5 @@
 import type { LLMProvider } from "./types";
+import { jsonObjectSchema, jsonValueSchema, parseJson, type JsonObject } from "./core/json";
 import {
   currentCompactionThresholdPercent,
   providerConfiguredCredential,
@@ -235,8 +236,7 @@ export function toolCallForTrace(tc: any): TraceMetadata {
   const rawArgs = String(tc?.function?.arguments ?? "");
   let argumentsJson: unknown = null;
   try {
-    const parsed = rawArgs ? JSON.parse(rawArgs) : null;
-    argumentsJson = parsed;
+    argumentsJson = rawArgs ? parseJson(rawArgs, "toolCallForTrace arguments", jsonValueSchema) : null;
   } catch {}
   return {
     toolCallId: tc?.id ?? null,
@@ -1026,10 +1026,10 @@ function dataUrlToAnthropicSource(url: unknown): any | null {
   return { type: "base64", media_type: m[1], data: m[2] };
 }
 
-function parseToolArgs(raw: unknown): any {
-  if (raw && typeof raw === "object") return raw;
+function parseToolArgs(raw: unknown): JsonObject {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as JsonObject;
   try {
-    return JSON.parse(String(raw || "{}"));
+    return parseJson(String(raw || "{}"), "parseToolArgs", jsonObjectSchema);
   } catch {
     return {};
   }
@@ -1586,7 +1586,7 @@ async function callStreamingChatSummary(
               );
               accumulateSummaryStreamEvent(
                 state,
-                JSON.parse(data),
+                parseJson(data, "accumulateSummaryStreamEvent", jsonObjectSchema),
                 !!request.responsesApi,
               );
               await notifySummaryStreamContent(
@@ -1615,7 +1615,7 @@ async function callStreamingChatSummary(
             );
             accumulateSummaryStreamEvent(
               state,
-              JSON.parse(data),
+              parseJson(data, "accumulateSummaryStreamEvent", jsonObjectSchema),
               !!request.responsesApi,
             );
             await notifySummaryStreamContent(
@@ -2368,7 +2368,7 @@ function parseCompactionProviderErrorBody(raw: unknown): any {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   try {
-    return JSON.parse(trimmed);
+    return parseJson(trimmed, "parseCompactionProviderErrorBody", jsonObjectSchema);
   } catch {
     return trimmed;
   }
@@ -2625,7 +2625,7 @@ export async function runCompaction(
   }
   let body: any;
   try {
-    body = JSON.parse(resp.body);
+    body = parseJson(resp.body, "compactionSummary", jsonObjectSchema);
   } catch {
     await recordCompactionFailure(
       chatId,
@@ -3351,9 +3351,9 @@ export async function executeToolCall(
   runTsStepId?: string | null,
 ): Promise<{ toolText: string }> {
   const name = tc?.function?.name;
-  let args: any = {};
+  let args: JsonObject = {};
   try {
-    args = JSON.parse(tc?.function?.arguments || "{}");
+    args = parseJson(tc?.function?.arguments || "{}", "executeToolCall args", jsonObjectSchema);
   } catch {
     args = {};
   }

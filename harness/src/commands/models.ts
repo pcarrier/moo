@@ -1,4 +1,4 @@
-import { parseJson } from "../core/json";
+import { parseJson, stringArraySchema } from "../core/json";
 import { moo } from "../moo";
 import { chatRefs } from "../lib";
 import { Term } from "../types";
@@ -242,8 +242,8 @@ function modelOptionLabel(provider: ProviderName, model: string): string {
 function configuredModelsFrom(raw: string | null): string[] {
   if (!raw) return [];
   try {
-    const parsed = parseJson(raw, "rememberChatSettings");
-    if (Array.isArray(parsed)) return parsed.map((m) => String(m).trim()).filter(Boolean);
+    const parsed = parseJson(raw, "configuredModelsFrom", stringArraySchema);
+    return parsed.map((m) => String(m).trim()).filter(Boolean);
   } catch {
     /* allow comma/newline separated lists */
   }

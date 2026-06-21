@@ -12,6 +12,7 @@ import {
 } from "solid-js";
 import { AppCodeExplorer } from "./AppCodeExplorer";
 import { UiPanel } from "./ChatApps";
+import { jsonValueSchema, parseJson } from "./schema";
 import {
   anchorFromEventTarget,
   renderMarkdown,
@@ -526,7 +527,7 @@ function parseFileDiffPayloadObject(
   if (typeof text !== "string") return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseJson(text, "parseFileDiffPayloadObject", jsonValueSchema);
   } catch {
     return null;
   }
@@ -2873,7 +2874,7 @@ function StorePreviewTab(props: {
     const text = content();
     if (object()?.kind === "json") {
       try {
-        return highlightHjsonValue(JSON.parse(text), { linkStoreHashes: true });
+        return highlightHjsonValue(parseJson(text, "store preview json", jsonValueSchema), { linkStoreHashes: true });
       } catch {
         // Fall through to automatic highlighting for malformed JSON objects.
       }

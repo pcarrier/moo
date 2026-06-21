@@ -1,4 +1,5 @@
 import { moo } from "../moo";
+import { parseJson, z } from "../core/json";
 import type { McpServerConfig } from "../types";
 import type { Input } from "./_shared";
 
@@ -17,7 +18,7 @@ export function mcpConfigFromInput(input: McpServerConfigInput): McpServerConfig
   let headers = input.headers;
   if (typeof headers === "string" && headers.trim()) {
     try {
-      headers = JSON.parse(headers);
+      headers = parseJson(headers, "mcpConfigFromInput headers", z.record(z.unknown()));
     } catch (err: any) {
       throw new Error(`headers must be a JSON object: ${err?.message || err}`);
     }

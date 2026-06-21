@@ -2,6 +2,48 @@ import { z } from "zod";
 
 export { z };
 
+export const judgeResultSchema = z.object({
+  ok: z.boolean(),
+  score: z.number(),
+  reason: z.string().optional(),
+});
+
+export const openAiOAuthTokenSchema = z.object({
+  access_token: z.string(),
+  id_token: z.string().optional(),
+  refresh_token: z.string().optional(),
+  expires_in: z.number().optional(),
+});
+
+export const openAiDeviceLoginSchema = z.object({
+  device_auth_id: z.string(),
+  user_code: z.string().optional(),
+  usercode: z.string().optional(),
+  interval: z.union([z.string(), z.number()]).optional(),
+});
+
+export const openAiDevicePollSchema = z.object({
+  authorization_code: z.string(),
+  code_verifier: z.string(),
+});
+
+export const mcpJsonRpcResponseSchema = z.object({
+  jsonrpc: z.literal("2.0").optional(),
+  id: z.union([z.string(), z.number(), z.null()]).optional(),
+  result: z.unknown().optional(),
+  error: z
+    .object({
+      code: z.number().optional(),
+      message: z.string().optional(),
+      data: z.unknown().optional(),
+    })
+    .optional(),
+});
+
+export type McpJsonRpcResponse = z.infer<typeof mcpJsonRpcResponseSchema>;
+
+export const httpHeaderRecordSchema = z.record(z.unknown());
+
 export const mcpOAuthTokenSchema = z.object({
   access_token: z.string(),
   token_type: z.string().optional(),

@@ -2,6 +2,10 @@ import * as host from "./host_ops";
 import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
 import { parseJson, z } from "./core/json";
 import {
+  httpHeaderRecordSchema,
+  judgeResultSchema,
+  mcpJsonRpcResponseSchema,
+  type McpJsonRpcResponse,
   mcpOAuthPendingSchema,
   mcpOAuthTokenSchema,
   mcpServerConfigSchema,
@@ -1011,10 +1015,10 @@ const judge: Moo["judge"] = {
     const match = /\{[\s\S]*\}/.exec(text);
     if (!match) return { ok: false, score: 0, reason: text || "judge subagent returned no JSON" };
     try {
-      const parsed = JSON.parse(match[0]);
-      const score = Math.max(0, Math.min(1, Number(parsed?.score ?? 0)));
-      const reason = String(parsed?.reason ?? "").trim() || (score >= 0.5 ? "claim is supported" : "claim is not supported");
-      return { ok: Boolean(parsed?.ok) && score >= 0.5, score, reason };
+      const parsed = parseJson(match[0], "judge.check", judgeResultSchema);
+      const score = Math.max(0, Math.min(1, parsed.score));
+      const reason = String(parsed.reason ?? "").trim() || (score >= 0.5 ? "claim is supported" : "claim is not supported");
+      return { ok: parsed.ok && score >= 0.5, score, reason };
     } catch (err: any) {
       return { ok: false, score: 0, reason: `judge subagent returned invalid JSON: ${err?.message || err}` };
     }
@@ -1734,10 +1738,9 @@ function buildBody(opts: any): { body: string | null; headers: Record<string, st
 function parseResponseHeaders(headersJson: string | undefined): Record<string, string | string[]> {
   if (!headersJson) return {};
   try {
-    const parsed = JSON.parse(headersJson);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const parsed = parseJson(headersJson, "parseResponseHeaders", httpHeaderRecordSchema);
     const out: Record<string, string | string[]> = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(parsed)) {
       const key = k.toLowerCase();
       if (typeof v === "string") out[key] = v;
       else if (Array.isArray(v)) out[key] = v.map((item) => String(item));
@@ -1868,8 +1871,8 @@ function normalizeMcpServer(input: McpServerConfig): McpServerConfig {
   };
 }
 
-function parseMcpSseBody(body: string): any {
-  const messages: any[] = [];
+function parseMcpSseBody(body: string): McpJsonRpcResponse | null {
+  const messages: McpJsonRpcResponse[] = [];
   let dataLines: string[] = [];
   let parseError: any = null;
   const flush = () => {
@@ -1878,7 +1881,7 @@ function parseMcpSseBody(body: string): any {
     dataLines = [];
     if (!data || data === "[DONE]") return;
     try {
-      messages.push(JSON.parse(data));
+      messages.push(parseJson(data, "parseMcpSseBody", mcpJsonRpcResponseSchema));
     } catch (err: any) {
       parseError = err;
     }
@@ -1904,9 +1907,9 @@ function parseMcpSseBody(body: string): any {
   throw new Error("no JSON data events found");
 }
 
-function parseMcpBody(body: string): any {
+function parseMcpBody(body: string): unknown {
   try {
-    return JSON.parse(body || "null");
+    return parseJson(body || "null", "parseMcpBody", z.record(z.unknown()));
   } catch (jsonErr: any) {
     try {
       return parseMcpSseBody(body || "");
@@ -2202,7 +2205,7 @@ async function refreshMcpOAuthToken(server: McpServerConfig, token: McpOAuthToke
     timeoutMs: server.timeoutMs ?? 60_000,
   });
   if (response.status < 200 || response.status >= 300) return token;
-  const next = parseMcpBody(response.body) as McpOAuthToken;
+  const next = mcpOAuthTokenSchema.parse(parseMcpBody(response.body));
   if (!next.refresh_token) next.refresh_token = token.refresh_token;
   return saveMcpOAuthToken(server.id, next);
 }
@@ -2360,8 +2363,8 @@ const mcpCore = {
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`MCP OAuth token exchange failed with HTTP ${response.status}: ${response.body}`);
     }
-    const token = parseMcpBody(response.body) as McpOAuthToken;
-    if (!token?.access_token) throw new Error("MCP OAuth token response missing access_token");
+    const token = mcpOAuthTokenSchema.parse(parseMcpBody(response.body));
+    if (!token.access_token) throw new Error("MCP OAuth token response missing access_token");
     await saveMcpOAuthToken(pending.serverId, token);
     await clearMcpSessionId(pending.serverId);
     const status = await mcpCore.authStatus(pending.serverId);
@@ -2434,17 +2437,18 @@ const mcpCore = {
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`MCP ${method} failed with HTTP ${response.status}: ${response.body}`);
     }
-    const payload = parseMcpBody(response.body);
+    const rawPayload = parseMcpBody(response.body);
+    const payload = mcpJsonRpcResponseSchema.parse(rawPayload);
     await traces.mark({ message: "mcp.payload", data: {
       serverId: server.id,
       method,
       payload,
     } });
-    if (payload?.error) {
+    if (payload.error) {
       throw new Error(payload.error.message || JSON.stringify(payload.error));
     }
     if (method === "initialize") await markMcpInitialized(server.id, responseSessionId);
-    return payload?.result as T;
+    return payload.result as T;
   },
   async listTools(serverId?: string): Promise<McpTool[]> {
     const servers = (serverId ? [await mcpCore.getServer(serverId)] : await mcpCore.listServers())
