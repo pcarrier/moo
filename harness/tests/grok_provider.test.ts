@@ -114,9 +114,9 @@ describe("OpenAI-compatible provider support", () => {
     expect(provider).toMatchObject({ name: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", effort: null });
   });
 
-  test("defaults GLM credentials to Z.AI API and GLM 5.1", async () => {
+  test("defaults GLM credentials to Z.AI API and GLM 5.2", async () => {
     const provider = await resolveProvider(null, null, "glm");
-    expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.1", effort: null });
+    expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.2", effort: null });
   });
 
   test("reads GLM key, model, and base URL aliases", async () => {

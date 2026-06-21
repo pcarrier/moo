@@ -144,9 +144,10 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     baseUrlEnv: "ZAI_BASE_URL",
     baseUrlAltEnvs: ["GLM_BASE_URL", "ZHIPUAI_BASE_URL", "ZHIPU_BASE_URL", "BIGMODEL_BASE_URL"],
     defaultBaseUrl: "https://api.z.ai/api/paas/v4",
-    fallbackModel: "glm-5.1",
+    fallbackModel: "glm-5.2",
     inferPrefixes: ["glm-"],
     models: [
+      { id: "glm-5.2", match: "^glm-5\\.2(?:[-.]|$)", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: { input: 1.4, cachedInput: 0.26, output: 4.4 }, capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true }, defaultOption: true },
       { id: "glm-5.1", match: "^glm-5\\.1(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1.4, cachedInput: 0.26, output: 4.4 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
       { id: "glm-5-turbo", match: "^glm-5-turbo(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1.2, cachedInput: 0.24, output: 4 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
       { id: "glm-5", match: "^glm-5(?:[-.]|$)", contextWindow: 200_000, maxOutputTokens: 128_000, pricing: { input: 1, cachedInput: 0.2, output: 3.2 }, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true },
