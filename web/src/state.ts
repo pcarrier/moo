@@ -4978,6 +4978,7 @@ export function createState() {
       landedTexts.set(item.text, (landedTexts.get(item.text) ?? 0) + 1);
     }
     if (landedStepIds.size === 0 && landedTexts.size === 0) return;
+    let removed = false;
     setPending((current) => {
       let changed = false;
       const next = current.filter((message) => {
@@ -4991,6 +4992,7 @@ export function createState() {
           pendingMessageStepIds.delete(message.id);
           deleteDispatchingPendingId(message.id);
           changed = true;
+          removed = true;
           return false;
         }
         const count = landedTexts.get(message.text) ?? 0;
@@ -4999,10 +5001,12 @@ export function createState() {
         pendingMessageStepIds.delete(message.id);
         deleteDispatchingPendingId(message.id);
         changed = true;
+        removed = true;
         return false;
       });
       return changed ? next : current;
     });
+    if (removed) void savePendingMessages().then(drainSoon);
   }
 
   async function dispatchMessageNow(

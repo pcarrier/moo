@@ -59,6 +59,16 @@ describe("chat message queueing", () => {
     expect(remove).toContain("await savePendingMessages()");
   });
 
+  test("landed queued messages persist their dequeue", () => {
+    const removeLanded = stateSource.slice(
+      stateSource.indexOf("function removeLandedDispatchingPendingMessages"),
+      stateSource.indexOf("async function dispatchMessageNow"),
+    );
+    expect(removeLanded).toContain("let removed = false");
+    expect(removeLanded).toContain("removed = true");
+    expect(removeLanded).toContain("if (removed) void savePendingMessages().then(drainSoon)");
+  });
+
   test("steering with a chosen queued message moves it to the front", () => {
     const steer = stateSource.slice(
       stateSource.indexOf("async function steerPending("),
