@@ -1544,16 +1544,6 @@ function PendingItem(props: {
         </button>
         <button
           type="button"
-          class="primary send-btn pending-edit-btn"
-          title={dispatching() ? "queued message is being sent" : "edit queued message"}
-          aria-label="edit queued message"
-          onClick={editQueuedMessage}
-          disabled={dispatching()}
-        >
-          Edit
-        </button>
-        <button
-          type="button"
           class="primary send-btn pending-remove-btn"
           title={
             dispatching() ? "queued message is being sent" : "remove queued message"
