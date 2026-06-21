@@ -453,7 +453,15 @@ async function defaultEffort(): Promise<string | null> {
       (await moo.env.get({ name: "OPENAI_REASONING_EFFORT" })) ||
       (await moo.env.get({ name: "OPENAI_EFFORT" })) ||
       (await moo.env.get({ name: "DEEPSEEK_REASONING_EFFORT" })) ||
-      (await moo.env.get({ name: "DEEPSEEK_EFFORT" })),
+      (await moo.env.get({ name: "DEEPSEEK_EFFORT" })) ||
+      (await moo.env.get({ name: "QWEN_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "QWEN_EFFORT" })) ||
+      (await moo.env.get({ name: "GLM_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "GLM_EFFORT" })) ||
+      (await moo.env.get({ name: "KIMI_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "KIMI_EFFORT" })) ||
+      (await moo.env.get({ name: "MOONSHOT_REASONING_EFFORT" })) ||
+      (await moo.env.get({ name: "MOONSHOT_EFFORT" })),
   );
 }
 
@@ -506,6 +514,9 @@ export function effortLevelsForProvider(
     return anthropicEffortLevels(provider.model);
   if (provider.name === "openai") return openaiEffortLevels(provider.model);
   if (provider.name === "deepseek") return deepseekEffortLevels(provider.model);
+  if (provider.name === "qwen") return qwenEffortLevels(provider.model);
+  if (provider.name === "glm") return glmEffortLevels(provider.model);
+  if (provider.name === "kimi") return kimiEffortLevels(provider.model);
   return [];
 }
 
@@ -547,6 +558,37 @@ function deepseekEffortLevels(model: string | null | undefined): string[] {
     : [];
 }
 
+function qwenEffortLevels(model: string | null | undefined): string[] {
+  const id = String(model ?? "")
+    .trim()
+    .toLowerCase();
+  return /^qwen3(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
+}
+
+function glmEffortLevels(model: string | null | undefined): string[] {
+  const id = String(model ?? "")
+    .trim()
+    .toLowerCase();
+  return /^glm-(?:4\.[567]|5)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
+}
+
+function kimiEffortLevels(model: string | null | undefined): string[] {
+  const id = String(model ?? "")
+    .trim()
+    .toLowerCase();
+  return /^kimi-k2\.(?:5|6|7)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
+}
+
+function openAICompatibleThinkingEffort(
+  provider: Pick<LLMProvider, "name" | "model" | "effort">,
+): "none" | "high" | null {
+  if (!effortLevelsForProvider(provider).length) return null;
+  const normalized = normalizeEffort(provider.effort);
+  if (normalized === "none" || normalized === "minimal") return "none";
+  if (normalized) return "high";
+  return null;
+}
+
 function deepseekEffortForRequest(
   effort: string | null | undefined,
 ): "none" | "high" | "max" | null {
@@ -566,6 +608,8 @@ function deepseekRequestEffort(
 
 function requestEffortForProvider(provider: LLMProvider): EffortLevel | null {
   if (provider.name === "deepseek") return deepseekRequestEffort(provider);
+  if (provider.name === "qwen" || provider.name === "glm" || provider.name === "kimi")
+    return openAICompatibleThinkingEffort(provider);
   if (
     provider.name === "anthropic" &&
     anthropicAdaptiveEffortLevels(provider.model)
@@ -704,6 +748,18 @@ function applyEffort(
     }
     body.thinking = { type: "enabled" };
     body.reasoning_effort = effort;
+    return;
+  }
+  if (provider.name === "qwen") {
+    const effort = openAICompatibleThinkingEffort(provider);
+    if (!effort) return;
+    body.enable_thinking = effort !== "none";
+    return;
+  }
+  if (provider.name === "glm" || provider.name === "kimi") {
+    const effort = openAICompatibleThinkingEffort(provider);
+    if (!effort) return;
+    body.thinking = { type: effort === "none" ? "disabled" : "enabled" };
     return;
   }
   if (
@@ -1343,7 +1399,7 @@ export async function resolveProvider(
       apiKey: configured.apiKey,
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
-      effort: null,
+      effort: normalizeEffort(effortOverride) || (await defaultEffort()),
       keyEnvHint: configured.keyEnvHint,
       authMode: configured.authMode,
     };
@@ -1355,7 +1411,7 @@ export async function resolveProvider(
       apiKey: configured.apiKey,
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
-      effort: null,
+      effort: normalizeEffort(effortOverride) || (await defaultEffort()),
       keyEnvHint: configured.keyEnvHint,
       authMode: configured.authMode,
     };
@@ -1391,7 +1447,7 @@ export async function resolveProvider(
       apiKey: configured.apiKey,
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
-      effort: null,
+      effort: normalizeEffort(effortOverride) || (await defaultEffort()),
       keyEnvHint: configured.keyEnvHint,
       authMode: configured.authMode,
     };

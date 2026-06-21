@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { DEEPSEEK_THINK_MAX_SYSTEM_PROMPT, buildStreamingLLMRequest, inferProviderForModel, modelContextBudget, normalizeUsage, recordUsage, resolveProvider } from "../src/agent";
+import { DEEPSEEK_THINK_MAX_SYSTEM_PROMPT, buildStreamingLLMRequest, effortLevelsForProvider, inferProviderForModel, modelContextBudget, normalizeUsage, recordUsage, resolveProvider } from "../src/agent";
 import { llmAuthGetCommand, llmAuthSaveCommand } from "../src/commands/llm_auth";
 import { applyDefaultChatSettings, chatModelInfo, modelOptionsFor, modelSupportsAttachments, splitModelId, modelSupportsToolCalls } from "../src/commands/models";
 import { estimateCostUsd, loadPricing, priceFor } from "../src/commands/describe";
@@ -117,6 +117,68 @@ describe("OpenAI-compatible provider support", () => {
   test("defaults GLM credentials to Z.AI API and GLM 5.2", async () => {
     const provider = await resolveProvider(null, null, "glm");
     expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.2", effort: null });
+  });
+
+  test("enables optional Qwen3 thinking", () => {
+    expect(effortLevelsForProvider({ name: "qwen", model: "qwen3-coder-plus" })).toEqual(["none", "high"]);
+    expect(effortLevelsForProvider({ name: "qwen", model: "qwen-plus" })).toEqual([]);
+    const request = buildStreamingLLMRequest({
+      name: "qwen",
+      baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      apiKey: "key",
+      model: "qwen3-coder-plus",
+      effort: "high",
+    } as any, [{ role: "user", content: "Think" }], null);
+    expect(request.requestEffort).toBe("high");
+    expect(request.body).toMatchObject({ enable_thinking: true });
+
+    const noThinking = buildStreamingLLMRequest({
+      name: "qwen",
+      baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      apiKey: "key",
+      model: "qwen3-coder-plus",
+      effort: "none",
+    } as any, [{ role: "user", content: "Answer" }], null);
+    expect(noThinking.requestEffort).toBe("none");
+    expect(noThinking.body).toMatchObject({ enable_thinking: false });
+  });
+
+  test("enables optional GLM thinking", () => {
+    expect(effortLevelsForProvider({ name: "glm", model: "glm-5.2" })).toEqual(["none", "high"]);
+    expect(effortLevelsForProvider({ name: "glm", model: "glm-4.6" })).toEqual(["none", "high"]);
+    const request = buildStreamingLLMRequest({
+      name: "glm",
+      baseUrl: "https://api.z.ai/api/paas/v4",
+      apiKey: "key",
+      model: "glm-5.2",
+      effort: "high",
+    } as any, [{ role: "user", content: "Think" }], null);
+    expect(request.requestEffort).toBe("high");
+    expect(request.body).toMatchObject({ thinking: { type: "enabled" } });
+
+    const noThinking = buildStreamingLLMRequest({
+      name: "glm",
+      baseUrl: "https://api.z.ai/api/paas/v4",
+      apiKey: "key",
+      model: "glm-5.2",
+      effort: "none",
+    } as any, [{ role: "user", content: "Answer" }], null);
+    expect(noThinking.requestEffort).toBe("none");
+    expect(noThinking.body).toMatchObject({ thinking: { type: "disabled" } });
+  });
+
+  test("enables optional Kimi K2 thinking", () => {
+    expect(effortLevelsForProvider({ name: "kimi", model: "kimi-k2.6-code" })).toEqual(["none", "high"]);
+    expect(effortLevelsForProvider({ name: "kimi", model: "moonshot-v1-128k" })).toEqual([]);
+    const request = buildStreamingLLMRequest({
+      name: "kimi",
+      baseUrl: "https://api.moonshot.ai/v1",
+      apiKey: "key",
+      model: "kimi-k2.6-code",
+      effort: "high",
+    } as any, [{ role: "user", content: "Think" }], null);
+    expect(request.requestEffort).toBe("high");
+    expect(request.body).toMatchObject({ thinking: { type: "enabled" } });
   });
 
   test("reads GLM key, model, and base URL aliases", async () => {
