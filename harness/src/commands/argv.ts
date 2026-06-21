@@ -284,7 +284,7 @@ function parseJson(text: string | undefined, fallback: unknown) {
 function parseJsonStrict(text: string | undefined, fallback: unknown, label: string) {
   if (text == null || text.trim() === "") return fallback;
   try {
-    return JSON.parse(text);
+    return parseJson(text, {});
   } catch {
     throw new Error(`invalid JSON for ${label}: ${text}`);
   }

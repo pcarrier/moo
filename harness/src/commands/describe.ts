@@ -1,3 +1,4 @@
+import { parseJson } from "../core/json";
 import { moo } from "../moo";
 import * as host from "../host_ops";
 import { chatRefs } from "../lib";
@@ -253,7 +254,7 @@ async function loadObjectsByHash(
     const row = objects[hash];
     into.set(
       hash,
-      row ? { kind: row.kind, value: JSON.parse(row.content) } : null,
+      row ? { kind: row.kind, value: parseJson(row.content, "describeCommand row content") } : null,
     );
   }
   return into;
@@ -1369,7 +1370,7 @@ export async function loadPricing(): Promise<Record<string, ModelPrice>> {
   const raw = await moo.env.get({ name: "MOO_LLM_PRICING" });
   if (!raw) return DEFAULT_MODEL_PRICING;
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = parseJson(raw, "loadPricing");
     if (parsed && typeof parsed === "object") {
       const clean: Record<string, ModelPrice> = { ...DEFAULT_MODEL_PRICING };
       for (const [key, rate] of Object.entries(parsed)) {

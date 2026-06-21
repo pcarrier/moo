@@ -1,3 +1,5 @@
+import { parseJson } from "./core/json";
+
 export type StoredObject = { kind: string; content: string; bytesBase64?: string; size?: number };
 export type FsStat = { kind: string; size: number; mtime: number };
 export type ProcRunResult = {
@@ -22,7 +24,8 @@ export const sha256Base64Url = (input: string): string => __op_sha256_base64url(
 
 export const putObject = (kind: string, content: string): string => __op_object_put(kind, content);
 export const getObject = (hash: string): StoredObject | null => __op_object_get(hash);
-export const getObjects = (hashes: readonly string[]): Record<string, StoredObject> => JSON.parse(__op_objects_get(JSON.stringify(hashes)));
+export const getObjects = (hashes: readonly string[]): Record<string, StoredObject> =>
+  parseJson(__op_objects_get(JSON.stringify(hashes)), "getObjects");
 
 export const setRef = (name: string, target: string): void => __op_ref_set(name, target);
 export const getRef = (name: string): string | null => __op_ref_get(name);

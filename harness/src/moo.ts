@@ -1,5 +1,6 @@
 import * as host from "./host_ops";
 import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
+import { parseJson } from "./core/json";
 import { err, ok, errorInfo } from "./core/result";
 import { unifiedDiffWithStats } from "./core/diff";
 import { PatchError, patchText, validatePatchEnvelopeTarget } from "./core/patch";
@@ -282,16 +283,16 @@ function traceAttachmentPlan(parentId: string | null, data: Record<string, unkno
 
 export async function startRunTSTraceRoot(parentId: string | null, data: Record<string, unknown> = {}) {
   const current = await host.currentTrace();
-  const cur = current ? JSON.parse(current) : null;
+  const cur = current ? (parseJson(current, "enterTrace current") as any) : null;
   const ambientParentId = typeof cur?.id === "string" && cur.id && cur.id !== parentId ? cur.id : null;
   const plan = traceAttachmentPlan(parentId, data, ambientParentId);
   await host.ensureTraceRoot(JSON.stringify(plan.root));
   if (plan.activeId !== plan.rootId) await host.ensureTraceSpan(JSON.stringify(plan.active));
   const raw = await host.enterTrace(JSON.stringify({ id: plan.activeId, rootId: plan.rootId }));
-  const entered = raw ? JSON.parse(raw) : null;
+  const entered = raw ? (parseJson(raw, "enterTrace") as any) : null;
   if (!entered) return null;
   if (activeRunTSContext && (entered.id || entered.traceId || entered.rootId)) activeRunTSContext.traceId = entered.id || entered.traceId || entered.rootId;
-  return entered;
+  return entered as any;
 }
 export const startTraceRoot = startRunTSTraceRoot;
 
@@ -299,12 +300,12 @@ export async function finishRunTSTraceRoot(info: TraceRootInfo) {
   let shouldLeave = false;
   try {
     const current = await host.currentTrace();
-    const cur = current ? JSON.parse(current) : null;
+    const cur = current ? (parseJson(current, "finishTraceRoot current") as any) : null;
     const traceId = info.id || info.traceId || cur?.id || cur?.parentId || cur?.traceId;
     if (!traceId) return false;
     shouldLeave = true;
     const root = await host.getTrace(JSON.stringify({ id: traceId }));
-    const row = root ? JSON.parse(root) : null;
+    const row = root ? (parseJson(root, "finishTraceRoot row") as any) : null;
     const data = {
       ...(row?.data && typeof row.data === "object" ? row.data : {}),
       ...(info.resultHash ? { resultHash: info.resultHash } : {}),
@@ -325,11 +326,11 @@ export async function finishRunTSTraceRoot(info: TraceRootInfo) {
 export const finishTraceRoot = finishRunTSTraceRoot;
 
 function parseTraceRow(raw: string | null): TraceRow | null {
-  return raw ? JSON.parse(raw) as TraceRow : null;
+  return raw ? parseJson(raw, "parseTraceRow") as TraceRow : null;
 }
 
 function parseTraceRows(raw: string): TraceRow[] {
-  const rows = JSON.parse(raw || "[]") as TraceRow[];
+  const rows = parseJson(raw || "[]", "parseTraceRows") as TraceRow[];
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -542,7 +543,7 @@ async function failedTraces(args: TraceFailedArgs = {}): Promise<TraceSearchRow[
 const traces: Moo["traces"] = {
   async current(_args = {}) {
     const raw = await host.currentTrace();
-    return raw ? JSON.parse(raw) : null;
+    return raw ? parseJson(raw, "traces.current") : null;
   },
   async get(args = {}) {
     return parseTraceRow(await host.getTrace(JSON.stringify(args ?? {})));
@@ -857,7 +858,7 @@ const objects: Moo["objects"] = {
   async getJSON({ hash }) {
     const row = host.getObject(hash);
     if (!row) return null;
-    return { kind: row.kind, value: JSON.parse(row.content) };
+    return { kind: row.kind, value: parseJson(row.content, "objects.getJSON") };
   },
 };
 
@@ -1038,7 +1039,7 @@ const pointers: Moo["pointers"] = {
     return host.listRefs(args.prefix ?? "");
   },
   async entries(args = {}) {
-    return JSON.parse(host.refEntries(args.prefix ?? ""));
+    return parseJson(host.refEntries(args.prefix ?? ""), "pointers.entries");
   },
   async delete({ name }) {
     if (!validate.pointerName({ name })) throw new MooApiError("invalid_pointer_name", "invalid pointer name", { name });
@@ -2803,12 +2804,12 @@ function driverRunningChatState(): {
   let running: Set<string>;
   let startedAt: Record<string, number>;
   try {
-    running = new Set(JSON.parse(host.runningChatIds()));
+    running = new Set(parseJson(host.runningChatIds(), "driverRunningChatState running"));
   } catch {
     running = new Set();
   }
   try {
-    startedAt = JSON.parse(host.runningChatStartedAt());
+    startedAt = parseJson(host.runningChatStartedAt(), "driverRunningChatState startedAt");
   } catch {
     startedAt = {};
   }
@@ -2825,7 +2826,7 @@ async function summarizeAllChatFacts(): Promise<Map<string, ChatFactsSummary>> {
   // failure abort the whole chat listing — degrade to no summaries instead.
   const raw = ((): Record<string, ChatFactsSummary | undefined> => {
     try {
-      return JSON.parse(host.chatFactSummaries()) as Record<
+      return parseJson(host.chatFactSummaries(), "summarizeAllChatFacts") as Record<
         string,
         ChatFactsSummary | undefined
       >;
@@ -3449,7 +3450,7 @@ async function runSubagent(spec: SubagentSpec, opts: { allowNested?: boolean } =
   try {
     request = await createSubagentRunRequest(normalized, opts);
     const raw = await host.runAgent(JSON.stringify(request));
-    const result = normalizeSubagentResult(JSON.parse(raw) as LegacySubagentResult);
+    const result = normalizeSubagentResult(parseJson(raw, "runSubagent") as LegacySubagentResult);
     await finishSubagentRun(request.childChatId, result);
     return result;
   } catch (err) {
@@ -3792,7 +3793,7 @@ const tools: Moo["tools"] = {
     const rawStepId = stepId ?? id ?? null;
     const targetStepId = rawStepId == null ? null : String(rawStepId).trim();
     const raw = host.cancelRunTS(targetChatId, targetStepId || null);
-    const parsed = JSON.parse(raw) as {
+    const parsed = parseJson(raw, "tools.cancel") as {
       chatId?: string;
       stepId?: string | null;
       cancelled?: number;

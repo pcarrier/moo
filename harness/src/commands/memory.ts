@@ -1,3 +1,4 @@
+import { parseJson } from "../core/json";
 import * as host from "../host_ops";
 import { moo } from "../moo";
 import { Term } from "../types";
@@ -81,10 +82,10 @@ export async function graphSummariesCommand(input: Input) {
     if (input.project !== undefined) {
       const store = await projectMemoryStoreFor(input.project);
       const graph = await projectMemoryGraphFor(input.project);
-      const graphs = JSON.parse(host.graphFactSummaries(store, graph)) as GraphSummaryRow[];
+      const graphs = parseJson(host.graphFactSummaries(store, graph), "graphSummariesCommand") as GraphSummaryRow[];
       return { ok: true, value: { graphs } };
     }
-    const graphs = JSON.parse(host.graphFactSummaries(null, null)) as GraphSummaryRow[];
+    const graphs = parseJson(host.graphFactSummaries(null, null), "graphSummariesCommand") as GraphSummaryRow[];
     return { ok: true, value: { graphs } };
   }
   const summaries = new Map<string, { facts: number; subjects: Set<string> }>();

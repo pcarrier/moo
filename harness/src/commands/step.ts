@@ -1,3 +1,4 @@
+import { parseJson } from "../core/json";
 import { moo } from "../moo";
 import * as host from "../host_ops";
 import type { StepKind } from "../types";
@@ -273,7 +274,7 @@ function parseToolArgs(toolCall: ToolCallInput | null | undefined): Record<strin
   if (raw == null || raw === "") return {};
   if (typeof raw !== "string") return asObject(raw);
   try {
-    return asObject(JSON.parse(raw));
+    return asObject(parseJson(raw, "chatQueueSaveCommand"));
   } catch {
     return {};
   }

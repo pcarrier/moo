@@ -15,6 +15,14 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::async_runtime::runtime;
 use crate::broadcast;
+
+fn spawn_on_runtime<F>(future: F) -> Result<tokio::task::JoinHandle<F::Output>, String>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    Ok(runtime()?.spawn(future))
+}
 use crate::host;
 use crate::ops::llm;
 use crate::pool::Pool;
@@ -440,7 +448,10 @@ fn dispatch_state(pool: Arc<Pool>, bundle: Arc<String>, state: Value) {
         return;
     }
 
-    start_prepared_run(prepare_chat_run(pool, bundle, chat_id, state));
+    match prepare_chat_run(pool, bundle, chat_id, state) {
+        Ok(prepared) => start_prepared_run(prepared),
+        Err(e) => eprintln!("{e}"),
+    }
 }
 
 fn prepare_chat_run(
@@ -448,7 +459,7 @@ fn prepare_chat_run(
     bundle: Arc<String>,
     chat_id: String,
     state: Value,
-) -> PreparedChatRun {
+) -> Result<PreparedChatRun, String> {
     let run_id = NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed);
     let started_at = now_ms() as u64;
     let lifecycle_events = state.get("lifecycleEvents").cloned();
@@ -463,7 +474,7 @@ fn prepare_chat_run(
     let task_foreground_runts = foreground_runts.clone();
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
     let task_chat_id = chat_id.clone();
-    let handle = runtime().spawn(async move {
+    let handle = spawn_on_runtime(async move {
         let _ = start_rx.await;
         let lifecycle_events = state.get("lifecycleEvents").cloned();
         let mut step_guard = StepLifecycle::new(lifecycle_events.as_ref(), task_ended);
@@ -486,9 +497,10 @@ fn prepare_chat_run(
         }
         step_guard.finish();
         finish_current_and_start_next(&task_chat_id, run_id);
-    });
+    })
+    .map_err(|e| format!("failed to spawn chat driver task for {chat_id}: {e}"))?;
 
-    PreparedChatRun {
+    Ok(PreparedChatRun {
         chat_id,
         running: RunningChat {
             handle,
@@ -501,7 +513,7 @@ fn prepare_chat_run(
         start_tx,
         lifecycle_events,
         started_at,
-    }
+    })
 }
 
 fn start_prepared_run(prepared: PreparedChatRun) {
@@ -549,12 +561,10 @@ fn start_next_queued_run_locked(chat_id: &str) {
             .push_front(next);
         return;
     }
-    start_prepared_run(prepare_chat_run(
-        next.pool,
-        next.bundle,
-        chat_id.to_string(),
-        next.state,
-    ));
+    match prepare_chat_run(next.pool, next.bundle, chat_id.to_string(), next.state) {
+        Ok(prepared) => start_prepared_run(prepared),
+        Err(e) => eprintln!("{e}"),
+    }
 }
 
 async fn drive(
@@ -604,7 +614,7 @@ async fn drive(
 }
 
 pub fn restart_ongoing(pool: Arc<Pool>, bundle: Arc<String>) {
-    runtime().spawn(async move {
+    if let Err(e) = spawn_on_runtime(async move {
         let discovered = call_v8(&pool, &bundle, json!({ "command": "restart-ongoing" })).await;
         let Ok(raw) = discovered else {
             eprintln!("chat driver restart discovery: {}", discovered.unwrap_err());
@@ -618,7 +628,9 @@ pub fn restart_ongoing(pool: Arc<Pool>, bundle: Arc<String>) {
             }
         };
         let _count = apply_driver_actions(&value, &pool, &bundle);
-    });
+    }) {
+        eprintln!("chat driver restart discovery: failed to spawn task: {e}");
+    }
 }
 
 pub fn apply_driver_actions(value: &Value, pool: &Arc<Pool>, bundle: &Arc<String>) -> usize {
@@ -842,8 +854,10 @@ pub fn spawn_runts_tool_command(
     bundle: Arc<String>,
     value: Value,
     cancelled: Arc<AtomicBool>,
-) -> JoinHandle<Value> {
-    runtime().spawn(async move { run_ts_tool_async(&pool, &bundle, &value, None, cancelled).await })
+) -> Result<JoinHandle<Value>, String> {
+    spawn_on_runtime(
+        async move { run_ts_tool_async(&pool, &bundle, &value, None, cancelled).await },
+    )
 }
 
 pub fn background_runts_command(
@@ -851,7 +865,7 @@ pub fn background_runts_command(
     value: Value,
     cancel_for_task: Arc<AtomicBool>,
     handle: JoinHandle<Value>,
-) {
+) -> Result<(), String> {
     let step_id = runts_tool_step_id(&value);
     let label = runts_tool_label(&value);
     let requested_by = "api";
@@ -875,7 +889,7 @@ pub fn background_runts_command(
         label.as_deref(),
         requested_by,
     );
-    runtime().spawn(async move {
+    spawn_on_runtime(async move {
         let _ = handle.await;
         background_runts_lock().remove(&step_id);
         publish_runts_background_event(
@@ -885,7 +899,8 @@ pub fn background_runts_command(
             label.as_deref(),
             requested_by,
         );
-    });
+    })
+    .map(|_| ())
 }
 
 fn publish_runts_background_event(
@@ -935,7 +950,7 @@ fn background_runts_tool(
     parent_span: Option<String>,
     tool_span: ChatTraceSpan,
     requested_by: &'static str,
-) {
+) -> Result<(), String> {
     let step_id = runts_tool_step_id(&value);
     let label = runts_tool_label(&value);
     let cancel_for_task = Arc::new(AtomicBool::new(false));
@@ -945,7 +960,7 @@ fn background_runts_tool(
         value.clone(),
         parent_span,
         cancel_for_task.clone(),
-    );
+    )?;
     background_runts_tool_handle(
         chat_id.clone(),
         step_id,
@@ -954,7 +969,7 @@ fn background_runts_tool(
         tool_span,
         handle,
         requested_by,
-    );
+    )
 }
 
 fn background_runts_tool_handle(
@@ -965,7 +980,7 @@ fn background_runts_tool_handle(
     tool_span: ChatTraceSpan,
     handle: JoinHandle<Value>,
     requested_by: &'static str,
-) {
+) -> Result<(), String> {
     let abort = handle.abort_handle();
     background_runts_lock().insert(
         step_id.clone(),
@@ -987,7 +1002,7 @@ fn background_runts_tool_handle(
         requested_by,
     );
     let cancel_for_join = cancel_for_task.clone();
-    runtime().spawn(async move {
+    spawn_on_runtime(async move {
         let tool_result = handle.await.unwrap_or_else(|e| {
             let cancelled = cancel_for_join.load(Ordering::SeqCst) || e.is_cancelled();
             json!({
@@ -1026,7 +1041,8 @@ fn background_runts_tool_handle(
             if tool_ok { "ok" } else { "error" },
             json!({ "result": tool_result }),
         );
-    });
+    })
+    .map(|_| ())
 }
 
 fn spawn_runts_tool_task(
@@ -1035,8 +1051,8 @@ fn spawn_runts_tool_task(
     value: Value,
     parent_span: Option<String>,
     cancelled: Arc<AtomicBool>,
-) -> JoinHandle<Value> {
-    runtime().spawn(async move {
+) -> Result<JoinHandle<Value>, String> {
+    spawn_on_runtime(async move {
         run_ts_tool_async(&pool, &bundle, &value, parent_span.as_deref(), cancelled).await
     })
 }
@@ -1236,7 +1252,7 @@ async fn drive_loop(
                 let background_after_ns = value.get("backgroundAfterNs").and_then(|v| v.as_u64());
                 if background_after_ns == Some(0) {
                     let detached_result = detached_runts_tool_result(&value);
-                    background_runts_tool(
+                    let _ = background_runts_tool(
                         pool.clone(),
                         bundle.clone(),
                         chat_id.to_string(),
@@ -1275,13 +1291,28 @@ async fn drive_loop(
                         background: tool_background.clone(),
                     },
                 );
-                let mut run = spawn_runts_tool_task(
+                let mut run = match spawn_runts_tool_task(
                     pool.clone(),
                     bundle.clone(),
                     foreground_value,
                     foreground_parent_span.clone(),
                     run_cancel.clone(),
-                );
+                ) {
+                    Ok(handle) => handle,
+                    Err(e) => {
+                        let tool_result = json!({
+                            "content": format!("error: failed to start runTS task: {e}"),
+                            "status": "failed",
+                        });
+                        tool_span.finish("error", json!({ "result": tool_result.clone() }));
+                        next_input = json!({
+                            "command": "step-next",
+                            "state": state,
+                            "toolResult": tool_result,
+                        });
+                        continue;
+                    }
+                };
                 let background_poll = async {
                     loop {
                         if tool_background.load(Ordering::SeqCst) {
@@ -1375,7 +1406,7 @@ async fn drive_loop(
                         // discoverable to cancel_runts (the two registries use
                         // separate mutexes; clearing first opens a window where a
                         // cancel finds the step in neither and is silently lost).
-                        background_runts_tool_handle(
+                        let _ = background_runts_tool_handle(
                             chat_id.to_string(),
                             step_id,
                             label,
@@ -1409,7 +1440,7 @@ async fn drive_loop(
                         // Register background before clearing foreground so a
                         // concurrent cancel_runts can't slip through the gap
                         // between the two registries (see background_poll arm).
-                        background_runts_tool_handle(
+                        let _ = background_runts_tool_handle(
                             chat_id.to_string(),
                             step_id,
                             label,
@@ -1528,10 +1559,16 @@ fn make_agent_run_handler(pool: Arc<Pool>, bundle: Arc<String>) -> AgentRunHandl
         let bundle = bundle.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancelled.clone();
-        runtime().spawn(async move {
+        let completion_tx_for_spawn = completion_tx.clone();
+        if let Err(e) = spawn_on_runtime(async move {
             let result = drive_subagent(pool, bundle, request_json, cancel_for_task).await;
-            let _ = completion_tx.send(AsyncOpCompletion { id: op_id, result });
-        });
+            let _ = completion_tx_for_spawn.send(AsyncOpCompletion { id: op_id, result });
+        }) {
+            let _ = completion_tx.send(AsyncOpCompletion {
+                id: op_id,
+                result: Err(format!("failed to spawn subagent task: {e}")),
+            });
+        }
         AsyncOpHandle {
             cancel: Arc::new(move || {
                 cancelled.store(true, Ordering::SeqCst);
@@ -1885,10 +1922,10 @@ mod tests {
         let other_step_id = format!("step:other-{}", now_ns());
         let cancel = Arc::new(AtomicBool::new(false));
         let other_cancel = Arc::new(AtomicBool::new(false));
-        let handle = runtime().spawn(async {
+        let handle = runtime().unwrap().spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         });
-        let other_handle = runtime().spawn(async {
+        let other_handle = runtime().unwrap().spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         });
         let abort = handle.abort_handle();
@@ -1949,7 +1986,7 @@ mod tests {
             },
         );
 
-        let handle = runtime().spawn(async {});
+        let handle = runtime().unwrap().spawn(async {});
         running_lock().insert(
             chat_id.clone(),
             RunningChat {

@@ -1480,30 +1480,47 @@ pub struct Pool {
 impl Pool {
     pub fn new(workers: usize, db: &str, server_base_url: Option<String>) -> Self {
         let main_pool = JobPool::new("moo-worker", workers.max(1), db);
-        spawn_worker(main_pool.clone(), main_pool.allocate_worker_id());
+        let main_id = main_pool.allocate_worker_id();
+        if let Err(e) = spawn_worker(main_pool.clone(), main_id) {
+            eprintln!("{e}");
+            main_pool.worker_start_failed();
+        }
 
         // UI/API reads must stay responsive even while agent/tool work fills
         // the main isolate pool. Keep fast reads on their own lane, and keep
         // whole-store scans (triples/vocabulary) off that lane so they cannot
         // starve chat-models/ui-chat/describe refreshes.
         let read_pool = JobPool::new("moo-read-worker", configured_read_max_workers(), db);
-        spawn_worker(read_pool.clone(), read_pool.allocate_worker_id());
+        let read_id = read_pool.allocate_worker_id();
+        if let Err(e) = spawn_worker(read_pool.clone(), read_id) {
+            eprintln!("{e}");
+            read_pool.worker_start_failed();
+        }
 
         let scan_pool = JobPool::new("moo-scan-worker", configured_scan_max_workers(), db);
-        spawn_worker(scan_pool.clone(), scan_pool.allocate_worker_id());
+        let scan_id = scan_pool.allocate_worker_id();
+        if let Err(e) = spawn_worker(scan_pool.clone(), scan_id) {
+            eprintln!("{e}");
+            scan_pool.worker_start_failed();
+        }
 
         // UI app handler calls can include slow external MCP requests. Keep
         // them off the main write lane so agent streaming/turn work cannot
         // starve app RPCs, and app RPCs cannot starve agent bookkeeping.
         let ui_pool = JobPool::new("moo-ui-worker", configured_ui_max_workers(), db);
-        spawn_worker(ui_pool.clone(), ui_pool.allocate_worker_id());
+        let ui_id = ui_pool.allocate_worker_id();
+        if let Err(e) = spawn_worker(ui_pool.clone(), ui_id) {
+            eprintln!("{e}");
+            ui_pool.worker_start_failed();
+        }
 
         let async_tool_pool =
             AsyncToolPool::new("moo-tool-worker", configured_tool_max_workers(), db);
-        spawn_async_tool_worker(
-            async_tool_pool.clone(),
-            async_tool_pool.allocate_worker_id(),
-        );
+        let async_id = async_tool_pool.allocate_worker_id();
+        if let Err(e) = spawn_async_tool_worker(async_tool_pool.clone(), async_id) {
+            eprintln!("{e}");
+            async_tool_pool.worker_start_failed();
+        }
 
         Pool {
             main_pool,
@@ -1574,8 +1591,12 @@ impl Pool {
         let input = self.input_with_server_base_url(input);
         let (resp_tx, resp_rx) = mpsc::channel();
         let pool = &self.async_tool_pool;
-        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed() {
-            spawn_async_tool_worker(pool.clone(), id);
+        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed()
+            && let Err(e) = spawn_async_tool_worker(pool.clone(), id)
+        {
+            pool.worker_start_failed();
+            pool.job_dequeued_on_send_error();
+            return Err(e);
         }
         if pool
             .sender()
@@ -1634,8 +1655,12 @@ impl Pool {
         input: String,
     ) -> Result<String, String> {
         let (resp_tx, resp_rx) = mpsc::channel();
-        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed() {
-            spawn_worker(pool.clone(), id);
+        if let Some(id) = pool.job_queued_and_allocate_worker_if_needed()
+            && let Err(e) = spawn_worker(pool.clone(), id)
+        {
+            pool.worker_start_failed();
+            pool.job_dequeued_on_send_error();
+            return Err(e);
         }
         if pool
             .sender()
@@ -1662,12 +1687,14 @@ fn recv_job_result(
         .unwrap_or_else(|_| Err(dropped_message.to_string()))
 }
 
-fn spawn_worker(pool: Arc<JobPool>, id: usize) {
+fn spawn_worker(pool: Arc<JobPool>, id: usize) -> Result<(), String> {
     let thread_name = format!("{}-{id}", pool.lane());
+    let lane = pool.lane().to_string();
     thread::Builder::new()
         .name(thread_name)
         .spawn(move || worker_loop(pool, id))
-        .expect("failed to spawn thread");
+        .map_err(|e| format!("failed to spawn {lane} worker {id}: {e}"))?;
+    Ok(())
 }
 
 fn worker_loop(pool: Arc<JobPool>, id: usize) {
@@ -2091,12 +2118,14 @@ fn run_snapshot_bundle_job(rt: &mut WorkerRuntime, input: &str, snapshot_hit: bo
     }
 }
 
-fn spawn_async_tool_worker(pool: Arc<AsyncToolPool>, id: usize) {
+fn spawn_async_tool_worker(pool: Arc<AsyncToolPool>, id: usize) -> Result<(), String> {
     let thread_name = format!("{}-{id}", pool.lane());
+    let lane = pool.lane().to_string();
     thread::Builder::new()
         .name(thread_name)
         .spawn(move || async_tool_worker_loop(pool, id))
-        .expect("failed to spawn thread");
+        .map_err(|e| format!("failed to spawn {lane} worker {id}: {e}"))?;
+    Ok(())
 }
 
 fn async_tool_worker_loop(pool: Arc<AsyncToolPool>, id: usize) {

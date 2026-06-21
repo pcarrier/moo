@@ -1246,23 +1246,54 @@ fn handle_run_ts_tool_command(
     }
     let cancel = Arc::new(AtomicBool::new(false));
     let payload = ensure_runts_step_id(payload);
-    let mut handle =
-        driver::spawn_runts_tool_command(pool.clone(), bundle, payload.clone(), cancel.clone());
+    let mut handle = match driver::spawn_runts_tool_command(
+        pool.clone(),
+        bundle,
+        payload.clone(),
+        cancel.clone(),
+    ) {
+        Ok(handle) => handle,
+        Err(e) => {
+            send_run_result(
+                writer_tx,
+                id,
+                json!({ "ok": false, "error": { "message": e } }),
+            );
+            return true;
+        }
+    };
     if background_after_ns == 0 {
         let result = detached_runts_tool_result(&payload);
-        driver::background_runts_command(chat_id, payload, cancel, handle);
+        if let Err(e) = driver::background_runts_command(chat_id, payload, cancel, handle) {
+            send_run_result(
+                writer_tx,
+                id,
+                json!({ "ok": false, "error": { "message": e } }),
+            );
+            return true;
+        }
         send_run_result(writer_tx, id, result);
         return true;
     }
     // Cap the foreground wait so a huge value cannot block the worker thread forever.
     const MAX_BACKGROUND_AFTER_NS: u64 = 5 * 60 * 1_000_000_000;
-    let wait = crate::async_runtime::runtime().block_on(async {
-        tokio::time::timeout(
-            Duration::from_nanos(background_after_ns.min(MAX_BACKGROUND_AFTER_NS)),
-            &mut handle,
-        )
-        .await
-    });
+    let wait = match crate::async_runtime::runtime() {
+        Ok(rt) => rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_nanos(background_after_ns.min(MAX_BACKGROUND_AFTER_NS)),
+                &mut handle,
+            )
+            .await
+        }),
+        Err(e) => {
+            send_run_result(
+                writer_tx,
+                id,
+                json!({ "ok": false, "error": { "message": e } }),
+            );
+            return true;
+        }
+    };
     match wait {
         Ok(joined) => {
             let result = joined.unwrap_or_else(|e| {
@@ -1274,7 +1305,16 @@ fn handle_run_ts_tool_command(
             send_run_result(writer_tx, id, json!({ "ok": true, "value": result }));
         }
         Err(_) => {
-            driver::background_runts_command(chat_id, payload.clone(), cancel, handle);
+            if let Err(e) =
+                driver::background_runts_command(chat_id, payload.clone(), cancel, handle)
+            {
+                send_run_result(
+                    writer_tx,
+                    id,
+                    json!({ "ok": false, "error": { "message": e } }),
+                );
+                return true;
+            }
             send_run_result(writer_tx, id, detached_runts_tool_result(&payload));
         }
     }

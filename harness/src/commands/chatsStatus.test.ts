@@ -14,7 +14,7 @@ describe("chat list status", () => {
 
   test("moo.chat.list ignores stale running facts when the driver is idle", () => {
     expect(mooSource).toContain("function driverRunningChatState()");
-    expect(mooSource).toContain("running = new Set(JSON.parse(host.runningChatIds()))");
+    expect(mooSource).toContain('running = new Set(parseJson(host.runningChatIds(), "driverRunningChatState running"))');
     expect(mooSource).toContain('summary.status === "ui:Pending"');
     expect(mooSource).toContain('summary.status === "agent:Running"');
     expect(mooSource).toContain('? "agent:Done"');

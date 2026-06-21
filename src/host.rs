@@ -28,7 +28,12 @@ static DB: Mutex<Option<Connection>> = Mutex::new(None);
 static DB_INIT_LOCK: Mutex<()> = Mutex::new(());
 static TRACE_EXPORTER: Mutex<Option<OtelTraceExporter>> = Mutex::new(None);
 static NEXT_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
-static TRACE_WRITE_QUEUE: LazyLock<TraceWriteQueue> = LazyLock::new(TraceWriteQueue::start);
+static TRACE_WRITE_QUEUE: LazyLock<Result<TraceWriteQueue, String>> = LazyLock::new(|| {
+    TraceWriteQueue::start().map_err(|e| {
+        eprintln!("trace write queue: {e}");
+        e
+    })
+});
 static TRACE_IN_FLIGHT_ROWS: LazyLock<Mutex<HashMap<String, TraceInFlightRow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -314,7 +319,7 @@ struct TraceWriteQueue {
 }
 
 impl TraceWriteQueue {
-    fn start() -> Self {
+    fn start() -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<TraceWrite>();
         thread::Builder::new()
             .name("moo-trace-writer".to_string())
@@ -340,8 +345,8 @@ impl TraceWriteQueue {
                     batch.clear();
                 }
             })
-            .expect("spawn trace writer");
-        Self { tx }
+            .map_err(|e| format!("failed to spawn trace writer thread: {e}"))?;
+        Ok(Self { tx })
     }
     fn enqueue(&self, write: TraceWrite) -> Result<(), (String, TraceWrite)> {
         self.tx.send(write).map_err(|e| (e.to_string(), e.0))
@@ -382,7 +387,8 @@ fn enqueue_trace_write(write: TraceWrite) -> Result<(), String> {
     // registration back if enqueue fails (writer thread gone), recovering the
     // moved value from SendError so the in-flight row count doesn't leak.
     register_trace_in_flight_write(&write);
-    match TRACE_WRITE_QUEUE.enqueue(write) {
+    let queue = TRACE_WRITE_QUEUE.as_ref().map_err(|e| e.clone())?;
+    match queue.enqueue(write) {
         Ok(()) => Ok(()),
         Err((message, write)) => {
             complete_trace_in_flight_writes(std::slice::from_ref(&write));
@@ -761,8 +767,8 @@ pub fn install_fresh(db_path: &str) -> Result<(), String> {
 }
 
 pub fn open_db(path: &str) -> Result<Connection, String> {
-    let conn = open_db_with_schema(path, MAIN_SCHEMA_SQL)?;
-    migrate_direct_json_pointers_conn(&conn)?;
+    let mut conn = open_db_with_schema(path, MAIN_SCHEMA_SQL)?;
+    migrate_direct_json_pointers_conn(&mut conn)?;
     Ok(conn)
 }
 
@@ -825,7 +831,7 @@ fn direct_json_pointer_target(
         .map_err(|e| e.to_string())
 }
 
-fn migrate_direct_json_pointers_conn(conn: &Connection) -> Result<usize, String> {
+fn migrate_direct_json_pointers_conn(conn: &mut Connection) -> Result<usize, String> {
     let updates: Vec<(String, String, String)> = {
         let mut stmt = conn
             .prepare(
@@ -865,7 +871,7 @@ fn migrate_direct_json_pointers_conn(conn: &Connection) -> Result<usize, String>
 
     let mut changed = 0usize;
     let now = now_ms();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     for (name, old_target, next_target) in updates {
         let n = tx
             .execute(

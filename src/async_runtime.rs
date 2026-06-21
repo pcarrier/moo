@@ -6,14 +6,17 @@
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
 
-pub fn runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("moo-async")
-            .build()
-            .expect("init tokio runtime")
-    })
+pub fn runtime() -> Result<&'static Runtime, String> {
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("moo-async")
+                .build()
+                .map_err(|e| format!("failed to start async runtime: {e}"))
+        })
+        .as_ref()
+        .map_err(|e| e.clone())
 }

@@ -207,7 +207,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
     }
 
     if let Cmd::Freeze = &cli.command {
-        let conn = host::open_db(&db_path)?;
+        let mut conn = host::open_db(&db_path)?;
         let now = util::now_ms();
         let names: Vec<String> = conn
             .prepare("SELECT name FROM refs WHERE name >= 'chat/' AND name < 'chat0' AND substr(name, length(name) - 7) = '/ongoing'")
@@ -220,7 +220,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
             eprintln!("no ongoing chats");
             return Ok(());
         }
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         for name in &names {
             let old: Option<String> = tx
                 .query_row("SELECT target FROM refs WHERE name = ?1", [name], |r| {
