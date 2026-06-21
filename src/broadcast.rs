@@ -251,7 +251,10 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn clear_active_drafts() {
-        ACTIVE_DRAFTS.lock().unwrap().clear();
+        ACTIVE_DRAFTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     #[test]
