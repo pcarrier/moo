@@ -775,8 +775,9 @@ fn run_inspected_job(
         return;
     }
 
-    let mut isolate = unsafe { v8::Isolate::from_raw_isolate_ptr_unchecked(isolate_ptr) };
-    v8::scope!(let scope, &mut isolate);
+    let mut isolate_ptr = isolate_ptr;
+    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_mut_unchecked(&mut isolate_ptr) };
+    v8::scope!(let scope, isolate);
     let context = v8::Local::new(scope, context_global);
     let mut scope = v8::ContextScope::new(scope, context);
     let report = match request.async_agent_run {
@@ -1280,12 +1281,13 @@ impl V8InspectorClientImpl for InspectorClient {
             let context_borrow = (*self.shared).default_context.borrow();
             let global = context_borrow.as_ref()?;
 
-            let mut isolate = v8::Isolate::from_raw_isolate_ptr_unchecked(isolate_ptr);
+            let mut isolate_ptr = isolate_ptr;
+            let isolate = v8::Isolate::ref_from_raw_isolate_ptr_mut_unchecked(&mut isolate_ptr);
             // CallbackScope wraps V8's *current* HandleScope (it does not push
             // a new one for `&mut Isolate`), so the Local we mint stays valid
             // for the duration of V8's enclosing C++ call frame — which is
             // precisely as long as V8 needs the returned pointer.
-            v8::callback_scope!(unsafe scope, &mut isolate);
+            v8::callback_scope!(unsafe scope, isolate);
             let local = v8::Local::new(scope, global);
             Some(local.extend_lifetime_unchecked::<v8::Local<'_, v8::Context>>())
         }

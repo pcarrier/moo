@@ -301,9 +301,16 @@ fn configure_process_group(_command: &mut Command) {}
 fn terminate_process_tree(child: &mut Child) {
     #[cfg(unix)]
     {
-        if let Ok(pid) = i32::try_from(child.id()) {
+        let pid = child.id();
+        if pid != 0 && pid <= i32::MAX as u32 {
+            let pid_i = pid as i32;
+            // Verify the child still owns its own process group before killing
+            // the group, so a reused PID cannot accidentally wipe out an
+            // unrelated process group.
             unsafe {
-                let _ = libc::kill(-pid, libc::SIGKILL);
+                if libc::getpgid(pid_i) == pid_i {
+                    let _ = libc::kill(-pid_i, libc::SIGKILL);
+                }
             }
         }
     }

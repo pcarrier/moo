@@ -280,6 +280,9 @@ impl Drop for TraceStateRunGuard {
             let previous = cell.borrow_mut().take();
             finish_open_trace_state(previous, "shutdown");
         });
+        // Ensure any spans/events queued by the shutdown cleanup are actually
+        // persisted before the process tears down the trace writer thread.
+        crate::host::flush_trace_queue();
     }
 }
 
@@ -1061,15 +1064,18 @@ impl AsyncCancelWatchdog {
         let done = Arc::new(AtomicBool::new(false));
         let done_for_thread = done.clone();
         let isolate_handle = scope.thread_safe_handle();
-        let thread = thread::spawn(move || {
-            while !done_for_thread.load(Ordering::SeqCst) {
-                if cancelled.load(Ordering::SeqCst) {
-                    let _ = isolate_handle.terminate_execution();
-                    return;
+        let thread = thread::Builder::new()
+            .name("moo-cancel-watchdog".into())
+            .spawn(move || {
+                while !done_for_thread.load(Ordering::SeqCst) {
+                    if cancelled.load(Ordering::SeqCst) {
+                        let _ = isolate_handle.terminate_execution();
+                        return;
+                    }
+                    thread::park_timeout(ASYNC_RECV_MAX_SLICE);
                 }
-                thread::sleep(ASYNC_RECV_MAX_SLICE);
-            }
-        });
+            })
+            .expect("spawn cancel watchdog");
         Self {
             done,
             thread: Some(thread),
@@ -1081,6 +1087,7 @@ impl Drop for AsyncCancelWatchdog {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }

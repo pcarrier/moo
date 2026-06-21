@@ -306,6 +306,7 @@ enum TraceWrite {
         kind: String,
         bytes: Vec<u8>,
     },
+    Flush(Sender<()>),
 }
 
 #[derive(Clone, Debug)]
@@ -337,12 +338,26 @@ impl TraceWriteQueue {
                             | Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
-                    let result = flush_trace_writes(&batch);
-                    complete_trace_in_flight_writes(&batch);
+                    let mut flush_senders = Vec::new();
+                    let writes: Vec<_> = batch
+                        .drain(..)
+                        .filter(|w| {
+                            if let TraceWrite::Flush(sender) = w {
+                                flush_senders.push(sender.clone());
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .collect();
+                    let result = flush_trace_writes(&writes);
+                    complete_trace_in_flight_writes(&writes);
                     if let Err(error) = result {
-                        report_trace_write_error(error, batch.len());
+                        report_trace_write_error(error, writes.len());
                     }
-                    batch.clear();
+                    for sender in flush_senders {
+                        let _ = sender.send(());
+                    }
                 }
             })
             .map_err(|e| format!("failed to spawn trace writer thread: {e}"))?;
@@ -350,6 +365,21 @@ impl TraceWriteQueue {
     }
     fn enqueue(&self, write: TraceWrite) -> Result<(), (String, TraceWrite)> {
         self.tx.send(write).map_err(|e| (e.to_string(), e.0))
+    }
+    fn flush(&self) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.enqueue(TraceWrite::Flush(tx))
+            .map_err(|(e, _)| format!("trace flush enqueue: {e}"))?;
+        rx.recv()
+            .map_err(|e| format!("trace flush wait: trace writer dropped ({e})"))
+    }
+}
+
+pub fn flush_trace_queue() {
+    if let Ok(queue) = TRACE_WRITE_QUEUE.as_ref()
+        && let Err(e) = queue.flush()
+    {
+        eprintln!("trace flush: {e}");
     }
 }
 
@@ -374,6 +404,7 @@ fn flush_trace_writes(writes: &[TraceWrite]) -> Result<(), String> {
             TraceWrite::Blob { hash, kind, bytes } => {
                 trace_store_put_blob(hash.clone(), kind.clone(), bytes.clone());
             }
+            TraceWrite::Flush(_) => {}
         }
     }
     if let Some(exporter) = current_trace_exporter() {
@@ -441,14 +472,14 @@ fn register_trace_in_flight_write(write: &TraceWrite) {
                     pending_writes: 1,
                 });
         }
-        TraceWrite::Blob { .. } => {}
+        TraceWrite::Blob { .. } | TraceWrite::Flush(_) => {}
     }
 }
 
 fn trace_write_row_id(write: &TraceWrite) -> Option<&str> {
     match write {
         TraceWrite::Span(row) | TraceWrite::State(row) => Some(row.id.as_str()),
-        TraceWrite::Blob { .. } => None,
+        TraceWrite::Blob { .. } | TraceWrite::Flush(_) => None,
     }
 }
 
