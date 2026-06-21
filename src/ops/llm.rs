@@ -797,7 +797,7 @@ impl OpenAiWebSocketManager {
         ws_url: &str,
         headers: &Value,
     ) -> WebSocketSelection {
-        let mut connections = self.connections.lock().expect("websocket manager poisoned");
+        let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         let pool = connections.entry(key.clone()).or_default();
         pool.retain(|handle| !handle.sender.is_closed());
 
@@ -836,7 +836,7 @@ impl OpenAiWebSocketManager {
     }
 
     fn remove_connection(&self, key: &WebSocketConnectionKey, session_id: u64) {
-        let mut connections = self.connections.lock().expect("websocket manager poisoned");
+        let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pool) = connections.get_mut(key) {
             pool.retain(|handle| handle.session_id != session_id && !handle.sender.is_closed());
             if pool.is_empty() {

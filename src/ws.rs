@@ -1654,7 +1654,7 @@ mod tests {
 
     #[test]
     fn otel_config_save_enabled_applies_without_endpoint_probe() {
-        let _guard = host::TEST_DB_LOCK.lock().unwrap();
+        let _guard = host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "moo-ws-otel-config-{}",
             crate::util::random_id("test")
@@ -1683,7 +1683,7 @@ mod tests {
 
     #[test]
     fn llm_auth_get_save_uses_settings_db_directly() {
-        let _guard = host::TEST_DB_LOCK.lock().unwrap();
+        let _guard = host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let db_path_buf = std::env::temp_dir().join(format!(
             "moo-llm-auth-settings-{}-{}.db",
             std::process::id(),

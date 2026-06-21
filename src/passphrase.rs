@@ -49,9 +49,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     // Fold the length difference into the accumulator and always scan the
     // shorter slice instead of returning early on a length mismatch, so timing
     // does not leak the stored secret's length. Mirrors the idiom in blit.rs.
-    let mut diff = (a.len() ^ b.len()) as u8;
+    // Use usize for the accumulator so length differences cannot be truncated.
+    let mut diff = a.len() ^ b.len();
     for i in 0..a.len().min(b.len()) {
-        diff |= a[i] ^ b[i];
+        diff |= (a[i] ^ b[i]) as usize;
     }
     std::hint::black_box(diff) == 0
 }

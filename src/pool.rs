@@ -437,7 +437,7 @@ impl V8Observability {
             generation_started_at: now,
             ..Default::default()
         };
-        self.workers.lock().expect("workers lock").insert(
+        self.workers.lock().unwrap_or_else(|e| e.into_inner()).insert(
             key.clone(),
             V8WorkerState {
                 snapshot,
@@ -469,7 +469,7 @@ impl V8Observability {
     }
 
     fn pool_runtime_update(&self, lane: &str, update: PoolRuntimeUpdate) {
-        let mut queues = self.queues.lock().expect("queues lock");
+        let mut queues = self.queues.lock().unwrap_or_else(|e| e.into_inner());
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -486,7 +486,7 @@ impl V8Observability {
     }
 
     fn job_queued(&self, lane: &str) {
-        let mut queues = self.queues.lock().expect("queues lock");
+        let mut queues = self.queues.lock().unwrap_or_else(|e| e.into_inner());
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -499,7 +499,7 @@ impl V8Observability {
     }
 
     fn observe_queue_wait(&self, lane: &str, queue_wait_ms: u64) {
-        let mut queues = self.queues.lock().expect("queues lock");
+        let mut queues = self.queues.lock().unwrap_or_else(|e| e.into_inner());
         let queue = queues
             .entry(lane.to_string())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -519,7 +519,7 @@ impl V8Observability {
     fn generation_started(&self, lane: &str, id: usize, generation: u64) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
+        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
             state.snapshot.generation = generation;
             state.snapshot.status = "idle".to_string();
             state.snapshot.generation_started_at = now;
@@ -548,7 +548,7 @@ impl V8Observability {
     fn job_start(&self, lane: &str, id: usize, generation: u64, command: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
+        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
             state.snapshot.status = "busy".to_string();
             state.snapshot.current_command = Some(command.to_string());
             state.snapshot.current_job_started_at = Some(now);
@@ -573,7 +573,7 @@ impl V8Observability {
         let key = worker_key(lane, id);
         let now = now_ms();
         let mut event_detail = None;
-        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
+        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
             let snapshot = &mut state.snapshot;
             snapshot.status = "idle".to_string();
             snapshot.current_command = None;
@@ -661,7 +661,7 @@ impl V8Observability {
     fn recycle(&self, lane: &str, id: usize, generation: u64, reason: &str) {
         let key = worker_key(lane, id);
         let now = now_ms();
-        if let Some(state) = self.workers.lock().expect("workers lock").get_mut(&key) {
+        if let Some(state) = self.workers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
             state.snapshot.recycles = state.snapshot.recycles.saturating_add(1);
             state.snapshot.status = "recycling".to_string();
             state.snapshot.last_recycle_reason = Some(reason.to_string());
@@ -706,7 +706,7 @@ impl V8Observability {
     }
 
     fn aggregate_worker_totals(&self, snapshot: &V8WorkerSnapshot) {
-        let mut queues = self.queues.lock().expect("queues lock");
+        let mut queues = self.queues.lock().unwrap_or_else(|e| e.into_inner());
         let queue = queues
             .entry(snapshot.lane.clone())
             .or_insert_with(|| V8PoolQueueSnapshot {
@@ -854,7 +854,7 @@ impl V8Observability {
     }
 
     fn push_event(&self, event: V8Event) {
-        let mut events = self.events.lock().expect("events lock");
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         events.push_back(event.clone());
         while events.len() > V8_EVENTS_MAX {
             events.pop_front();
@@ -1285,7 +1285,7 @@ impl<T> DynamicPool<T> {
         let update;
         let id;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             id = self.allocate_worker_id_locked(&mut state);
             update = self.runtime_update_locked(&mut state, Instant::now());
         }
@@ -1298,7 +1298,7 @@ impl<T> DynamicPool<T> {
         V8_OBSERVABILITY.job_queued(&self.lane);
         let update;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.queued = state.queued.saturating_add(1);
             if state.busy_workers.saturating_add(state.queued) > state.active_workers
                 && state.active_workers < self.max_workers
@@ -1314,7 +1314,7 @@ impl<T> DynamicPool<T> {
     fn job_dequeued_on_send_error(&self) {
         let update;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.queued = state.queued.saturating_sub(1);
             update = self.runtime_update_locked(&mut state, Instant::now());
         }
@@ -1332,7 +1332,7 @@ impl<T> DynamicPool<T> {
                 Ok(job) => {
                     let update;
                     {
-                        let mut state = self.state.lock().expect("dynamic pool state");
+                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         let now = Instant::now();
                         state.queued = state.queued.saturating_sub(1);
                         state.busy_workers = state.busy_workers.saturating_add(1);
@@ -1361,7 +1361,7 @@ impl<T> DynamicPool<T> {
     fn job_finished(&self) {
         let update;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.busy_workers = state.busy_workers.saturating_sub(1);
             self.record_utilization_locked(&mut state, Instant::now());
             update = self.runtime_update_locked(&mut state, Instant::now());
@@ -1376,7 +1376,7 @@ impl<T> DynamicPool<T> {
     fn worker_exited(&self) {
         let update;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.active_workers = state.active_workers.saturating_sub(1);
             update = self.runtime_update_locked(&mut state, Instant::now());
         }
@@ -1387,7 +1387,7 @@ impl<T> DynamicPool<T> {
         let mut retired = false;
         let update;
         {
-            let mut state = self.state.lock().expect("dynamic pool state");
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
             let recent_max = self.recent_max_utilization_locked(&mut state, now);
             if state.queued == 0 && state.active_workers > 1 && recent_max < state.active_workers {
@@ -1437,7 +1437,7 @@ impl<T> DynamicPool<T> {
     }
 
     fn runtime_update(&self) -> PoolRuntimeUpdate {
-        let mut state = self.state.lock().expect("dynamic pool state");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.runtime_update_locked(&mut state, Instant::now())
     }
 
@@ -1621,7 +1621,7 @@ impl Pool {
     /// Arc and locks it via `.lock().await` (async) or `.blocking_lock()`
     /// (sync, outside a tokio runtime).
     pub fn chat_lock(&self, key: &str) -> Arc<TokioMutex<()>> {
-        let mut locks = self.chat_locks.lock().expect("chat locks");
+        let mut locks = self.chat_locks.lock().unwrap_or_else(|e| e.into_inner());
         // Drop locks that nobody else references (strong_count == 1 means only
         // the map holds it), so the map stays bounded by *active* chats rather
         // than by every chat ever seen. Safe because an entry kept by an
@@ -2575,7 +2575,7 @@ mod tests {
         assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), Some(2));
         assert_eq!(pool.job_queued_and_allocate_worker_if_needed(), None);
 
-        let state = pool.state.lock().expect("dynamic pool state");
+        let state = pool.state.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(state.active_workers, 3);
         assert_eq!(state.queued, 4);
         assert_eq!(state.next_worker_id, 3);
@@ -2588,7 +2588,7 @@ mod tests {
             pool.allocate_worker_id();
         }
         {
-            let mut state = pool.state.lock().expect("dynamic pool state");
+            let mut state = pool.state.lock().unwrap_or_else(|e| e.into_inner());
             state.busy_workers = 0;
             state.queued = 0;
             state.utilization.clear();
@@ -2615,7 +2615,7 @@ mod tests {
             pool.allocate_worker_id();
         }
         {
-            let mut state = pool.state.lock().expect("dynamic pool state");
+            let mut state = pool.state.lock().unwrap_or_else(|e| e.into_inner());
             state.busy_workers = 0;
             state.queued = 0;
             state.utilization.clear();
@@ -2640,7 +2640,7 @@ mod tests {
         let pool = JobPool::new("test-dynamic-floor", 1, ":memory:");
         pool.allocate_worker_id();
         {
-            let mut state = pool.state.lock().expect("dynamic pool state");
+            let mut state = pool.state.lock().unwrap_or_else(|e| e.into_inner());
             state.busy_workers = 0;
             state.queued = 0;
             state.utilization.clear();

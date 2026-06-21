@@ -495,7 +495,10 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         <Show when={canOAuth}>
           <div class="oauth-status">
             <strong>{provider()?.hasAccessToken ? "OAuth connected" : "OAuth not connected"}</strong>
-            <span>{provider()?.expiresAt ? "token expires " + new Date(provider()!.expiresAt!).toLocaleString() : ""}</span>
+            <span>{(() => {
+              const at = provider()?.expiresAt;
+              return at ? "token expires " + new Date(at).toLocaleString() : "";
+            })()}</span>
           </div>
           <p class="oauth-help">Uses OpenAI's first-party Codex login; select OAuth and save to use it for model calls.</p>
           <Show when={deviceLogin()}>

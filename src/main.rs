@@ -155,7 +155,7 @@ fn real_main(cli: Cli) -> Result<(), String> {
                 let cache = Mutex::new((None, Arc::new(String::new())));
                 std::sync::Arc::new(move || {
                     let modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
-                    let mut guard = cache.lock().expect("bundle cache poisoned");
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     if guard.0 == modified && !guard.1.is_empty() {
                         return guard.1.clone();
                     }

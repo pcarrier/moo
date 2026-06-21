@@ -374,16 +374,17 @@ export async function patchTasks(chatId: string, patch: TaskPatch): Promise<Agen
       );
     }
   }
-  const written = await writeTasks(chatId, next, before);
   if (validationFailures.length) throw new Error(validationFailures.join("; "));
-  return written;
+  return await writeTasks(chatId, next, before);
 }
 
 
 export async function addTask(chatId: string, input: TaskAddInput): Promise<AgentTask> {
   const before = await getTasks(chatId);
   const after = await patchTasks(chatId, { add: [input] });
-  return after.items[before.items.length] ?? after.items[after.items.length - 1]!;
+  const task = after.items[before.items.length] ?? after.items.at(-1);
+  if (!task) throw new Error("added task not found");
+  return task;
 }
 
 export async function updateTask(chatId: string, input: TaskUpdateInput): Promise<AgentTask> {

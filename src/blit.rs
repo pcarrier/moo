@@ -678,9 +678,11 @@ fn compute_accept(key: &str) -> String {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = (a.len() ^ b.len()) as u8;
+    // Use usize for the accumulator so length differences cannot be truncated
+    // (e.g. lengths differing by a multiple of 256 would look equal otherwise).
+    let mut diff = a.len() ^ b.len();
     for i in 0..a.len().min(b.len()) {
-        diff |= a[i] ^ b[i];
+        diff |= (a[i] ^ b[i]) as usize;
     }
     std::hint::black_box(diff) == 0
 }

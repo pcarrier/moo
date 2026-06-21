@@ -414,9 +414,11 @@ function openMermaidLightbox(diagram: HTMLElement) {
     close();
   };
 
-  zoomOutButton.addEventListener("click", () => zoomBy(1 / ZOOM_STEP));
+  const zoomOutHandler = () => zoomBy(1 / ZOOM_STEP);
+  const zoomInHandler = () => zoomBy(ZOOM_STEP);
+  zoomOutButton.addEventListener("click", zoomOutHandler);
   zoomResetButton.addEventListener("click", reset);
-  zoomInButton.addEventListener("click", () => zoomBy(ZOOM_STEP));
+  zoomInButton.addEventListener("click", zoomInHandler);
   closeButton.addEventListener("click", close);
   viewport.addEventListener("pointerdown", onPointerDown);
   viewport.addEventListener("pointermove", onPointerMove);
@@ -430,6 +432,16 @@ function openMermaidLightbox(diagram: HTMLElement) {
   closeButton.focus();
 
   activeLightboxCleanup = () => {
+    zoomOutButton.removeEventListener("click", zoomOutHandler);
+    zoomResetButton.removeEventListener("click", reset);
+    zoomInButton.removeEventListener("click", zoomInHandler);
+    closeButton.removeEventListener("click", close);
+    viewport.removeEventListener("pointerdown", onPointerDown);
+    viewport.removeEventListener("pointermove", onPointerMove);
+    viewport.removeEventListener("pointerup", onPointerUp);
+    viewport.removeEventListener("pointercancel", onPointerUp);
+    viewport.removeEventListener("wheel", onWheel);
+    overlay.removeEventListener("click", onOverlayClick);
     window.removeEventListener("keydown", onKeyDown, true);
     if (suppressOutsideClickTimer !== undefined) window.clearTimeout(suppressOutsideClickTimer);
     overlay.remove();

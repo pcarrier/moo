@@ -648,8 +648,9 @@ async function hydrateMergedFileDiff(
   const sources = fileDiffSourceItems(item);
   if (sources.length === 0) return item;
   const hydrateIndexes = new Set<number>();
-  const first = sources[0]!;
-  const last = sources[sources.length - 1]!;
+  const first = sources[0];
+  const last = sources[sources.length - 1];
+  if (!first || !last) return item;
   if (!hasBeforeSnapshot(first) && first.hash) hydrateIndexes.add(0);
   if (!hasAfterSnapshot(last) && last.hash)
     hydrateIndexes.add(sources.length - 1);
@@ -4801,7 +4802,8 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
       const rows = listEl.querySelectorAll<HTMLElement>("[data-chat-id]");
       const seen = new Set<string>();
       rows.forEach((row) => {
-        const id = row.dataset.chatId!;
+        const id = row.dataset.chatId;
+        if (!id) return;
         seen.add(id);
         const newTop = row.offsetTop;
         const oldTop = lastOffsets.get(id);

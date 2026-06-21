@@ -149,6 +149,10 @@ function availableCliTools(): Promise<Set<string>> {
         .filter((tool) => cliTools.includes(tool)),
     );
   })();
+  // A transient failure should not permanently break CLI tool detection.
+  cliToolsCache.catch(() => {
+    cliToolsCache = null;
+  });
   return cliToolsCache;
 }
 

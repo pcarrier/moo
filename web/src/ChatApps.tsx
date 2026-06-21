@@ -179,6 +179,11 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
     const msg = ev.data || {};
     if (!msg || typeof msg !== "object" || msg.source !== "moo-ui" || !msg.id)
       return;
+    // Capture the active IDs once at the start of the request so concurrent
+    // app switches cannot cause later awaits to use a different instance.
+    const instanceId = activeInstanceId();
+    const uiId = activeUiId();
+    const chatId = bag.chatId();
     const reply = (payload: Record<string, unknown>) =>
       // The app iframe is sandboxed without allow-same-origin, so its origin is
       // opaque ("null") and cannot be addressed by a concrete targetOrigin. Use
@@ -187,27 +192,24 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
       source?.postMessage({ source: "moo-host", id: msg.id, ...payload }, "*");
     try {
       if (msg.method === "state:get") {
-        const inst = activeInstanceId();
-        if (!inst) throw new Error("no UI instance is open");
-        const r = await api("ui-state-get", { instanceId: inst });
+        if (!instanceId) throw new Error("no UI instance is open");
+        const r = await api("ui-state-get", { instanceId });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "state:set") {
-        const inst = activeInstanceId();
-        if (!inst) throw new Error("no UI instance is open");
+        if (!instanceId) throw new Error("no UI instance is open");
         const r = await api("ui-state-set", {
-          instanceId: inst,
+          instanceId,
           state: msg.state ?? {},
         });
         if (!r.ok) throw new Error(r.error.message);
         reply({ ok: true, value: r.value.state });
       } else if (msg.method === "call") {
-        const uiId = activeUiId();
         if (!uiId) throw new Error("no UI is open");
         const r = await api("ui-call", {
           uiId,
-          instanceId: activeInstanceId(),
-          chatId: bag.chatId(),
+          instanceId,
+          chatId,
           name: String(msg.name || "default"),
           input: msg.input ?? {},
         });
@@ -387,13 +389,19 @@ function buildUiSrcdoc(html: string, css: string, js: string): string {
           const onMessage = (ev) => {
             const msg = ev.data || {};
             if (msg.source !== 'moo-host' || msg.id !== id) return;
+            window.clearTimeout(timeout);
             window.removeEventListener('message', onMessage);
             msg.ok ? resolve(msg.value) : reject(new Error(msg.error?.message || 'moo request failed'));
           };
+          const timeout = window.setTimeout(() => {
+            window.removeEventListener('message', onMessage);
+            reject(new Error('moo request timed out'));
+          }, 30000);
           window.addEventListener('message', onMessage);
           try {
             parent.postMessage({ source: 'moo-ui', id, method, ...(payload || {}) }, '*');
           } catch (err) {
+            window.clearTimeout(timeout);
             window.removeEventListener('message', onMessage);
             reject(err);
           }

@@ -2284,7 +2284,7 @@ mod tests {
 
     #[test]
     fn trace_ops_create_tree_and_reset_between_runs() {
-        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-traces-{}-{}",
@@ -2443,7 +2443,7 @@ globalThis.main = () => {
 
     #[test]
     fn trace_enter_missing_target_attaches_to_requested_root() {
-        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-trace-enter-missing-{}-{}",
@@ -2497,7 +2497,7 @@ globalThis.main = () => {
 
     #[test]
     fn trace_state_finishes_open_spans_on_shutdown_and_startup() {
-        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap();
+        let _guard = crate::host::TEST_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _trace = crate::host::enable_tracing_for_test();
         let dir = std::env::temp_dir().join(format!(
             "moo-runtime-trace-cleanup-{}-{}",

@@ -435,7 +435,10 @@ export function McpView(props: { bag: Bag; onToggleSidebar?: () => void }) {
                   </label>
                   <label>
                     transport
-                    <select value={draft().transport} onChange={(e) => setDraft({ ...draft(), transport: e.currentTarget.value as "http" | "sse" })}>
+                    <select value={draft().transport} onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setDraft({ ...draft(), transport: value === "sse" ? "sse" : "http" });
+                    }}>
                       <option value="http">http</option>
                       <option value="sse">sse</option>
                     </select>

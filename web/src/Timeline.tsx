@@ -4349,7 +4349,8 @@ function FormUi(props: { item: InputItem; bag: Bag; timelineKey: string }) {
   let formEl: HTMLFormElement | undefined;
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
-    const fd = new FormData(formEl!);
+    if (!formEl) return;
+    const fd = new FormData(formEl);
     const values: Record<string, unknown> = {};
     for (const f of spec().fields) {
       const raw = fd.get(f.name);
