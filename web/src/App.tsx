@@ -165,13 +165,16 @@ export function App(props: { bag: Bag }) {
         listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void,
       ) => void;
     };
-    mobileQuery.addEventListener?.("change", syncMobileMode) ??
+    if (mobileQuery.addEventListener) {
+      mobileQuery.addEventListener("change", syncMobileMode);
+    } else {
       legacyMobileQuery.addListener?.(
         syncMobileMode as (
           this: MediaQueryList,
           ev: MediaQueryListEvent,
         ) => void,
       );
+    }
     syncViewportHeight();
     window.addEventListener("resize", syncViewportHeight);
     window.addEventListener("orientationchange", syncViewportHeight);
@@ -183,13 +186,16 @@ export function App(props: { bag: Bag }) {
     };
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => {
-      mobileQuery.removeEventListener?.("change", syncMobileMode) ??
+      if (mobileQuery.removeEventListener) {
+        mobileQuery.removeEventListener("change", syncMobileMode);
+      } else {
         legacyMobileQuery.removeListener?.(
           syncMobileMode as (
             this: MediaQueryList,
             ev: MediaQueryListEvent,
           ) => void,
         );
+      }
       if (viewportRaf) window.cancelAnimationFrame(viewportRaf);
       stopMermaidRenderer();
       stopHjsonCollapsible();

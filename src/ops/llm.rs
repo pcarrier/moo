@@ -216,7 +216,10 @@ pub async fn stream_chat(
     let status = resp.status().as_u16();
     let response_headers = headers_json(resp.headers());
     if status >= 400 {
-        let body_text = resp.text().await.unwrap_or_default();
+        let body_text = match resp.text().await {
+            Ok(text) => text,
+            Err(e) => format!("failed to read error response body: {e}"),
+        };
         return transport_error(
             &pool,
             &bundle,

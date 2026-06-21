@@ -2,6 +2,7 @@ use glob::glob;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use rusty_v8 as v8;
@@ -17,6 +18,7 @@ use crate::runtime::{install_fn, throw};
 /// character/block devices, sockets) are rejected rather than allowed to
 /// exhaust memory or hang the host thread.
 const MAX_FILE_READ_BYTES: u64 = 256 * 1024 * 1024;
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_fs_read", op_fs_read)?;
@@ -167,7 +169,11 @@ fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "fs_write".to_string());
-    let tmp_path = dir.join(format!(".{file_name}.moo-tmp-{}", std::process::id()));
+    let nonce = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!(
+        ".{file_name}.moo-tmp-{}-{nonce}",
+        std::process::id()
+    ));
 
     // Preserve the existing file's permissions onto the temp file, since
     // rename does not carry them over from the target.

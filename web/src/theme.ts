@@ -1,6 +1,8 @@
 export type ThemeMode = "system" | "light" | "dark";
 export type ResolvedThemeMode = Exclude<ThemeMode, "system">;
 
+import { storage } from "./storage";
+
 export const THEME_STORAGE_KEY = "moo.theme.mode";
 export const LIGHT_THEME_COLOR = "#fafafa";
 export const DARK_THEME_COLOR = "#141414";
@@ -44,7 +46,7 @@ export function syncThemeColor(mode: ThemeMode): void {
 
 export function storedThemeMode(): ThemeMode {
   try {
-    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+    const value = storage.getItem(THEME_STORAGE_KEY);
     if (isThemeMode(value)) return value;
   } catch {
     // Ignore storage access failures and fall back to the system setting.
@@ -64,7 +66,7 @@ export function applyThemeMode(mode: ThemeMode): void {
 
 export function persistThemeMode(mode: ThemeMode): void {
   try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, mode);
+    storage.setItem(THEME_STORAGE_KEY, mode);
   } catch {
     // Ignore storage access failures; the in-memory choice still applies.
   }
@@ -96,11 +98,17 @@ export function startThemeColorSync(
     removeListener?: (listener: (event: MediaQueryListEvent) => void) => void;
   };
 
-  media.addEventListener?.("change", syncIfSystem) ??
+  if (media.addEventListener) {
+    media.addEventListener("change", syncIfSystem);
+  } else {
     legacyMedia.addListener?.(syncIfSystem);
+  }
 
   return () => {
-    media.removeEventListener?.("change", syncIfSystem) ??
+    if (media.removeEventListener) {
+      media.removeEventListener("change", syncIfSystem);
+    } else {
       legacyMedia.removeListener?.(syncIfSystem);
+    }
   };
 }

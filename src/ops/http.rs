@@ -10,6 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::ops::v8util::{required_args, set_object_str, set_object_value, set_return_str};
 use crate::runtime::{install_fn, throw};
+use crate::util::f64_to_u64;
 
 pub fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     install_fn(scope, "__op_http_fetch", op_http_fetch)?;
@@ -264,6 +265,7 @@ fn resolve_redirect(base: &str, location: &str) -> Result<String, String> {
     // Relative path: resolve against the base path's directory.
     let base_path = base_uri.path();
     let dir = match base_path.rfind('/') {
+        Some(0) => "",
         Some(idx) => &base_path[..=idx],
         None => "/",
     };
@@ -295,20 +297,13 @@ fn op_http_fetch(
     } else {
         None
     };
-    let timeout_ms: u64 = if args.length() > 4 && args.get(4).is_number() {
-        let n = args
-            .get(4)
-            .to_number(scope)
-            .map(|n| n.value())
-            .unwrap_or(60_000.0);
-        if n.is_finite() && n > 0.0 {
-            n as u64
-        } else {
-            60_000
-        }
-    } else {
-        60_000
-    };
+    let timeout_ms: u64 = args
+        .get(4)
+        .to_number(scope)
+        .map(|n| n.value())
+        .and_then(f64_to_u64)
+        .filter(|n| *n > 0)
+        .unwrap_or(60_000);
 
     let headers: serde_json::Value =
         serde_json::from_str(&headers_json).unwrap_or_else(|_| serde_json::json!({}));
@@ -475,20 +470,13 @@ fn op_http_stream_open(
     } else {
         None
     };
-    let timeout_ms: u64 = if args.length() > 4 && args.get(4).is_number() {
-        let n = args
-            .get(4)
-            .to_number(scope)
-            .map(|n| n.value())
-            .unwrap_or(120_000.0);
-        if n.is_finite() && n > 0.0 {
-            n as u64
-        } else {
-            120_000
-        }
-    } else {
-        120_000
-    };
+    let timeout_ms: u64 = args
+        .get(4)
+        .to_number(scope)
+        .map(|n| n.value())
+        .and_then(f64_to_u64)
+        .filter(|n| *n > 0)
+        .unwrap_or(120_000);
 
     let headers: serde_json::Value =
         serde_json::from_str(&headers_json).unwrap_or_else(|_| serde_json::json!({}));
@@ -564,7 +552,8 @@ fn op_http_stream_next(
     let handle = args
         .get(0)
         .to_number(scope)
-        .map(|n| n.value() as u64)
+        .map(|n| n.value())
+        .and_then(f64_to_u64)
         .unwrap_or(0);
 
     let mut buf = [0u8; 4096];
@@ -592,7 +581,8 @@ fn op_http_stream_close(
     let handle = args
         .get(0)
         .to_number(_scope)
-        .map(|n| n.value() as u64)
+        .map(|n| n.value())
+        .and_then(f64_to_u64)
         .unwrap_or(0);
     STREAMS.with(|s| {
         s.borrow_mut().remove(&handle);

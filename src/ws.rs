@@ -858,7 +858,10 @@ fn clamp_i64(value: Option<i64>, fallback: i64, min: i64, max: i64) -> i64 {
 }
 
 fn value_i64(value: Option<&Value>) -> Option<i64> {
-    value.and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|n| n.floor() as i64)))
+    value.and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_f64().and_then(crate::util::f64_to_i64))
+    })
 }
 
 fn positive_i64(value: Option<i64>, fallback: i64) -> i64 {
@@ -1251,8 +1254,14 @@ fn handle_run_ts_tool_command(
         send_run_result(writer_tx, id, result);
         return true;
     }
+    // Cap the foreground wait so a huge value cannot block the worker thread forever.
+    const MAX_BACKGROUND_AFTER_NS: u64 = 5 * 60 * 1_000_000_000;
     let wait = crate::async_runtime::runtime().block_on(async {
-        tokio::time::timeout(Duration::from_nanos(background_after_ns), &mut handle).await
+        tokio::time::timeout(
+            Duration::from_nanos(background_after_ns.min(MAX_BACKGROUND_AFTER_NS)),
+            &mut handle,
+        )
+        .await
     });
     match wait {
         Ok(joined) => {

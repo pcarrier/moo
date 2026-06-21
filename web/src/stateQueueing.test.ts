@@ -46,7 +46,8 @@ describe("chat message queueing", () => {
     expect(edit).toContain("await savePendingMessages()");
     expect(edit).toContain("requestChatComposerFocus()");
     expect(timelineSource).toContain("editQueuedMessage");
-    expect(timelineSource).toContain('aria-label="edit queued message"');
+    expect(timelineSource).toContain("onFocus={editQueuedMessage}");
+    expect(timelineSource).toContain("onClick={editQueuedMessage}");
   });
 
   test("removing a queued message deletes only that item and saves", () => {
@@ -91,7 +92,8 @@ describe("chat message queueing", () => {
 
   test("queue rows expose run-next edit and remove controls", () => {
     expect(timelineSource).toContain("pending-steer-btn");
-    expect(timelineSource).toContain("edit queued message");
+    expect(timelineSource).toContain("onFocus={editQueuedMessage}");
+    expect(timelineSource).toContain("onClick={editQueuedMessage}");
     expect(timelineSource).toContain("remove queued message");
     expect(timelineSource).toContain("props.bag.steerPending(props.item().id)");
     expect(timelineSource).toContain("props.bag.removePending(props.item().id)");

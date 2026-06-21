@@ -1,3 +1,5 @@
+import { storage } from "../storage";
+
 const MODEL_MRU_KEY = "moo.model.mru.v1";
 const MODEL_MRU_MAX = 20;
 
@@ -17,16 +19,12 @@ export function normalizeModelMru(value: unknown): string[] {
 
 export function readModelMru(): string[] {
   try {
-    return normalizeModelMru(JSON.parse(localStorage.getItem(MODEL_MRU_KEY) || "[]"));
+    return normalizeModelMru(JSON.parse(storage.getItem(MODEL_MRU_KEY) || "[]"));
   } catch {
     return [];
   }
 }
 
 export function persistModelMru(models: string[]) {
-  try {
-    localStorage.setItem(MODEL_MRU_KEY, JSON.stringify(normalizeModelMru(models)));
-  } catch {
-    // ignore quota/security errors
-  }
+  storage.setItem(MODEL_MRU_KEY, JSON.stringify(normalizeModelMru(models)));
 }

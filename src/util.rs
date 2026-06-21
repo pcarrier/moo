@@ -24,6 +24,30 @@ pub fn now_ms() -> i64 {
     now_ns() / 1_000_000
 }
 
+pub fn f64_to_u64(n: f64) -> Option<u64> {
+    if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 {
+        Some(n as u64)
+    } else {
+        None
+    }
+}
+
+pub fn f64_to_usize(n: f64) -> Option<usize> {
+    if n.is_finite() && n >= 0.0 && n <= usize::MAX as f64 {
+        Some(n as usize)
+    } else {
+        None
+    }
+}
+
+pub fn f64_to_i64(n: f64) -> Option<i64> {
+    if n.is_finite() && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+        Some(n as i64)
+    } else {
+        None
+    }
+}
+
 fn fill_entropy(bytes: &mut [u8]) {
     if getrandom::fill(bytes).is_ok() {
         return;

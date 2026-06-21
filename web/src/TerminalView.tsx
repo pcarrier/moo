@@ -8,6 +8,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { storage } from "./storage";
 import {
   BlitWorkspace,
   PALETTES,
@@ -262,7 +263,7 @@ export function ChatTerminals(props: {
   );
   const [terminalRows, setTerminalRows_] = createSignal(
     parseTerminalRows(
-      localStorage.getItem(TERMINAL_HEIGHT_KEY),
+      storage.getItem(TERMINAL_HEIGHT_KEY),
       terminalCellHeight(),
     ) ?? defaultTerminalRows(terminalCellHeight()),
   );
@@ -396,7 +397,7 @@ export function ChatTerminals(props: {
     const next = clampTerminalRows(rows, terminalCellHeight(), true);
     setTerminalRows_(next);
     try {
-      localStorage.setItem(TERMINAL_HEIGHT_KEY, `${next}rows`);
+      storage.setItem(TERMINAL_HEIGHT_KEY, `${next}rows`);
     } catch {
       /* ignore storage failures */
     }

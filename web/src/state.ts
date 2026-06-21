@@ -47,6 +47,7 @@ import { collapseHome, setHomeDir_ } from "./paths";
 import { EventStream, type Event as WsEvent } from "./events";
 import { createChatSettingsWriteBarrier } from "./chatSettingsBarrier";
 import { checkPsk, getPsk, setPsk } from "./auth";
+import { storage } from "./storage";
 import {
   mergedFileDiffs,
   mergedMemoryDiffs,
@@ -218,7 +219,7 @@ export function createState() {
   const [chats, setChats] = createSignal<ChatSummary[]>([]);
   const [chatsLoaded, setChatsLoaded] = createSignal(false);
   const [archivedCollapsed, setArchivedCollapsed] = createSignal(
-    localStorage.getItem(sidebarLayout.archivedCollapsedKey) !== "0",
+    storage.getItem(sidebarLayout.archivedCollapsedKey) !== "0",
   );
   const [chatId, setChatId] = createSignal<string | null>(null);
   const currentChat = () =>
@@ -550,7 +551,7 @@ export function createState() {
 
   function loadPersistentChatCache() {
     try {
-      const raw = localStorage.getItem(CHAT_CACHE_KEY);
+      const raw = storage.getItem(CHAT_CACHE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as {
         entries?: Array<[string, ChatCacheEntry]>;
@@ -562,14 +563,14 @@ export function createState() {
       }
       pruneExpiredChatCache();
     } catch {
-      localStorage.removeItem(CHAT_CACHE_KEY);
+      storage.removeItem(CHAT_CACHE_KEY);
     }
   }
 
   function persistChatCache() {
     pruneExpiredChatCache();
     try {
-      localStorage.setItem(
+      storage.setItem(
         CHAT_CACHE_KEY,
         JSON.stringify({ entries: [...chatCache.entries()] }),
       );
@@ -581,9 +582,9 @@ export function createState() {
       chatCache.clear();
       for (const [id, entry] of entries) chatCache.set(id, entry);
       try {
-        localStorage.setItem(CHAT_CACHE_KEY, JSON.stringify({ entries }));
+        storage.setItem(CHAT_CACHE_KEY, JSON.stringify({ entries }));
       } catch {
-        localStorage.removeItem(CHAT_CACHE_KEY);
+        storage.removeItem(CHAT_CACHE_KEY);
       }
     }
   }
@@ -3011,7 +3012,7 @@ export function createState() {
     setRightSidebarMaximized(!rightSidebarMaximized());
   }
 
-  const stored = localStorage.getItem(sidebarLayout.key);
+  const stored = storage.getItem(sidebarLayout.key);
   const [sidebarW, setSidebarW_] = createSignal(
     sidebarLayout.clampWidth(stored),
   );
@@ -3019,7 +3020,7 @@ export function createState() {
     setSidebarW_(sidebarLayout.clampWidth(width, "percent", true));
   }
   const [collapsed, setCollapsed] = createSignal(
-    localStorage.getItem(sidebarLayout.collapsedKey) === "1",
+    storage.getItem(sidebarLayout.collapsedKey) === "1",
   );
 
   // URL routing: `/chat/<id>` for chats, `/apps/<appId>` for app panes, `/new`, `/facts[/<graph>][#<subject>]`, `/pointers`, `/skills`, `/apps`.
@@ -3340,14 +3341,14 @@ export function createState() {
   window.addEventListener("popstate", popstateHandler);
   onCleanup(() => window.removeEventListener("popstate", popstateHandler));
 
-  createEffect(() => localStorage.setItem(sidebarLayout.key, sidebarW()));
+  createEffect(() => storage.setItem(sidebarLayout.key, sidebarW()));
   createEffect(() => persistRightSidebarLayout(rightSidebarLayoutByChat()));
   createEffect(on(chatId, () => clearRememberedRightSidebarMaximized()));
   createEffect(() =>
-    localStorage.setItem(sidebarLayout.collapsedKey, collapsed() ? "1" : "0"),
+    storage.setItem(sidebarLayout.collapsedKey, collapsed() ? "1" : "0"),
   );
   createEffect(() =>
-    localStorage.setItem(
+    storage.setItem(
       sidebarLayout.archivedCollapsedKey,
       archivedCollapsed() ? "1" : "0",
     ),
@@ -4787,7 +4788,7 @@ export function createState() {
 
   const wipKey = (id: string) => `moo.wip.${id}`;
   function loadWipText(id: string) {
-    setWipText(localStorage.getItem(wipKey(id)) ?? "");
+    setWipText(storage.getItem(wipKey(id)) ?? "");
   }
 
   function resetSelectedChatViewState(
@@ -4827,8 +4828,8 @@ export function createState() {
     const id = chatId();
     if (!id) return;
     const text = wipText();
-    if (text === "") localStorage.removeItem(wipKey(id));
-    else localStorage.setItem(wipKey(id), text);
+    if (text === "") storage.removeItem(wipKey(id));
+    else storage.setItem(wipKey(id), text);
   });
 
 

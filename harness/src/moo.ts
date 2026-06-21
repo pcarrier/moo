@@ -2056,10 +2056,11 @@ async function loadMcpOAuthToken(serverId: string): Promise<McpOAuthToken | null
 
 async function saveMcpOAuthToken(serverId: string, token: McpOAuthToken): Promise<McpOAuthToken> {
   const now = await time.nowMs({});
-  if (token.expires_in && !token.expires_at) token.expires_at = now + Number(token.expires_in) * 1000;
-  const hash = await objects.putJSON({ kind: "mcp:OAuthToken", value: token });
+  const stored: McpOAuthToken = { ...token };
+  if (stored.expires_in && !stored.expires_at) stored.expires_at = now + Number(stored.expires_in) * 1000;
+  const hash = await objects.putJSON({ kind: "mcp:OAuthToken", value: stored });
   await pointers.set({ name: mcpOAuthTokenRef(serverId), target: hash });
-  return token;
+  return stored;
 }
 
 function headerValue(headers: Record<string, string | string[]> | undefined, name: string): string | null {

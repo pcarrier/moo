@@ -101,12 +101,13 @@ pub fn set_filter_without_replay(id: u64, filter: Filter) {
 }
 
 fn replace_filter(id: u64, filter: Filter) -> bool {
-    if let Ok(mut subs) = SUBSCRIBERS.lock() {
-        for sub in subs.iter_mut() {
-            if sub.id == id {
-                sub.filter = filter;
-                return true;
-            }
+    let mut subs = SUBSCRIBERS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for sub in subs.iter_mut() {
+        if sub.id == id {
+            sub.filter = filter;
+            return true;
         }
     }
     false

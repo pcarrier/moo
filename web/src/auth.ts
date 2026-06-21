@@ -4,6 +4,8 @@
 // title / referrer headers. The WS URL appends `?psk=` so the server can
 // verify it on upgrade.
 
+import { storage } from "./storage";
+
 const STORAGE_KEY = "moo.psk";
 let memoryPsk: string | null = null;
 
@@ -37,7 +39,7 @@ export function captureFragmentPsk(): void {
 
 export function getPsk(): string | null {
   try {
-    return localStorage.getItem(STORAGE_KEY) ?? memoryPsk;
+    return storage.getItem(STORAGE_KEY) ?? memoryPsk;
   } catch (_) {
     return memoryPsk;
   }
@@ -47,9 +49,9 @@ export function setPsk(value: string | null): void {
   memoryPsk = value === "" ? null : value;
   try {
     if (value === null || value === "") {
-      localStorage.removeItem(STORAGE_KEY);
+      storage.removeItem(STORAGE_KEY);
     } else {
-      localStorage.setItem(STORAGE_KEY, value);
+      storage.setItem(STORAGE_KEY, value);
     }
   } catch (_) {
     // localStorage may be disabled; keep the key in memory for this page.

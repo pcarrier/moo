@@ -667,6 +667,10 @@ export function Timeline(props: {
     if (!request || request.id === handledTimelineJumpId) return;
     handledTimelineJumpId = request.id;
     bag.timeline();
+    let jumpTimeout: number | undefined;
+    onCleanup(() => {
+      if (jumpTimeout !== undefined) window.clearTimeout(jumpTimeout);
+    });
     queueMicrotask(() => {
       requestAnimationFrame(() => {
         const el = findTimelineJumpElement(request.target);
@@ -674,7 +678,7 @@ export function Timeline(props: {
         stuck = false;
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         highlightTimelineJump(el);
-        window.setTimeout(captureScrollAnchor, 250);
+        jumpTimeout = window.setTimeout(captureScrollAnchor, 250);
       });
     });
   });
@@ -1433,7 +1437,13 @@ function PendingItem(props: {
   };
   createEffect(() => {
     props.item().text;
-    queueMicrotask(autosize);
+    let alive = true;
+    onCleanup(() => {
+      alive = false;
+    });
+    queueMicrotask(() => {
+      if (alive) autosize();
+    });
   });
   const focusMessageInput = () => inputEl?.focus({ preventScroll: true });
   const autocomplete = createComposerAutocomplete({

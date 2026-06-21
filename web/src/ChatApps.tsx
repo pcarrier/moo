@@ -10,6 +10,7 @@ import {
 
 import { api } from "./api";
 import type { Bag } from "./state";
+import { storage } from "./storage";
 import { CloseIcon, MaximizeIcon, RestoreIcon } from "./icons";
 import { installPointerResize } from "./resizeDrag";
 
@@ -44,7 +45,7 @@ export function ChatAppLauncher(props: { bag: Bag }) {
 
 export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   const { bag } = props;
-  const storedPanelWidth = Number(localStorage.getItem("moo.uiPanelWidth"));
+  const storedPanelWidth = Number(storage.getItem("moo.uiPanelWidth"));
   const defaultPanelWidth = Math.round(
     window.innerWidth <= 900 ? window.innerWidth : window.innerWidth * 0.42,
   );
@@ -113,7 +114,7 @@ export function UiPanel(props: { bag: Bag; embedded?: boolean }) {
   };
 
   createEffect(() => {
-    localStorage.setItem(
+    storage.setItem(
       "moo.uiPanelWidth",
       String(clampPanelWidth(panelWidth())),
     );

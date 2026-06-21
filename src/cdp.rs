@@ -1041,7 +1041,7 @@ fn cdp_resource_tree(shared: *const Shared) -> Value {
 }
 
 fn new_io_stream(shared: *const Shared, content: String) -> String {
-    let n = unsafe { (*shared).io_stream_counter.get() + 1 };
+    let n = unsafe { (*shared).io_stream_counter.get().saturating_add(1) };
     unsafe { (*shared).io_stream_counter.set(n) };
     let handle = format!("resource-{n}");
     unsafe {
@@ -1099,7 +1099,7 @@ fn finish_tracing(shared: *const Shared, profile: Option<Value>) {
     let trace = trace_json(shared, profile.clone());
     let return_stream = unsafe { (*shared).tracing_return_stream.get() };
     if return_stream {
-        let n = unsafe { (*shared).trace_stream_counter.get() + 1 };
+        let n = unsafe { (*shared).trace_stream_counter.get().saturating_add(1) };
         unsafe { (*shared).trace_stream_counter.set(n) };
         let handle = format!("trace-{n}");
         unsafe {

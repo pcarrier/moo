@@ -240,12 +240,12 @@ fn input_field(input_json: &str, field: &str) -> Option<String> {
 unsafe extern "C" fn near_heap_limit_callback(
     data: *mut c_void,
     current_heap_limit: usize,
-    initial_heap_limit: usize,
+    _initial_heap_limit: usize,
 ) -> usize {
     if let Some(flag) = unsafe { (data as *const AtomicBool).as_ref() } {
         flag.store(true, Ordering::SeqCst);
     }
-    let growth = initial_heap_limit.max(HEAP_LIMIT_GROWTH_BYTES);
+    let growth = HEAP_LIMIT_GROWTH_BYTES;
     current_heap_limit
         .saturating_add(growth)
         .max(current_heap_limit + 1)

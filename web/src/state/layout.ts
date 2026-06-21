@@ -1,3 +1,5 @@
+import { storage } from "../storage";
+
 const SIDEBAR_KEY = "moo.sidebar.w";
 const COLLAPSED_KEY = "moo.sidebar.collapsed";
 const ARCHIVED_COLLAPSED_KEY = "moo.sidebar.archivedCollapsed";
@@ -182,7 +184,7 @@ export function clampRightSidebarWidth(
 
 export function readRightSidebarLayout(): Record<string, RightSidebarLayoutState> {
   try {
-    const raw = localStorage.getItem(RIGHT_SIDEBAR_LAYOUT_KEY);
+    const raw = storage.getItem(RIGHT_SIDEBAR_LAYOUT_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
@@ -209,10 +211,10 @@ export function persistRightSidebarLayout(
   try {
     const entries = Object.entries(layout).filter(([id]) => id);
     if (entries.length === 0) {
-      localStorage.removeItem(RIGHT_SIDEBAR_LAYOUT_KEY);
+      storage.removeItem(RIGHT_SIDEBAR_LAYOUT_KEY);
       return;
     }
-    localStorage.setItem(
+    storage.setItem(
       RIGHT_SIDEBAR_LAYOUT_KEY,
       JSON.stringify(Object.fromEntries(entries)),
     );

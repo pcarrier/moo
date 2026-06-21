@@ -8,6 +8,7 @@ use rusty_v8 as v8;
 
 use crate::ops::v8util::{required_args, set_object_str, set_object_value};
 use crate::runtime::{current_cancel_token, install_fn, throw};
+use crate::util::{f64_to_u64, f64_to_usize};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -60,16 +61,11 @@ fn op_proc_run(
         None
     };
     let timeout_ms: Option<u64> = if args.length() > 3 && args.get(3).is_number() {
-        let n = args
-            .get(3)
+        args.get(3)
             .to_number(scope)
             .map(|n| n.value())
-            .unwrap_or(0.0);
-        if n.is_finite() && n > 0.0 {
-            Some(n as u64)
-        } else {
-            None
-        }
+            .and_then(f64_to_u64)
+            .filter(|n| *n > 0)
     } else {
         None
     };
@@ -87,16 +83,11 @@ fn op_proc_run(
             None
         };
     let max_output_bytes: Option<usize> = if args.length() > 5 && args.get(5).is_number() {
-        let n = args
-            .get(5)
+        args.get(5)
             .to_number(scope)
             .map(|n| n.value())
-            .unwrap_or(0.0);
-        if n.is_finite() && n > 0.0 {
-            Some(n as usize)
-        } else {
-            None
-        }
+            .and_then(f64_to_usize)
+            .filter(|n| *n > 0)
     } else {
         None
     };

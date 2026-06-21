@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 
 import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type OtelConfig, type OtelSettingsValue, type V8PoolRuntimeSettings, type V8RuntimeSettings, type V8SettingsValue } from "./api";
 import type { Bag } from "./state";
@@ -92,6 +92,11 @@ function errorMessage(err: unknown): string {
 }
 
 export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
+  let mounted = true;
+  onCleanup(() => {
+    mounted = false;
+  });
+
   const [settings, setSettings] = createSignal<LlmAuthSettings | null>(props.bag.settingsCache());
   const [v8Settings, setV8Settings] = createSignal<V8SettingsValue | null>(props.bag.v8SettingsCache());
   const [otelSettings, setOtelSettings] = createSignal<OtelSettingsValue | null>(props.bag.otelSettingsCache());
@@ -269,9 +274,20 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
 
   async function pollDeviceLogin(state: string, intervalSeconds: number) {
     const wait = Math.max(1000, intervalSeconds * 1000);
-    while (deviceLogin()?.state === state) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
+    let pollTimeout: number | undefined;
+    onCleanup(() => {
+      if (pollTimeout !== undefined) window.clearTimeout(pollTimeout);
+    });
+    while (mounted && deviceLogin()?.state === state) {
+      await new Promise<void>((resolve) => {
+        pollTimeout = window.setTimeout(() => {
+          pollTimeout = undefined;
+          resolve();
+        }, wait);
+      });
+      if (!mounted) return;
       const r = await api("llm-auth-oauth-device-poll", { state });
+      if (!mounted) return;
       if (!r.ok) {
         setError(r.error.message);
         setDeviceLogin(null);
