@@ -37,14 +37,9 @@
         "aarch64-darwin" = "sha256-fnR0DD7woOj8DiaKJYYSPpg0D+lDVmjNwSiPrvtzYq4=";
       };
 
-      harnessDepsHash = "sha256-xoBnkymeYXkKb7QYMaoVFQ3meDUpv/9nPEYREyrk97A=";
+      harnessDepsHash = "sha256-m7S6WlEoBKEMnvQllfUpTK8o1Mk/re3q2iuRFay5R+o=";
 
-      webDepsHashes = {
-        "x86_64-linux" = "sha256-yw/kSgoX6ge5kydwnJfbHIfaWrU5+OFyje1zfSINvvU=";
-        "aarch64-linux" = "sha256-tfaR3aK7Tnd5JKur+fefG6eO8v2UqI3MN0vW53VD1Fs=";
-        "x86_64-darwin" = "sha256-fBgmnPOM2lTK9XBlEx4VJiL32H5zOaFxNQ3b8KExvhM=";
-        "aarch64-darwin" = "sha256-PkxcahHPVA6kmIHc1QSrmbN1HQfo6tl5bSJnfED0SfI=";
-      };
+      webDepsHash = "sha256-nDmKklutWrsoqcU38jYO82HoMgM/wkvGjyJolzTL/tY=";
 
 
       # Glibc ABI floor for the portable Linux release.  Covers
@@ -102,7 +97,10 @@
             buildPhase = ''
               runHook preBuild
               export HOME=$TMPDIR
-              bun install --frozen-lockfile --no-progress
+              # Install optional dependencies for every platform so the
+              # resulting node_modules tree is identical across systems. This
+              # lets us keep a single webDepsHash instead of one per system.
+              bun install --frozen-lockfile --no-progress --cpu '*' --os '*'
               runHook postBuild
             '';
             installPhase = ''
@@ -113,7 +111,7 @@
             '';
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = webDepsHashes.${system};
+            outputHash = webDepsHash;
           };
 
           # Pre-fetched bun deps for the harness bundle.
@@ -203,7 +201,7 @@
           commonArgs = {
             inherit src;
             pname = "moo";
-            version = "0.7.1";
+            version = "0.9.0";
             strictDeps = true;
             doCheck = false;
 

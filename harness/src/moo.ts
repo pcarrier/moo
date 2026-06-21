@@ -2137,7 +2137,7 @@ function mcpInitializeParams() {
   return {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "moo", version: "0.7.1" },
+    clientInfo: { name: "moo", version: "0.9.0" },
   };
 }
 
