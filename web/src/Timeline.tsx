@@ -1454,7 +1454,7 @@ function PendingItem(props: {
     value: localText,
     setValue: (value) => {
       setLocalText(value);
-      void props.bag.editPending(props.item().id, value, false);
+      autosize();
     },
     cursorFromInput: () => inputEl?.selectionStart,
     setSelectionRange: (start, end) => inputEl?.setSelectionRange(start, end),
@@ -1465,7 +1465,6 @@ function PendingItem(props: {
   });
   const beginQueuedEdit = () => {
     if (dispatching()) return;
-    setLocalText(props.item().text);
     props.bag.beginPendingEdit(props.item().id);
     setAutocompleteEnabled(true);
   };
@@ -1556,7 +1555,7 @@ function PendingItem(props: {
             onInput={(e) => {
               const value = e.currentTarget.value;
               setLocalText(value);
-              void props.bag.editPending(props.item().id, value, false);
+              autosize();
             }}
             aria-label={dispatching() ? "sending queued message" : "queued message"}
             readOnly={dispatching()}
