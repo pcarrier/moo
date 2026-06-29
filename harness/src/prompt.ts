@@ -95,7 +95,7 @@ async function agentsMdLines(scratch: string): Promise<string[]> {
     if (!stat || stat.kind !== "file") return [];
     const content = (await moo.fs.read({ path: path })).trim();
     if (!content) return [];
-    return ["", "AGENTS.md:", content];
+    return ["", "User/project steering (AGENTS.md):", content];
   } catch {
     return [];
   }
@@ -273,6 +273,7 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     ...(cliLine ? [cliLine] : []),
     "",
     `context: chatId=${chatId}; repo=${JSON.stringify(repo)}; scratch=${JSON.stringify(scratch)}; ${repoInfo}.`,
+    ...agentsLines,
     "API types: ObjectInput=string|number|boolean|Term; Term=canonical Turtle wrapper; Quad=[graph,subject,predicate,object]; Bindings=Record<string,string>; TermBindings=Record<string,BindingTerm>; FactMutationReceipt={store:string,added:number,removed:number}; PatchResult={status:string,output?:string|null}.",
     "moo.try({fn})→Promise<Result<Awaited<T>>>.",
     "moo.time{nowMs,nowISO,datetime,nowPlus}: nowMs({})→Promise<number>; nowISO({})→Promise<string>; datetime({d?:Date|string|number})→Promise<Term>; nowPlus({ms:number})→Promise<number>.",
@@ -322,7 +323,6 @@ export async function buildSystemPrompt(chatId: string): Promise<string> {
     "moo.vocab{define,list}: define({name,description?,example?,label?})→Promise<void>; list()→Promise<Array<{name,declared,count,label,description,example}>>; list before inventing predicates.",
     "async: await Promise-returning moo.* results before use (paths, scratch, pointers, rows, refs); `await` is harmless on sync helpers like moo.validate.*, moo.term.*, moo.log, moo.events.publish, moo.memory.project.",
     "compaction: auto near token threshold; manual via token-bar compact button.",
-    ...agentsLines,
     ...subagentLines,
   ].join("\n");
 }

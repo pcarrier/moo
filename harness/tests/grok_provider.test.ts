@@ -193,6 +193,37 @@ describe("OpenAI-compatible provider support", () => {
     expect(provider).toMatchObject({ name: "glm", apiKey: "glm-key", baseUrl: "https://proxy.example/glm", model: "glm-4.6", keyEnvHint: "ZAI_API_KEY" });
   });
 
+  test("defaults Kimi credentials to the Moonshot platform endpoint", async () => {
+    const provider = await resolveProvider(null, null, "kimi");
+    expect(provider).toMatchObject({ name: "kimi", baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k2.7-code" });
+  });
+
+  test("routes the Kimi Code variant to api.kimi.com/coding with kimi-for-coding", async () => {
+    const saved = await llmAuthSaveCommand({ kimi: { authMode: "apiKey", apiKey: "code-key", variant: "code" } });
+    expect(saved.value.settings.providers.kimi).toMatchObject({ authMode: "apiKey", variant: "code" });
+
+    const provider = await resolveProvider(null, null, "kimi");
+    expect(provider).toMatchObject({
+      name: "kimi",
+      apiKey: "code-key",
+      baseUrl: "https://api.kimi.com/coding/v1",
+      model: "kimi-for-coding",
+    });
+  });
+
+  test("a reloaded llm-auth-get still reports the saved Kimi variant", async () => {
+    // Mirror the exact kimi payload SettingsView sends (empty baseUrl + variant).
+    await llmAuthSaveCommand({ kimi: { authMode: "apiKey", apiKey: "code-key", baseUrl: "", variant: "code" } });
+    const reloaded = await llmAuthGetCommand();
+    expect(reloaded.value.settings.providers.kimi).toMatchObject({ variant: "code" });
+  });
+
+  test("an explicit base URL override still wins over the Kimi Code variant", async () => {
+    await llmAuthSaveCommand({ kimi: { authMode: "apiKey", apiKey: "code-key", variant: "code", baseUrl: "https://proxy.example/kimi" } });
+    const provider = await resolveProvider(null, null, "kimi");
+    expect(provider).toMatchObject({ name: "kimi", baseUrl: "https://proxy.example/kimi", model: "kimi-for-coding" });
+  });
+
   test("redacted auth settings include xAI provider", async () => {
     const result = await llmAuthGetCommand();
     expect(result.value.settings.providers.xai).toMatchObject({ authMode: "env" });

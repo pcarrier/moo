@@ -27,6 +27,7 @@ describe("timeline runTS state merging", () => {
 
   test("handles explicit runTS completion events without changing expansion", () => {
     expect(state).toContain('ev.kind === "runts-step-finished"');
+    expect(state).toContain('settleTimelineStep(targetStep, "agent:Cancelled")');
     expect(state).toContain('item.step !== ev.stepId');
     expect(state).toContain('status: ev.status || (ev.error ? "agent:Failed" : "agent:Done")');
     expect(state).toContain('refreshTimelineIncrementalSoon();');
@@ -165,6 +166,9 @@ test("backgrounded runTS timeline rows remain cancellable", () => {
   expect(controlsStart).toBeGreaterThanOrEqual(0);
   expect(controls).toContain('class="runts-control runts-cancel"');
   expect(controls).toContain("props.bag.cancelRunTSStep(props.item.step);");
+  expect(state).toContain('timelineRunTSStepStatus(targetStep) === "agent:Queued"');
+  expect(state).toContain('await interruptAgent({ resumeQueued: true, offerResume: false });');
+  expect(state).toContain('stepId: null');
   expect(controls).toContain('props.item.status !== "agent:Cancelled"');
 });
 

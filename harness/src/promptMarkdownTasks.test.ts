@@ -27,3 +27,13 @@ describe("filesystem editing prompt", () => {
     expect(prompt).toContain("prefer moo.fs.patch for patch operations on existing files");
   });
 });
+
+describe("steering prompt", () => {
+  test("keeps AGENTS.md steering before the API reference", () => {
+    const steering = prompt.indexOf("User/project steering (AGENTS.md)");
+    const apiReference = prompt.indexOf("API types: ObjectInput");
+    expect(steering).toBeGreaterThan(-1);
+    expect(apiReference).toBeGreaterThan(-1);
+    expect(steering).toBeLessThan(apiReference);
+  });
+});

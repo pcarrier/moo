@@ -110,6 +110,14 @@ describe("background runTS cancellation wiring", () => {
     expect(prompt).toContain("await moo.tools.cancel({id})");
   });
 
+  test("moo.tools.cancel accepts copied detached runTS output", () => {
+    const source = readFileSync(new URL("./moo.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("function normalizeRunTSStepId");
+    expect(source).toContain("text.match(/step:[A-Za-z0-9_-]+/)?.[0]");
+    expect(source).toContain("const targetStepId = normalizeRunTSStepId(rawStepId);");
+  });
+
   test("Rust driver queues chat runs while foreground tools background", () => {
     const source = readFileSync(
       new URL("../../src/driver.rs", import.meta.url),
@@ -159,7 +167,7 @@ describe("background runTS cancellation wiring", () => {
     expect(driver).toContain("struct ForegroundRunTs");
     expect(driver).toContain("step_id: String");
     expect(driver).toContain(
-      "active_foreground_runts(&entry.foreground_runts, step_id)",
+      "find_map(|entry| active_foreground_runts(&entry.foreground_runts, Some(step_id)))",
     );
     expect(driver).toContain(
       "let run_cancel = Arc::new(AtomicBool::new(false));",
@@ -171,5 +179,26 @@ describe("background runTS cancellation wiring", () => {
     expect(ws).toContain(
       "request_foreground_runts_background(chat_id, step_id)",
     );
+  });
+
+  test("Rust runTS cancellation signals V8 instead of aborting the wrapper task", () => {
+    const driver = readFileSync(
+      new URL("../../src/driver.rs", import.meta.url),
+      "utf8",
+    );
+    const backgroundCancel = driver.slice(
+      driver.indexOf("pub fn cancel_background_runts"),
+      driver.indexOf("pub fn request_foreground_runts_background"),
+    );
+    const foregroundCancel = driver.slice(
+      driver.indexOf("_ = &mut cancel_poll =>"),
+      driver.indexOf("_ = &mut background_poll =>"),
+    );
+
+    expect(backgroundCancel).toContain("cancel.cancel()");
+    expect(backgroundCancel).not.toContain("abort.abort()");
+    expect(driver).not.toContain("abort: AbortHandle");
+    expect(foregroundCancel).toContain("let tool_result = run.await.unwrap_or_else");
+    expect(foregroundCancel).not.toContain("run.abort()");
   });
 });

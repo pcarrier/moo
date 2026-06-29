@@ -5,7 +5,7 @@ import { openAiDeviceLoginSchema, openAiDevicePollSchema, openAiOAuthTokenSchema
 import type { RetryPolicy } from "../core/retry";
 import { DEFAULT_LLM_RETRY_POLICY } from "../core/retry";
 import type { Input } from "./_shared";
-import { PROVIDER_METADATA, normalizeProvider, type ProviderName } from "../llm_models";
+import { PROVIDER_METADATA, normalizeProvider, resolveProviderVariant, type ProviderName } from "../llm_models";
 
 const SETTINGS_REF = "settings";
 const OAUTH_STATE_REF_PREFIX = "llm/auth/oauth/openai/";
@@ -29,6 +29,8 @@ export type LlmAuthProviderSettings = {
   oauthSubject?: string | null;
   oauthAccountId?: string | null;
   baseUrl?: string | null;
+  /** Selected provider variant id (e.g. kimi "platform" vs "code"). */
+  variant?: string | null;
 };
 
 export type LlmCompactionSettings = {
@@ -107,7 +109,16 @@ function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuth
     oauthSubject: id === "openai" && typeof r.oauthSubject === "string" && r.oauthSubject ? r.oauthSubject : null,
     oauthAccountId: id === "openai" && typeof r.oauthAccountId === "string" && r.oauthAccountId ? r.oauthAccountId : null,
     baseUrl: typeof r.baseUrl === "string" && r.baseUrl.trim() ? r.baseUrl.trim() : null,
+    variant: normalizeVariant(id, r.variant),
   };
+}
+
+/** Clamp a stored variant to one this provider actually declares. */
+function normalizeVariant(id: LlmAuthProviderId, value: unknown): string | null {
+  const variants = PROVIDERS[id].variants;
+  if (!variants?.length || typeof value !== "string") return null;
+  const wanted = value.trim().toLowerCase();
+  return variants.some((v) => v.id === wanted) ? wanted : null;
 }
 
 export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
@@ -157,8 +168,8 @@ async function envKeyForProvider(id: LlmAuthProviderId): Promise<string | null> 
   return null;
 }
 
-async function fallbackModelForProvider(id: LlmAuthProviderId, authMode?: LlmAuthMode): Promise<string> {
-  const providerFallback = PROVIDERS[id].fallbackModel;
+async function fallbackModelForProvider(id: LlmAuthProviderId, variantFallback?: string | null): Promise<string> {
+  const providerFallback = variantFallback || PROVIDERS[id].fallbackModel;
   const generic = await moo.env.get({ name: "MOO_LLM_MODEL" });
   if (generic) {
     const trimmed = generic.trim();
@@ -199,9 +210,11 @@ export async function providerConfiguredCredential(id: LlmAuthProviderId): Promi
     if (envBaseUrl) break;
     envBaseUrl = await moo.env.get({ name: alt });
   }
-  const baseUrl = provider.baseUrl || envBaseUrl || meta.defaultBaseUrl;
-  const requestedAuthMode = provider.authMode;
-  const model = await fallbackModelForProvider(id, requestedAuthMode);
+  // The selected variant supplies the base URL + default model when the user
+  // hasn't set an explicit override or env var (e.g. Kimi Code vs Moonshot).
+  const variant = resolveProviderVariant(meta, provider.variant);
+  const baseUrl = provider.baseUrl || envBaseUrl || variant?.baseUrl || meta.defaultBaseUrl;
+  const model = await fallbackModelForProvider(id, variant?.fallbackModel);
   if (id === "openai" && provider.authMode === "oauth") {
     const oauthBaseUrl = provider.baseUrl || "https://chatgpt.com/backend-api/codex";
     return { apiKey: provider.accessToken || null, authMode: "oauth", keyEnvHint: "OpenAI OAuth", baseUrl: oauthBaseUrl, model, oauthAccountId: provider.oauthAccountId };
@@ -261,6 +274,7 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
     authMode,
     apiKey: typeof apiKeyInput === "string" && !apiKeyInput.startsWith("••••") ? apiKeyInput.trim() || null : current.apiKey ?? null,
     baseUrl: typeof providerInput.baseUrl === "string" ? providerInput.baseUrl.trim() || null : current.baseUrl ?? null,
+    variant: "variant" in providerInput ? normalizeVariant(id, providerInput.variant) : current.variant ?? null,
   };
   // Preserve OpenAI OAuth credentials across auth-mode changes; only an
   // explicit disconnect should clear them.

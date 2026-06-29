@@ -1391,6 +1391,7 @@ function PendingItem(props: {
   let fileInput: HTMLInputElement | undefined;
   let blurTimer: number | null = null;
   const [autocompleteEnabled, setAutocompleteEnabled] = createSignal(false);
+  const [localText, setLocalText] = createSignal(props.item().text);
   const dispatching = () =>
     props.bag.dispatchingPendingIds().has(props.item().id);
   const attachmentsSupported = () =>
@@ -1438,6 +1439,8 @@ function PendingItem(props: {
   };
   createEffect(() => {
     props.item().text;
+    const text = props.item().text;
+    if (!autocompleteEnabled() && localText() !== text) setLocalText(text);
     let alive = true;
     onCleanup(() => {
       alive = false;
@@ -1448,8 +1451,11 @@ function PendingItem(props: {
   });
   const focusMessageInput = () => inputEl?.focus({ preventScroll: true });
   const autocomplete = createComposerAutocomplete({
-    value: () => props.item().text,
-    setValue: (value) => props.bag.editPending(props.item().id, value),
+    value: localText,
+    setValue: (value) => {
+      setLocalText(value);
+      void props.bag.editPending(props.item().id, value, false);
+    },
     cursorFromInput: () => inputEl?.selectionStart,
     setSelectionRange: (start, end) => inputEl?.setSelectionRange(start, end),
     currentChatWorktreePath: () => props.bag.currentChatWorktreePath(),
@@ -1457,9 +1463,20 @@ function PendingItem(props: {
     focus: focusMessageInput,
     enabled: autocompleteEnabled,
   });
-  const editQueuedMessage = () => {
+  const beginQueuedEdit = () => {
     if (dispatching()) return;
-    props.bag.editPending(props.item().id);
+    setLocalText(props.item().text);
+    props.bag.beginPendingEdit(props.item().id);
+    setAutocompleteEnabled(true);
+  };
+  const endQueuedEdit = () => {
+    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    blurTimer = window.setTimeout(() => {
+      blurTimer = null;
+      void props.bag.editPending(props.item().id, localText());
+      props.bag.endPendingEdit(props.item().id);
+      setAutocompleteEnabled(false);
+    }, 120);
   };
   onCleanup(() => {
     if (blurTimer !== null) window.clearTimeout(blurTimer);
@@ -1489,7 +1506,7 @@ function PendingItem(props: {
                   title="remove image"
                   aria-label="remove image"
                   onClick={() => {
-                    if (!dispatching()) editQueuedMessage();
+                    if (!dispatching()) props.bag.removePendingAttachment(props.item().id, i);
                   }}
                   disabled={dispatching()}
                 >
@@ -1533,11 +1550,16 @@ function PendingItem(props: {
             class="message-input pending-input"
             rows={1}
             autocomplete="off"
-            value={props.item().text}
-            onFocus={editQueuedMessage}
-            onClick={editQueuedMessage}
+            value={localText()}
+            onFocus={beginQueuedEdit}
+            onBlur={endQueuedEdit}
+            onInput={(e) => {
+              const value = e.currentTarget.value;
+              setLocalText(value);
+              void props.bag.editPending(props.item().id, value, false);
+            }}
             aria-label={dispatching() ? "sending queued message" : "queued message"}
-            readOnly
+            readOnly={dispatching()}
           />
         </div>
         <button
@@ -3610,6 +3632,7 @@ function RunTSBody(props: {
                 onClick={(ev) => {
                   ev.preventDefault();
                   ev.stopPropagation();
+                  props.bag.backgroundRunTSStep(props.item.step);
                 }}
               >
                 <BackgroundIcon class="runts-control-icon" />
@@ -3629,6 +3652,7 @@ function RunTSBody(props: {
                 onClick={(ev) => {
                   ev.preventDefault();
                   ev.stopPropagation();
+                  props.bag.cancelRunTSStep(props.item.step);
                 }}
               >
                 <CrossIcon class="runts-control-icon" />

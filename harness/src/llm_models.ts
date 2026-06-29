@@ -46,6 +46,20 @@ export type ModelMetadata = {
   defaultOption?: boolean;
 };
 
+/**
+ * An alternate endpoint for a provider that shares the same API key plumbing
+ * but targets a different base URL and default model — e.g. Kimi's "Kimi Code"
+ * subscription (api.kimi.com/coding) vs the Moonshot dev platform
+ * (api.moonshot.ai). Selected explicitly by the user, mirroring how OpenAI
+ * routes on authMode rather than sniffing the key string (both use `sk-`).
+ */
+export type ProviderVariant = {
+  id: string;
+  title: string;
+  baseUrl: string;
+  fallbackModel: string;
+};
+
 export type ProviderMetadata = {
   id: ProviderName;
   title: string;
@@ -56,6 +70,8 @@ export type ProviderMetadata = {
   defaultBaseUrl: string;
   fallbackModel: string;
   inferPrefixes: string[];
+  /** Optional alternate endpoints; the first entry is the default. */
+  variants?: readonly ProviderVariant[];
   models: readonly ModelMetadata[];
 };
 
@@ -224,7 +240,16 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     defaultBaseUrl: "https://api.moonshot.ai/v1",
     fallbackModel: "kimi-k2.7-code",
     inferPrefixes: ["kimi-", "moonshot-"],
+    variants: [
+      // Moonshot dev platform (platform.kimi.ai → api.moonshot.ai).
+      { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1", fallbackModel: "kimi-k2.7-code" },
+      // Kimi Code subscription (kimi.com/code/console). Keys are NOT
+      // interchangeable with the platform, and the OpenAI-compatible endpoint
+      // requires the `kimi-for-coding` model id.
+      { id: "code", title: "Kimi Code", baseUrl: "https://api.kimi.com/coding/v1", fallbackModel: "kimi-for-coding" },
+    ],
     models: [
+      { id: "kimi-for-coding", match: "^kimi-for-coding(?:[-.]|$)", contextWindow: 262_144, capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true } },
       {
         id: "kimi-k2.7-code-highspeed",
         match: "^kimi-k2\\.7-code-highspeed(?:[-.]|$)",
@@ -267,6 +292,18 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     ],
   },
 };
+
+/**
+ * Resolve a provider's selected variant. Returns the matching variant, or the
+ * first (default) variant when the id is unset/unknown, or null when the
+ * provider declares no variants.
+ */
+export function resolveProviderVariant(meta: ProviderMetadata, variantId: string | null | undefined): ProviderVariant | null {
+  const variants = meta.variants;
+  if (!variants?.length) return null;
+  const id = lower(variantId);
+  return variants.find((v) => v.id === id) ?? variants[0];
+}
 
 function lower(value: string | null | undefined): string {
   return String(value ?? "").trim().toLowerCase();

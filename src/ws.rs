@@ -6,9 +6,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -128,6 +127,7 @@ pub fn handle(
             // is the backpressure we want.
             const MAX_INFLIGHT_RUNS: usize = 64;
             let (run_permits_tx, run_permits_rx) = mpsc::sync_channel::<()>(MAX_INFLIGHT_RUNS);
+            let run_permits_rx = Arc::new(Mutex::new(run_permits_rx));
             for _ in 0..MAX_INFLIGHT_RUNS {
                 let _ = run_permits_tx.try_send(());
             }
@@ -177,6 +177,8 @@ pub fn handle(
                             let bundle = bundle.clone();
                             let db = db.clone();
                             let base_url = base_url.clone();
+                            let id_for_dispatch_error = id.clone();
+                            let writer_tx_for_dispatch_error = writer_tx.clone();
                             let run = move || {
                                 let id_for_error = id.clone();
                                 let writer_tx_for_error = writer_tx.clone();
@@ -198,20 +200,44 @@ pub fn handle(
                             if run_inline {
                                 run();
                             } else {
-                                // Block until a permit frees up, then release it
-                                // when the worker finishes (success or panic).
-                                if run_permits_rx.recv().is_err() {
-                                    break;
-                                }
+                                // Do not block the WebSocket reader while waiting
+                                // for a worker permit. Latency-sensitive commands
+                                // such as runTS cancel/interrupt arrive on this
+                                // same socket; if the reader parks here behind a
+                                // saturated worker queue, cancellation cannot even
+                                // be parsed. A tiny dispatcher thread waits for a
+                                // permit and then runs the existing guarded worker,
+                                // leaving the reader free to process later inline
+                                // frames.
+                                let permits_rx = run_permits_rx.clone();
                                 let release_tx = run_permits_tx.clone();
-                                let guarded = move || {
-                                    run();
-                                    let _ = release_tx.send(());
+                                let spawn_worker = move || {
+                                    let permit = match permits_rx.lock() {
+                                        Ok(rx) => rx.recv(),
+                                        Err(poisoned) => poisoned.into_inner().recv(),
+                                    };
+                                    if permit.is_err() {
+                                        return;
+                                    }
+                                    let release_tx_for_worker = release_tx.clone();
+                                    let guarded = move || {
+                                        run();
+                                        let _ = release_tx_for_worker.send(());
+                                    };
+                                    if thread::Builder::new().spawn(guarded).is_err() {
+                                        let _ = release_tx.send(());
+                                    }
                                 };
-                                if thread::Builder::new().spawn(guarded).is_err() {
-                                    // Spawn failed: return the permit so we don't
-                                    // leak capacity.
-                                    let _ = run_permits_tx.send(());
+                                if thread::Builder::new()
+                                    .name("moo-ws-run-dispatch".to_string())
+                                    .spawn(spawn_worker)
+                                    .is_err()
+                                {
+                                    send_run_result(
+                                        &writer_tx_for_dispatch_error,
+                                        &id_for_dispatch_error,
+                                        json!({ "ok": false, "error": { "message": "failed to spawn command dispatcher" } }),
+                                    );
                                 }
                             }
                         }
@@ -250,10 +276,10 @@ fn run_command(
     base_url: Option<String>,
 ) {
     let command = command_from_payload(&payload).to_string();
-    if command == "interrupt"
-        && let Some(chat_id) = payload.get("chatId").and_then(|v| v.as_str())
-    {
-        crate::driver::cancel_runts(chat_id, None);
+    if command == "interrupt" {
+        let result = interrupt_command(&payload);
+        send_run_result(&writer_tx, &id, result);
+        return;
     }
 
     if command == "run-ts-cancel" {
@@ -327,6 +353,25 @@ fn builtin_command_result(command: &str, db: &str, payload: &Value) -> Option<Va
     })
 }
 
+fn interrupt_command(payload: &Value) -> Value {
+    let Some(chat_id) = payload
+        .get("chatId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return json!({ "ok": false, "error": { "message": "interrupt requires chatId" } });
+    };
+    let cancelled = crate::driver::cancel_runts(chat_id, None);
+    let aborted = crate::driver::interrupt(chat_id);
+    json!({
+        "ok": true,
+        "value": {
+            "chatId": chat_id,
+            "aborted": aborted || cancelled > 0,
+        },
+    })
+}
+
 fn run_ts_background_command(payload: &Value) -> Value {
     let Some(chat_id) = payload
         .get("chatId")
@@ -371,32 +416,45 @@ fn run_ts_cancel_command(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
+    let mut cancelled_step_ids =
+        crate::driver::runts_step_ids_for_cancel(&chat_id, step_id.as_deref());
     let cancelled = crate::driver::cancel_runts(&chat_id, step_id.as_deref());
-    if cancelled > 0
-        && let Some(sid) = &step_id
-    {
-        crate::broadcast::publish(
-            json!({
-                "kind": "runts-step-finished",
-                "chatId": chat_id,
-                "stepId": sid,
-                "status": "agent:Cancelled",
-                "error": "runTS cancelled",
-                "at": crate::util::now_ms(),
-            })
-            .to_string(),
-        );
-        let pool = pool.clone();
-        let bundle = bundle();
-        let db = db.to_string();
-        let chat_id = chat_id.clone();
-        let sid = sid.clone();
-        std::thread::spawn(move || {
-            if host::install(&db).is_ok() {
-                let input = json!({ "command": "run-ts-cancel", "chatId": chat_id, "stepId": sid });
-                let _ = pool.submit(bundle, input.to_string());
+    if cancelled > 0 {
+        if let Some(sid) = &step_id {
+            // The browser may still show a transient streamed row id while the
+            // driver has already registered the final runTS step id. Broadcast
+            // both so the clicked row visibly stops even when fallback
+            // cancellation targeted a different active id.
+            if !cancelled_step_ids.iter().any(|id| id == sid) {
+                cancelled_step_ids.push(sid.clone());
             }
-        });
+        }
+        for sid in &cancelled_step_ids {
+            crate::broadcast::publish(
+                json!({
+                    "kind": "runts-step-finished",
+                    "chatId": chat_id,
+                    "stepId": sid,
+                    "status": "agent:Cancelled",
+                    "error": "runTS cancelled",
+                    "at": crate::util::now_ms(),
+                })
+                .to_string(),
+            );
+        }
+        if let Some(sid) = cancelled_step_ids.first().cloned() {
+            let pool = pool.clone();
+            let bundle = bundle();
+            let db = db.to_string();
+            let chat_id = chat_id.clone();
+            std::thread::spawn(move || {
+                if host::install(&db).is_ok() {
+                    let input =
+                        json!({ "command": "run-ts-cancel", "chatId": chat_id, "stepId": sid });
+                    let _ = pool.submit(bundle, input.to_string());
+                }
+            });
+        }
     }
     json!({
         "ok": true,
@@ -404,6 +462,7 @@ fn run_ts_cancel_command(
             "chatId": chat_id,
             "stepId": step_id,
             "cancelled": cancelled,
+            "stepIds": cancelled_step_ids,
         },
     })
 }
@@ -767,8 +826,14 @@ fn no_host_builtin_command(command: &str) -> bool {
 }
 
 fn inline_builtin_command(command: &str) -> bool {
-    // Only pure process-local reads should run on the WebSocket reader thread.
-    matches!(command, "v8-stats")
+    // Process-local and latency-sensitive commands run on the WebSocket reader
+    // thread. In particular, runTS cancellation must not wait behind the bounded
+    // worker permit queue: a tight foreground loop can leave the UI cancel RPC
+    // queued while the isolate keeps burning CPU.
+    matches!(
+        command,
+        "interrupt" | "run-ts-background" | "run-ts-cancel" | "v8-stats"
+    )
 }
 
 fn settings_command(command: &str) -> bool {
@@ -917,6 +982,27 @@ fn normalize_llm_auth_mode<'a>(id: &str, requested: &'a str) -> &'a str {
     }
 }
 
+/// Valid endpoint variant ids per provider. Mirrors the `variants` list in the
+/// JS harness's PROVIDER_METADATA (harness/src/llm_models.ts). A provider with
+/// no variants always normalizes to null.
+fn llm_provider_variants(id: &str) -> &'static [&'static str] {
+    match id {
+        "kimi" => &["platform", "code"],
+        _ => &[],
+    }
+}
+
+fn normalize_llm_variant(id: &str, raw: Option<&Value>) -> Value {
+    let variants = llm_provider_variants(id);
+    if variants.is_empty() {
+        return Value::Null;
+    }
+    match raw.and_then(Value::as_str).map(|s| s.trim().to_lowercase()) {
+        Some(wanted) if variants.contains(&wanted.as_str()) => Value::String(wanted),
+        _ => Value::Null,
+    }
+}
+
 fn normalize_llm_provider(raw: Option<&Value>, id: &str) -> Value {
     let obj = raw.and_then(Value::as_object);
     let requested = obj
@@ -933,6 +1019,7 @@ fn normalize_llm_provider(raw: Option<&Value>, id: &str) -> Value {
         "oauthSubject": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("oauthSubject"))) } else { None },
         "oauthAccountId": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("oauthAccountId"))) } else { None },
         "baseUrl": non_empty_string(obj.and_then(|o| o.get("baseUrl"))),
+        "variant": normalize_llm_variant(id, obj.and_then(|o| o.get("variant"))),
     })
 }
 
@@ -1090,6 +1177,14 @@ fn apply_llm_provider_input(current: &Value, id: &str, input: Option<&Value>) ->
                 .unwrap_or(Value::Null),
         );
     }
+    // Carry the selected endpoint variant (e.g. kimi platform vs code) into the
+    // record so normalize_llm_provider can validate and persist it.
+    if input_obj.contains_key("variant") {
+        next.insert(
+            "variant".to_string(),
+            input_obj.get("variant").cloned().unwrap_or(Value::Null),
+        );
+    }
     // Keep OpenAI OAuth credentials when switching away from OAuth so the user
     // can switch back without reconnecting; only explicit disconnect clears it.
     if id != "openai" || input_obj.get("clearOAuth").and_then(Value::as_bool) == Some(true) {
@@ -1232,9 +1327,7 @@ fn handle_run_ts_tool_command(
     writer_tx: &mpsc::SyncSender<String>,
     id: &str,
 ) -> bool {
-    let Some(background_after_ns) = driver::runts_tool_background_after_ns(&payload) else {
-        return false;
-    };
+    let background_after_ns = driver::runts_tool_background_after_ns(&payload);
     let chat_id = payload
         .get("chatId")
         .or_else(|| payload.pointer("/state/chatId"))
@@ -1244,8 +1337,15 @@ fn handle_run_ts_tool_command(
     if chat_id.is_empty() {
         return false;
     }
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = crate::pool::AsyncToolCancel::new();
     let payload = ensure_runts_step_id(payload);
+    let step_id = payload
+        .get("runTsStepId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let external_runts =
+        driver::register_external_runts(chat_id.clone(), step_id.clone(), cancel.clone());
     let mut handle = match driver::spawn_runts_tool_command(
         pool.clone(),
         bundle,
@@ -1259,10 +1359,12 @@ fn handle_run_ts_tool_command(
                 id,
                 json!({ "ok": false, "error": { "message": e } }),
             );
+            drop(external_runts);
             return true;
         }
     };
-    if background_after_ns == 0 {
+    if background_after_ns == Some(0) {
+        drop(external_runts);
         let result = detached_runts_tool_result(&payload);
         if let Err(e) = driver::background_runts_command(chat_id, payload, cancel, handle) {
             send_run_result(
@@ -1275,15 +1377,22 @@ fn handle_run_ts_tool_command(
         send_run_result(writer_tx, id, result);
         return true;
     }
-    // Cap the foreground wait so a huge value cannot block the worker thread forever.
+    // Cap explicit foreground waits so a huge value cannot block the worker thread forever.
+    // When no backgroundAfterNs is supplied, keep normal foreground semantics but
+    // leave the task in the external runTS registry until it completes so the UI
+    // cancel button can stop it.
     const MAX_BACKGROUND_AFTER_NS: u64 = 5 * 60 * 1_000_000_000;
     let wait = match crate::async_runtime::runtime() {
         Ok(rt) => rt.block_on(async {
-            tokio::time::timeout(
-                Duration::from_nanos(background_after_ns.min(MAX_BACKGROUND_AFTER_NS)),
-                &mut handle,
-            )
-            .await
+            match background_after_ns {
+                Some(ns) => tokio::time::timeout(
+                    Duration::from_nanos(ns.min(MAX_BACKGROUND_AFTER_NS)),
+                    &mut handle,
+                )
+                .await
+                .map(Some),
+                None => Ok(Some((&mut handle).await)),
+            }
         }),
         Err(e) => {
             send_run_result(
@@ -1295,16 +1404,21 @@ fn handle_run_ts_tool_command(
         }
     };
     match wait {
-        Ok(joined) => {
+        Ok(Some(joined)) => {
             let result = joined.unwrap_or_else(|e| {
+                let cancelled = cancel.is_cancelled() || e.is_cancelled();
                 json!({
-                    "content": format!("error: runTS task failed: {e}"),
-                    "status": "failed",
+                    "content": if cancelled {
+                        "cancelled: runTS cancelled".to_string()
+                    } else {
+                        format!("error: runTS task failed: {e}")
+                    },
+                    "status": if cancelled { "cancelled" } else { "failed" },
                 })
             });
             send_run_result(writer_tx, id, json!({ "ok": true, "value": result }));
         }
-        Err(_) => {
+        Ok(None) | Err(_) => {
             if let Err(e) =
                 driver::background_runts_command(chat_id, payload.clone(), cancel, handle)
             {
@@ -1784,7 +1898,20 @@ mod tests {
     }
 
     #[test]
-    fn only_pure_process_builtins_run_on_ws_reader_thread() {
+    fn run_ts_cancel_reports_requested_step_id_for_visible_row() {
+        let source = include_str!("ws.rs");
+        assert!(source.contains("if !cancelled_step_ids.iter().any(|id| id == sid)"));
+        assert!(source.contains("cancelled_step_ids.push(sid.clone())"));
+        assert!(source.contains("\"stepIds\": cancelled_step_ids"));
+    }
+
+    #[test]
+    fn latency_sensitive_builtins_run_on_ws_reader_thread() {
+        assert!(inline_builtin_command("interrupt"));
+        assert!(inline_builtin_command("run-ts-background"));
+        assert!(inline_builtin_command("run-ts-cancel"));
         assert!(inline_builtin_command("v8-stats"));
+        assert!(!inline_builtin_command("describe"));
+        assert!(!inline_builtin_command("fs-read"));
     }
 }

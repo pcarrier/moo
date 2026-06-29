@@ -31,23 +31,65 @@ describe("chat message queueing", () => {
 
   test("queued messages persist through server queue commands", () => {
     expect(stateSource).toContain('async function savePendingMessages');
+    expect(stateSource).toContain('let pendingSaveInFlight = false');
+    expect(stateSource).toContain('let pendingSaveAgain = false');
     expect(stateSource).toContain('api("chat-queue-save", { messages: pending() })');
+    expect(stateSource).toContain('if (pendingSaveAgain) continue');
     expect(stepSource).toContain('export async function chatQueueSaveCommand');
     expect(stepSource).toContain('value: { messages: await writePendingMessages(raw, knownIds) }');
   });
 
-  test("editing a queued message dequeues it into the composer", () => {
+  test("editing a queued message updates it in place", () => {
     const edit = stateSource.slice(
       stateSource.indexOf("async function editPending("),
       stateSource.indexOf("function addPendingAttachments"),
     );
-    expect(edit).toContain("setPending(pending().filter((p) => p.id !== id))");
-    expect(edit).toContain("setWipText(item.text)");
-    expect(edit).toContain("await savePendingMessages()");
-    expect(edit).toContain("requestChatComposerFocus()");
-    expect(timelineSource).toContain("editQueuedMessage");
-    expect(timelineSource).toContain("onFocus={editQueuedMessage}");
-    expect(timelineSource).toContain("onClick={editQueuedMessage}");
+    expect(edit).toContain("if (text === undefined) return");
+    expect(edit).toContain("setPending(pending().map((p) => (p.id === id ? { ...p, text } : p)))");
+    expect(edit).toContain("void savePendingMessages()");
+    expect(edit).not.toContain("setWipText(item.text)");
+    expect(edit).not.toContain("requestChatComposerFocus()");
+    expect(timelineSource).toContain("beginQueuedEdit");
+    expect(timelineSource).toContain("const [localText, setLocalText]");
+    expect(timelineSource).toContain("value: localText");
+    expect(timelineSource).toContain("onFocus={beginQueuedEdit}");
+    expect(timelineSource).toContain("value={localText()}");
+    expect(timelineSource).toContain("setLocalText(value)");
+    expect(timelineSource).toContain("readOnly={dispatching()}");
+  });
+
+  test("queued message edits block draining until blur", () => {
+    const stateSetup = stateSource.slice(
+      stateSource.indexOf("const [dispatchingPendingIds"),
+      stateSource.indexOf("// Maps a pending message ID"),
+    );
+    const editLifecycle = stateSource.slice(
+      stateSource.indexOf("function beginPendingEdit"),
+      stateSource.indexOf("function appendOptimisticUserInput"),
+    );
+    const drain = stateSource.slice(
+      stateSource.indexOf("async function drain()"),
+      stateSource.indexOf("function touchModelMru"),
+    );
+    expect(stateSetup).toContain("const [editingPendingIds");
+    expect(editLifecycle).toContain("addEditingPendingId(id)");
+    expect(editLifecycle).toContain("deleteEditingPendingId(id)");
+    expect(editLifecycle).toContain("void savePendingMessages().then(drainSoon)");
+    expect(drain).toContain("!editingPendingIds().has(p.id)");
+  });
+
+  test("editing queued attachments persists in place", () => {
+    const addAttachments = stateSource.slice(
+      stateSource.indexOf("function addPendingAttachments"),
+      stateSource.indexOf("function removePendingAttachment"),
+    );
+    const removeAttachment = stateSource.slice(
+      stateSource.indexOf("function removePendingAttachment"),
+      stateSource.indexOf("async function removePending"),
+    );
+    expect(addAttachments).toContain("void savePendingMessages()");
+    expect(removeAttachment).toContain("void savePendingMessages()");
+    expect(timelineSource).toContain("props.bag.removePendingAttachment(props.item().id, i)");
   });
 
   test("removing a queued message deletes only that item and saves", () => {
@@ -76,8 +118,26 @@ describe("chat message queueing", () => {
       stateSource.indexOf("async function savePendingMessages"),
     );
     expect(steer).toContain("setPending([item, ...pen.slice(0, idx), ...pen.slice(idx + 1)])");
+    expect(steer).toContain("addToSet(setInterruptedChats, interruptedChats, item.chatId)");
     expect(steer).toContain("await savePendingMessages()");
+    expect(steer).toContain("await interruptQueuedChatForSteer(item.chatId)");
+    expect(steer).toContain("deleteFromSet(setInterruptedChats, interruptedChats, item.chatId)");
     expect(steer).toContain("drainSoon()");
+  });
+
+  test("steering interrupts active queue blockers before draining", () => {
+    const steerInterrupt = stateSource.slice(
+      stateSource.indexOf("async function interruptQueuedChatForSteer"),
+      stateSource.indexOf("async function steerPending"),
+    );
+    expect(steerInterrupt).toContain("chatHasInFlightTurn(id)");
+    expect(steerInterrupt).toContain("setHas(dispatchingChats(), id)");
+    expect(steerInterrupt).toContain("setHas(interruptingChats(), id)");
+    expect(steerInterrupt).toContain("clearActiveChatRuntime(id)");
+    expect(steerInterrupt).toContain("settleRunningTimelineRows(id)");
+    expect(steerInterrupt).toContain("dismissCurrentDraftReply(id)");
+    expect(steerInterrupt).toContain("clearDraftReply(id)");
+    expect(steerInterrupt).toContain('const r = await api("interrupt", { chatId: id })');
   });
 
   test("drain dispatches the selected front item deterministically", () => {
@@ -87,13 +147,13 @@ describe("chat message queueing", () => {
     );
     expect(drain).toContain("const idx = pen.findIndex(");
     expect(drain).toContain("await dispatchQueuedMessage(head)");
-    expect(drain).not.toContain("editingPendingIds");
+    expect(drain).toContain("!editingPendingIds().has(p.id)");
   });
 
   test("queue rows expose run-next edit and remove controls", () => {
     expect(timelineSource).toContain("pending-steer-btn");
-    expect(timelineSource).toContain("onFocus={editQueuedMessage}");
-    expect(timelineSource).toContain("onClick={editQueuedMessage}");
+    expect(timelineSource).toContain("onFocus={beginQueuedEdit}");
+    expect(timelineSource).toContain("setLocalText(value)");
     expect(timelineSource).toContain("remove queued message");
     expect(timelineSource).toContain("props.bag.steerPending(props.item().id)");
     expect(timelineSource).toContain("props.bag.removePending(props.item().id)");

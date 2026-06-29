@@ -5,18 +5,22 @@ import type { Bag } from "./state";
 import { ActionRow, Card, InlineActions, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
 import { TabBar, type TabBarItem } from "./TabBar";
 
+type ProviderVariantMeta = { id: string; title: string; baseUrl: string };
+
 type ProviderMeta = {
   id: LlmProviderId;
   title: string;
   envLabel: string;
   defaultBaseUrl: string;
   supportsOAuth?: boolean;
+  variants?: ProviderVariantMeta[];
 };
 
 type ProviderDraft = {
   authMode: LlmAuthMode;
   apiKey: string;
   baseUrl: string;
+  variant: string;
 };
 
 type SettingsTabId = "providers" | "runtime" | "otel" | "behavior";
@@ -37,7 +41,10 @@ const PROVIDERS: ProviderMeta[] = [
   { id: "glm", title: "GLM", envLabel: "ZAI_API_KEY or GLM_API_KEY", defaultBaseUrl: "https://api.z.ai/api/paas/v4" },
   { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
   { id: "deepseek", title: "DeepSeek", envLabel: "DEEPSEEK_API_KEY", defaultBaseUrl: "https://api.deepseek.com" },
-  { id: "kimi", title: "Kimi", envLabel: "MOONSHOT_API_KEY or KIMI_API_KEY", defaultBaseUrl: "https://api.moonshot.ai/v1" },
+  { id: "kimi", title: "Kimi", envLabel: "MOONSHOT_API_KEY or KIMI_API_KEY", defaultBaseUrl: "https://api.moonshot.ai/v1", variants: [
+    { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1" },
+    { id: "code", title: "Kimi Code (kimi.com/code)", baseUrl: "https://api.kimi.com/coding/v1" },
+  ] },
 ];
 
 
@@ -47,7 +54,7 @@ function numberOrBlank(value: unknown): string {
 }
 
 function blankDraft(): ProviderDraft {
-  return { authMode: "env", apiKey: "", baseUrl: "" };
+  return { authMode: "env", apiKey: "", baseUrl: "", variant: "" };
 }
 
 function mib(bytes: number | null | undefined): string {
@@ -140,6 +147,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         authMode: p.authMode,
         apiKey: p.hasApiKey ? "••••" : "",
         baseUrl: p.baseUrl || "",
+        variant: p.variant || meta.variants?.[0]?.id || "",
       };
     }
     setDrafts(providerDrafts);
@@ -211,6 +219,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           authMode: d.kimi.authMode,
           apiKey: d.kimi.apiKey === "••••" ? undefined : d.kimi.apiKey,
           baseUrl: d.kimi.baseUrl,
+          variant: d.kimi.variant,
         },
         compaction: {
           thresholdPercent: Number(compactionThresholdPercent()),
@@ -476,9 +485,30 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const draft = () => drafts()[meta.id];
     const provider = () => settings()?.providers[meta.id];
     const canOAuth = !!meta.supportsOAuth;
+    const variantValue = () => draft().variant || meta.variants?.[0]?.id || "";
+    // A controlled <select>'s `value` prop is applied before its <option>
+    // children exist, so the browser silently drops it and falls back to the
+    // first option — which made the saved endpoint appear to reset after every
+    // save. Set the value imperatively via a ref once the options are mounted.
+    let variantSelect: HTMLSelectElement | undefined;
+    createEffect(() => {
+      const v = variantValue();
+      if (variantSelect && variantSelect.value !== v) variantSelect.value = v;
+    });
     return (
       <section class="settings-section llm-provider-section">
         <h2>{meta.title}</h2>
+        <Show when={meta.variants?.length}>
+          <label class="field-label">Endpoint</label>
+          <select
+            ref={variantSelect}
+            onChange={(e) => updateDraft(meta.id, { variant: e.currentTarget.value })}
+          >
+            {meta.variants!.map((v) => (
+              <option value={v.id}>{v.title} ({v.baseUrl})</option>
+            ))}
+          </select>
+        </Show>
         <label class="field-label">Auth mode</label>
         <select
           value={draft().authMode}
@@ -514,7 +544,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           </ActionRow>
         </Show>
         <div class="settings-row">
-          <label><span>Base URL override</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={meta.defaultBaseUrl} /></label>
+          <label><span>Base URL override</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={meta.variants?.find((v) => v.id === (draft().variant || meta.variants![0].id))?.baseUrl ?? meta.defaultBaseUrl} /></label>
         </div>
       </section>
     );

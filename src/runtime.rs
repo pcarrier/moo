@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
+use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
@@ -1069,7 +1070,7 @@ impl AsyncCancelWatchdog {
             .spawn(move || {
                 while !done_for_thread.load(Ordering::SeqCst) {
                     if cancelled.load(Ordering::SeqCst) {
-                        let _ = isolate_handle.terminate_execution();
+                        request_isolate_termination(&isolate_handle);
                         return;
                     }
                     thread::park_timeout(ASYNC_RECV_MAX_SLICE);
@@ -1081,6 +1082,16 @@ impl AsyncCancelWatchdog {
             thread: Some(thread),
         }
     }
+}
+
+unsafe extern "C" fn terminate_interrupt(isolate: v8::UnsafeRawIsolatePtr, _data: *mut c_void) {
+    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_unchecked(&isolate) };
+    let _ = isolate.terminate_execution();
+}
+
+pub(crate) fn request_isolate_termination(isolate_handle: &v8::IsolateHandle) {
+    let _ = isolate_handle.request_interrupt(terminate_interrupt, std::ptr::null_mut());
+    let _ = isolate_handle.terminate_execution();
 }
 
 impl Drop for AsyncCancelWatchdog {
@@ -2248,6 +2259,9 @@ pub fn throw(scope: &mut v8::PinScope, msg: &str) {
 }
 
 fn caught_exception(try_catch: &mut v8::PinnedRef<'_, v8::TryCatch<v8::HandleScope>>) -> String {
+    if try_catch.is_execution_terminating() {
+        return "runTS cancelled".to_string();
+    }
     try_catch
         .exception()
         .map(|exception| exception.to_rust_string_lossy(try_catch))
@@ -2648,6 +2662,53 @@ globalThis.main = () => {
                 Arc::new(AtomicBool::new(false)),
             )
             .result
+    }
+
+    #[test]
+    fn async_runts_cancel_terminates_tight_loop() {
+        init_v8();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_for_thread = cancelled.clone();
+        let source = r#"
+globalThis.main = async () => {
+  let x = 0;
+  while (true) { x = (x + 1) | 0; }
+  return x;
+};
+"#;
+        let handle = thread::spawn(move || {
+            let mut isolate = v8::Isolate::new(Default::default());
+            let mut cache = LoadedBundleCache::new();
+            let bundle = Arc::new(source.to_string());
+            cache
+                .run_async_report_in(
+                    &mut isolate,
+                    &bundle,
+                    "{}",
+                    noop_agent_handler(),
+                    None,
+                    cancelled_for_thread,
+                )
+                .result
+        });
+        thread::sleep(Duration::from_millis(100));
+        cancelled.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        while !handle.is_finished() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            handle.is_finished(),
+            "tight loop did not stop after cancellation"
+        );
+        let result = handle.join().unwrap();
+        assert!(
+            matches!(
+                result.as_deref(),
+                Err(err) if err.contains("cancel") || err.contains("terminated")
+            ),
+            "unexpected result: {result:?}"
+        );
     }
 
     #[test]

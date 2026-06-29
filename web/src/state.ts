@@ -4706,6 +4706,8 @@ export function createState() {
   let pendingLoaded = false;
   let pendingRefreshInFlight = false;
   let pendingRefreshAgain = false;
+  let pendingSaveInFlight = false;
+  let pendingSaveAgain = false;
   // Pending IDs currently being dispatched (not yet landed on the server).
   // Kept separate from the message objects so queued messages remain editable
   // and deletable while in flight, and so save/merge round-trips cannot
@@ -4713,6 +4715,9 @@ export function createState() {
   const [dispatchingPendingIds, setDispatchingPendingIds] = createSignal<
     Set<string>
   >(new Set());
+  const [editingPendingIds, setEditingPendingIds] = createSignal<Set<string>>(
+    new Set(),
+  );
   function addDispatchingPendingId(id: string) {
     setDispatchingPendingIds((current) => {
       if (current.has(id)) return current;
@@ -4723,6 +4728,22 @@ export function createState() {
   }
   function deleteDispatchingPendingId(id: string) {
     setDispatchingPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
+  function addEditingPendingId(id: string) {
+    setEditingPendingIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }
+  function deleteEditingPendingId(id: string) {
+    setEditingPendingIds((current) => {
       if (!current.has(id)) return current;
       const next = new Set(current);
       next.delete(id);
@@ -4748,6 +4769,7 @@ export function createState() {
     for (const id of Array.from(current)) {
       if (!ids.has(id)) {
         deleteDispatchingPendingId(id);
+        deleteEditingPendingId(id);
         pendingMessageStepIds.delete(id);
       }
     }
@@ -4863,13 +4885,12 @@ export function createState() {
     void savePendingMessages().then(drainSoon);
   }
 
-  async function editPending(id: string, _text?: string) {
+  async function editPending(id: string, text?: string, save = true) {
     const item = pending().find((p) => p.id === id);
     if (!item || dispatchingPendingIds().has(id)) return;
-    setPending(pending().filter((p) => p.id !== id));
-    setWipText(item.text);
-    await savePendingMessages();
-    requestChatComposerFocus();
+    if (text === undefined) return;
+    setPending(pending().map((p) => (p.id === id ? { ...p, text } : p)));
+    if (save) void savePendingMessages();
   }
 
   function addPendingAttachments(id: string, attachments: ImageAttachment[]) {
@@ -4881,6 +4902,7 @@ export function createState() {
           : p,
       ),
     );
+    void savePendingMessages();
   }
 
   function removePendingAttachment(id: string, index: number) {
@@ -4893,6 +4915,7 @@ export function createState() {
           : (({ attachments: _attachments, ...rest }) => rest)(p);
       }),
     );
+    void savePendingMessages();
   }
 
   async function removePending(id: string) {
@@ -4901,9 +4924,30 @@ export function createState() {
     const wasDispatching = dispatchingPendingIds().has(id);
     setPending(pending().filter((p) => p.id !== id));
     deleteDispatchingPendingId(id);
+    deleteEditingPendingId(id);
     pendingMessageStepIds.delete(id);
     await savePendingMessages();
     if (!wasDispatching) drainSoon();
+  }
+
+  async function interruptQueuedChatForSteer(id: string) {
+    if (
+      !chatHasInFlightTurn(id) &&
+      !setHas(dispatchingChats(), id) &&
+      !setHas(interruptingChats(), id)
+    ) {
+      return;
+    }
+    clearActiveChatRuntime(id);
+    settleRunningTimelineRows(id);
+    dismissCurrentDraftReply(id);
+    clearDraftReply(id);
+    addToSet(setInterruptingChats, interruptingChats, id);
+    addToSet(setInterruptedChats, interruptedChats, id);
+    updateChatSummary(id, { status: "agent:Done", runningStartedAt: null });
+    const r = await api("interrupt", { chatId: id });
+    deleteFromSet(setInterruptingChats, interruptingChats, id);
+    if (!r.ok) reportError(`interrupt ${id}`, r.error);
   }
 
   async function steerPending(id: string) {
@@ -4911,29 +4955,49 @@ export function createState() {
     const idx = pen.findIndex((p) => p.id === id);
     if (idx < 0) return;
     const item = pen[idx]!;
-    if (dispatchingPendingIds().has(id)) return;
+    if (dispatchingPendingIds().has(id) || editingPendingIds().has(id)) return;
     setPending([item, ...pen.slice(0, idx), ...pen.slice(idx + 1)]);
+    addToSet(setInterruptedChats, interruptedChats, item.chatId);
     await savePendingMessages();
+    await interruptQueuedChatForSteer(item.chatId);
+    deleteFromSet(setInterruptedChats, interruptedChats, item.chatId);
     drainSoon();
   }
 
   async function savePendingMessages() {
     if (!pendingLoaded) return;
-    const r = await api("chat-queue-save", { messages: pending() });
-    if (!r.ok) {
-      reportError("save pending messages", r.error);
+    if (pendingSaveInFlight) {
+      pendingSaveAgain = true;
       return;
     }
-    const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
-    setPending(messages);
-    prunePendingDispatchTracking(messages);
+    pendingSaveInFlight = true;
+    try {
+      do {
+        pendingSaveAgain = false;
+        const r = await api("chat-queue-save", { messages: pending() });
+        if (!r.ok) {
+          reportError("save pending messages", r.error);
+          return;
+        }
+        if (pendingSaveAgain) continue;
+        const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
+        setPending(messages);
+        prunePendingDispatchTracking(messages);
+      } while (pendingSaveAgain);
+    } finally {
+      pendingSaveInFlight = false;
+    }
   }
 
   function beginPendingEdit(id: string) {
-    void editPending(id);
+    if (dispatchingPendingIds().has(id)) return;
+    addEditingPendingId(id);
   }
 
-  function endPendingEdit(_id: string) {}
+  function endPendingEdit(id: string) {
+    deleteEditingPendingId(id);
+    void savePendingMessages().then(drainSoon);
+  }
 
   function appendOptimisticUserInput(
     chat: string,
@@ -5170,6 +5234,7 @@ export function createState() {
         const idx = pen.findIndex(
           (p, i) =>
             !dispatchingPendingIds().has(p.id) &&
+            !editingPendingIds().has(p.id) &&
             !paused.has(p.chatId) &&
             // MCP setup keeps its server-busy and ordering bypasses (it may run
             // promptly even while the chat looks busy), but must still wait
@@ -5757,6 +5822,16 @@ export function createState() {
     return null;
   }
 
+  function timelineRunTSStepStatus(stepId: string | null): string | null {
+    if (!stepId) return null;
+    const item = timeline().find(
+      (item) => item.type === "step" && item.step === stepId,
+    );
+    return item?.type === "step" && (item.runts || item.runjs)
+      ? item.status
+      : null;
+  }
+
   function releaseRunTSForeground(
     id: string,
     stepId?: string | null,
@@ -5803,11 +5878,23 @@ export function createState() {
     const id = targetChatId || chatId();
     if (!id) return;
     const targetStep = stepId || currentRunningRunTSStepId();
+    const wasQueued =
+      !!targetStep && timelineRunTSStepStatus(targetStep) === "agent:Queued";
+    if (wasQueued) settleTimelineStep(targetStep, "agent:Cancelled");
     if (targetStep) requestRunTSBackground(id, targetStep);
-    const r = await api("run-ts-cancel", {
+    let r = await api("run-ts-cancel", {
       chatId: id,
       stepId: targetStep || null,
     });
+    if (r.ok && !r.value.cancelled && targetStep) {
+      // If the visible row still has a transient/draft step id, retry at chat
+      // scope before giving up. This keeps the click useful even when the
+      // backend has registered the active runTS under its final id.
+      r = await api("run-ts-cancel", {
+        chatId: id,
+        stepId: null,
+      });
+    }
     if (!r.ok) {
       if (targetStep) clearRunTSBackgroundRequest(id, targetStep);
       reportError("cancel runTS", r.error);
@@ -5815,8 +5902,15 @@ export function createState() {
     }
     if (!r.value.cancelled && targetStep)
       clearRunTSBackgroundRequest(id, targetStep);
-    if (r.value.cancelled && id === chatId()) {
-      if (targetStep) clearRunTSBackgroundRequest(id, targetStep);
+    if (wasQueued && !r.value.cancelled) {
+      await interruptAgent({ resumeQueued: true, offerResume: false });
+      return;
+    }
+    if ((r.value.cancelled || wasQueued) && id === chatId()) {
+      if (targetStep) {
+        clearRunTSBackgroundRequest(id, targetStep);
+        settleTimelineStep(targetStep, "agent:Cancelled");
+      }
       clearActiveChatRuntime(id);
       unblockRunTSQueue(id);
       updateChatSummary(id, {

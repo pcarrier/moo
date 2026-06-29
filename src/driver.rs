@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::task::JoinHandle;
 
 use crate::async_runtime::runtime;
 use crate::broadcast;
@@ -25,7 +25,7 @@ where
 }
 use crate::host;
 use crate::ops::llm;
-use crate::pool::Pool;
+use crate::pool::{AsyncToolCancel, Pool};
 use crate::runtime::{AgentRunHandler, AsyncOpCompletion, AsyncOpHandle};
 use crate::util::{now_ms, now_ns, random_id};
 
@@ -47,6 +47,7 @@ type ForegroundRunTsState = Arc<Mutex<Option<ForegroundRunTs>>>;
 struct ForegroundRunTs {
     step_id: String,
     cancel: Arc<AtomicBool>,
+    tool_cancel: Arc<AsyncToolCancel>,
     background: Arc<AtomicBool>,
 }
 
@@ -70,8 +71,33 @@ struct BackgroundRunTs {
     label: Option<String>,
     requested_by: String,
     started_at: u64,
-    cancel: Arc<AtomicBool>,
-    abort: AbortHandle,
+    cancel: Arc<AsyncToolCancel>,
+}
+
+struct ExternalRunTs {
+    chat_id: String,
+    cancel: Arc<AsyncToolCancel>,
+}
+
+static EXTERNAL_RUNTS: LazyLock<Mutex<HashMap<String, ExternalRunTs>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub struct ExternalRunTsGuard {
+    step_id: String,
+}
+
+impl Drop for ExternalRunTsGuard {
+    fn drop(&mut self) {
+        external_runts_lock().remove(&self.step_id);
+    }
+}
+
+fn async_tool_cancel_from_token(token: Arc<AtomicBool>) -> Arc<AsyncToolCancel> {
+    let cancel = AsyncToolCancel::new();
+    if token.load(Ordering::SeqCst) {
+        cancel.cancel();
+    }
+    cancel
 }
 
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningChat>>> =
@@ -123,6 +149,52 @@ fn background_runts_lock() -> MutexGuard<'static, HashMap<String, BackgroundRunT
     }
 }
 
+fn external_runts_lock() -> MutexGuard<'static, HashMap<String, ExternalRunTs>> {
+    match EXTERNAL_RUNTS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("external runTS registry mutex poisoned; recovering inner value");
+            poisoned.into_inner()
+        }
+    }
+}
+
+pub fn register_external_runts(
+    chat_id: String,
+    step_id: String,
+    cancel: Arc<AsyncToolCancel>,
+) -> ExternalRunTsGuard {
+    external_runts_lock().insert(step_id.clone(), ExternalRunTs { chat_id, cancel });
+    ExternalRunTsGuard { step_id }
+}
+
+fn cancel_external_runts(chat_id: &str, step_id: Option<&str>) -> usize {
+    let cancels = external_runts_lock()
+        .iter()
+        .filter(|(id, entry)| {
+            step_id.is_some_and(|wanted| *id == wanted)
+                || (step_id.is_none() && entry.chat_id == chat_id)
+        })
+        .map(|(_, entry)| entry.cancel.clone())
+        .collect::<Vec<_>>();
+    for cancel in &cancels {
+        cancel.cancel();
+    }
+    cancels.len()
+}
+
+fn cancel_external_runts_for_chat(chat_id: &str) -> usize {
+    let cancels = external_runts_lock()
+        .values()
+        .filter(|entry| entry.chat_id == chat_id)
+        .map(|entry| entry.cancel.clone())
+        .collect::<Vec<_>>();
+    for cancel in &cancels {
+        cancel.cancel();
+    }
+    cancels.len()
+}
+
 pub fn background_runts_json() -> Value {
     let jobs = background_runts_lock()
         .values()
@@ -142,35 +214,137 @@ pub fn background_runts_json() -> Value {
 pub fn cancel_background_runts(chat_id: &str, step_id: Option<&str>) -> usize {
     let cancels = background_runts_lock()
         .values()
-        .filter(|entry| entry.chat_id == chat_id && step_id.is_none_or(|id| entry.step_id == id))
-        .map(|entry| (entry.cancel.clone(), entry.abort.clone()))
+        .filter(|entry| {
+            step_id.is_some_and(|id| entry.step_id == id)
+                || (entry.chat_id == chat_id && step_id.is_none())
+        })
+        .map(|entry| entry.cancel.clone())
         .collect::<Vec<_>>();
-    for (cancel, abort) in &cancels {
-        cancel.store(true, Ordering::SeqCst);
-        abort.abort();
+    for cancel in &cancels {
+        cancel.cancel();
     }
     cancels.len()
 }
 
 pub fn request_foreground_runts_background(chat_id: &str, step_id: Option<&str>) -> bool {
-    let Some(foreground) = running_lock()
-        .get(chat_id)
-        .and_then(|entry| active_foreground_runts(&entry.foreground_runts, step_id))
-    else {
+    let running = running_lock();
+    let foreground = if let Some(step_id) = step_id {
+        running
+            .values()
+            .find_map(|entry| active_foreground_runts(&entry.foreground_runts, Some(step_id)))
+    } else {
+        running
+            .get(chat_id)
+            .and_then(|entry| active_foreground_runts(&entry.foreground_runts, None))
+    };
+    let Some(foreground) = foreground else {
         return false;
     };
     foreground.background.store(true, Ordering::SeqCst);
     true
 }
 
+fn push_unique_step_id(ids: &mut Vec<String>, step_id: impl Into<String>) {
+    let step_id = step_id.into();
+    if !step_id.is_empty() && !ids.iter().any(|id| id == &step_id) {
+        ids.push(step_id);
+    }
+}
+
+pub fn runts_step_ids_for_cancel(chat_id: &str, step_id: Option<&str>) -> Vec<String> {
+    let mut ids = Vec::new();
+    {
+        let background = background_runts_lock();
+        for entry in background.values() {
+            if step_id.is_some_and(|id| entry.step_id == id)
+                || (entry.chat_id == chat_id && step_id.is_none())
+            {
+                push_unique_step_id(&mut ids, entry.step_id.clone());
+            }
+        }
+    }
+    {
+        let external = external_runts_lock();
+        for (id, entry) in external.iter() {
+            if step_id.is_some_and(|wanted| id == wanted)
+                || (entry.chat_id == chat_id && step_id.is_none())
+            {
+                push_unique_step_id(&mut ids, id.clone());
+            }
+        }
+    }
+    {
+        let running = running_lock();
+        if let Some(step_id) = step_id {
+            for entry in running.values() {
+                if active_foreground_runts(&entry.foreground_runts, Some(step_id)).is_some() {
+                    push_unique_step_id(&mut ids, step_id.to_string());
+                }
+            }
+        } else if let Some(foreground) = running
+            .get(chat_id)
+            .and_then(|entry| active_foreground_runts(&entry.foreground_runts, None))
+        {
+            push_unique_step_id(&mut ids, foreground.step_id);
+        }
+    }
+    // Match cancel_runts' same-chat foreground/direct-foreground fallback for
+    // transient UI row ids: if the exact requested id is absent, report the
+    // actual active same-chat id that will be cancelled.
+    if ids.is_empty() && step_id.is_some() {
+        let running = running_lock();
+        if let Some(foreground) = running
+            .get(chat_id)
+            .and_then(|entry| active_foreground_runts(&entry.foreground_runts, None))
+        {
+            push_unique_step_id(&mut ids, foreground.step_id);
+        }
+        drop(running);
+        let external = external_runts_lock();
+        for (id, entry) in external.iter() {
+            if entry.chat_id == chat_id {
+                push_unique_step_id(&mut ids, id.clone());
+            }
+        }
+    }
+    ids
+}
+
 pub fn cancel_runts(chat_id: &str, step_id: Option<&str>) -> usize {
     let mut cancelled = cancel_background_runts(chat_id, step_id);
-    if let Some(foreground) = running_lock()
-        .get(chat_id)
-        .and_then(|entry| active_foreground_runts(&entry.foreground_runts, step_id))
-        && !foreground.cancel.swap(true, Ordering::SeqCst)
-    {
-        cancelled += 1;
+    cancelled += cancel_external_runts(chat_id, step_id);
+    let running = running_lock();
+    let foreground = if let Some(step_id) = step_id {
+        running
+            .values()
+            .find_map(|entry| active_foreground_runts(&entry.foreground_runts, Some(step_id)))
+    } else {
+        running
+            .get(chat_id)
+            .and_then(|entry| active_foreground_runts(&entry.foreground_runts, None))
+    };
+    if let Some(foreground) = foreground {
+        foreground.tool_cancel.cancel();
+        if !foreground.cancel.swap(true, Ordering::SeqCst) {
+            cancelled += 1;
+        }
+    }
+    // Browser timeline rows can briefly hold a streamed/draft runTS row id while
+    // the native driver has registered the final runTsStepId. If an explicit
+    // step-id cancel misses but the user is cancelling from that same chat, fall
+    // back to the active foreground runTS for the chat. Keep this foreground-only
+    // so stale ids never cancel unrelated background jobs.
+    if cancelled == 0 && step_id.is_some() {
+        if let Some(foreground) = running
+            .get(chat_id)
+            .and_then(|entry| active_foreground_runts(&entry.foreground_runts, None))
+        {
+            foreground.tool_cancel.cancel();
+            if !foreground.cancel.swap(true, Ordering::SeqCst) {
+                cancelled += 1;
+            }
+        }
+        cancelled += cancel_external_runts_for_chat(chat_id);
     }
     cancelled
 }
@@ -728,6 +902,7 @@ pub fn running_started_at() -> HashMap<String, u64> {
 
 fn finish_running(running: RunningChat) {
     if let Some(foreground) = active_foreground_runts(&running.foreground_runts, None) {
+        foreground.tool_cancel.cancel();
         foreground.cancel.store(true, Ordering::SeqCst);
     }
     running.handle.abort();
@@ -853,23 +1028,20 @@ pub fn spawn_runts_tool_command(
     pool: Arc<Pool>,
     bundle: Arc<String>,
     value: Value,
-    cancelled: Arc<AtomicBool>,
+    cancel: Arc<AsyncToolCancel>,
 ) -> Result<JoinHandle<Value>, String> {
-    spawn_on_runtime(
-        async move { run_ts_tool_async(&pool, &bundle, &value, None, cancelled).await },
-    )
+    spawn_on_runtime(async move { run_ts_tool_async(&pool, &bundle, &value, None, cancel).await })
 }
 
 pub fn background_runts_command(
     chat_id: String,
     value: Value,
-    cancel_for_task: Arc<AtomicBool>,
+    cancel_for_task: Arc<AsyncToolCancel>,
     handle: JoinHandle<Value>,
 ) -> Result<(), String> {
     let step_id = runts_tool_step_id(&value);
     let label = runts_tool_label(&value);
     let requested_by = "api";
-    let abort = handle.abort_handle();
     background_runts_lock().insert(
         step_id.clone(),
         BackgroundRunTs {
@@ -879,7 +1051,6 @@ pub fn background_runts_command(
             requested_by: requested_by.to_string(),
             started_at: now_ms() as u64,
             cancel: cancel_for_task,
-            abort,
         },
     );
     publish_runts_background_event(
@@ -953,7 +1124,7 @@ fn background_runts_tool(
 ) -> Result<(), String> {
     let step_id = runts_tool_step_id(&value);
     let label = runts_tool_label(&value);
-    let cancel_for_task = Arc::new(AtomicBool::new(false));
+    let cancel_for_task = AsyncToolCancel::new();
     let handle = spawn_runts_tool_task(
         pool.clone(),
         bundle.clone(),
@@ -976,12 +1147,11 @@ fn background_runts_tool_handle(
     chat_id: String,
     step_id: String,
     label: Option<String>,
-    cancel_for_task: Arc<AtomicBool>,
+    cancel_for_task: Arc<AsyncToolCancel>,
     tool_span: ChatTraceSpan,
     handle: JoinHandle<Value>,
     requested_by: &'static str,
 ) -> Result<(), String> {
-    let abort = handle.abort_handle();
     background_runts_lock().insert(
         step_id.clone(),
         BackgroundRunTs {
@@ -991,7 +1161,6 @@ fn background_runts_tool_handle(
             requested_by: requested_by.to_string(),
             started_at: now_ms() as u64,
             cancel: cancel_for_task.clone(),
-            abort,
         },
     );
     publish_runts_background_event(
@@ -1004,7 +1173,7 @@ fn background_runts_tool_handle(
     let cancel_for_join = cancel_for_task.clone();
     spawn_on_runtime(async move {
         let tool_result = handle.await.unwrap_or_else(|e| {
-            let cancelled = cancel_for_join.load(Ordering::SeqCst) || e.is_cancelled();
+            let cancelled = cancel_for_join.is_cancelled() || e.is_cancelled();
             json!({
                 "content": if cancelled {
                     "cancelled: runTS cancelled".to_string()
@@ -1050,10 +1219,10 @@ fn spawn_runts_tool_task(
     bundle: Arc<String>,
     value: Value,
     parent_span: Option<String>,
-    cancelled: Arc<AtomicBool>,
+    cancel: Arc<AsyncToolCancel>,
 ) -> Result<JoinHandle<Value>, String> {
     spawn_on_runtime(async move {
-        run_ts_tool_async(&pool, &bundle, &value, parent_span.as_deref(), cancelled).await
+        run_ts_tool_async(&pool, &bundle, &value, parent_span.as_deref(), cancel).await
     })
 }
 
@@ -1282,12 +1451,14 @@ async fn drive_loop(
                 let foreground_parent_span = tool_span.id().map(ToString::to_string);
                 let foreground_step_id = runts_tool_step_id(&value);
                 let run_cancel = Arc::new(AtomicBool::new(false));
+                let run_tool_cancel = AsyncToolCancel::new();
                 let tool_background = Arc::new(AtomicBool::new(false));
                 set_active_foreground_runts(
                     &foreground_runts,
                     ForegroundRunTs {
                         step_id: foreground_step_id.clone(),
                         cancel: run_cancel.clone(),
+                        tool_cancel: run_tool_cancel.clone(),
                         background: tool_background.clone(),
                     },
                 );
@@ -1296,7 +1467,7 @@ async fn drive_loop(
                     bundle.clone(),
                     foreground_value,
                     foreground_parent_span.clone(),
-                    run_cancel.clone(),
+                    run_tool_cancel.clone(),
                 ) {
                     Ok(handle) => handle,
                     Err(e) => {
@@ -1374,11 +1545,13 @@ async fn drive_loop(
                         clear_active_foreground_runts(&foreground_runts, &foreground_step_id);
                     }
                     _ = &mut cancel_poll => {
-                        run.abort();
-                        let tool_result = json!({
-                            "toolCallId": runts_tool_call_id(&value),
-                            "content": "cancelled: runTS cancelled",
-                            "status": "cancelled",
+                        run_tool_cancel.cancel();
+                        let tool_result = run.await.unwrap_or_else(|e| {
+                            json!({
+                                "toolCallId": runts_tool_call_id(&value),
+                                "content": format!("cancelled: runTS cancelled ({e})"),
+                                "status": "cancelled",
+                            })
                         });
                         tool_span.finish("error", json!({ "result": tool_result.clone() }));
                         next_input = json!({
@@ -1410,7 +1583,7 @@ async fn drive_loop(
                             chat_id.to_string(),
                             step_id,
                             label,
-                            run_cancel,
+                            run_tool_cancel,
                             tool_span,
                             run,
                             "user",
@@ -1444,7 +1617,7 @@ async fn drive_loop(
                             chat_id.to_string(),
                             step_id,
                             label,
-                            run_cancel,
+                            run_tool_cancel,
                             tool_span,
                             run,
                             "timer",
@@ -1501,7 +1674,7 @@ async fn run_ts_tool_async(
     bundle: &Arc<String>,
     value: &Value,
     parent_step_id: Option<&str>,
-    cancelled: Arc<AtomicBool>,
+    cancel: Arc<AsyncToolCancel>,
 ) -> Value {
     let chat_id = value
         .pointer("/state/chatId")
@@ -1523,9 +1696,9 @@ async fn run_ts_tool_async(
     let bundle2 = bundle.clone();
     let input_str = input.to_string();
     let parent_step_id = parent_step_id.map(ToString::to_string);
-    let cancelled_for_result = cancelled.clone();
+    let cancel_for_result = cancel.clone();
     let raw = tokio::task::spawn_blocking(move || {
-        pool2.submit_async_tool(bundle2, input_str, handler, parent_step_id, cancelled)
+        pool2.submit_async_tool(bundle2, input_str, handler, parent_step_id, cancel)
     })
     .await
     .map_err(|e| format!("spawn_blocking async tool: {e}"))
@@ -1543,7 +1716,7 @@ async fn run_ts_tool_async(
             }),
         },
         Err(e) => {
-            let cancelled = cancelled_for_result.load(Ordering::SeqCst);
+            let cancelled = cancel_for_result.is_cancelled();
             json!({
                 "toolCallId": tool_call_id,
                 "content": format!("{}: {e}", if cancelled { "cancelled" } else { "error" }),
@@ -1801,8 +1974,14 @@ async fn drive_limited(
                     return Err(format!("subagent exceeded maxSteps={max_steps}"));
                 }
                 let state = value.get("state").cloned().unwrap_or(Value::Null);
-                let tool_result =
-                    run_ts_tool_async(pool, bundle, &value, None, cancelled.clone()).await;
+                let tool_result = run_ts_tool_async(
+                    pool,
+                    bundle,
+                    &value,
+                    None,
+                    async_tool_cancel_from_token(cancelled.clone()),
+                )
+                .await;
                 next_input = json!({
                     "command": "step-next",
                     "state": state,
@@ -1920,17 +2099,8 @@ mod tests {
         let other_chat_id = format!("test-chat-other-{}", now_ns());
         let step_id = format!("step:test-{}", now_ns());
         let other_step_id = format!("step:other-{}", now_ns());
-        let cancel = Arc::new(AtomicBool::new(false));
-        let other_cancel = Arc::new(AtomicBool::new(false));
-        let handle = runtime().unwrap().spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        });
-        let other_handle = runtime().unwrap().spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        });
-        let abort = handle.abort_handle();
-        let other_abort = other_handle.abort_handle();
-
+        let cancel = AsyncToolCancel::new();
+        let other_cancel = AsyncToolCancel::new();
         background_runts_lock().insert(
             step_id.clone(),
             BackgroundRunTs {
@@ -1940,7 +2110,6 @@ mod tests {
                 requested_by: "test".to_string(),
                 started_at: now_ms() as u64,
                 cancel: cancel.clone(),
-                abort,
             },
         );
         background_runts_lock().insert(
@@ -1952,23 +2121,50 @@ mod tests {
                 requested_by: "test".to_string(),
                 started_at: now_ms() as u64,
                 cancel: other_cancel.clone(),
-                abort: other_abort,
             },
         );
 
         assert_eq!(cancel_runts(&chat_id, Some("missing")), 0);
-        assert!(!cancel.load(Ordering::SeqCst));
-        assert_eq!(cancel_runts(&chat_id, Some(&step_id)), 1);
-        assert!(cancel.load(Ordering::SeqCst));
-        assert!(!other_cancel.load(Ordering::SeqCst));
-        assert_eq!(cancel_runts(&chat_id, Some(&step_id)), 1);
+        assert!(!cancel.is_cancelled());
+        assert_eq!(cancel_runts(&other_chat_id, Some(&step_id)), 1);
+        assert!(cancel.is_cancelled());
+        assert!(!other_cancel.is_cancelled());
+        assert_eq!(cancel_runts(&other_chat_id, Some(&step_id)), 1);
         assert_eq!(cancel_runts(&other_chat_id, None), 1);
-        assert!(other_cancel.load(Ordering::SeqCst));
+        assert!(other_cancel.is_cancelled());
 
         background_runts_lock().remove(&step_id);
         background_runts_lock().remove(&other_step_id);
-        handle.abort();
-        other_handle.abort();
+    }
+
+    #[test]
+    fn external_runts_cancel_is_step_scoped_and_drops() {
+        let chat_id = format!("test-chat-{}", now_ns());
+        let other_chat_id = format!("test-chat-other-{}", now_ns());
+        let step_id = format!("step:external-{}", now_ns());
+        let other_step_id = format!("step:external-other-{}", now_ns());
+        let cancel = AsyncToolCancel::new();
+        let other_cancel = AsyncToolCancel::new();
+
+        let guard = register_external_runts(chat_id.clone(), step_id.clone(), cancel.clone());
+        let other_guard = register_external_runts(
+            other_chat_id.clone(),
+            other_step_id.clone(),
+            other_cancel.clone(),
+        );
+
+        assert_eq!(cancel_runts(&chat_id, Some("missing")), 1);
+        assert!(cancel.is_cancelled());
+        assert_eq!(cancel_runts(&other_chat_id, Some(&step_id)), 1);
+        assert!(cancel.is_cancelled());
+        assert!(!other_cancel.is_cancelled());
+        assert_eq!(cancel_runts(&other_chat_id, None), 1);
+        assert!(other_cancel.is_cancelled());
+
+        drop(guard);
+        drop(other_guard);
+        assert!(!external_runts_lock().contains_key(&step_id));
+        assert!(!external_runts_lock().contains_key(&other_step_id));
     }
 
     #[test]
@@ -1976,12 +2172,14 @@ mod tests {
         let chat_id = format!("test-chat-{}", now_ns());
         let state = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
+        let tool_cancel = AsyncToolCancel::new();
         let background = Arc::new(AtomicBool::new(false));
         set_active_foreground_runts(
             &state,
             ForegroundRunTs {
                 step_id: "step:active".to_string(),
                 cancel: cancel.clone(),
+                tool_cancel: tool_cancel.clone(),
                 background: background.clone(),
             },
         );
@@ -2004,20 +2202,22 @@ mod tests {
             &chat_id,
             Some("step:other")
         ));
-        assert_eq!(cancel_runts(&chat_id, Some("step:other")), 0);
+        assert_eq!(cancel_runts("other-chat", Some("step:other")), 0);
         assert!(!cancel.load(Ordering::SeqCst));
+        assert!(!tool_cancel.is_cancelled());
         assert!(!background.load(Ordering::SeqCst));
 
         assert!(request_foreground_runts_background(
-            &chat_id,
+            "other-chat",
             Some("step:active")
         ));
         assert!(background.load(Ordering::SeqCst));
 
         let active = active_foreground_runts(&state, Some("step:active")).unwrap();
-        assert_eq!(cancel_runts(&chat_id, Some("step:active")), 1);
+        assert_eq!(cancel_runts("other-chat", Some("step:active")), 1);
         assert!(cancel.load(Ordering::SeqCst));
-        assert_eq!(cancel_runts(&chat_id, Some("step:active")), 0);
+        assert!(tool_cancel.is_cancelled());
+        assert_eq!(cancel_runts("other-chat", Some("step:active")), 0);
 
         clear_active_foreground_runts(&state, "step:other");
         assert!(active_foreground_runts(&state, None).is_some());
@@ -2028,5 +2228,97 @@ mod tests {
             running.handle.abort();
         }
         drop(active);
+    }
+
+    #[test]
+    fn runts_step_ids_for_cancel_reports_fallback_foreground_step() {
+        let chat_id = format!("test-chat-{}", now_ns());
+        let stale_step_id = format!("step:stale-{}", now_ns());
+        let active_step_id = format!("step:active-{}", now_ns());
+        let foreground = Arc::new(Mutex::new(Some(ForegroundRunTs {
+            step_id: active_step_id.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            tool_cancel: AsyncToolCancel::new(),
+            background: Arc::new(AtomicBool::new(false)),
+        })));
+        let handle = runtime().expect("runtime").spawn(async {});
+        running_lock().insert(
+            chat_id.clone(),
+            RunningChat {
+                handle,
+                run_id: 0,
+                started_at: 0,
+                end_event: None,
+                ended: Arc::new(AtomicBool::new(false)),
+                foreground_runts: foreground.clone(),
+            },
+        );
+
+        assert_eq!(
+            runts_step_ids_for_cancel(&chat_id, Some(&stale_step_id)),
+            vec![active_step_id.clone()]
+        );
+        assert_eq!(cancel_runts(&chat_id, Some(&stale_step_id)), 1);
+        running_lock().remove(&chat_id);
+    }
+
+    #[test]
+    fn runts_step_ids_for_cancel_reports_fallback_external_steps() {
+        let chat_id = format!("test-chat-{}", now_ns());
+        let stale_step_id = format!("step:stale-{}", now_ns());
+        let active_step_id = format!("step:external-{}", now_ns());
+        let cancel = AsyncToolCancel::new();
+        let guard =
+            register_external_runts(chat_id.clone(), active_step_id.clone(), cancel.clone());
+
+        assert_eq!(
+            runts_step_ids_for_cancel(&chat_id, Some(&stale_step_id)),
+            vec![active_step_id.clone()]
+        );
+        assert_eq!(cancel_runts(&chat_id, Some(&stale_step_id)), 1);
+        assert!(cancel.is_cancelled());
+        drop(guard);
+    }
+
+    #[test]
+    fn foreground_runts_cancel_falls_back_to_same_chat_active_step() {
+        let chat_id = format!("test-chat-fallback-{}", now_ns());
+        let state = Arc::new(Mutex::new(None));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tool_cancel = AsyncToolCancel::new();
+        let background = Arc::new(AtomicBool::new(false));
+        set_active_foreground_runts(
+            &state,
+            ForegroundRunTs {
+                step_id: "step:active-fallback".to_string(),
+                cancel: cancel.clone(),
+                tool_cancel: tool_cancel.clone(),
+                background,
+            },
+        );
+
+        let handle = runtime().unwrap().spawn(async {});
+        running_lock().insert(
+            chat_id.clone(),
+            RunningChat {
+                handle,
+                run_id: 0,
+                started_at: 0,
+                end_event: None,
+                ended: Arc::new(AtomicBool::new(false)),
+                foreground_runts: state.clone(),
+            },
+        );
+
+        assert_eq!(cancel_runts("other-chat", Some("step:stale")), 0);
+        assert!(!cancel.load(Ordering::SeqCst));
+        assert_eq!(cancel_runts(&chat_id, Some("step:stale")), 1);
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(tool_cancel.is_cancelled());
+
+        if let Some(running) = running_lock().remove(&chat_id) {
+            running.handle.abort();
+        }
+        clear_active_foreground_runts(&state, "step:active-fallback");
     }
 }

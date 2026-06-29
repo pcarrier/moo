@@ -26,7 +26,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -184,6 +184,7 @@ struct InspectRequest {
     input: String,
     response: Sender<Result<String, String>>,
     async_agent_run: Option<AgentRunHandler>,
+    cancelled: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone)]
@@ -204,6 +205,7 @@ impl CdpHandle {
         &self,
         input: &str,
         async_agent_run: Option<AgentRunHandler>,
+        cancelled: Option<Arc<AtomicBool>>,
     ) -> Option<Result<String, String>> {
         let chat_id = chat_id_from_input(input)?;
         let attached = self
@@ -232,6 +234,7 @@ impl CdpHandle {
             input: input.to_string(),
             response,
             async_agent_run,
+            cancelled: cancelled.clone(),
         };
         if self.inspect_tx.send(request).is_err() {
             return Some(Err("cdp inspector thread is not running".to_string()));
@@ -240,6 +243,12 @@ impl CdpHandle {
         // pump dequeues the job) cannot block this caller indefinitely. On
         // timeout, re-check the pause flag to give a precise error.
         loop {
+            if cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                return Some(Err("runTS cancelled".to_string()));
+            }
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(result) => return Some(result),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -785,7 +794,10 @@ fn run_inspected_job(
             &mut scope,
             &request.input,
             agent_run,
-            Arc::new(AtomicBool::new(false)),
+            request
+                .cancelled
+                .clone()
+                .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         ),
         None => runtime::run_loaded_main_in_scope(&mut scope, &request.input),
     };

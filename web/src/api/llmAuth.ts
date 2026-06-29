@@ -29,6 +29,7 @@ export type LlmProviderAuthSettings = {
   expiresAt?: number | null;
   oauthSubject?: string | null;
   baseUrl?: string | null;
+  variant?: string | null;
   hasApiKey?: boolean;
   hasAccessToken?: boolean;
   hasRefreshToken?: boolean;
@@ -39,6 +40,7 @@ export type LlmProviderSaveSettings = {
   apiKey?: string | null;
   clearOAuth?: boolean;
   baseUrl?: string | null;
+  variant?: string | null;
 };
 
 export type LlmAuthSettings = {

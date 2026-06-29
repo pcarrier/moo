@@ -3801,7 +3801,7 @@ const tools: Moo["tools"] = {
     const targetChatId = String(chatId ?? activeChatId ?? "").trim();
     if (!targetChatId) throw new Error("moo.tools.cancel requires chatId outside an active chat context");
     const rawStepId = stepId ?? id ?? null;
-    const targetStepId = rawStepId == null ? null : String(rawStepId).trim();
+    const targetStepId = normalizeRunTSStepId(rawStepId);
     const raw = host.cancelRunTS(targetChatId, targetStepId || null);
     const parsed = parseJson(raw, "tools.cancel") as {
       chatId?: string;
@@ -3822,6 +3822,13 @@ const tools: Moo["tools"] = {
     };
   },
 };
+
+function normalizeRunTSStepId(raw: unknown): string | null {
+  if (raw == null) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  return text.match(/step:[A-Za-z0-9_-]+/)?.[0] ?? text;
+}
 
 const rawMoo: Moo = {
   try: tryApi,

@@ -1224,9 +1224,73 @@ pub struct AsyncToolJob {
     pub input: String,
     pub agent_run: AgentRunHandler,
     pub parent_id: Option<String>,
-    pub cancelled: Arc<AtomicBool>,
+    pub cancel: Arc<AsyncToolCancel>,
     pub response: Sender<Result<String, String>>,
     pub enqueued_at: Instant,
+}
+
+pub struct AsyncToolCancel {
+    cancelled: Arc<AtomicBool>,
+    isolate: Mutex<Option<v8::IsolateHandle>>,
+}
+
+impl AsyncToolCancel {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            isolate: Mutex::new(None),
+        })
+    }
+
+    pub fn token(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let handle = self
+            .isolate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(handle) = handle {
+            runtime::request_isolate_termination(&handle);
+        }
+    }
+
+    fn bind_isolate(&self, isolate: &mut v8::OwnedIsolate) -> AsyncToolCancelBinding<'_> {
+        *self.isolate.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(isolate.thread_safe_handle());
+        if self.is_cancelled() {
+            let handle = self
+                .isolate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(handle) = handle {
+                runtime::request_isolate_termination(&handle);
+            }
+        }
+        AsyncToolCancelBinding { cancel: self }
+    }
+}
+
+struct AsyncToolCancelBinding<'a> {
+    cancel: &'a AsyncToolCancel,
+}
+
+impl Drop for AsyncToolCancelBinding<'_> {
+    fn drop(&mut self) {
+        *self
+            .cancel
+            .isolate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 type JobPool = DynamicPool<Job>;
@@ -1609,7 +1673,7 @@ impl Pool {
         input: String,
         agent_run: AgentRunHandler,
         parent_id: Option<String>,
-        cancelled: Arc<AtomicBool>,
+        cancel: Arc<AsyncToolCancel>,
     ) -> Result<String, String> {
         let input = self.input_with_server_base_url(input);
         let (resp_tx, resp_rx) = mpsc::channel();
@@ -1628,7 +1692,7 @@ impl Pool {
                 input,
                 agent_run,
                 parent_id,
-                cancelled,
+                cancel,
                 response: resp_tx,
                 enqueued_at: Instant::now(),
             })
@@ -1745,7 +1809,7 @@ fn worker_loop(pool: Arc<JobPool>, id: usize) {
         V8_OBSERVABILITY.job_start(&lane, id, rt.generation, &command);
         let started = Instant::now();
         let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as u64;
-        let inspected = cdp::handle().and_then(|h| h.run_if_attached(&job.input, None));
+        let inspected = cdp::handle().and_then(|h| h.run_if_attached(&job.input, None, None));
         let snapshot_hit = if inspected.is_none() && snapshot_eligible(&job.input) {
             match rt.ensure_snapshot_bundle(&job.bundle) {
                 Ok(hit) => Some(hit),
@@ -2176,8 +2240,13 @@ fn async_tool_worker_loop(pool: Arc<AsyncToolPool>, id: usize) {
         V8_OBSERVABILITY.job_start(&lane, id, rt.generation, &command);
         let started = Instant::now();
         let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as u64;
-        let inspected =
-            cdp::handle().and_then(|h| h.run_if_attached(&job.input, Some(job.agent_run.clone())));
+        let inspected = cdp::handle().and_then(|h| {
+            h.run_if_attached(
+                &job.input,
+                Some(job.agent_run.clone()),
+                Some(job.cancel.token()),
+            )
+        });
         let outcome = if let Some(result) = inspected {
             JobOutcome {
                 result,
@@ -2193,7 +2262,7 @@ fn async_tool_worker_loop(pool: Arc<AsyncToolPool>, id: usize) {
                 &job.input,
                 job.agent_run,
                 job.parent_id,
-                job.cancelled.clone(),
+                job.cancel.clone(),
             )
         } else {
             run_async_tool_job(
@@ -2202,7 +2271,7 @@ fn async_tool_worker_loop(pool: Arc<AsyncToolPool>, id: usize) {
                 &job.input,
                 job.agent_run,
                 job.parent_id,
-                job.cancelled.clone(),
+                job.cancel.clone(),
             )
         };
         let duration_ns = started.elapsed().as_nanos() as u64;
@@ -2253,14 +2322,21 @@ fn run_async_tool_job(
     input: &str,
     agent_run: AgentRunHandler,
     parent_id: Option<String>,
-    cancelled: Arc<AtomicBool>,
+    cancel: Arc<AsyncToolCancel>,
 ) -> JobOutcome {
     rt.near_heap_limit.store(false, Ordering::SeqCst);
     let was_cached = rt.bundle_cache.len() > 0;
     let report = {
         let isolate = rt.isolate.as_mut().expect("worker isolate missing");
-        rt.bundle_cache
-            .run_async_report_in(isolate, bundle, input, agent_run, parent_id, cancelled)
+        let _cancel_binding = cancel.bind_isolate(isolate);
+        rt.bundle_cache.run_async_report_in(
+            isolate,
+            bundle,
+            input,
+            agent_run,
+            parent_id,
+            cancel.token(),
+        )
     };
     let near_heap_limit = rt.near_heap_limit.load(Ordering::SeqCst);
     snapshots::record_if_triggered(
@@ -2287,17 +2363,21 @@ fn run_uncached_async_tool_job(
     input: &str,
     agent_run: AgentRunHandler,
     parent_id: Option<String>,
-    cancelled: Arc<AtomicBool>,
+    cancel: Arc<AsyncToolCancel>,
 ) -> JobOutcome {
     rt.near_heap_limit.store(false, Ordering::SeqCst);
-    let report = runtime::run_js_async_report_in(
-        rt.isolate_mut(),
-        bundle,
-        input,
-        agent_run,
-        parent_id,
-        cancelled,
-    );
+    let report = {
+        let isolate = rt.isolate_mut();
+        let _cancel_binding = cancel.bind_isolate(isolate);
+        runtime::run_js_async_report_in(
+            isolate,
+            bundle,
+            input,
+            agent_run,
+            parent_id,
+            cancel.token(),
+        )
+    };
     let near_heap_limit = rt.near_heap_limit.load(Ordering::SeqCst);
     snapshots::record_if_triggered(
         rt.isolate_mut(),
