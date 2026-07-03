@@ -103,8 +103,14 @@ export type Event =
     }
   | { kind: "compaction-start"; chatId: string; at?: number }
   | { kind: "compaction-end"; chatId: string; at?: number }
-  | { kind: "step-start"; chatId: string; compacting?: boolean; at?: number }
-  | { kind: "step-end"; chatId: string; at?: number }
+  | {
+      kind: "step-start";
+      chatId: string;
+      compacting?: boolean;
+      userStepId?: string;
+      at?: number;
+    }
+  | { kind: "step-end"; chatId: string; userStepId?: string; at?: number }
   | ({ kind: "draft" } & StreamDraftEvent)
   | ({ kind: "reasoning-draft" } & StreamDraftEvent)
   | ({ kind: "compaction-draft" } & StreamDraftEvent)
@@ -511,10 +517,22 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
       };
     }
     case "compaction-start":
-    case "compaction-end":
-    case "step-end": {
+    case "compaction-end": {
       const chatId = stringField(frame, "chatId");
       return chatId ? withOptionalAt({ kind: rawKind, chatId }, frame) : null;
+    }
+    case "step-end": {
+      const chatId = stringField(frame, "chatId");
+      return chatId
+        ? withOptionalAt(
+            {
+              kind: "step-end",
+              chatId,
+              userStepId: optionalString(frame, "userStepId"),
+            },
+            frame,
+          )
+        : null;
     }
     case "step-start": {
       const chatId = stringField(frame, "chatId");
@@ -524,6 +542,7 @@ function parseEventFrame(frame: Record<string, unknown>): Event | null {
               kind: "step-start",
               chatId,
               compacting: optionalBoolean(frame, "compacting"),
+              userStepId: optionalString(frame, "userStepId"),
             },
             frame,
           )

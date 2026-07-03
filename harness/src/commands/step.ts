@@ -199,6 +199,34 @@ async function writePendingMessages(messages: unknown[], knownIdsInput?: unknown
   return next;
 }
 
+// Applies a queue mutation against the freshest list inside a CAS retry
+// loop. The transform re-runs on every attempt, so concurrent writers can't
+// be clobbered by a stale snapshot the way a plain read-modify-write would.
+async function transformPendingMessages(
+  transform: (messages: PendingMessage[]) => PendingMessage[],
+): Promise<PendingMessage[]> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const previousTarget = await moo.pointers.get({
+      name: CHAT_PENDING_MESSAGES_REF,
+    });
+    const next = sanitizePendingMessages(
+      transform(pendingMessagesFromTarget(previousTarget)),
+    );
+    const changed = await moo.pointers.cas({
+      name: CHAT_PENDING_MESSAGES_REF,
+      expected: previousTarget,
+      next: encodeJsonPointer(next),
+    });
+    if (changed) return next;
+  }
+  const next = sanitizePendingMessages(transform(await readPendingMessages()));
+  await moo.pointers.set({
+    name: CHAT_PENDING_MESSAGES_REF,
+    target: encodeJsonPointer(next),
+  });
+  return next;
+}
+
 export async function pendingMessagesCommand(_input: Input) {
   return { ok: true, value: { messages: await readPendingMessages() } };
 }
@@ -229,32 +257,46 @@ export async function chatQueueRemoveCommand(input: Input) {
   const id = String(input.id ?? "").trim();
   const chatId = String(input.chatId ?? "").trim();
   if (!id) return { ok: false, error: { message: "queue item id is required" } };
-  const messages = (await readPendingMessages()).filter(
-    (message) => message.id !== id || (chatId && message.chatId !== chatId),
+  const messages = await transformPendingMessages((current) =>
+    current.filter(
+      (message) => message.id !== id || (chatId && message.chatId !== chatId),
+    ),
   );
-  return { ok: true, value: { messages: await writePendingMessages(messages) } };
+  return { ok: true, value: { messages } };
 }
 
 export async function chatQueueRunNextCommand(input: Input) {
   const id = String(input.id ?? "").trim();
   const chatId = String(input.chatId ?? "").trim();
   if (!id) return { ok: false, error: { message: "queue item id is required" } };
-  const messages = await readPendingMessages();
-  const idx = messages.findIndex((message) => message.id === id && (!chatId || message.chatId === chatId));
-  if (idx < 0) return { ok: true, value: { moved: false, messages } };
-  const item = messages[idx]!;
-  const next = [item, ...messages.slice(0, idx), ...messages.slice(idx + 1)];
-  return { ok: true, value: { moved: true, messages: await writePendingMessages(next) } };
+  let moved = false;
+  const messages = await transformPendingMessages((current) => {
+    const idx = current.findIndex(
+      (message) => message.id === id && (!chatId || message.chatId === chatId),
+    );
+    moved = idx >= 0;
+    if (idx < 0) return current;
+    const item = current[idx]!;
+    return [item, ...current.slice(0, idx), ...current.slice(idx + 1)];
+  });
+  return { ok: true, value: { moved, messages } };
 }
 
 export async function chatQueueEditCommand(input: Input) {
   const id = String(input.id ?? "").trim();
   const chatId = String(input.chatId ?? "").trim();
   if (!id) return { ok: false, error: { message: "queue item id is required" } };
-  const messages = await readPendingMessages();
-  const item = messages.find((message) => message.id === id && (!chatId || message.chatId === chatId)) ?? null;
-  const next = messages.filter((message) => message.id !== id || (chatId && message.chatId !== chatId));
-  return { ok: true, value: { item, messages: await writePendingMessages(next) } };
+  let item: PendingMessage | null = null;
+  const messages = await transformPendingMessages((current) => {
+    item =
+      current.find(
+        (message) => message.id === id && (!chatId || message.chatId === chatId),
+      ) ?? null;
+    return current.filter(
+      (message) => message.id !== id || (chatId && message.chatId !== chatId),
+    );
+  });
+  return { ok: true, value: { item, messages } };
 }
 
 function parseProviderErrorBody(raw: unknown): unknown {
@@ -992,12 +1034,19 @@ async function hasChatInFlightSteps(chatId: string): Promise<boolean> {
 // (Tokio) without tying up an isolate; the worker is borrowed only for short
 // JS calls (event shape, build messages, run tool, record fact).
 
-export function stepLifecycleEvents(chatId: string, compacting = false) {
+export function stepLifecycleEvents(
+  chatId: string,
+  compacting = false,
+  userStepId?: string,
+) {
+  // userStepId lets clients settle the exact queued message a run belongs
+  // to from the lifecycle events alone, without loading the chat timeline.
+  const step = userStepId ? { userStepId } : {};
   return {
     start: compacting
-      ? { kind: "step-start", chatId, compacting: true }
-      : { kind: "step-start", chatId },
-    end: { kind: "step-end", chatId },
+      ? { kind: "step-start", chatId, compacting: true, ...step }
+      : { kind: "step-start", chatId, ...step },
+    end: { kind: "step-end", chatId, ...step },
   };
 }
 
@@ -1006,7 +1055,11 @@ export function stepDriverAction(
   mode: "step" | "resume" | "compact",
   extra: Record<string, JsonValue | undefined> = {},
 ) {
-  const lifecycleEvents = stepLifecycleEvents(chatId, mode === "compact");
+  const lifecycleEvents = stepLifecycleEvents(
+    chatId,
+    mode === "compact",
+    typeof extra.userStepId === "string" ? extra.userStepId : undefined,
+  );
   return {
     action: "drive",
     chatId,

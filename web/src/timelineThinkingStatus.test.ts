@@ -120,8 +120,10 @@ describe("timeline thinking status", () => {
     );
 
     expect(registry).toContain("compact: compactCommand");
-    expect(step).toContain('stepLifecycleEvents(chatId, mode === "compact")');
-    expect(step).toContain('{ kind: "step-start", chatId, compacting: true }');
+    expect(step).toContain('mode === "compact",');
+    expect(step).toContain(
+      '{ kind: "step-start", chatId, compacting: true, ...step }',
+    );
     expect(step).toContain('{ draftKind: "compaction-draft" }');
     expect(step).toContain('return { ok: true, value: { kind: "done" } };');
     expect(state).toContain("if (ev.compacting === true)");

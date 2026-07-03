@@ -33,7 +33,8 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain('async function savePendingMessages');
     expect(stateSource).toContain('let pendingSaveInFlight = false');
     expect(stateSource).toContain('let pendingSaveAgain = false');
-    expect(stateSource).toContain('api("chat-queue-save", { messages: pending() })');
+    expect(stateSource).toContain('const r = await api("chat-queue-save", {');
+    expect(stateSource).toContain("knownIds: Array.from(serverSeenPendingIds)");
     expect(stateSource).toContain('if (pendingSaveAgain) continue');
     expect(stepSource).toContain('export async function chatQueueSaveCommand');
     expect(stepSource).toContain('value: { messages: await writePendingMessages(raw, knownIds) }');
@@ -148,6 +149,56 @@ describe("chat message queueing", () => {
     expect(drain).toContain("const idx = pen.findIndex(");
     expect(drain).toContain("await dispatchQueuedMessage(head)");
     expect(drain).toContain("!editingPendingIds().has(p.id)");
+  });
+
+  test("settles dispatched messages from step-end events for any chat", () => {
+    const eventsSource = readFileSync(new URL("./events.ts", import.meta.url), "utf8");
+    expect(stateSource).toContain("function removeLandedPendingByStepId");
+    expect(stateSource).toContain(
+      "removeLandedPendingByStepId(ev.chatId, ev.userStepId)",
+    );
+    expect(eventsSource).toContain('userStepId: optionalString(frame, "userStepId")');
+    expect(stepSource).toContain("userStepId?: string,");
+  });
+
+  test("returns dropped dispatches to the queue after an interrupt", () => {
+    expect(stateSource).toContain("function resetDroppedDispatchesAfterInterrupt");
+    const occurrences = stateSource.split("resetDroppedDispatchesAfterInterrupt(id)").length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+    expect(stateSource).toContain("DROPPED_DISPATCH_INTERRUPT_RESET_GRACE_MS");
+  });
+
+  test("backs off failed dispatches instead of hot-looping", () => {
+    expect(stateSource).toContain("function notePendingDispatchFailure");
+    expect(stateSource).toContain(
+      "(pendingDispatchFailures.get(p.id)?.nextAt ?? 0) <= now",
+    );
+    expect(stateSource).toContain("schedulePendingDispatchRetry(pen)");
+    expect(stateSource).toContain("pendingDispatchFailures.delete(head.id)");
+  });
+
+  test("parks failed immediate sends as visible queued messages", () => {
+    expect(stateSource).toContain("setPending([...pending(), head])");
+  });
+
+  test("keeps local unsaved messages when reloading the server queue", () => {
+    expect(stateSource).toContain("const serverSeenPendingIds = new Set<string>()");
+    expect(stateSource).toContain("!serverSeenPendingIds.has(p.id)");
+  });
+
+  test("queued edits commit against the id captured at focus", () => {
+    expect(timelineSource).toContain("let editingId: string | null = null");
+    expect(timelineSource).toContain("const commitQueuedEdit = () =>");
+    expect(timelineSource).toContain("void props.bag.editPending(id, untrack(localText))");
+  });
+
+  test("steering flushes the in-flight edit instead of no-oping", () => {
+    const steerButton = timelineSource.slice(
+      timelineSource.indexOf("pending-steer-btn"),
+      timelineSource.indexOf("pending-remove-btn"),
+    );
+    expect(steerButton).toContain("commitQueuedEdit();");
+    expect(steerButton).toContain("void props.bag.steerPending(props.item().id);");
   });
 
   test("queue rows expose run-next edit and remove controls", () => {

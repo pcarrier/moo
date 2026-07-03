@@ -3480,6 +3480,7 @@ const agent: Moo["agent"] = {
       predicate: "agent:status",
       object: "agent:Queued",
     } });
+    const candidates: { stepId: string; createdAt: number }[] = [];
     for (const [, stepId] of queued) {
       if (runId) {
         const runRows = await facts.match({ store, ...{
@@ -3490,6 +3491,21 @@ const agent: Moo["agent"] = {
         } });
         if (runRows.length && runRows[0]![3] !== runId) continue;
       }
+      const createdRows = await facts.match({ store, ...{
+        graph,
+        subject: stepId,
+        predicate: "agent:createdAt",
+        limit: 1,
+      } });
+      const createdAt = createdRows.length ? Number(createdRows[0]![3]) : NaN;
+      candidates.push({
+        stepId,
+        createdAt: Number.isFinite(createdAt) ? createdAt : Number.MAX_SAFE_INTEGER,
+      });
+    }
+    // Claim in enqueue order; facts.match row order is not FIFO.
+    candidates.sort((a, b) => a.createdAt - b.createdAt);
+    for (const { stepId } of candidates) {
       const leaseId = await id.new({ prefix: "lease" });
       const expiresAt = (await time.nowMs({})) + leaseMs;
       await facts.update({ store, fn: (txn) => {
@@ -3498,6 +3514,24 @@ const agent: Moo["agent"] = {
         txn.add({ graph: graph, subject: stepId, predicate: "agent:lease", object: leaseId });
         txn.add({ graph: graph, subject: leaseId, predicate: "agent:expiresAt", object: String(expiresAt) });
       } });
+      // swapFacts has no compare-and-swap, so two concurrent claims can both
+      // lease the same step. Arbitrate deterministically on the lease rows
+      // and roll back the loser so exactly one caller runs the step.
+      const leases = await facts.match({ store, ...{
+        graph,
+        subject: stepId,
+        predicate: "agent:lease",
+      } });
+      if (leases.length > 1) {
+        const winner = leases.map((row) => row[3]).sort()[0];
+        if (winner !== leaseId) {
+          await facts.update({ store, fn: (txn) => {
+            txn.remove({ graph: graph, subject: stepId, predicate: "agent:lease", object: leaseId });
+            txn.remove({ graph: graph, subject: leaseId, predicate: "agent:expiresAt", object: String(expiresAt) });
+          } });
+          continue;
+        }
+      }
       return { stepId, leaseId, expiresAt };
     }
     return null;

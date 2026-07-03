@@ -1463,22 +1463,58 @@ function PendingItem(props: {
     focus: focusMessageInput,
     enabled: autocompleteEnabled,
   });
+  // The id being edited is captured at focus time. Rows are rendered
+  // positionally (<Index>), so props.item() can start resolving to a
+  // different message mid-edit when the queue reorders or an earlier item
+  // dispatches; committing against the captured id keeps the edit (and the
+  // editing lock release) on the message the user actually typed into.
+  let editingId: string | null = null;
+  const clearBlurTimer = () => {
+    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    blurTimer = null;
+  };
+  const commitQueuedEdit = () => {
+    clearBlurTimer();
+    const id = editingId;
+    if (id === null) return;
+    editingId = null;
+    void props.bag.editPending(id, untrack(localText));
+    props.bag.endPendingEdit(id);
+    setAutocompleteEnabled(false);
+  };
   const beginQueuedEdit = () => {
     if (dispatching()) return;
-    props.bag.beginPendingEdit(props.item().id);
+    clearBlurTimer();
+    editingId = props.item().id;
+    props.bag.beginPendingEdit(editingId);
     setAutocompleteEnabled(true);
   };
   const endQueuedEdit = () => {
-    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    clearBlurTimer();
     blurTimer = window.setTimeout(() => {
       blurTimer = null;
-      void props.bag.editPending(props.item().id, localText());
-      props.bag.endPendingEdit(props.item().id);
-      setAutocompleteEnabled(false);
+      commitQueuedEdit();
     }, 120);
   };
+  createEffect(() => {
+    const id = props.item().id;
+    if (editingId === null || editingId === id) return;
+    // The row was re-keyed under an active edit. Commit the buffer to the
+    // message it belongs to, then resume editing whatever the row shows now
+    // if the textarea still has focus.
+    const stillFocused = !!inputEl && document.activeElement === inputEl;
+    commitQueuedEdit();
+    setLocalText(props.item().text);
+    if (stillFocused && !dispatching()) {
+      editingId = id;
+      props.bag.beginPendingEdit(id);
+      setAutocompleteEnabled(true);
+    }
+  });
   onCleanup(() => {
-    if (blurTimer !== null) window.clearTimeout(blurTimer);
+    // Unmounting a focused row fires no blur event; commit and release the
+    // edit lock here so the message doesn't stay excluded from draining.
+    commitQueuedEdit();
     setAutocompleteEnabled(false);
   });
   return (
@@ -1570,7 +1606,14 @@ function PendingItem(props: {
               : "steer with this queued message now"
           }
           aria-label="steer with this queued message now"
-          onClick={() => props.bag.steerPending(props.item().id)}
+          onClick={() => {
+            // Clicking steer blurs the textarea first, which defers the edit
+            // commit by 120ms; flush it now so the editing lock can't make
+            // steerPending silently no-op and so the steered text is current.
+            commitQueuedEdit();
+            void props.bag.steerPending(props.item().id);
+          }}
+          disabled={dispatching()}
         >
           <SteerIcon class="pending-action-icon" />
         </button>
