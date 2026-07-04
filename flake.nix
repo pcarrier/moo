@@ -201,7 +201,7 @@
           commonArgs = {
             inherit src;
             pname = "moo";
-            version = "0.9.2";
+            version = "0.10.0";
             strictDeps = true;
             doCheck = false;
 
