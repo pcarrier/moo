@@ -576,13 +576,16 @@ function kimiEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
+  if (/^kimi-k3(?:[-.]|$)/.test(id)) return ["max"];
   return /^kimi-k2\.(?:5|6|7)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
 }
 
 function openAICompatibleThinkingEffort(
   provider: Pick<LLMProvider, "name" | "model" | "effort">,
-): "none" | "high" | null {
-  if (!effortLevelsForProvider(provider).length) return null;
+): "none" | "high" | "max" | null {
+  const levels = effortLevelsForProvider(provider);
+  if (!levels.length) return null;
+  if (levels.length === 1 && levels[0] === "max") return "max";
   const normalized = normalizeEffort(provider.effort);
   if (normalized === "none" || normalized === "minimal") return "none";
   if (normalized) return "high";
@@ -759,6 +762,12 @@ function applyEffort(
   if (provider.name === "glm" || provider.name === "kimi") {
     const effort = openAICompatibleThinkingEffort(provider);
     if (!effort) return;
+    if (provider.name === "kimi" && effort === "max") {
+      // Kimi K3 always thinks and its API uses top-level reasoning_effort.
+      // K2.x keeps the older OpenAI-compatible `thinking` object.
+      body.reasoning_effort = "max";
+      return;
+    }
     body.thinking = { type: effort === "none" ? "disabled" : "enabled" };
     return;
   }

@@ -238,17 +238,26 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     envAltKeys: ["KIMI_API_KEY"],
     baseUrlEnv: "MOONSHOT_BASE_URL",
     defaultBaseUrl: "https://api.moonshot.ai/v1",
-    fallbackModel: "kimi-k2.7-code",
+    fallbackModel: "kimi-k3",
     inferPrefixes: ["kimi-", "moonshot-"],
     variants: [
       // Moonshot dev platform (platform.kimi.ai → api.moonshot.ai).
-      { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1", fallbackModel: "kimi-k2.7-code" },
+      { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1", fallbackModel: "kimi-k3" },
       // Kimi Code subscription (kimi.com/code/console). Keys are NOT
       // interchangeable with the platform, and the OpenAI-compatible endpoint
       // requires the `kimi-for-coding` model id.
       { id: "code", title: "Kimi Code", baseUrl: "https://api.kimi.com/coding/v1", fallbackModel: "kimi-for-coding" },
     ],
     models: [
+      {
+        id: "kimi-k3",
+        match: "^kimi-k3(?:[-.]|$)",
+        contextWindow: 1_048_576,
+        maxOutputTokens: 1_048_576,
+        pricing: { input: 3, cachedInput: 0.3, output: 15 },
+        capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true },
+        defaultOption: true,
+      },
       { id: "kimi-for-coding", match: "^kimi-for-coding(?:[-.]|$)", contextWindow: 262_144, capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true } },
       {
         id: "kimi-k2.7-code-highspeed",

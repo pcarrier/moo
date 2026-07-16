@@ -195,7 +195,7 @@ describe("OpenAI-compatible provider support", () => {
 
   test("defaults Kimi credentials to the Moonshot platform endpoint", async () => {
     const provider = await resolveProvider(null, null, "kimi");
-    expect(provider).toMatchObject({ name: "kimi", baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k2.7-code" });
+    expect(provider).toMatchObject({ name: "kimi", baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k3" });
   });
 
   test("routes the Kimi Code variant to api.kimi.com/coding with kimi-for-coding", async () => {
