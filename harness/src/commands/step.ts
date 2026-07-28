@@ -104,6 +104,7 @@ type PendingMessage = {
 };
 type LlmMessage = LlmMessageInput;
 const CHAT_PENDING_MESSAGES_REF = "chat/pending-messages";
+const CLIENT_MESSAGE_STEP_REF_SEGMENT = "/client-message-steps/";
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -142,9 +143,67 @@ function sanitizePendingMessage(value: unknown): PendingMessage | null {
 }
 
 async function readPendingMessages(): Promise<PendingMessage[]> {
-  return pendingMessagesFromTarget(
-    await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF }),
+  return withoutAcceptedPendingMessages(
+    pendingMessagesFromTarget(
+      await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF }),
+    ),
   );
+}
+
+function clientMessageStepRef(message: Pick<PendingMessage, "chatId" | "id">) {
+  return (
+    "chat/" +
+    message.chatId +
+    CLIENT_MESSAGE_STEP_REF_SEGMENT +
+    encodeURIComponent(message.id)
+  );
+}
+
+async function withoutAcceptedPendingMessages(
+  messages: PendingMessage[],
+): Promise<PendingMessage[]> {
+  const accepted = await Promise.all(
+    messages.map((message) =>
+      moo.pointers.get({ name: clientMessageStepRef(message) }),
+    ),
+  );
+  return messages.filter((_message, index) => !accepted[index]);
+}
+
+async function scrubAcceptedPendingMessages(
+  messages: PendingMessage[],
+): Promise<PendingMessage[]> {
+  const pending = await withoutAcceptedPendingMessages(messages);
+  if (pending.length === messages.length) return pending;
+  const pendingIds = new Set(pending.map((message) => message.id));
+  for (const message of messages) {
+    if (!pendingIds.has(message.id)) await removePendingMessageById(message.id);
+  }
+  return readPendingMessages();
+}
+
+async function removePendingMessageById(id: string): Promise<PendingMessage[]> {
+  // This path runs once per accepted user message and must never fall back to
+  // an unconditional write: doing so after CAS contention could erase a
+  // message another browser just queued. Retry against the latest pointer
+  // until this one ID is absent.
+  for (;;) {
+    const previousTarget = await moo.pointers.get({
+      name: CHAT_PENDING_MESSAGES_REF,
+    });
+    const previous = pendingMessagesFromTarget(previousTarget);
+    if (!previous.some((message) => message.id === id)) return previous;
+    const next = previous.filter((message) => message.id !== id);
+    if (
+      await moo.pointers.cas({
+        name: CHAT_PENDING_MESSAGES_REF,
+        expected: previousTarget,
+        next: encodeJsonPointer(next),
+      })
+    ) {
+      return next;
+    }
+  }
 }
 
 function sanitizePendingMessages(messages: unknown[]): PendingMessage[] {
@@ -160,18 +219,21 @@ function pendingMessagesFromTarget(target: string | null): PendingMessage[] {
 }
 
 async function writePendingMessages(messages: unknown[], knownIdsInput?: unknown[]) {
-  const clean = sanitizePendingMessages(messages);
+  const sanitized = sanitizePendingMessages(messages);
   const knownIds = Array.isArray(knownIdsInput)
     ? new Set(knownIdsInput.map((id) => String(id)).filter(Boolean))
     : null;
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
+    const clean = await withoutAcceptedPendingMessages(sanitized);
     const previousTarget = await moo.pointers.get({ name: CHAT_PENDING_MESSAGES_REF });
     let next = clean;
     if (knownIds) {
       const incomingIds = new Set(clean.map((message) => message.id));
-      const retainedUnknown = pendingMessagesFromTarget(previousTarget).filter(
-        (message) => !knownIds.has(message.id) && !incomingIds.has(message.id),
+      const retainedUnknown = await withoutAcceptedPendingMessages(
+        pendingMessagesFromTarget(previousTarget).filter(
+          (message) => !knownIds.has(message.id) && !incomingIds.has(message.id),
+        ),
       );
       next = [...clean, ...retainedUnknown];
     }
@@ -181,10 +243,11 @@ async function writePendingMessages(messages: unknown[], knownIdsInput?: unknown
       expected: previousTarget,
       next: nextTarget,
     });
-    if (changed) return next;
+    if (changed) return scrubAcceptedPendingMessages(next);
   }
 
-  const latest = await readPendingMessages();
+  const clean = await withoutAcceptedPendingMessages(sanitized);
+  const latest = await withoutAcceptedPendingMessages(await readPendingMessages());
   const incomingIds = new Set(clean.map((message) => message.id));
   const retainedUnknown = knownIds
     ? latest.filter(
@@ -196,7 +259,7 @@ async function writePendingMessages(messages: unknown[], knownIdsInput?: unknown
     name: CHAT_PENDING_MESSAGES_REF,
     target: encodeJsonPointer(next),
   });
-  return next;
+  return scrubAcceptedPendingMessages(next);
 }
 
 // Applies a queue mutation against the freshest list inside a CAS retry
@@ -609,6 +672,7 @@ async function recordUnsupportedAttachments(
 export async function stepCommand(input: Input) {
   const chatId = String(input.chatId || "demo").trim() || "demo";
   const message = String(input.message || "").trim();
+  const clientMessageId = String(input.clientMessageId ?? "").trim();
   const attachments = sanitizeAttachments(input.attachments);
   if (!message && attachments.length === 0) {
     return {
@@ -622,18 +686,45 @@ export async function stepCommand(input: Input) {
   );
   if (unsupported) return { ok: false, error: unsupported };
 
-  const userStepId = host.newId("step");
+  let userStepId = host.newId("step");
+  let claimed = true;
+  if (clientMessageId) {
+    const ref = clientMessageStepRef({ chatId, id: clientMessageId });
+    const existing = await moo.pointers.get({ name: ref });
+    if (existing) {
+      userStepId = existing;
+      claimed = false;
+    } else if (
+      !(await moo.pointers.cas({ name: ref, expected: null, next: userStepId }))
+    ) {
+      // Another browser or a retry won the claim after our read. Reuse its
+      // exact step ID and, critically, do not enqueue a second driver action.
+      const winner = await moo.pointers.get({ name: ref });
+      if (winner) userStepId = winner;
+      claimed = false;
+    }
+    // The shared pending queue is rendered by every open browser. Settle the
+    // accepted item here so another tab cannot keep showing a stale queued
+    // copy beside the persisted user-input step. This is safe for retries: the
+    // same client ID maps to the same step and removal is idempotent.
+    await removePendingMessageById(clientMessageId);
+  }
   return {
     ok: true,
     value: {
       chatId,
       userStepId,
       accepted: true,
-      driver: stepDriverAction(chatId, "step", {
-        message,
-        attachments,
-        userStepId,
-      }),
+      claimed,
+      ...(claimed
+        ? {
+            driver: stepDriverAction(chatId, "step", {
+              message,
+              attachments,
+              userStepId,
+            }),
+          }
+        : {}),
     },
   };
 }

@@ -754,13 +754,13 @@ export async function fsGitPullBranchesCommand(input: Input) {
     if (!repo) return { ok: false, error: { message: "not a git repository: " + base } };
     const before = await gitHasRemote(repo.gitRoot);
     if (!before) return { ok: false, error: { message: "no git remotes configured for " + repo.gitRoot } };
-    const fetch = await moo.proc.run({ cmd: ["git", "fetch", "--all", "--prune"], ...{ cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 } });
-    if (fetch.code !== 0) {
-      return { ok: false, error: { message: (fetch.stderr || fetch.stdout || "git fetch failed").trim() } };
+    const pull = await moo.proc.run({ cmd: ["git", "pull", "--all", "--prune"], ...{ cwd: repo.gitRoot, timeoutMs: 60_000, maxOutputBytes: 120_000 } });
+    if (pull.code !== 0) {
+      return { ok: false, error: { message: (pull.stderr || pull.stdout || "git pull failed").trim() } };
     }
-    const message = (fetch.stderr || fetch.stdout || "Fetched remote branches").trim();
+    const message = (pull.stderr || pull.stdout || "Pulled remote branches").trim();
     gitBranchesCache.delete(repo.gitRoot);
-    return { ok: true, value: await loadGitBranches(base, true, message || "Fetched remote branches") };
+    return { ok: true, value: await loadGitBranches(base, true, message || "Pulled remote branches") };
   } catch (e: any) {
     return { ok: false, error: { message: e?.message || String(e) } };
   }

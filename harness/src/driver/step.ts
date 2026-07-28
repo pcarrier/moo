@@ -89,6 +89,7 @@ export type StepDriverState = Record<string, unknown> & {
   mode?: "step" | "resume" | "compact";
   message?: string;
   attachments?: unknown[];
+  userStepId?: string;
   artificial?: boolean;
   provider?: { name?: string; model?: string; effort?: string; authMode?: string };
   retryAttempt?: number;
@@ -126,6 +127,7 @@ export interface StartInput {
   mode: "step" | "resume" | "compact";
   message?: string;
   attachments?: unknown[];
+  userStepId?: string;
   artificial?: boolean;
 }
 
@@ -475,6 +477,7 @@ export function planStepDriverEffects(state: StepDriverState): StepDriverEffect[
               mode,
               message: state.message ?? "",
               attachments: state.attachments,
+              userStepId: optionalString(state.userStepId),
               ...(state.artificial === true ? { artificial: true } : {}),
             }) as StartInput,
       }];

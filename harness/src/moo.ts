@@ -1,5 +1,5 @@
 import * as host from "./host_ops";
-import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
+import type { Moo, Quad, Bindings, Triple, ObjectInput, MemoryScope, UiAskSpec, UiChooseSpec, UiBundle, UiManifest, FactQuadInput, McpServerConfig, McpTool, McpOAuthStartOptions, McpOAuthStatus, McpOAuthStart, SubagentSpec, SubagentResult, AgentStartSpec, FactMutationReceipt, ProcRunArgs, ProcResult, TermBindings, BindingTerm, QuadObject, TraceRow, TraceTreeNode, TraceSummary, TraceDiagnostic, PatchResult, SparqlSelectFormat, SparqlQueryResult, FactMatchFormat, FactPattern, TraceFailedArgs, TraceSearchRow } from "./types";
 import { parseJson, z } from "./core/json";
 import {
   httpHeaderRecordSchema,
@@ -1980,6 +1980,18 @@ function parseHttpUrl(url: string): { origin: string; path: string } | null {
   return { origin: m[1]!, path: m[2] || "/" };
 }
 
+function oauthAuthorizationServerMetadataUrl(issuer: string): string {
+  const parsed = parseHttpUrl(issuer);
+  if (!parsed) {
+    return String(issuer).replace(/\/+$/, "") + "/.well-known/oauth-authorization-server";
+  }
+  const path = parsed.path.replace(/\/+$/, "");
+  if (path === "" || path === "/") {
+    return parsed.origin + "/.well-known/oauth-authorization-server";
+  }
+  return parsed.origin + "/.well-known/oauth-authorization-server" + path;
+}
+
 function formEncode(values: Record<string, string | undefined>): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(values)) {
@@ -2022,7 +2034,7 @@ async function discoverMcpOAuth(server: McpServerConfig): Promise<DiscoveredMcpO
     const meta = await getJsonMaybe(oauth.resourceMetadataUrl, server.timeoutMs);
     const issuer = meta?.authorization_servers?.[0] || meta?.authorization_server;
     if (issuer && !oauth.authorizationServerMetadataUrl) {
-      oauth.authorizationServerMetadataUrl = String(issuer).replace(/\/$/, "") + "/.well-known/oauth-authorization-server";
+      oauth.authorizationServerMetadataUrl = oauthAuthorizationServerMetadataUrl(String(issuer));
     }
   }
   if ((!oauth.authorizationUrl || !oauth.tokenUrl) && !oauth.resourceMetadataUrl) {
@@ -2037,7 +2049,7 @@ async function discoverMcpOAuth(server: McpServerConfig): Promise<DiscoveredMcpO
         const issuer = meta?.authorization_servers?.[0] || meta?.authorization_server;
         if (issuer) {
           oauth.resourceMetadataUrl = candidate;
-          oauth.authorizationServerMetadataUrl = String(issuer).replace(/\/$/, "") + "/.well-known/oauth-authorization-server";
+          oauth.authorizationServerMetadataUrl = oauthAuthorizationServerMetadataUrl(String(issuer));
           break;
         }
       }
@@ -3321,6 +3333,31 @@ function normalizeSubagentResult(result: LegacySubagentResult): SubagentResult {
   return normalized;
 }
 
+function buildSubagentTask(spec: NormalizedSubagentSpec): string {
+  const parts = [
+    "You are a bounded subagent delegated by a parent agent.",
+    "Complete only the assigned task. Do not ask the user questions. Return a concise final report with evidence and file links when relevant.",
+    `Task label: ${spec.label}`,
+    `Task:\n${spec.task}`,
+  ];
+  if (spec.context?.trim()) parts.push(`Context:\n${spec.context}`);
+  if (spec.expectedOutput?.trim()) parts.push(`Expected output:\n${spec.expectedOutput}`);
+  return parts.join("\n\n");
+}
+
+function subagentStepState(childChatId: string, message: string, artificial: boolean) {
+  return {
+    chatId: childChatId,
+    mode: "step",
+    message,
+    artificial,
+    lifecycleEvents: {
+      start: { kind: "step-start", chatId: childChatId },
+      end: { kind: "step-end", chatId: childChatId },
+    },
+  };
+}
+
 function truncateTitle(title: string): string {
   const t = String(title || "subagent").replace(/\s+/g, " ").trim() || "subagent";
   return t.length <= 60 ? t : t.slice(0, 57).trimEnd() + "…";
@@ -3419,7 +3456,7 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
     parentRunTsStepId: ctx.runTsStepId,
     parentSubagentStepId: appended.stepId,
     childChatId,
-    spec,
+    state: subagentStepState(childChatId, buildSubagentTask(spec), true),
     limits: {
       maxSteps: spec.maxSteps,
       timeoutMs: spec.timeoutMs,
@@ -3564,6 +3601,44 @@ const agent: Moo["agent"] = {
       if (forkedFrom) txn.add({ graph: c.graph, subject: runId, predicate: "agent:forkedFrom", object: forkedFrom });
     } });
     return { chatId, runId, forkedFrom };
+  },
+  async start(spec: AgentStartSpec) {
+    if (!activeRunTSContext) throw new Error("moo.agent.start is only available inside runTS");
+    if (!spec || typeof spec !== "object") throw new Error("moo.agent.start requires a spec object");
+    const task = String(spec.task ?? "").trim();
+    if (!task) throw new Error("moo.agent.start requires spec.task");
+    const parentChatId = activeRunTSContext.chatId;
+    const inherit = spec.inherit !== false;
+    const inheritedPath = inherit ? await pointers.get({ name: `chat/${parentChatId}/path` }) : null;
+    const inheritedBranch = inherit ? await pointers.get({ name: `chat/${parentChatId}/start-branch` }) : null;
+    const inheritedModel = inherit ? await pointers.get({ name: chatRefs(parentChatId).model }) : null;
+    const inheritedEffort = inherit ? await pointers.get({ name: chatRefs(parentChatId).effort }) : null;
+    const chatId = await chat.create({
+      path: typeof spec.path === "string" && spec.path.trim() ? spec.path.trim() : inheritedPath,
+      branch: typeof spec.branch === "string" && spec.branch.trim() ? spec.branch.trim() : inheritedBranch,
+    });
+    try {
+      await applyDefaultChatSettings(chatId);
+      const model = typeof spec.model === "string" && spec.model.trim() ? spec.model.trim() : inheritedModel;
+      const effort = typeof spec.effort === "string" && spec.effort.trim() ? spec.effort.trim() : inheritedEffort;
+      if (model) await pointers.set({ name: `chat/${chatId}/model`, target: model });
+      if (effort) await pointers.set({ name: `chat/${chatId}/effort`, target: effort });
+      if (typeof spec.title === "string" && spec.title.trim()) await chat.setTitle({ chatId, title: spec.title.trim(), manual: true });
+      const response = parseJson(await host.runAgent(JSON.stringify({
+        mode: "start",
+        childChatId: chatId,
+        state: subagentStepState(chatId, task, false),
+        limits: {
+          maxSteps: Math.max(1, Math.floor(Number(spec.maxSteps ?? DEFAULT_SUBAGENT_STEPS) || DEFAULT_SUBAGENT_STEPS)),
+          timeoutMs: Math.max(1_000, Math.min(MAX_SUBAGENT_TIMEOUT_MS, Math.floor(Number(spec.timeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS) || DEFAULT_SUBAGENT_TIMEOUT_MS))),
+        },
+      })), "agent start result");
+      if (!response || typeof response !== "object" || (response as any).chatId !== chatId) throw new Error("moo.agent.start received an invalid host response");
+      return { chatId };
+    } catch (error) {
+      await chat.remove({ chatId }).catch(() => undefined);
+      throw error;
+    }
   },
   async run(spec: SubagentSpec): Promise<SubagentResult> {
     return await runSubagent(spec);

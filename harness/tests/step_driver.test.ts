@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { buildStreamingLLMRequest, compactionThroughAt } from "../src/agent";
-import { reduceStepDriverState } from "../src/driver/step";
+import { planStepDriverEffects, reduceStepDriverState } from "../src/driver/step";
 import { llmStreamAccumulateEffect, llmStreamFinalizeEffect } from "../src/llm_stream";
 
 const g = globalThis as any;
@@ -14,6 +14,30 @@ g.__op_trace_leave ??= () => null;
 g.__op_trace_enter ??= () => null;
 
 describe("step driver compaction", () => {
+  test("forwards the reserved user step ID to the prelude", () => {
+    expect(
+      planStepDriverEffects({
+        chatId: "chat-1",
+        mode: "step",
+        phase: "startLoop",
+        message: "hello",
+        userStepId: "step:reserved",
+      }),
+    ).toEqual([
+      {
+        type: "Start",
+        mode: "step",
+        input: {
+          chatId: "chat-1",
+          mode: "step",
+          message: "hello",
+          attachments: undefined,
+          userStepId: "step:reserved",
+        },
+      },
+    ]);
+  });
+
   test("automatic compaction success resumes the agent loop", () => {
     const next = reduceStepDriverState(
       { chatId: "chat-1", mode: "compact", phase: "startLoop" },

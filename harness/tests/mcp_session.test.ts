@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 const refs = new Map<string, string>();
 const objects = new Map<string, { kind: string; content: string }>();
@@ -135,5 +135,56 @@ describe("MCP session persistence", () => {
     expect(sessionRefSetCount()).toBe(sessionSetsAfterFirstRequest);
     expect(httpCalls.length).toBe(3);
     expect(httpCalls[2].headers["Mcp-Session-Id"]).toBe("session-1");
+  });
+});
+
+describe("MCP OAuth discovery", () => {
+  const originalFetch = (globalThis as any).__op_http_fetch;
+
+  beforeEach(() => {
+    (globalThis as any).__op_http_fetch = (
+      method: string,
+      url: string,
+      headersJson: string,
+      body: string | null,
+    ) => {
+      const parsedBody = body ? JSON.parse(body) : null;
+      httpCalls.push({ method, url, headers: JSON.parse(headersJson || "{}"), body: parsedBody });
+      if (url === "https://mcp.example/.well-known/oauth-protected-resource/rpc") {
+        return {
+          status: 200,
+          headers: "{}",
+          body: JSON.stringify({ authorization_servers: ["https://github.com/login/oauth"] }),
+        };
+      }
+      if (url === "https://github.com/.well-known/oauth-authorization-server/login/oauth") {
+        return {
+          status: 200,
+          headers: "{}",
+          body: JSON.stringify({
+            authorization_endpoint: "https://github.com/login/oauth/authorize",
+            token_endpoint: "https://github.com/login/oauth/access_token",
+          }),
+        };
+      }
+      return {
+        status: 200,
+        headers: JSON.stringify({ "mcp-session-id": "session-1" }),
+        body: JSON.stringify({ jsonrpc: "2.0", id: parsedBody?.id ?? null, result: parsedBody?.method === "tools/list" ? { tools: [] } : {} }),
+      };
+    };
+  });
+
+  afterEach(() => {
+    (globalThis as any).__op_http_fetch = originalFetch;
+  });
+
+  test("discovers authorization server metadata at the issuer root per RFC 8414", async () => {
+    const start = await moo.mcp.login("test", { redirectUri: "http://127.0.0.1:7777/mcp/oauth/callback" });
+    const fetchedUrls = httpCalls.map((call) => call.url);
+    expect(fetchedUrls).toContain("https://mcp.example/.well-known/oauth-protected-resource/rpc");
+    expect(fetchedUrls).toContain("https://github.com/.well-known/oauth-authorization-server/login/oauth");
+    expect(fetchedUrls).not.toContain("https://github.com/login/oauth/.well-known/oauth-authorization-server");
+    expect(start.authorizeUrl.startsWith("https://github.com/login/oauth/authorize?")).toBe(true);
   });
 });

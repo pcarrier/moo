@@ -6,6 +6,7 @@ import {
   mergeTimelineRows,
   mergeTimelineUpdateRows,
   newestTimelineWatermark,
+  reconcileOptimisticStepId,
   sortTimelineItems,
   timelineItemKey,
 } from "./state/timelineRows";
@@ -112,6 +113,44 @@ describe("timeline row helpers", () => {
       liveSlack: 0,
     });
     expect(merged.map((item) => item.type === "step" ? item.step : item.type)).toEqual(["real-other", "opt-local"]);
+  });
+
+  test("replaces an optimistic user input with its reserved step id", () => {
+    const optimistic = step({
+      step: "opt-pending.1",
+      kind: "agent:UserInput",
+      text: "hello",
+      at: 30,
+    });
+    expect(
+      reconcileOptimisticStepId(
+        [optimistic],
+        "opt-pending.1",
+        "step:reserved",
+      ).map(timelineItemKey),
+    ).toEqual(["step:step:reserved"]);
+  });
+
+  test("drops an optimistic user input when its persisted step already exists", () => {
+    const optimistic = step({
+      step: "opt-pending.1",
+      kind: "agent:UserInput",
+      text: "hello",
+      at: 30,
+    });
+    const persisted = step({
+      step: "step:reserved",
+      kind: "agent:UserInput",
+      text: "hello",
+      at: 20,
+    });
+    expect(
+      reconcileOptimisticStepId(
+        [persisted, optimistic],
+        "opt-pending.1",
+        "step:reserved",
+      ),
+    ).toEqual([persisted]);
   });
 
   test("merges full pages while preserving a live queued RunTS draft", () => {

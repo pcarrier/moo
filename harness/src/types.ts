@@ -341,6 +341,21 @@ export type SubagentResult = {
   usage?: unknown;
 };
 
+export type AgentStartSpec = {
+  task: string;
+  /** Inherit the current chat's project, branch, model, and effort. Defaults to true. */
+  inherit?: boolean;
+  title?: string;
+  path?: string;
+  branch?: string;
+  model?: string;
+  effort?: string;
+  maxSteps?: number;
+  timeoutMs?: number;
+};
+
+export type AgentStartResult = { chatId: string };
+
 export type ProcResult = {
   code: number;
   stdout: string;
@@ -777,6 +792,7 @@ export type Moo = {
     claim(args: { store: string; graph: string; runId: string | null; leaseMs?: number }): Promise<{ stepId: string; leaseId: string; expiresAt: number } | null>;
     complete(args: { store: string; graph: string; stepId: string; status?: StepStatus }): Promise<void>;
     fork(args: { chatId: string; fromStepId?: string | null }): Promise<{ chatId: string; runId: string; forkedFrom: string | null }>;
+    start(spec: AgentStartSpec): Promise<AgentStartResult>;
     run(spec: SubagentSpec): Promise<SubagentResult>;
   };
   /**

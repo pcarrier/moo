@@ -94,6 +94,7 @@ import {
   mergeTimelineRows as mergeTimelineRowsWithOptions,
   mergeTimelineUpdateRows as mergeTimelineUpdateRowsWithOptions,
   newestTimelineWatermark,
+  reconcileOptimisticStepId,
   sortTimelineItems,
   timelineItemKey,
   type TimelineRowCompactionOptions,
@@ -5078,6 +5079,32 @@ export function createState() {
     forgetChatCache(chat);
   }
 
+  function patchOptimisticStepId(
+    chat: string,
+    pendingId: string,
+    stepId: StepId,
+  ) {
+    if (chatId() !== chat) return;
+    const optimisticStepId = `opt-${pendingId}`;
+    setTimeline((items) =>
+      reconcileOptimisticStepId(items, optimisticStepId, stepId),
+    );
+  }
+
+  function settleAcceptedPendingMessage(id: string) {
+    serverSeenPendingIds.add(id);
+    let removed = false;
+    setPending((current) => {
+      const next = current.filter((message) => message.id !== id);
+      removed = next.length !== current.length;
+      return removed ? next : current;
+    });
+    deleteDispatchingPendingId(id);
+    deleteEditingPendingId(id);
+    pendingMessageStepIds.delete(id);
+    if (removed) void savePendingMessages();
+  }
+
   function clearPendingDispatching(id: string) {
     deleteDispatchingPendingId(id);
   }
@@ -5183,9 +5210,12 @@ export function createState() {
     text: string,
     attachments: ImageAttachment[] = [],
     label = "step",
-    opts: { optimisticUserInput?: boolean } = { optimisticUserInput: true },
-  ): Promise<StepId | null> {
-    const id = newPendingMessageId();
+    opts: {
+      optimisticUserInput?: boolean;
+      clientMessageId?: string;
+    } = { optimisticUserInput: true },
+  ): Promise<{ userStepId: StepId; claimed: boolean } | null> {
+    const id = opts.clientMessageId ?? newPendingMessageId();
     if (opts.optimisticUserInput) {
       appendOptimisticUserInput(chat, id, text, attachments);
     }
@@ -5194,13 +5224,18 @@ export function createState() {
     const r = await api("step", {
       chatId: chat,
       message: text,
+      clientMessageId: id,
       ...(attachments.length ? { attachments } : {}),
     });
     if (!r.ok) {
       reportError(`${label} ${chat}`, r.error);
       return null;
     }
-    return r.value.userStepId;
+    settleAcceptedPendingMessage(id);
+    return {
+      userStepId: r.value.userStepId,
+      claimed: r.value.claimed,
+    };
   }
 
   async function dispatchQueuedMessage(
@@ -5226,10 +5261,10 @@ export function createState() {
         head.text,
         attachments,
         "MCP setup",
-        opts,
+        { ...opts, clientMessageId: head.id },
       )
-        .then((userStepId) => {
-          if (userStepId == null) {
+        .then((accepted) => {
+          if (accepted == null) {
             deleteDispatchingPendingId(head.id);
             notePendingDispatchFailure(head.id);
             if (!pending().some((p) => p.id === head.id)) {
@@ -5238,8 +5273,8 @@ export function createState() {
               setPending([...pending(), head]);
               void savePendingMessages();
             }
-          } else if (pending().some((p) => p.id === head.id)) {
-            pendingMessageStepIds.set(head.id, userStepId);
+          } else {
+            patchOptimisticStepId(head.chatId, head.id, accepted.userStepId);
           }
         })
         .finally(() => {
@@ -5273,6 +5308,7 @@ export function createState() {
     const r = await api("step", {
       chatId: head.chatId,
       message: head.text,
+      clientMessageId: head.id,
       ...(attachments.length ? { attachments } : {}),
     });
     if (!r.ok) {
@@ -5290,8 +5326,14 @@ export function createState() {
       }
     } else {
       pendingDispatchFailures.delete(head.id);
-      pendingMessageStepIds.set(head.id, r.value.userStepId);
-      watchDispatchingChat(head.chatId);
+      patchOptimisticStepId(head.chatId, head.id, r.value.userStepId);
+      settleAcceptedPendingMessage(head.id);
+      if (r.value.claimed) {
+        watchDispatchingChat(head.chatId);
+      } else {
+        clearDispatchingChat(head.chatId);
+        drainSoon();
+      }
     }
   }
 

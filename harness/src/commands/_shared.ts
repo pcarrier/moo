@@ -127,6 +127,7 @@ export type AttachmentInput = {
 export type UserStepInput = {
   message?: string;
   attachments?: AttachmentInput[];
+  clientMessageId?: string;
   artificial?: boolean;
   userStepId?: string;
 };

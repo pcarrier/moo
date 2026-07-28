@@ -145,6 +145,23 @@ export function dedupeTimelineRows(items: TimelineItem[]): TimelineItem[] {
   return sortTimelineItems([...byKey.values()]);
 }
 
+export function reconcileOptimisticStepId(
+  items: TimelineItem[],
+  optimisticStepId: string,
+  stepId: string,
+): TimelineItem[] {
+  const confirmed = items.some(
+    (item) => item.type === "step" && item.step === stepId,
+  );
+  let changed = false;
+  const next = items.flatMap((item) => {
+    if (item.type !== "step" || item.step !== optimisticStepId) return [item];
+    changed = true;
+    return confirmed ? [] : [{ ...item, step: stepId } as TimelineItem];
+  });
+  return changed ? dedupeTimelineRows(next) : items;
+}
+
 function isUserInputStep(item: TimelineItem): item is StepTimelineItem {
   return item.type === "step" && item.kind === "agent:UserInput";
 }

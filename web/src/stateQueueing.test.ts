@@ -29,6 +29,17 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain("dispatchQueuedMessage(item, { optimisticUserInput: true })");
   });
 
+  test("uses the pending message id to make step dispatches idempotent", () => {
+    expect(stateSource).toContain("clientMessageId: head.id");
+    expect(stateSource).toContain("clientMessageId: id");
+    expect(stepSource).toContain("CLIENT_MESSAGE_STEP_REF_SEGMENT");
+    expect(stepSource).toContain("if (existing)");
+    expect(stepSource).toContain("driver: stepDriverAction");
+    expect(stepSource).toContain("claimed,");
+    expect(stateSource).toContain("settleAcceptedPendingMessage(id)");
+    expect(stateSource).toContain("if (r.value.claimed)");
+  });
+
   test("queued messages persist through server queue commands", () => {
     expect(stateSource).toContain('async function savePendingMessages');
     expect(stateSource).toContain('let pendingSaveInFlight = false');

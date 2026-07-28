@@ -529,19 +529,15 @@ export function supportsEffort(
 export function compactionProviderForRequest(
   provider: LLMProvider,
 ): LLMProvider {
-  const levels = effortLevelsForProvider(provider);
-  if (!levels.length) return { ...provider, effort: null };
-  const effort =
-    ["minimal", "none", "low"].find((candidate) =>
-      levels.includes(candidate),
-    ) ?? null;
-  return { ...provider, effort };
+  return provider;
 }
 
 function openaiEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
+  if (/^gpt-5\.6(?:[.-]|$)/.test(id))
+    return ["none", "low", "medium", "high", "xhigh"];
   if (/^gpt-5\.5(?:[.-]|$)/.test(id))
     return ["none", "low", "medium", "high", "xhigh"];
   if (/^gpt-5(?:[.-]|$)/.test(id)) return ["minimal", "low", "medium", "high"];

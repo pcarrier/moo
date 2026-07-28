@@ -83,6 +83,7 @@ const {
   chatQueueRemoveCommand,
   chatQueueRunNextCommand,
   pendingMessagesSaveCommand,
+  stepCommand,
   stepLifecycleEvents,
 } = await import("../src/commands/step");
 const { encodeJsonPointer } = await import("../src/lib");
@@ -191,4 +192,128 @@ describe("step lifecycle events", () => {
     expect(events.start).toEqual({ kind: "step-start", chatId: "c1", compacting: true });
     expect(events.end).toEqual({ kind: "step-end", chatId: "c1" });
   });
+});
+
+describe("step client message idempotency", () => {
+  test("reuses one user step without returning a second driver action", async () => {
+    const input = {
+      chatId: "c1",
+      message: "hello",
+      clientMessageId: "pending.1",
+    } as never;
+
+    const first = await stepCommand(input);
+    const second = await stepCommand(input);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error("step command failed");
+    expect(first.value.userStepId).toBe(second.value.userStepId);
+    expect(first.value.claimed).toBe(true);
+    expect(second.value.claimed).toBe(false);
+    expect(first.value.driver).toBeDefined();
+    expect(second.value.driver).toBeUndefined();
+  });
+
+  test("loses an overlapping claim to the existing user step", async () => {
+    beforeCas = () => {
+      refs.set("chat/c1/client-message-steps/pending.2", "step:winner");
+    };
+
+    const result = await stepCommand({
+      chatId: "c1",
+      message: "hello",
+      clientMessageId: "pending.2",
+    } as never);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("step command failed");
+    expect(result.value.userStepId).toBe("step:winner");
+    expect(result.value.claimed).toBe(false);
+    expect(result.value.driver).toBeUndefined();
+  });
+
+  test("accepted step settles its shared pending queue item", async () => {
+    const first = { id: "pending.accepted", chatId: "queue-test", text: "send me" };
+    const other = { id: "pending.other", chatId: "queue-test", text: "keep me" };
+    await pendingMessagesSaveCommand({ messages: [first, other] });
+
+    const accepted = await stepCommand({
+      chatId: first.chatId,
+      message: first.text,
+      clientMessageId: first.id,
+    });
+    expect(accepted.ok).toBe(true);
+    expect((await chatQueueListCommand({})).value.messages).toEqual([other]);
+
+    const retried = await stepCommand({
+      chatId: first.chatId,
+      message: first.text,
+      clientMessageId: first.id,
+    });
+    expect(retried.ok).toBe(true);
+    expect(retried.value.userStepId).toBe(accepted.value.userStepId);
+    expect((await chatQueueListCommand({})).value.messages).toEqual([other]);
+  });
+
+  test("accepted step preserves a queue item added concurrently", async () => {
+    const accepted = { id: "pending.accepted", chatId: "queue-test", text: "send me" };
+    const concurrent = { id: "pending.concurrent", chatId: "other-chat", text: "keep me" };
+    seedQueue([accepted]);
+    beforeCas = () => seedQueue([accepted, concurrent]);
+
+    const result = await stepCommand({
+      chatId: accepted.chatId,
+      message: accepted.text,
+      clientMessageId: accepted.id,
+    });
+
+    expect(result.ok).toBe(true);
+    expect((await chatQueueListCommand({})).value.messages).toEqual([concurrent]);
+  });
+
+  test("stale saves cannot resurrect an accepted queue item", async () => {
+    const accepted = { id: "pending.accepted", chatId: "queue-test", text: "send me" };
+    const other = { id: "pending.other", chatId: "other-chat", text: "keep me" };
+    await pendingMessagesSaveCommand({ messages: [accepted, other] });
+    const result = await stepCommand({
+      chatId: accepted.chatId,
+      message: accepted.text,
+      clientMessageId: accepted.id,
+    });
+    expect(result.ok).toBe(true);
+
+    const staleSave = await pendingMessagesSaveCommand({
+      messages: [accepted, other],
+      knownIds: [accepted.id, other.id],
+    });
+    expect(queueIds(staleSave as never)).toEqual([other.id]);
+    expect((await chatQueueListCommand({})).value.messages).toEqual([other]);
+  });
+
+  test("a claim racing with queue save scrubs the accepted item", async () => {
+    const accepted = { id: "pending.racing", chatId: "queue-test", text: "send me" };
+    beforeCas = () => {
+      refs.set(
+        "chat/queue-test/client-message-steps/pending.racing",
+        "step:winner",
+      );
+    };
+
+    const saved = await pendingMessagesSaveCommand({ messages: [accepted] });
+    expect(queueIds(saved as never)).toEqual([]);
+    expect((await chatQueueListCommand({})).value.messages).toEqual([]);
+  });
+
+  test("queue reads hide stale items that already have a user step", async () => {
+    const accepted = { id: "pending.stale", chatId: "queue-test", text: "send me" };
+    seedQueue([accepted]);
+    refs.set(
+      "chat/queue-test/client-message-steps/pending.stale",
+      "step:existing",
+    );
+
+    expect((await chatQueueListCommand({})).value.messages).toEqual([]);
+  });
+
 });

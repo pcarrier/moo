@@ -88,9 +88,12 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     envKey: "OPENAI_API_KEY",
     baseUrlEnv: "OPENAI_BASE_URL",
     defaultBaseUrl: "https://api.openai.com/v1",
-    fallbackModel: "gpt-5.5",
+    fallbackModel: "gpt-5.6-sol",
     inferPrefixes: ["gpt-", "o1", "o3", "o4", "chatgpt-"],
     models: [
+      { id: "gpt-5.6-sol", aliases: ["gpt-5.6"], match: "^gpt-5\\.6(?:-sol)?(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 }, capabilities: { toolCalls: true, reasoning: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
+      { id: "gpt-5.6-terra", match: "^gpt-5\\.6-terra(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 2.5, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15 }, capabilities: { toolCalls: true, reasoning: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
+      { id: "gpt-5.6-luna", match: "^gpt-5\\.6-luna(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 6 }, capabilities: { toolCalls: true, reasoning: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
       { id: "gpt-5.5", match: "^gpt-5\\.5(?!-pro)(?:[.-]|$)", contextWindow: 1_000_000, interfaceContextWindows: { codex: 400_000 }, pricing: { input: 5, cachedInput: 0.5, output: 30 }, capabilities: { toolCalls: true, reasoning: true }, availability: "Plus, Pro, Business, Enterprise, API, and Codex", defaultOption: true },
       { id: "gpt-5.4", defaultOption: true },
       { id: "gpt-5.4-mini", defaultOption: true },
@@ -112,6 +115,7 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     models: [
       // Keep Claude 4.x context/output caps aligned with Anthropic's Models overview.
       { id: "claude-fable-5", match: "^claude-fable-5(?:[.-]|$)", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: { input: 10, cachedInput: 1, cacheWriteInput: 12.5, output: 50 }, capabilities: { toolCalls: true }, defaultOption: true },
+      { id: "claude-opus-5", match: "^claude-opus-5(?:[.-]|$)", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: { input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 }, capabilities: { toolCalls: true }, defaultOption: true },
       { id: "claude-opus-4", match: "^claude-opus-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 32_000, pricing: { input: 15, cachedInput: 1.5, cacheWriteInput: 18.75, output: 75 }, capabilities: { toolCalls: true } },
       { id: "claude-sonnet-4", match: "^claude-sonnet-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: { input: 3, cachedInput: 0.3, cacheWriteInput: 3.75, output: 15 }, capabilities: { toolCalls: true } },
       { id: "claude-haiku-4", match: "^claude-haiku-4(?:[.-]|$)", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: { input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 5 }, capabilities: { toolCalls: true } },

@@ -20,7 +20,7 @@ export type DescribeUpdateReq = { chatId: ChatId; mode: "update"; limit?: number
 export type ChatCommands =
   | ApiCommand<"describe", DescribeSnapshotReq | DescribeUpdateReq, DescribeValue>
   | ApiCommand<"compactions", { chatId: ChatId }, CompactionsValue>
-  | ApiCommand<"step", { chatId: ChatId; message: string; attachments?: ImageAttachment[] }, { chatId: ChatId; userStepId: StepId }>
+  | ApiCommand<"step", { chatId: ChatId; message: string; attachments?: ImageAttachment[]; clientMessageId?: string }, { chatId: ChatId; userStepId: StepId; accepted: boolean; claimed: boolean }>
   | ApiCommand<"pending-messages", Record<string, never>, { messages: PendingMessage[] }>
   | ApiCommand<"pending-messages-save", { messages: PendingMessage[]; knownIds?: string[] }, { messages: PendingMessage[] }>
   | ApiCommand<"chat-queue-list", { chatId?: ChatId }, { messages: PendingMessage[] }>

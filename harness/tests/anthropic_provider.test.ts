@@ -35,6 +35,7 @@ describe("Anthropic provider support", () => {
     const cases: Array<[string, number, number]> = [
         ["claude-fable-5", 1_000_000, 128_000],
         ["claude-fable-5-20260224", 1_000_000, 128_000],
+      ["claude-opus-5", 1_000_000, 128_000],
       ["claude-opus-4-8", 1_000_000, 128_000],
       ["claude-opus-4-8-20260201", 1_000_000, 128_000],
       ["claude-opus-4-7", 1_000_000, 128_000],
@@ -104,6 +105,12 @@ describe("Anthropic provider support", () => {
     expect(priceFor("claude-opus-4-8", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
     expect(priceFor("claude-opus-4-8-20260201", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
     expect(estimateCostUsd({ models: { "claude-opus-4-8": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(36.75);
+  });
+
+  test("tracks Claude Opus 5 pricing", async () => {
+    const pricing = await loadPricing();
+    expect(priceFor("claude-opus-5", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 25 });
+    expect(estimateCostUsd({ models: { "claude-opus-5": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(36.75);
   });
 
   test("tracks Claude Fable 5 pricing", async () => {

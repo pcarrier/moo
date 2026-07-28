@@ -590,6 +590,21 @@ type SubagentResult = {
     durationNs: number;
     usage?: unknown;
 };
+type AgentStartSpec = {
+    task: string;
+    /** Inherit the current chat's project, branch, model, and effort. Defaults to true. */
+    inherit?: boolean;
+    title?: string;
+    path?: string;
+    branch?: string;
+    model?: string;
+    effort?: string;
+    maxSteps?: number;
+    timeoutMs?: number;
+};
+type AgentStartResult = {
+    chatId: string;
+};
 type ProcResult = {
     code: number;
     stdout: string;
@@ -1418,6 +1433,7 @@ type Moo = {
             runId: string;
             forkedFrom: string | null;
         }>;
+        start(spec: AgentStartSpec): Promise<AgentStartResult>;
         run(spec: SubagentSpec): Promise<SubagentResult>;
     };
     /**
