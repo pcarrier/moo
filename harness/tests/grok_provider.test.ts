@@ -270,20 +270,24 @@ describe("OpenAI-compatible provider support", () => {
     expect(modelMetadataFor("xai", "grok-4-fast")?.rateLimits).toMatchObject({ requestsPerMinute: 600, tokensPerMinute: 4_000_000 });
   });
 
-  test("uses GPT-5.5 API and Codex context windows for dated model variants", () => {
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.5" })).toBe(1_000_000);
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-2026-01" })).toBe(1_000_000);
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.5", authMode: "oauth" })).toBe(400_000);
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.5-2026-01", authMode: "oauth" })).toBe(400_000);
+  test("uses GPT-5.6 API and Codex context windows for dated model variants", () => {
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-sol" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-terra-2026-01" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-luna", authMode: "oauth" })).toBe(400_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-2026-01", authMode: "oauth" })).toBe(400_000);
   });
 
-  test("tracks GPT-5.5 availability tiers", async () => {
-    const base = modelMetadataFor("openai", "gpt-5.5");
+  test("tracks GPT-5.6 availability tiers", async () => {
+    const base = modelMetadataFor("openai", "gpt-5.6");
+    expect(base?.id).toBe("gpt-5.6-sol");
     expect(base?.availability).toBe("Plus, Pro, Business, Enterprise, API, and Codex");
     expect(base?.capabilities?.reasoning).toBe(true);
-    expect(base && modelMatches(base, "gpt-5.5-pro")).toBe(false);
-    const options = await modelOptionsFor("openai", "gpt-5.5");
-    expect(options.find((option) => option.id === "openai:gpt-5.5")?.availability).toBe(base?.availability);
+    expect(base && modelMatches(base, "gpt-5.6-sol-2026-01")).toBe(true);
+    expect(modelMetadataFor("openai", "gpt-5.6-terra")?.id).toBe("gpt-5.6-terra");
+    expect(modelMetadataFor("openai", "gpt-5.6-luna")?.id).toBe("gpt-5.6-luna");
+    const options = await modelOptionsFor("openai", "gpt-5.6");
+    expect(options.find((option) => option.id === "openai:gpt-5.6-sol")?.availability).toBe(base?.availability);
+    expect(options.map((option) => option.id)).toEqual(expect.arrayContaining(["openai:gpt-5.6-sol", "openai:gpt-5.6-terra", "openai:gpt-5.6-luna"]));
   });
 
   test("uses GLM-specific context windows and request options", async () => {
@@ -369,11 +373,13 @@ describe("OpenAI-compatible provider support", () => {
     expect(JSON.stringify(result.error)).toContain("does not support image attachments");
   });
 
-  test("tracks GPT-5.5 pricing", async () => {
+  test("tracks GPT-5.6 pricing", async () => {
     const pricing = await loadPricing();
-    expect(priceFor("gpt-5.5", pricing)).toEqual({ input: 5, cachedInput: 0.5, output: 30 });
-    expect(priceFor("gpt-5.5-2026-01", pricing)).toEqual({ input: 5, cachedInput: 0.5, output: 30 });
-    expect(estimateCostUsd({ models: { "gpt-5.5": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(35.5);
+    expect(priceFor("gpt-5.6", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 });
+    expect(priceFor("gpt-5.6-sol-2026-01", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 });
+    expect(priceFor("gpt-5.6-terra", pricing)).toEqual({ input: 2.5, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15 });
+    expect(priceFor("gpt-5.6-luna", pricing)).toEqual({ input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 6 });
+    expect(estimateCostUsd({ models: { "gpt-5.6": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(41.75);
   });
 
   test("tracks Grok pricing and capabilities", async () => {

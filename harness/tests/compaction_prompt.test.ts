@@ -434,13 +434,19 @@ describe("compaction prompts", () => {
     expect(body.client_metadata?.["x-codex-installation-id"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  test("uses low/no reasoning for compaction summary requests", () => {
+  test("preserves reasoning effort for compaction summary requests", () => {
     const base = { apiKey: "key", baseUrl: "https://llm.test", keyEnvHint: "KEY" };
 
-    expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5.5", effort: "xhigh" }).effort).toBe("none");
-    expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5", effort: "high" }).effort).toBe("minimal");
-    expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-sonnet-4", effort: "xhigh" }).effort).toBe("low");
-    expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-opus-4-8", effort: "xhigh" }).effort).toBe("low");
+    const gpt56 = "gpt-5.6-sol-premium-1p-codexswic-ev3";
+    expect(effortLevelsForProvider({ name: "openai", model: gpt56 })).toEqual(["none", "low", "medium", "high", "xhigh"]);
+    expect((buildStreamingLLMRequest({ ...base, name: "openai", model: gpt56, effort: "minimal" }, [{ role: "user", content: "summarize" }], null).body as any).reasoning).toEqual({ summary: "auto" });
+    const gpt56CompactionProvider = compactionProviderForRequest({ ...base, name: "openai", model: gpt56, effort: "xhigh" });
+    expect(gpt56CompactionProvider.effort).toBe("xhigh");
+    expect((buildStreamingLLMRequest(gpt56CompactionProvider, [{ role: "user", content: "summarize" }], null).body as any).reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5.5", effort: "xhigh" }).effort).toBe("xhigh");
+    expect(compactionProviderForRequest({ ...base, name: "openai", model: "gpt-5", effort: "high" }).effort).toBe("high");
+    expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-sonnet-4", effort: "xhigh" }).effort).toBe("xhigh");
+    expect(compactionProviderForRequest({ ...base, name: "anthropic", model: "claude-opus-4-8", effort: "xhigh" }).effort).toBe("xhigh");
   });
 
   test("accumulates streamed compaction summaries", () => {

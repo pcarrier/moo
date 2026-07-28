@@ -1733,13 +1733,34 @@ fn make_agent_run_handler(pool: Arc<Pool>, bundle: Arc<String>) -> AgentRunHandl
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancelled.clone();
         let completion_tx_for_spawn = completion_tx.clone();
+        let detached_start =
+            serde_json::from_str::<Value>(&request_json)
+                .ok()
+                .and_then(|request| {
+                    (request.get("mode").and_then(Value::as_str) == Some("start"))
+                        .then(|| {
+                            request
+                                .get("childChatId")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .flatten()
+                });
+        let detached_chat_id = detached_start.clone();
         if let Err(e) = spawn_on_runtime(async move {
             let result = drive_subagent(pool, bundle, request_json, cancel_for_task).await;
-            let _ = completion_tx_for_spawn.send(AsyncOpCompletion { id: op_id, result });
+            if detached_chat_id.is_none() {
+                let _ = completion_tx_for_spawn.send(AsyncOpCompletion { id: op_id, result });
+            }
         }) {
             let _ = completion_tx.send(AsyncOpCompletion {
                 id: op_id,
                 result: Err(format!("failed to spawn subagent task: {e}")),
+            });
+        } else if let Some(chat_id) = detached_start {
+            let _ = completion_tx.send(AsyncOpCompletion {
+                id: op_id,
+                result: Ok(json!({ "chatId": chat_id }).to_string()),
             });
         }
         AsyncOpHandle {
@@ -1763,26 +1784,19 @@ async fn drive_subagent(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "subagent request missing childChatId".to_string())?
         .to_string();
-    let task = build_subagent_task(&req);
+    let state = req
+        .get("state")
+        .cloned()
+        .ok_or_else(|| "subagent request missing state".to_string())?;
     let max_steps = req
         .pointer("/limits/maxSteps")
         .and_then(|v| v.as_u64())
-        .unwrap_or(20);
+        .ok_or_else(|| "subagent request missing limits.maxSteps".to_string())?;
     let timeout_ms = req
         .pointer("/limits/timeoutMs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(600_000);
+        .ok_or_else(|| "subagent request missing limits.timeoutMs".to_string())?;
     let started = std::time::Instant::now();
-    let state = json!({
-        "chatId": child_chat_id.clone(),
-        "mode": "step",
-        "message": task,
-        "artificial": true,
-        "lifecycleEvents": {
-            "start": { "kind": "step-start", "chatId": child_chat_id },
-            "end": { "kind": "step-end", "chatId": child_chat_id }
-        }
-    });
     let drive = drive_limited(&pool, &bundle, state, max_steps, cancelled.clone());
     let status =
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), drive).await {
@@ -1852,33 +1866,6 @@ async fn drive_subagent(
         },
         started.elapsed().as_nanos(),
     ))
-}
-
-fn build_subagent_task(req: &Value) -> String {
-    let spec = req.get("spec").cloned().unwrap_or(Value::Null);
-    let label = spec
-        .get("label")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Subagent task");
-    let task = spec.get("task").and_then(|v| v.as_str()).unwrap_or("");
-    let context = spec.get("context").and_then(|v| v.as_str()).unwrap_or("");
-    let expected = spec
-        .get("expectedOutput")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let mut parts = vec![
-        "You are a bounded subagent delegated by a parent agent.".to_string(),
-        "Complete only the assigned task. Do not ask the user questions. Return a concise final report with evidence and file links when relevant.".to_string(),
-        format!("Task label: {label}"),
-        format!("Task:\n{task}"),
-    ];
-    if !context.trim().is_empty() {
-        parts.push(format!("Context:\n{context}"));
-    }
-    if !expected.trim().is_empty() {
-        parts.push(format!("Expected output:\n{expected}"));
-    }
-    parts.join("\n\n")
 }
 
 async fn drive_limited(

@@ -5078,6 +5078,25 @@ export function createState() {
     forgetChatCache(chat);
   }
 
+  function patchOptimisticStepId(
+    chat: string,
+    pendingId: string,
+    stepId: StepId,
+  ) {
+    if (chatId() !== chat) return;
+    const optimisticStepId = `opt-${pendingId}`;
+    setTimeline((items) => {
+      let changed = false;
+      const next = items.map((item) => {
+        if (item.type !== "step" || item.step !== optimisticStepId)
+          return item;
+        changed = true;
+        return { ...item, step: stepId } as TimelineItem;
+      });
+      return changed ? next : items;
+    });
+  }
+
   function clearPendingDispatching(id: string) {
     deleteDispatchingPendingId(id);
   }
@@ -5240,6 +5259,7 @@ export function createState() {
             }
           } else if (pending().some((p) => p.id === head.id)) {
             pendingMessageStepIds.set(head.id, userStepId);
+          patchOptimisticStepId(head.chatId, head.id, userStepId);
           }
         })
         .finally(() => {
@@ -5291,6 +5311,7 @@ export function createState() {
     } else {
       pendingDispatchFailures.delete(head.id);
       pendingMessageStepIds.set(head.id, r.value.userStepId);
+      patchOptimisticStepId(head.chatId, head.id, r.value.userStepId);
       watchDispatchingChat(head.chatId);
     }
   }
