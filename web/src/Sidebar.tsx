@@ -4700,10 +4700,10 @@ export function Sidebar(props: { bag: Bag; onNavigate?: () => void }) {
     () => new Map(bag.chats().map((chat) => [chat.chatId, chat])),
   );
   const activeChats = createMemo(() =>
-    orderedChats().filter((chat) => !chat.archived),
+    orderedChats().filter((chat) => !chat.hidden && !chat.archived),
   );
   const archivedChats = createMemo(() =>
-    orderedChats().filter((chat) => chat.archived),
+    orderedChats().filter((chat) => !chat.hidden && chat.archived),
   );
   const activeChatIds = createMemo(() =>
     activeChats().map((chat) => chat.chatId),
