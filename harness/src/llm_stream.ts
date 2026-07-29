@@ -573,6 +573,11 @@ function responseReasoningPartKey(parsed: ParsedStreamEvent): string {
   return [itemId, outputIndex, contentIndex, summaryIndex].join(":");
 }
 
+export function reasoningPartPrefix(content: string, next: string): string {
+  if (!content || !next || /\s$/.test(content) || /^\s/.test(next)) return "";
+  return "\n\n";
+}
+
 function appendResponseReasoningTextDelta(
   state: LlmAccumulatorState,
   parsed: ParsedStreamEvent,
@@ -581,9 +586,11 @@ function appendResponseReasoningTextDelta(
   events: StreamOutputEvent[],
 ) {
   const key = responseReasoningPartKey(parsed);
-  const previous = state.responseReasoningTextParts[key] ?? "";
-  state.responseReasoningTextParts[key] = previous + delta;
-  appendLlmReasoningDelta(state, delta, streamEvents, events);
+  const previous = state.responseReasoningTextParts[key];
+  const prefix =
+    previous === undefined ? reasoningPartPrefix(state.reasoningContent, delta) : "";
+  state.responseReasoningTextParts[key] = (previous ?? "") + delta;
+  appendLlmReasoningDelta(state, prefix + delta, streamEvents, events);
 }
 
 function finishResponseReasoningText(
@@ -595,14 +602,21 @@ function finishResponseReasoningText(
 ) {
   if (!text) return;
   const key = responseReasoningPartKey(parsed);
-  const previous = state.responseReasoningTextParts[key] ?? "";
+  const previous = state.responseReasoningTextParts[key];
   state.responseReasoningTextParts[key] = text;
   if (previous && text.startsWith(previous)) {
     const delta = text.slice(previous.length);
     if (delta) appendLlmReasoningDelta(state, delta, streamEvents, events);
     return;
   }
-  if (!previous) appendLlmReasoningDelta(state, text, streamEvents, events);
+  if (previous === undefined) {
+    appendLlmReasoningDelta(
+      state,
+      reasoningPartPrefix(state.reasoningContent, text) + text,
+      streamEvents,
+      events,
+    );
+  }
 }
 
 function ensureRunTsStepId(toolCall: LlmToolCall): string {
