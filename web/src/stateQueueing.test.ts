@@ -40,6 +40,14 @@ describe("chat message queueing", () => {
     expect(stateSource).toContain("if (r.value.claimed)");
   });
 
+  test("stale queue responses cannot resurrect accepted messages", () => {
+    expect(stateSource).toContain("const acceptedPendingIds = new Set<string>()");
+    expect(stateSource).toContain("rememberAcceptedPendingId(id)");
+    expect(
+      stateSource.match(/!acceptedPendingIds\.has\(message\.id\)/g)?.length,
+    ).toBe(2);
+  });
+
   test("queued messages persist through server queue commands", () => {
     expect(stateSource).toContain('async function savePendingMessages');
     expect(stateSource).toContain('let pendingSaveInFlight = false');

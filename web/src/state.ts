@@ -4725,6 +4725,19 @@ export function createState() {
   // client added, and used to tell "not yet saved here" (keep + save) from
   // "deleted by another client" (drop) when reloading.
   const serverSeenPendingIds = new Set<string>();
+  // Queue list/save requests can start before /step atomically accepts and
+  // removes a message, then return afterward with the stale pre-acceptance
+  // snapshot. Remember locally accepted IDs so those late responses cannot
+  // resurrect the message and dispatch it again when the turn ends.
+  const acceptedPendingIds = new Set<string>();
+  const ACCEPTED_PENDING_IDS_MAX = 1000;
+  function rememberAcceptedPendingId(id: string) {
+    acceptedPendingIds.delete(id);
+    acceptedPendingIds.add(id);
+    if (acceptedPendingIds.size <= ACCEPTED_PENDING_IDS_MAX) return;
+    const oldest = acceptedPendingIds.values().next().value;
+    if (oldest !== undefined) acceptedPendingIds.delete(oldest);
+  }
   // Per-message dispatch failure backoff. Without it, a persistent /step
   // error makes drain() re-pick the same head immediately: an unbounded
   // request/error-toast loop.
@@ -4826,7 +4839,10 @@ export function createState() {
         pendingLoaded = true;
         return;
       }
-      const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
+      const messages = (Array.isArray(r.value.messages)
+        ? r.value.messages
+        : []
+      ).filter((message) => !acceptedPendingIds.has(message.id));
       // Keep local messages the server hasn't seen yet (enqueued before this
       // load or while it was in flight); drop only messages the server once
       // had and no longer does — those were removed by another client.
@@ -5037,7 +5053,10 @@ export function createState() {
           return;
         }
         if (pendingSaveAgain) continue;
-        const messages = Array.isArray(r.value.messages) ? r.value.messages : [];
+        const messages = (Array.isArray(r.value.messages)
+          ? r.value.messages
+          : []
+        ).filter((message) => !acceptedPendingIds.has(message.id));
         for (const message of messages) serverSeenPendingIds.add(message.id);
         setPending(messages);
         prunePendingDispatchTracking(messages);
@@ -5092,6 +5111,7 @@ export function createState() {
   }
 
   function settleAcceptedPendingMessage(id: string) {
+    rememberAcceptedPendingId(id);
     serverSeenPendingIds.add(id);
     let removed = false;
     setPending((current) => {
