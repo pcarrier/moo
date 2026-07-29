@@ -3406,11 +3406,20 @@ async function createSubagentRunRequest(spec: NormalizedSubagentSpec, opts: { al
   } else {
     selectedScratch = await chat.scratch({ chatId: parentChatId });
   }
-  const childChatId = await chat.create({ path: parentRoot, useExistingWorktree: true });
-  await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
-  await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });
+  const rawChildChatId = await id.new({ prefix: "chat" });
+  const childChatId = rawChildChatId.replace(/^chat:/, "");
+  // chat.list() discovers a chat from its first pointer. Mark subagents hidden
+  // before chat.create() writes path/created-at so a concurrent sidebar refresh
+  // can never observe the child as a normal visible chat.
   await pointers.set({ name: `chat/${childChatId}/hidden`, target: "true" });
   await pointers.set({ name: `chat/${childChatId}/parent`, target: parentChatId });
+  await chat.create({
+    chatId: childChatId,
+    path: parentRoot,
+    useExistingWorktree: true,
+  });
+  await pointers.set({ name: `chat/${childChatId}/worktree-path`, target: await canonicalDir(selectedScratch) });
+  await chat.setTitle({ chatId: childChatId, title: truncateTitle(spec.label) });
   await pointers.set({ name: `chat/${childChatId}/subagent-depth`, target: String(ctx.depth + 1) });
   await pointers.set({ name: `chat/${childChatId}/subagent-parent-runts`, target: ctx.runTsStepId });
   await applyDefaultChatSettings(childChatId);

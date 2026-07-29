@@ -42,3 +42,15 @@ describe("moo.agent.start", () => {
     expect(mooSource).toContain("state: subagentStepState(chatId, task, false)");
   });
 });
+
+describe("moo.agent.run", () => {
+  test("hides child chats before they become visible to chat.list", () => {
+    const runStart = mooSource.indexOf("async function createSubagentRunRequest");
+    const hiddenWrite = mooSource.indexOf('`chat/${childChatId}/hidden`', runStart);
+    const childCreate = mooSource.indexOf("await chat.create({", runStart);
+
+    expect(hiddenWrite).toBeGreaterThan(runStart);
+    expect(hiddenWrite).toBeLessThan(childCreate);
+    expect(mooSource).toContain("chatId: childChatId,\n    path: parentRoot,");
+  });
+});
