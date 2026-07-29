@@ -16,6 +16,7 @@ import {
   anchorFromEventTarget,
   renderMarkdown,
   renderMarkdownInline,
+  renderMarkdownWithBreaks,
   renderUserMessage,
   repoFilePathFromHref,
 } from "./markdown";
@@ -2829,7 +2830,7 @@ function ReasoningBlock(props: {
   timelineKey: string;
 }) {
   const text = () => props.content.trim();
-  const html = () => renderMarkdown(text());
+  const html = () => renderMarkdownWithBreaks(text());
   const open = () => props.streaming;
   return (
     <Show when={text()}>

@@ -266,7 +266,9 @@ describe("timeline thinking status", () => {
     expect(timeline).not.toContain("streaming={bag.thinking()}");
     expect(timeline).toContain('class="step reply-thinking"');
     expect(timeline).toContain("data-timeline-key={props.timelineKey}");
-    expect(timeline).toContain("const html = () => renderMarkdown(text());");
+    expect(timeline).toContain(
+      "const html = () => renderMarkdownWithBreaks(text());",
+    );
     expect(timeline).toContain('class="body markdown reply-thinking-body"');
     expect(timeline).toContain('label="streaming thinking"');
     expect(timeline).toContain('streamingLabel?: string;');

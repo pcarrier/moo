@@ -27,6 +27,10 @@ function cssBlock(selector: string, from = 0) {
 }
 
 describe("new chat layout", () => {
+  it("preserves newlines in git pull output", () => {
+    expect(cssBlock(".fs-branch-error")).toContain("white-space: pre-wrap;");
+  });
+
   it("renders compact new chat options", () => {
     expect(sidebar).toContain('class="new-chat-panel"');
     expect(sidebar).toContain('aria-label="New chat options"');

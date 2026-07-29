@@ -351,6 +351,7 @@
 .fs-branch-error {
   color: var(--muted);
   font-size: 0.85rem;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
