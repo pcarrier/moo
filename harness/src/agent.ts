@@ -469,6 +469,42 @@ export function usesResponsesApi(provider: LLMProvider): boolean {
   return provider.name === "openai";
 }
 
+// OpenRouter routes via "vendor/model" slugs (e.g. "z-ai/glm-5.3"); strip the
+// vendor prefix and known suffixes so effort/metadata matching sees the bare
+// model id.
+export function openRouterBaseModelId(model: string | null | undefined): string {
+  const id = openAIBaseModelForRequest(model).trim().toLowerCase();
+  const slash = id.indexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+export function isOpenRouterBaseUrl(baseUrl: string | null | undefined): boolean {
+  const raw = String(baseUrl ?? "").trim();
+  const host = raw.includes("://") ? raw.split("://")[1] ?? "" : raw;
+  const authority = host.split("/")[0] ?? "";
+  return /(^|\.)openrouter\.ai$/i.test(authority);
+}
+
+function glmModelBaseId(model: string | null | undefined): string {
+  return openRouterBaseModelId(model);
+}
+
+function isGlm53Model(model: string | null | undefined): boolean {
+  return /^glm-5\.3(?:[-.]|$)/.test(glmModelBaseId(model));
+}
+
+// OpenRouter normalizes reasoning across vendors via the unified "reasoning"
+// request parameter and streams it back as delta.reasoning; it does not accept
+// the vendor-specific thinking/enable_thinking fields.
+function openRouterRequestReasoning(
+  effort: EffortLevel | null,
+): { enabled: boolean; effort?: Exclude<EffortLevel, "none"> } | null {
+  if (effort === null) return null;
+  return effort === "none"
+    ? { enabled: false }
+    : { enabled: true, effort: effort as Exclude<EffortLevel, "none"> };
+}
+
 function providerForRequest(provider: LLMProvider): LLMProvider {
   if (provider.name !== "openai") return provider;
   const serviceTier = provider.serviceTier ?? openAIServiceTierForModel(provider.model);
@@ -578,9 +614,7 @@ function qwenEffortLevels(model: string | null | undefined): string[] {
 }
 
 function glmEffortLevels(model: string | null | undefined): string[] {
-  const id = String(model ?? "")
-    .trim()
-    .toLowerCase();
+  const id = glmModelBaseId(model);
   if (/^glm-5\.3(?:[-.]|$)/.test(id)) return ["low", "high", "max"];
   if (/^glm-4\.6v(?:-|$)/.test(id)) return ["none", "high"];
   return /^glm-(?:4\.[567]|5)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
@@ -626,7 +660,7 @@ function deepseekRequestEffort(
 
 function requestEffortForProvider(provider: LLMProvider): EffortLevel | null {
   if (provider.name === "deepseek") return deepseekRequestEffort(provider);
-  if ((provider.name === "glm" && /^glm-5\.3(?:[-.]|$)/i.test(provider.model ?? "")) ||
+  if ((provider.name === "glm" && isGlm53Model(provider.model)) ||
       (provider.name === "kimi" && /^kimi-k3(?:[-.]|$)/i.test(provider.model ?? "")))
     return effortAllowed(effortLevelsForProvider(provider), provider.effort) ?? "max";
   if (provider.name === "qwen" || provider.name === "glm" || provider.name === "kimi")
@@ -782,13 +816,18 @@ function applyEffort(
   if (provider.name === "glm" || provider.name === "kimi") {
     const effort = requestEffortForProvider(provider);
     if (!effort) return;
+    if (provider.name === "glm" && isOpenRouterBaseUrl(provider.baseUrl)) {
+      const reasoning = openRouterRequestReasoning(effort);
+      if (reasoning) body.reasoning = reasoning;
+      return;
+    }
     if (provider.name === "kimi" && /^kimi-k3(?:[-.]|$)/i.test(provider.model ?? "")) {
       // Kimi K3 always thinks and its API uses top-level reasoning_effort.
       // K2.x keeps the older OpenAI-compatible `thinking` object.
       body.reasoning_effort = effort;
       return;
     }
-    if (provider.name === "glm" && /^glm-5\.3(?:[-.]|$)/i.test(provider.model ?? "")) body.reasoning_effort = effort;
+    if (provider.name === "glm" && isGlm53Model(provider.model)) body.reasoning_effort = effort;
     body.thinking = { type: effort === "none" ? "disabled" : "enabled" };
     return;
   }

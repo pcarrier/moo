@@ -1030,6 +1030,19 @@ function accumulateLlmStreamEvent(
       events,
     );
   }
+  // OpenRouter normalizes vendor reasoning into delta.reasoning (plus
+  // reasoning_details); DeepSeek-style gateways use reasoning_content instead.
+  if (typeof delta.reasoning === "string" && delta.reasoning) {
+    appendLlmReasoningDelta(state, delta.reasoning, streamEvents, events);
+  }
+  if (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length) {
+    const text = delta.reasoning_details
+      .map((detail: unknown) =>
+        isObject(detail) && typeof detail.text === "string" ? detail.text : "",
+      )
+      .join("");
+    if (text) appendLlmReasoningDelta(state, text, streamEvents, events);
+  }
   if (Array.isArray(delta.tool_calls)) {
     for (const rawTc of delta.tool_calls) {
       const tc = isObject(rawTc) ? rawTc : {};

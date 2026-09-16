@@ -181,6 +181,29 @@ describe("OpenAI-compatible provider support", () => {
     expect(noThinking.body).toMatchObject({ thinking: { type: "disabled" } });
   });
 
+  test("sends OpenRouter reasoning for GLM via OpenRouter base URL", () => {
+    expect(effortLevelsForProvider({ name: "glm", model: "z-ai/glm-5.3" })).toEqual(["low", "high", "max"]);
+    const request = buildStreamingLLMRequest({
+      name: "glm",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "key",
+      model: "z-ai/glm-5.3",
+      effort: "high",
+    } as any, [{ role: "user", content: "Think" }], null);
+    expect(request.requestEffort).toBe("high");
+    expect(request.body).toMatchObject({ reasoning: { enabled: true, effort: "high" } });
+    expect(request.body.thinking).toBeUndefined();
+
+    const disabled = buildStreamingLLMRequest({
+      name: "glm",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "key",
+      model: "z-ai/glm-5.2",
+      effort: "none",
+    } as any, [{ role: "user", content: "Answer" }], null);
+    expect(disabled.body).toMatchObject({ reasoning: { enabled: false } });
+  });
+
   test("enables optional Kimi K2 thinking", () => {
     expect(effortLevelsForProvider({ name: "kimi", model: "kimi-k2.6-code" })).toEqual(["none", "high"]);
     expect(effortLevelsForProvider({ name: "kimi", model: "moonshot-v1-128k" })).toEqual([]);
