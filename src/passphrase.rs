@@ -5,8 +5,7 @@
 //! value so existing databases keep working until the PSK is set again.
 
 use argon2::Argon2;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 
 /// PHC strings produced by the argon2 crate always start with this marker
 /// (covers `$argon2id$`, `$argon2i$`, and `$argon2d$`).
@@ -15,9 +14,8 @@ const PHC_PREFIX: &str = "$argon2";
 /// Hash `passphrase` with argon2id and a fresh random salt, returning a PHC
 /// string suitable for storage.
 pub fn hash(passphrase: &str) -> Result<String, String> {
-    let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
-        .hash_password(passphrase.as_bytes(), &salt)
+        .hash_password(passphrase.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| format!("cannot hash passphrase: {e}"))
 }
@@ -34,12 +32,9 @@ pub fn is_hashed(stored: &str) -> bool {
 /// else is treated as legacy plaintext and compared in constant time.
 pub fn verify(provided: &str, stored: &str) -> bool {
     if is_hashed(stored) {
-        match PasswordHash::new(stored) {
-            Ok(parsed) => Argon2::default()
-                .verify_password(provided.as_bytes(), &parsed)
-                .is_ok(),
-            Err(_) => false,
-        }
+        Argon2::default()
+            .verify_password(provided.as_bytes(), stored)
+            .is_ok()
     } else {
         constant_time_eq(provided.as_bytes(), stored.as_bytes())
     }
@@ -73,6 +68,15 @@ mod tests {
     #[test]
     fn each_hash_uses_a_fresh_salt() {
         assert_ne!(hash("same").unwrap(), hash("same").unwrap());
+    }
+
+    #[test]
+    fn existing_argon2_phc_hash_still_verifies() {
+        // Published Argon2 0.5.3 test vector, with parameters embedded in the hash.
+        let stored = "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
+        assert!(is_hashed(stored));
+        assert!(verify("password", stored));
+        assert!(!verify("wrong-password", stored));
     }
 
     #[test]

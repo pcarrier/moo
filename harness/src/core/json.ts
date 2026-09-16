@@ -11,7 +11,7 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 
 export const jsonObjectSchema: z.ZodType<JsonObject> = z.lazy(() =>
-  z.record(z.union([jsonValueSchema, z.undefined()]))
+  z.record(z.string(), z.union([jsonValueSchema, z.undefined()]))
 );
 
 export const stringArraySchema = z.array(z.unknown());

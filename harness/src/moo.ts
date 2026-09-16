@@ -1909,7 +1909,7 @@ function parseMcpSseBody(body: string): McpJsonRpcResponse | null {
 
 function parseMcpBody(body: string): unknown {
   try {
-    return parseJson(body || "null", "parseMcpBody", z.record(z.unknown()));
+    return parseJson(body || "null", "parseMcpBody", z.record(z.string(), z.unknown()));
   } catch (jsonErr: any) {
     try {
       return parseMcpSseBody(body || "");

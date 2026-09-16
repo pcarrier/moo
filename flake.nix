@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Nixpkgs 26.11 dropped Intel macOS; 26.05 still receives security fixes.
+    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -10,9 +12,11 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { nixpkgs, rust-overlay, crane, ... }:
+  outputs = { nixpkgs, nixpkgs-darwin, rust-overlay, crane, ... }:
     let
       lib = nixpkgs.lib;
+      nixpkgsFor = system:
+        if system == "x86_64-darwin" then nixpkgs-darwin else nixpkgs;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -21,7 +25,7 @@
       ];
       forAllSystems = lib.genAttrs systems;
 
-      rustyV8Version = "147.4.0";
+      rustyV8Version = "152.2.0";
 
       rustyV8Targets = {
         "x86_64-linux" = "x86_64-unknown-linux-gnu";
@@ -31,15 +35,15 @@
       };
 
       rustyV8Hashes = {
-        "x86_64-linux" = "sha256-Cd3vbFEZKv/wVBExoO+cAPgxhdI5HaqxgDgqOr82rJU=";
-        "aarch64-linux" = "sha256-lMPw/eAFFAT8obaR8opJbXjbgw58+0maBEyxpeOllFU=";
-        "x86_64-darwin" = "sha256-+ppR8dMhVTSZL0PPar+DlKZ0K+E5N7WfdXXfBTYel+Y=";
-        "aarch64-darwin" = "sha256-fnR0DD7woOj8DiaKJYYSPpg0D+lDVmjNwSiPrvtzYq4=";
+        "x86_64-linux" = "sha256-tmg+mvy3f72MssOs9F001SApqyFrMyUiyVF5wS8P7Tw=";
+        "aarch64-linux" = "sha256-xAGWu/GCUy5YP2W32vAZb9uzNU5vrFmzHQU5wg+THz0=";
+        "x86_64-darwin" = "sha256-BMvBw2xM1UWcVASXddkoiTN8adk2+wsBH5sm8dRUYQ0=";
+        "aarch64-darwin" = "sha256-pKVIREStS18Q3HvtFBI23Z2+q/IAbRRSDxm5NdTbQic=";
       };
 
-      harnessDepsHash = "sha256-m7S6WlEoBKEMnvQllfUpTK8o1Mk/re3q2iuRFay5R+o=";
+      harnessDepsHash = "sha256-Fu0cljWip9e4KHOoq/fI835XLFgIQqF7DfjTxD2JbNU=";
 
-      webDepsHash = "sha256-nDmKklutWrsoqcU38jYO82HoMgM/wkvGjyJolzTL/tY=";
+      webDepsHash = "sha256-fC09kKs/SKUFPiv6SDutOphZi1J3BoqdZzuOpKPoLwk=";
 
 
       # Glibc ABI floor for the portable Linux release.  Covers
@@ -51,7 +55,7 @@
     {
       packages = forAllSystems (system:
         let
-          pkgs = import nixpkgs {
+          pkgs = import (nixpkgsFor system) {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
@@ -129,7 +133,9 @@
             buildPhase = ''
               runHook preBuild
               export HOME=$TMPDIR
-              bun install --frozen-lockfile --no-progress
+              # TypeScript's native compiler has platform-specific packages;
+              # include all of them to keep harnessDepsHash portable too.
+              bun install --frozen-lockfile --no-progress --cpu '*' --os '*'
               runHook postBuild
             '';
             installPhase = ''
@@ -301,13 +307,13 @@
           default = moo;
           moo = moo;
         }
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           moo-gnu = mooGnuRelease;
         });
 
       devShells = forAllSystems (system:
         let
-          pkgs = import nixpkgs {
+          pkgs = import (nixpkgsFor system) {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };

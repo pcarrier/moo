@@ -36,9 +36,17 @@ jobs:
       MATRIX_SYSTEM: ${{ matrix.system }}
       MATRIX_TARGET: ${{ matrix.rustyV8Target }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@1d87d45818068401a10cf16bdc5f00b24994a83f
-      - uses: DeterminateSystems/magic-nix-cache-action@14645543c3b214bedad3b9b49775cb042f4c1fc7
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: runner.os != 'macOS' || runner.arch != 'X64'
+      # Determinate's installer and cache no longer support Intel macOS.
+      - name: Install Nix (Intel macOS)
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        uses: cachix/install-nix-action@19effe9fe722874e6d46dd7182e4b8b7a43c4a99 # v31.10.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        if: runner.os != 'macOS' || runner.arch != 'X64'
 
       - name: Prefetch rusty_v8 archive
         id: rusty
@@ -116,7 +124,7 @@ jobs:
             '{system:$s, rustyV8:$r, webDeps:$w}' \
             > "hash-out/${MATRIX_SYSTEM}.json"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: hashes-${{ matrix.system }}
           path: hash-out/
@@ -130,9 +138,9 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: hash-out
           pattern: hashes-*
@@ -180,7 +188,7 @@ jobs:
           rm -rf hash-out
           git diff -- flake.nix || true
 
-      - uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           commit-message: "flake: capture cross-platform hashes"
           title: "flake: capture cross-platform hashes"

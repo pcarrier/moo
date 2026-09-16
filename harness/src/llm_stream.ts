@@ -1219,7 +1219,7 @@ function parseStreamJsonEvent(raw: string): ParsedStreamEvent | null {
   const line = raw.startsWith("data: ") ? raw.slice(6).trimEnd() : raw.trim();
   if (!line || line === "[DONE]") return null;
   try {
-    return parseJson(line, "parseStreamJsonEvent", z.record(z.unknown()));
+    return parseJson(line, "parseStreamJsonEvent", z.record(z.string(), z.unknown()));
   } catch {
     return null;
   }

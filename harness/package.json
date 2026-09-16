@@ -6,12 +6,15 @@
   "scripts": {
     "build": "bun build src/index.ts --outdir=dist --entry-naming=harness.[ext] --format=iife --target=browser",
     "dev": "bun build src/index.ts --outdir=dist --entry-naming=harness.[ext] --format=iife --target=browser --sourcemap=linked --watch --no-clear-screen",
-    "typecheck": "tsc",
+    "typecheck": "bun node_modules/typescript/bin/tsc",
     "test": "bun test tests src"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "partial-json": "^0.1.7",
-    "typescript": "^6.0.3",
-    "zod": "^3"
+    "typescript-js": "npm:typescript@^6.0.3",
+    "zod": "^4.6.5"
   }
 }

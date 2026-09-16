@@ -11,7 +11,7 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 
 export const jsonObjectSchema: z.ZodType<JsonObject> = z.lazy(() =>
-  z.record(z.union([jsonValueSchema, z.undefined()]))
+  z.record(z.string(), z.union([jsonValueSchema, z.undefined()]))
 );
 
 export function parseJson<T>(text: string, context: string, schema: z.ZodType<T>): T {
@@ -36,11 +36,12 @@ export const pskStatusSchema = z.object({
 
 export const stringArraySchema = z.array(z.string());
 
-export const recordUnknownSchema = z.record(z.unknown());
+export const recordUnknownSchema = z.record(z.string(), z.unknown());
 
-export const stringRecordSchema = z.record(z.string());
+export const stringRecordSchema = z.record(z.string(), z.string());
 
 export const rightSidebarLayoutSchema = z.record(
+  z.string(),
   z.object({
     width: z.union([z.string(), z.number()]).optional(),
     collapsed: z.boolean().optional(),
@@ -56,6 +57,6 @@ export const chatCacheSchema = z.object({
   entries: z.array(z.tuple([z.string(), z.unknown()])).optional(),
 });
 
-export const toolCallArgsSchema = z.union([z.record(z.unknown()), z.string()]);
+export const toolCallArgsSchema = z.union([z.record(z.string(), z.unknown()), z.string()]);
 
 export const runTSBackgroundKeySchema = z.tuple([z.string(), z.string()]);

@@ -200,7 +200,7 @@ function effortSettingPayload(command: "chat-effort-set", args: string[]): Input
 }
 
 function jsonObjectPayload(command: "llm-auth-save", args: string[]): Input {
-  return { command, ...(parseJson(args.join(" "), "llm-auth-save payload", z.record(z.unknown())) as ProviderAuthConfigInput) };
+  return { command, ...(parseJson(args.join(" "), "llm-auth-save payload", z.record(z.string(), z.unknown())) as ProviderAuthConfigInput) };
 }
 
 function triplesPayload(command: "triples", args: string[]): Input {

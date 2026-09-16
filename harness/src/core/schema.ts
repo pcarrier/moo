@@ -42,7 +42,7 @@ export const mcpJsonRpcResponseSchema = z.object({
 
 export type McpJsonRpcResponse = z.infer<typeof mcpJsonRpcResponseSchema>;
 
-export const httpHeaderRecordSchema = z.record(z.unknown());
+export const httpHeaderRecordSchema = z.record(z.string(), z.unknown());
 
 export const mcpOAuthTokenSchema = z.object({
   access_token: z.string(),
@@ -88,7 +88,7 @@ export const mcpServerConfigSchema = z.object({
   url: z.string(),
   transport: z.enum(["http", "sse"]).optional(),
   enabled: z.boolean().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   timeoutMs: z.number().optional(),
   oauth: mcpOAuthConfigSchema.optional(),
 });
