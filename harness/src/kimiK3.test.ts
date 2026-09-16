@@ -35,7 +35,7 @@ describe("Kimi K3 model support", () => {
       effort: null,
     };
 
-    expect(effortLevelsForProvider(provider)).toEqual(["max"]);
+    expect(effortLevelsForProvider(provider)).toEqual(["low", "high", "max"]);
 
     const request = buildStreamingLLMRequest(
       provider,

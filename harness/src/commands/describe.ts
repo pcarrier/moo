@@ -14,7 +14,7 @@ import {
 } from "../agent";
 import type { Input } from "./_shared";
 import { activeTasks, getTasks } from "../tasks";
-import { defaultModelPricing, type ModelPrice } from "../llm_models";
+import { defaultModelPricing, modelMetadataFor, type ModelPrice } from "../llm_models";
 import { chatModelInfo } from "./models";
 
 const DEFAULT_TIMELINE_LIMIT = 160;
@@ -1340,8 +1340,8 @@ async function loadTimelineSnapshot(
   };
 }
 
-// USD per million tokens. Cache lookups are subset matched (substring):
-// `gpt-5.5` matches both `gpt-5.5` and `gpt-5.5-2026-01`. Override or extend
+// USD per million tokens. Built-ins resolve through catalog IDs and aliases.
+// User overrides retain substring matching. Override or extend
 // via MOO_LLM_PRICING (JSON: {"<model-substring>": {input,cachedInput,cacheWriteInput,output}}).
 const DEFAULT_MODEL_PRICING: Record<string, ModelPrice> = defaultModelPricing();
 
@@ -1353,9 +1353,10 @@ export function validPrice(v: unknown): v is ModelPrice {
     typeof input === "number" &&
     Number.isFinite(input) &&
     input >= 0 &&
-    typeof cachedInput === "number" &&
-    Number.isFinite(cachedInput) &&
-    cachedInput >= 0 &&
+    (cachedInput == null ||
+      (typeof cachedInput === "number" &&
+        Number.isFinite(cachedInput) &&
+        cachedInput >= 0)) &&
     typeof output === "number" &&
     Number.isFinite(output) &&
     output >= 0 &&
@@ -1392,16 +1393,24 @@ export function priceFor(
 ): ModelPrice | null {
   if (table[model]) return table[model]!;
   const lower = model.toLowerCase();
+  const unqualified = lower.replace(/^[^:]+:/, "");
+  const [base, ...suffixes] = unqualified.split("#");
+  const metadata = modelMetadataFor(null, base);
+  const key = metadata ? metadata.id + (suffixes.length ? "#" + suffixes.join("#") : "") : null;
   let best: { key: string; rate: ModelPrice } | null = null;
-  for (const [key, rate] of Object.entries(table)) {
+  for (const [override, rate] of Object.entries(table)) {
+    // Built-in rates use catalog matching, never arbitrary substrings such as
+    // gpt-5 matching gpt-5.99 or a text model matching an image model.
+    const builtIn = DEFAULT_MODEL_PRICING[override];
+    if (builtIn && (["input", "cachedInput", "cacheWriteInput", "output"] as const).every((field) => rate[field] === builtIn[field])) continue;
     if (
-      lower.includes(key.toLowerCase()) &&
-      (!best || key.length > best.key.length)
+      lower.includes(override.toLowerCase()) &&
+      (!best || override.length > best.key.length)
     ) {
-      best = { key, rate };
+      best = { key: override, rate };
     }
   }
-  return best?.rate ?? null;
+  return best?.rate ?? table[unqualified] ?? (key ? table[key] : null) ?? null;
 }
 
 export function estimateCostUsd(
@@ -1427,9 +1436,10 @@ export function estimateCostUsd(
       unpricedModels.push(model);
       continue;
     }
+    if (counts.cachedInput > 0 && rate.cachedInput == null) unpricedModels.push(model);
     total +=
       (counts.input * rate.input +
-        counts.cachedInput * rate.cachedInput +
+        counts.cachedInput * (rate.cachedInput ?? 0) +
         (counts.cacheWriteInput ?? 0) * (rate.cacheWriteInput ?? rate.input) +
         counts.output * rate.output) /
       1_000_000;

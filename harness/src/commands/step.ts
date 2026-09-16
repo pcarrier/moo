@@ -2331,6 +2331,7 @@ export async function stepHandleLlmCommand(input: Input) {
     const requestProvider =
       input.requestProvider === "anthropic" ||
       input.requestProvider === "qwen" ||
+      input.requestProvider === "glm" ||
       input.requestProvider === "xai" ||
       input.requestProvider === "deepseek" ||
       input.requestProvider === "kimi"
@@ -2350,7 +2351,7 @@ export async function stepHandleLlmCommand(input: Input) {
         : null,
     );
     if (tokenEvent) moo.events.publish({ payload: tokenEvent });
-    await recordUsage(chatId, usedModel, normalizedUsage);
+    await recordUsage(chatId, usedModel, normalizedUsage, { effort: input.requestEffort, serviceTier: input.requestServiceTier });
     await traceMark("usage.persisted", {
       chatId,
       purpose,
@@ -2360,6 +2361,8 @@ export async function stepHandleLlmCommand(input: Input) {
   } else if (normalizedUsage) {
     await recordUsage(chatId, usedModel, normalizedUsage, {
       updateLastContextTokens: false,
+      effort: input.requestEffort,
+      serviceTier: input.requestServiceTier,
     });
     await traceMark("usage.persisted", {
       chatId,

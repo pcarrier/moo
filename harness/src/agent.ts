@@ -34,7 +34,7 @@ import {
   inferProviderForModelId,
   openAIBaseModelForRequest,
   openAIServiceTierForModel,
-  modelLongContextUsageKey,
+  modelUsagePricingKey,
   modelSupportsVision,
   normalizeProvider as normalizeProviderName,
   type ProviderName,
@@ -517,6 +517,12 @@ export function effortLevelsForProvider(
   if (provider.name === "qwen") return qwenEffortLevels(provider.model);
   if (provider.name === "glm") return glmEffortLevels(provider.model);
   if (provider.name === "kimi") return kimiEffortLevels(provider.model);
+  if (provider.name === "xai") {
+    const id = String(provider.model ?? "").toLowerCase();
+    if (/^grok-4\.6(?:-|$)/.test(id)) return ["low", "medium", "high", "xhigh"];
+    if (/^grok-4\.5(?:-|$)/.test(id)) return ["low", "medium", "high"];
+    if (/^grok-4\.3(?:-|$)/.test(id)) return ["none", "low", "medium", "high"];
+  }
   return [];
 }
 
@@ -533,13 +539,20 @@ export function compactionProviderForRequest(
 }
 
 function openaiEffortLevels(model: string | null | undefined): string[] {
-  const id = String(model ?? "")
+  const id = openAIBaseModelForRequest(model)
     .trim()
     .toLowerCase();
+  if (/^gpt-6-astra(?:-|$)/.test(id)) return ["low", "medium", "high", "xhigh", "max"];
   if (/^gpt-5\.6(?:[.-]|$)/.test(id))
+    return ["none", "low", "medium", "high", "xhigh", "max"];
+  if (/^gpt-5\.[245]-pro(?:-|$)/.test(id)) return ["medium", "high", "xhigh"];
+  if (/^gpt-5-pro(?:-|$)/.test(id)) return ["high"];
+  if (/^gpt-5\.[23]-codex(?:-|$)/.test(id) || /^gpt-5\.1-codex-max(?:-|$)/.test(id))
+    return ["low", "medium", "high", "xhigh"];
+  if (/^gpt-5(?:\.1)?-codex(?:-|$)/.test(id)) return ["low", "medium", "high"];
+  if (/^gpt-5\.[245](?:[.-]|$)/.test(id))
     return ["none", "low", "medium", "high", "xhigh"];
-  if (/^gpt-5\.5(?:[.-]|$)/.test(id))
-    return ["none", "low", "medium", "high", "xhigh"];
+  if (/^gpt-5\.1(?:[.-]|$)/.test(id)) return ["none", "low", "medium", "high"];
   if (/^gpt-5(?:[.-]|$)/.test(id)) return ["minimal", "low", "medium", "high"];
   if (/^o(?:1|3|4)(?:[.-]|$)/.test(id)) return ["low", "medium", "high"];
   return [];
@@ -549,7 +562,7 @@ function deepseekEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
-  return /^deepseek-(?:v4|chat|reasoner)(?:[-.]|$)/.test(id)
+  return /^deepseek-(?:flash|v4|chat|reasoner)(?:[-.]|$)/.test(id)
     ? ["none", "high", "max"]
     : [];
 }
@@ -558,6 +571,9 @@ function qwenEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
+  if (id.includes("coder") || id.includes("instruct")) return [];
+  if (id.includes("thinking")) return ["high"];
+  if (/^qwen-(?:plus|turbo|flash)(?:-|$)/.test(id)) return ["none", "high"];
   return /^qwen3(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
 }
 
@@ -565,6 +581,8 @@ function glmEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
+  if (/^glm-5\.3(?:[-.]|$)/.test(id)) return ["low", "high", "max"];
+  if (/^glm-4\.6v(?:-|$)/.test(id)) return ["none", "high"];
   return /^glm-(?:4\.[567]|5)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
 }
 
@@ -572,8 +590,9 @@ function kimiEffortLevels(model: string | null | undefined): string[] {
   const id = String(model ?? "")
     .trim()
     .toLowerCase();
-  if (/^kimi-k3(?:[-.]|$)/.test(id)) return ["max"];
-  return /^kimi-k2\.(?:5|6|7)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
+  if (/^kimi-k3(?:[-.]|$)/.test(id)) return ["low", "high", "max"];
+  if (/^kimi-k2\.7(?:[-.]|$)/.test(id)) return ["high"];
+  return /^kimi-k2\.(?:5|6)(?:[-.]|$)/.test(id) ? ["none", "high"] : [];
 }
 
 function openAICompatibleThinkingEffort(
@@ -581,7 +600,7 @@ function openAICompatibleThinkingEffort(
 ): "none" | "high" | "max" | null {
   const levels = effortLevelsForProvider(provider);
   if (!levels.length) return null;
-  if (levels.length === 1 && levels[0] === "max") return "max";
+  if (levels.length === 1 && (levels[0] === "max" || levels[0] === "high")) return levels[0];
   const normalized = normalizeEffort(provider.effort);
   if (normalized === "none" || normalized === "minimal") return "none";
   if (normalized) return "high";
@@ -607,6 +626,9 @@ function deepseekRequestEffort(
 
 function requestEffortForProvider(provider: LLMProvider): EffortLevel | null {
   if (provider.name === "deepseek") return deepseekRequestEffort(provider);
+  if ((provider.name === "glm" && /^glm-5\.3(?:[-.]|$)/i.test(provider.model ?? "")) ||
+      (provider.name === "kimi" && /^kimi-k3(?:[-.]|$)/i.test(provider.model ?? "")))
+    return effortAllowed(effortLevelsForProvider(provider), provider.effort) ?? "max";
   if (provider.name === "qwen" || provider.name === "glm" || provider.name === "kimi")
     return openAICompatibleThinkingEffort(provider);
   if (
@@ -689,6 +711,8 @@ function anthropicAdaptiveEffortLevels(
     .trim()
     .toLowerCase();
   if (!id.startsWith("claude")) return null;
+  if (/(?:fable|mythos|opus|sonnet)[-.]5(?:[-.]|$)/.test(id))
+    return ANTHROPIC_ADAPTIVE_OPUS_4_7_PLUS_EFFORT_LEVELS;
   if (isClaudeOpus47Plus(id)) return ANTHROPIC_ADAPTIVE_OPUS_4_7_PLUS_EFFORT_LEVELS;
   if (isClaudeMaxEffortModel(id)) return ANTHROPIC_ADAPTIVE_MAX_EFFORT_LEVELS;
   if (/(?:^|[-.])(?:opus|sonnet|haiku)[-.]4(?:[-.]|$)/.test(id))
@@ -756,14 +780,15 @@ function applyEffort(
     return;
   }
   if (provider.name === "glm" || provider.name === "kimi") {
-    const effort = openAICompatibleThinkingEffort(provider);
+    const effort = requestEffortForProvider(provider);
     if (!effort) return;
-    if (provider.name === "kimi" && effort === "max") {
+    if (provider.name === "kimi" && /^kimi-k3(?:[-.]|$)/i.test(provider.model ?? "")) {
       // Kimi K3 always thinks and its API uses top-level reasoning_effort.
       // K2.x keeps the older OpenAI-compatible `thinking` object.
-      body.reasoning_effort = "max";
+      body.reasoning_effort = effort;
       return;
     }
+    if (provider.name === "glm" && /^glm-5\.3(?:[-.]|$)/i.test(provider.model ?? "")) body.reasoning_effort = effort;
     body.thinking = { type: effort === "none" ? "disabled" : "enabled" };
     return;
   }
@@ -808,6 +833,11 @@ function applyEffort(
     } else if (effort) body.reasoning_effort = effort;
     return;
   }
+  if (provider.name === "xai") {
+    const effort = requestEffortForProvider(provider);
+    if (effort) body.reasoning_effort = effort;
+    return;
+  }
   if (!provider.effort) return;
 }
 
@@ -844,6 +874,7 @@ export function buildStreamingLLMRequest(
       requestModel: requestProvider.model || null,
       requestEffort: requestEffortForProvider(requestProvider),
       requestAuthMode: requestProvider.authMode || null,
+      requestServiceTier: requestProvider.serviceTier || null,
     };
   }
 
@@ -899,6 +930,7 @@ export function buildStreamingLLMRequest(
     requestModel: requestProvider.model || null,
     requestEffort: requestEffortForProvider(requestProvider),
     requestAuthMode: requestProvider.authMode || null,
+    requestServiceTier: requestProvider.serviceTier || null,
   };
 }
 export function toResponsesTools(tools: any[] | null): any[] | null {
@@ -1922,6 +1954,8 @@ export async function recordUsage(
   options: {
     updateLastContextTokens?: boolean;
     compactionPromptTokens?: number | null;
+    effort?: string | null;
+    serviceTier?: string | null;
   } = {},
 ): Promise<void> {
   if (!usage || !model) return;
@@ -1939,7 +1973,11 @@ export async function recordUsage(
     return;
   const ref = chatRefs(chatId).usage;
   const current = readChatUsageTarget(await moo.pointers.get({ name: ref }));
-  const usageModel = modelLongContextUsageKey(model, promptTotal) || model;
+  const usageModel = modelUsagePricingKey(model, promptTotal, {
+    at: await moo.time.nowMs({}),
+    thinking: !!options.effort && options.effort !== "none",
+    serviceTier: options.serviceTier,
+  });
   const slot = current.models[usageModel] ?? {
     input: 0,
     cachedInput: 0,
@@ -2709,7 +2747,7 @@ export async function runCompaction(
     chatId,
     body?.model || requestProvider.model,
     normalizeUsage(body?.usage) ?? estimateRawUsage(summaryMessages, summary),
-    { updateLastContextTokens: false },
+    { updateLastContextTokens: false, effort: requestEffortForProvider(requestProvider), serviceTier: requestProvider.serviceTier },
   );
 
   const now = await moo.time.nowMs({});

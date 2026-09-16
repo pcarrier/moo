@@ -25,12 +25,14 @@ type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek"
 type ModelPrice = {
     /** USD per million regular input tokens. */
     input: number;
-    /** USD per million prompt-cache read tokens. */
-    cachedInput: number;
+    /** USD per million prompt-cache read tokens; omitted when unpublished. */
+    cachedInput?: number;
     /** USD per million output tokens. */
     output: number;
     /** USD per million prompt-cache write tokens; defaults to `input` when omitted. */
     cacheWriteInput?: number;
+    /** Output rate when thinking is enabled, if different from regular output. */
+    thinkingOutput?: number;
 };
 type ModelCapabilities = {
     toolCalls?: boolean;
@@ -55,17 +57,36 @@ type ModelMetadata = {
     /** Max generated tokens, when the provider documents a separate output cap. */
     maxOutputTokens?: number;
     pricing?: ModelPrice;
-    /** Pricing used when the request crosses the provider's long-context threshold. */
-    longContext?: {
+    /** Ascending prompt-size tiers. Thresholds are exclusive unless marked inclusive. */
+    contextPricing?: readonly {
         threshold: number;
+        inclusive?: boolean;
         pricing: ModelPrice;
-    };
+        fastPricing?: ModelPrice;
+    }[];
+    /** DeepSeek's weekday peak schedule; all other times use these rates. */
+    offPeakPricing?: ModelPrice;
+    /** Published Fast mode token rates; absent when unavailable. */
+    fastPricing?: ModelPrice;
     capabilities?: ModelCapabilities;
     /** Human-readable availability notes for UI/API model metadata. */
     availability?: string;
     rateLimits?: ModelRateLimits;
     /** Show in the model picker by default. */
     defaultOption?: boolean;
+};
+/**
+ * An alternate endpoint for a provider that shares the same API key plumbing
+ * but targets a different base URL and default model — e.g. Kimi's "Kimi Code"
+ * subscription (api.kimi.com/coding) vs the Moonshot dev platform
+ * (api.moonshot.ai). Selected explicitly by the user, mirroring how OpenAI
+ * routes on authMode rather than sniffing the key string (both use `sk-`).
+ */
+type ProviderVariant = {
+    id: string;
+    title: string;
+    baseUrl: string;
+    fallbackModel: string;
 };
 type ProviderMetadata = {
     id: ProviderName;
@@ -77,6 +98,8 @@ type ProviderMetadata = {
     defaultBaseUrl: string;
     fallbackModel: string;
     inferPrefixes: string[];
+    /** Optional alternate endpoints; the first entry is the default. */
+    variants?: readonly ProviderVariant[];
     models: readonly ModelMetadata[];
 };
 declare const DEFAULT_CONTEXT_TOKENS = 128000;
@@ -84,6 +107,12 @@ declare const OPENAI_FAST_MODEL_SUFFIX = "#fast";
 declare const OPENAI_FAST_SERVICE_TIER = "priority";
 declare const PROVIDERS: readonly ProviderName[];
 declare const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata>;
+/**
+ * Resolve a provider's selected variant. Returns the matching variant, or the
+ * first (default) variant when the id is unset/unknown, or null when the
+ * provider declares no variants.
+ */
+declare function resolveProviderVariant(meta: ProviderMetadata, variantId: string | null | undefined): ProviderVariant | null;
 declare function openAIBaseModelForRequest(model: string | null | undefined): string;
 declare function openAIServiceTierForModel(model: string | null | undefined): typeof OPENAI_FAST_SERVICE_TIER | null;
 declare function openAIFastModelId(model: string | null | undefined): string;
@@ -97,6 +126,11 @@ declare function modelContextWindow(provider: ProviderName | null | undefined, m
 declare function modelSupportsTools(provider: ProviderName | null | undefined, model: string | null | undefined): boolean;
 declare function modelSupportsVision(provider: ProviderName | null | undefined, model: string | null | undefined): boolean;
 declare function modelLongContextUsageKey(model: string | null | undefined, promptTokens: number): string | null;
+declare function modelUsagePricingKey(model: string, promptTokens: number, options: {
+    at: number;
+    thinking?: boolean;
+    serviceTier?: string | null;
+}): string;
 declare function defaultModelPricing(): Record<string, ModelPrice>;
 
 // ---- harness/src/core/effect.d.ts ----

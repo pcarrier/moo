@@ -34,6 +34,20 @@ afterEach(() => {
 });
 
 describe("OpenAI-compatible provider support", () => {
+  test("records pricing tiers per request and retains Fast mode with an echoed base model", async () => {
+    for (const tokens of [32_000, 32_001]) {
+      await recordUsage("tier-test", "qwen3-coder-plus", { prompt_tokens: tokens, completion_tokens: 100 });
+    }
+    await recordUsage("tier-test", "gpt-6-astra", { prompt_tokens: 272_001, completion_tokens: 100 }, { serviceTier: "priority" });
+    const stored = JSON.parse(refs.get("chat/tier-test/usage")!.slice("json:".length));
+    expect(stored.models["qwen3-coder-plus"].input).toBe(32_000);
+    expect(stored.models["qwen3-coder-plus#long-context"].input).toBe(32_001);
+    expect(stored.models["gpt-6-astra#long-context#fast"].input).toBe(272_001);
+    expect(estimateCostUsd(stored, await loadPricing()).costUsd).toBeCloseTo(
+      (32_000 + 100 * 5 + 32_001 * 1.8 + 100 * 9 + 272_001 * 40 + 100 * 150) / 1_000_000,
+    );
+  });
+
   test("infers and parses xAI-prefixed Grok models", () => {
     expect(inferProviderForModel("grok-4-fast")).toBe("xai");
     expect(splitModelId("xai:grok-4-fast")).toEqual({ provider: "xai", model: "grok-4-fast" });
@@ -60,8 +74,8 @@ describe("OpenAI-compatible provider support", () => {
     expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-flash");
     expect(options.map((option) => option.id)).toContain("deepseek:deepseek-v4-pro");
     expect(modelSupportsToolCalls("deepseek-chat")).toBe(true);
-    expect(modelSupportsAttachments("deepseek", "deepseek-v4-flash")).toBe(false);
-    expect(options.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(false);
+    expect(modelSupportsAttachments("deepseek", "deepseek-v4-flash")).toBe(true);
+    expect(options.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(true);
   });
 
   test("includes GLM defaults in model options", async () => {
@@ -104,29 +118,29 @@ describe("OpenAI-compatible provider support", () => {
     expect(refs.get("chat/fresh/effort")).toBe("medium");
   });
 
-  test("defaults xAI credentials to x.ai API and Grok 4 Fast", async () => {
+  test("defaults xAI credentials to x.ai API and Grok 4.6", async () => {
     const provider = await resolveProvider(null, null, "xai");
-    expect(provider).toMatchObject({ name: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-4-fast", effort: null });
+    expect(provider).toMatchObject({ name: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-4.6", effort: null });
   });
 
-  test("defaults DeepSeek credentials to DeepSeek API and V4 Flash", async () => {
+  test("defaults DeepSeek credentials to DeepSeek API and V4.1 Flash", async () => {
     const provider = await resolveProvider(null, null, "deepseek");
-    expect(provider).toMatchObject({ name: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", effort: null });
+    expect(provider).toMatchObject({ name: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-flash", effort: null });
   });
 
-  test("defaults GLM credentials to Z.AI API and GLM 5.2", async () => {
+  test("defaults GLM credentials to Z.AI API and GLM 5.3", async () => {
     const provider = await resolveProvider(null, null, "glm");
-    expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.2", effort: null });
+    expect(provider).toMatchObject({ name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", model: "glm-5.3", effort: null });
   });
 
   test("enables optional Qwen3 thinking", () => {
-    expect(effortLevelsForProvider({ name: "qwen", model: "qwen3-coder-plus" })).toEqual(["none", "high"]);
-    expect(effortLevelsForProvider({ name: "qwen", model: "qwen-plus" })).toEqual([]);
+    expect(effortLevelsForProvider({ name: "qwen", model: "qwen3.8-max" })).toEqual(["none", "high"]);
+    expect(effortLevelsForProvider({ name: "qwen", model: "qwen3-coder-plus" })).toEqual([]);
     const request = buildStreamingLLMRequest({
       name: "qwen",
       baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       apiKey: "key",
-      model: "qwen3-coder-plus",
+      model: "qwen3.8-max",
       effort: "high",
     } as any, [{ role: "user", content: "Think" }], null);
     expect(request.requestEffort).toBe("high");
@@ -136,7 +150,7 @@ describe("OpenAI-compatible provider support", () => {
       name: "qwen",
       baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       apiKey: "key",
-      model: "qwen3-coder-plus",
+      model: "qwen3.8-max",
       effort: "none",
     } as any, [{ role: "user", content: "Answer" }], null);
     expect(noThinking.requestEffort).toBe("none");
@@ -266,13 +280,13 @@ describe("OpenAI-compatible provider support", () => {
   });
 
   test("uses Grok-specific context windows", () => {
-    expect(modelContextBudget({ name: "xai", model: "grok-4-fast" })).toBe(2_000_000);
-    expect(modelMetadataFor("xai", "grok-4-fast")?.rateLimits).toMatchObject({ requestsPerMinute: 600, tokensPerMinute: 4_000_000 });
+    expect(modelContextBudget({ name: "xai", model: "grok-4-fast" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "xai", model: "grok-4.6" })).toBe(500_000);
   });
 
   test("uses GPT-5.6 API and Codex context windows for dated model variants", () => {
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-sol" })).toBe(1_000_000);
-    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-terra-2026-01" })).toBe(1_000_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-sol" })).toBe(1_050_000);
+    expect(modelContextBudget({ name: "openai", model: "gpt-5.6-terra-2026-01" })).toBe(1_050_000);
     expect(modelContextBudget({ name: "openai", model: "gpt-5.6-luna", authMode: "oauth" })).toBe(400_000);
     expect(modelContextBudget({ name: "openai", model: "gpt-5.6-2026-01", authMode: "oauth" })).toBe(400_000);
   });
@@ -280,7 +294,7 @@ describe("OpenAI-compatible provider support", () => {
   test("tracks GPT-5.6 availability tiers", async () => {
     const base = modelMetadataFor("openai", "gpt-5.6");
     expect(base?.id).toBe("gpt-5.6-sol");
-    expect(base?.availability).toBe("Plus, Pro, Business, Enterprise, API, and Codex");
+    expect(base?.availability).toBe("API and Codex; promotional rates through at least 2026-11-21");
     expect(base?.capabilities?.reasoning).toBe(true);
     expect(base && modelMatches(base, "gpt-5.6-sol-2026-01")).toBe(true);
     expect(modelMetadataFor("openai", "gpt-5.6-terra")?.id).toBe("gpt-5.6-terra");
@@ -353,14 +367,14 @@ describe("OpenAI-compatible provider support", () => {
 
     const info = await chatModelInfo("deepseek-attachments");
 
-    expect(info.supportsAttachments).toBe(false);
-    expect(info.modelOptions.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(false);
-    expect(info.modelOptions.find((option) => option.id === "xai:grok-4-fast")?.supportsAttachments).toBe(true);
+    expect(info.supportsAttachments).toBe(true);
+    expect(info.modelOptions.find((option) => option.id === "deepseek:deepseek-v4-flash")?.supportsAttachments).toBe(true);
+    expect(info.modelOptions.find((option) => option.id === "xai:grok-4.6")?.supportsAttachments).toBe(true);
   });
 
-  test("rejects DeepSeek image attachments before starting a step", async () => {
+  test("rejects DeepSeek Pro image attachments before starting a step", async () => {
     refs.set("chat/deepseek-step/provider", "deepseek");
-    refs.set("chat/deepseek-step/model", "deepseek-v4-flash");
+    refs.set("chat/deepseek-step/model", "deepseek-v4-pro");
 
     const result = await stepCommand({
       chatId: "deepseek-step",
@@ -369,26 +383,26 @@ describe("OpenAI-compatible provider support", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error).toMatchObject({ source: "unsupported_attachments", provider: "deepseek", model: "deepseek-v4-flash" });
+    expect(result.error).toMatchObject({ source: "unsupported_attachments", provider: "deepseek", model: "deepseek-v4-pro" });
     expect(JSON.stringify(result.error)).toContain("does not support image attachments");
   });
 
   test("tracks GPT-5.6 pricing", async () => {
     const pricing = await loadPricing();
-    expect(priceFor("gpt-5.6", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 });
-    expect(priceFor("gpt-5.6-sol-2026-01", pricing)).toEqual({ input: 5, cachedInput: 0.5, cacheWriteInput: 6.25, output: 30 });
-    expect(priceFor("gpt-5.6-terra", pricing)).toEqual({ input: 2.5, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15 });
-    expect(priceFor("gpt-5.6-luna", pricing)).toEqual({ input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 6 });
-    expect(estimateCostUsd({ models: { "gpt-5.6": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(41.75);
+    expect(priceFor("gpt-5.6", pricing)).toEqual({ input: 4, cachedInput: 0.4, cacheWriteInput: 5, output: 20 });
+    expect(priceFor("gpt-5.6-sol-2026-01", pricing)).toEqual({ input: 4, cachedInput: 0.4, cacheWriteInput: 5, output: 20 });
+    expect(priceFor("gpt-5.6-terra", pricing)).toEqual({ input: 2, cachedInput: 0.2, cacheWriteInput: 2.5, output: 12 });
+    expect(priceFor("gpt-5.6-luna", pricing)).toEqual({ input: 0.2, cachedInput: 0.02, cacheWriteInput: 0.25, output: 1.2 });
+    expect(estimateCostUsd({ models: { "gpt-5.6": { input: 1_000_000, cachedInput: 1_000_000, cacheWriteInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(29.4);
   });
 
   test("tracks Grok pricing and capabilities", async () => {
     const pricing = await loadPricing();
-    expect(priceFor("grok-4-fast", pricing)).toEqual({ input: 0.2, cachedInput: 0.05, output: 0.5 });
-    expect(priceFor("grok-4-fast#long-context", pricing)).toEqual({ input: 0.4, cachedInput: 0, output: 1 });
-    expect(modelLongContextUsageKey("grok-4-fast", 128_001)).toBe("grok-4-fast#long-context");
+    expect(priceFor("grok-4-fast", pricing)).toEqual({ input: 1.25, cachedInput: 0.2, output: 2.5 });
+    expect(priceFor("grok-4-fast#long-context", pricing)).toEqual({ input: 2.5, cachedInput: 0.4, output: 5 });
+    expect(modelLongContextUsageKey("grok-4-fast", 200_000)).toBe("grok-4.3#long-context");
     expect(modelSupportsToolCalls("grok-4-fast")).toBe(true);
-    expect(estimateCostUsd({ models: { "grok-4-fast": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.75);
+    expect(estimateCostUsd({ models: { "grok-4-fast": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(3.95);
   });
 
   test("tracks GLM pricing and capabilities", async () => {
@@ -402,15 +416,15 @@ describe("OpenAI-compatible provider support", () => {
 
   test("tracks DeepSeek pricing, aliases, and cache usage", async () => {
     const pricing = await loadPricing();
-    expect(priceFor("deepseek-v4-flash", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
-    expect(priceFor("deepseek-chat", pricing)).toEqual({ input: 0.14, cachedInput: 0.0028, output: 0.28 });
-    expect(priceFor("deepseek-v4-pro", pricing)).toEqual({ input: 0.435, cachedInput: 0.003625, output: 0.87 });
+    expect(priceFor("deepseek-v4-flash", pricing)).toEqual({ input: 0.3, cachedInput: 0.006, output: 1.2 });
+    expect(priceFor("deepseek-flash", pricing)).toEqual({ input: 0.3, cachedInput: 0.006, output: 1.2 });
+    expect(priceFor("deepseek-v4-pro", pricing)).toEqual({ input: 1.32, cachedInput: 0.044, output: 3.96 });
     const normalizedCacheUsage = normalizeUsage({ prompt_tokens: 20, prompt_cache_hit_tokens: 4, prompt_cache_miss_tokens: 6, completion_tokens: 2 });
     expect(normalizedCacheUsage?.prompt_tokens).toBe(10);
     expect(normalizedCacheUsage?.prompt_tokens_details?.cached_tokens).toBe(4);
     await recordUsage("deepseek-cache-test", "deepseek-v4-flash", normalizedCacheUsage);
     const stored = JSON.parse(refs.get("chat/deepseek-cache-test/usage")!.slice("json:".length));
-    expect(stored.models["deepseek-v4-flash"]).toEqual({ input: 6, cachedInput: 4, cacheWriteInput: 0, output: 2 });
-    expect(estimateCostUsd({ models: { "deepseek-v4-flash": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(0.4228);
+    expect(stored.models["deepseek-flash#off-peak"]).toEqual({ input: 6, cachedInput: 4, cacheWriteInput: 0, output: 2 });
+    expect(estimateCostUsd({ models: { "deepseek-v4-flash": { input: 1_000_000, cachedInput: 1_000_000, output: 1_000_000 } } }, pricing).costUsd).toBe(1.506);
   });
 });

@@ -438,7 +438,7 @@ describe("compaction prompts", () => {
     const base = { apiKey: "key", baseUrl: "https://llm.test", keyEnvHint: "KEY" };
 
     const gpt56 = "gpt-5.6-sol-premium-1p-codexswic-ev3";
-    expect(effortLevelsForProvider({ name: "openai", model: gpt56 })).toEqual(["none", "low", "medium", "high", "xhigh"]);
+    expect(effortLevelsForProvider({ name: "openai", model: gpt56 })).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
     expect((buildStreamingLLMRequest({ ...base, name: "openai", model: gpt56, effort: "minimal" }, [{ role: "user", content: "summarize" }], null).body as any).reasoning).toEqual({ summary: "auto" });
     const gpt56CompactionProvider = compactionProviderForRequest({ ...base, name: "openai", model: gpt56, effort: "xhigh" });
     expect(gpt56CompactionProvider.effort).toBe("xhigh");

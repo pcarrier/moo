@@ -174,6 +174,7 @@ export type LlmResultInput = {
   requestModel?: string | null;
   requestProvider?: string | null;
   requestAuthMode?: string | null;
+  requestServiceTier?: string | null;
   availableTokens?: number | string;
   compactionsInARow?: number | string;
   compactionTrigger?: "automatic" | "manual" | string;
