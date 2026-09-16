@@ -220,6 +220,10 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
     defaultBaseUrl: "https://api.z.ai/api/paas/v4",
     fallbackModel: "glm-5.3",
     inferPrefixes: ["glm-"],
+    variants: [
+      { id: "platform", title: "Z.ai API Platform", baseUrl: "https://api.z.ai/api/paas/v4", fallbackModel: "glm-5.3" },
+      { id: "coding", title: "Z.ai Coding Plan", baseUrl: "https://api.z.ai/api/coding/paas/v4", fallbackModel: "glm-5.3" },
+    ],
     models: [
       { id: "glm-5.3", match: "^glm-5\\.3(?:-\\d{4}(?:-\\d{2}(?:-\\d{2})?)?|-latest)?$", contextWindow: 1000000, pricing: { input: 1.4, cachedInput: 0.26, output: 4.4 }, capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true }, defaultOption: true, maxOutputTokens: 128000 },
       { id: "glm-5.3-flash", match: "^glm-5\\.3-flash(?:-\\d{4}(?:-\\d{2}(?:-\\d{2})?)?|-latest)?$", contextWindow: 1000000, pricing: { input: 0.15, cachedInput: 0.03, output: 0.5 }, capabilities: { toolCalls: true, structuredOutputs: true, reasoning: true, vision: true }, defaultOption: true, maxOutputTokens: 128000 },

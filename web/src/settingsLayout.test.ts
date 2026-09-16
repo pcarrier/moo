@@ -60,6 +60,22 @@ describe("settings layout", () => {
     expect(settingsView).not.toContain('draftsForSave');
   });
 
+  it("offers a GLM plan selector that sets its URL without replacing the API key", () => {
+    expect(settingsView).toContain('from "./settingsProviders"');
+    expect(settingsView).toContain("variant: d.glm.variant");
+    expect(settingsView).toContain("baseUrl: d.glm.baseUrl");
+    expect(settingsView).toContain('apiKey: d.glm.apiKey === "••••" ? undefined : d.glm.apiKey');
+    expect(settingsView).toContain('variant: p.variant || meta.variants?.[0]?.id || ""');
+    expect(settingsView).toContain('onChange={(e) => updateDraft(meta.id, providerVariantPatch(meta, e.currentTarget.value))}');
+    expect(settingsView).toContain('for={`provider-variant-${meta.id}`}>{meta.variantLabel ?? "Endpoint"}');
+    expect(settingsView).toContain('id={`provider-variant-${meta.id}`}');
+    expect(settingsView).toContain('const variantValue = () => providerVariantValue(meta, draft());');
+    expect(settingsView).toContain('variantSelect.value = v');
+    expect(settingsView).toContain('<option value="custom" disabled hidden={variantValue() !== "custom"}>Custom endpoint (advanced)</option>');
+    expect(settingsView).toContain('<Show when={meta.endpointHint}><p class="subtle">{meta.endpointHint}</p></Show>');
+    expect(settingsView).toContain('<Show when={selectedVariant()?.hint}><p class="subtle">{selectedVariant()?.hint}</p></Show>');
+  });
+
   it("defaults automatic compaction to fifty percent", () => {
     expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 50");
   });

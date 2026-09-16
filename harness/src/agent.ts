@@ -1,5 +1,6 @@
 import type { LLMProvider } from "./types";
 import { jsonObjectSchema, jsonValueSchema, parseJson, type JsonObject } from "./core/json";
+import { providerErrorHint } from "./core/provider_error";
 import {
   currentCompactionThresholdPercent,
   providerConfiguredCredential,
@@ -2739,6 +2740,10 @@ export async function runCompaction(
         code: compactionProviderErrorCode(parsed),
         requestId: providerErrorRequestId(parsed, resp.headers),
         retryAfter: providerErrorRetryAfter(resp.headers, parsed),
+        hint: providerErrorHint(
+          requestProvider,
+          compactionProviderErrorCode(parsed),
+        ),
         body: compactionProviderErrorBodyForRecord(parsed, resp.body),
       },
     );

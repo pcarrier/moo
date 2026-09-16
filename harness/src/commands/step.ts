@@ -75,6 +75,7 @@ import {
   type StepDriverState,
 } from "../driver/step";
 import { llmAttempt, llmRetryDecisionFromSchedule } from "../core/retry";
+import { providerErrorHint } from "../core/provider_error";
 import { currentLlmRetryPolicy } from "./llm_auth";
 import { getTasks, outstandingTaskCount } from "../tasks";
 import type { ProviderName } from "../llm_models";
@@ -1419,7 +1420,10 @@ export async function stepNextCommand(input: Input) {
         },
         async () =>
           commandValue(
-            await stepHandleLlmCommand(effect.input as unknown as Input),
+            await stepHandleLlmCommand({
+              ...effect.input,
+              provider: state.provider,
+            } as unknown as Input),
           ),
       );
       state = reduceStepDriverState(state, { type: "LlmHandled", handled });
@@ -2390,7 +2394,10 @@ export async function stepHandleLlmCommand(input: Input) {
       const type = providerErrorType(parsed);
       const requestId = providerErrorRequestId(parsed, llmResult.headers);
       const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
-      const hint = null;
+      const hint = providerErrorHint(
+        { ...input.provider, name: input.requestProvider ?? input.provider?.name },
+        providerErrorCode(parsed),
+      );
       await traceMark("compaction.failed", {
         chatId,
         reason,
@@ -2685,7 +2692,10 @@ export async function stepHandleLlmCommand(input: Input) {
     const type = providerErrorType(parsed);
     const requestId = providerErrorRequestId(parsed, llmResult.headers);
     const retryAfter = providerErrorRetryAfter(llmResult.headers, parsed);
-    const hint = null;
+    const hint = providerErrorHint(
+      { ...input.provider, name: input.requestProvider ?? input.provider?.name },
+      providerErrorCode(parsed),
+    );
     await recordErrorStep(
       chatId,
       "provider",

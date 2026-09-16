@@ -4,17 +4,7 @@ import { api, type LlmAuthMode, type LlmAuthSettings, type LlmProviderId, type O
 import type { Bag } from "./state";
 import { ActionRow, Card, InlineActions, Notice, PageBody, PageHeader, PageShell } from "./PageChrome";
 import { TabBar, type TabBarItem } from "./TabBar";
-
-type ProviderVariantMeta = { id: string; title: string; baseUrl: string };
-
-type ProviderMeta = {
-  id: LlmProviderId;
-  title: string;
-  envLabel: string;
-  defaultBaseUrl: string;
-  supportsOAuth?: boolean;
-  variants?: ProviderVariantMeta[];
-};
+import { PROVIDERS, providerVariantPatch, providerVariantValue, type ProviderMeta } from "./settingsProviders";
 
 type ProviderDraft = {
   authMode: LlmAuthMode;
@@ -33,20 +23,6 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "runtime", title: "Runtime" },
   { id: "otel", title: "OTEL" },
 ];
-
-const PROVIDERS: ProviderMeta[] = [
-  { id: "openai", title: "OpenAI", envLabel: "OPENAI_API_KEY", defaultBaseUrl: "https://api.openai.com/v1", supportsOAuth: true },
-  { id: "anthropic", title: "Anthropic", envLabel: "ANTHROPIC_API_KEY", defaultBaseUrl: "https://api.anthropic.com/v1" },
-  { id: "qwen", title: "Qwen", envLabel: "QWEN_API_KEY or DASHSCOPE_API_KEY", defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
-  { id: "glm", title: "GLM", envLabel: "ZAI_API_KEY or GLM_API_KEY", defaultBaseUrl: "https://api.z.ai/api/paas/v4" },
-  { id: "xai", title: "xAI", envLabel: "XAI_API_KEY or GROK_API_KEY", defaultBaseUrl: "https://api.x.ai/v1" },
-  { id: "deepseek", title: "DeepSeek", envLabel: "DEEPSEEK_API_KEY", defaultBaseUrl: "https://api.deepseek.com" },
-  { id: "kimi", title: "Kimi", envLabel: "MOONSHOT_API_KEY or KIMI_API_KEY", defaultBaseUrl: "https://api.moonshot.ai/v1", variants: [
-    { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1" },
-    { id: "code", title: "Kimi Code (kimi.com/code)", baseUrl: "https://api.kimi.com/coding/v1" },
-  ] },
-];
-
 
 function numberOrBlank(value: unknown): string {
   const n = Number(value);
@@ -204,6 +180,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           authMode: d.glm.authMode,
           apiKey: d.glm.apiKey === "••••" ? undefined : d.glm.apiKey,
           baseUrl: d.glm.baseUrl,
+          variant: d.glm.variant,
         },
         xai: {
           authMode: d.xai.authMode,
@@ -485,7 +462,8 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     const draft = () => drafts()[meta.id];
     const provider = () => settings()?.providers[meta.id];
     const canOAuth = !!meta.supportsOAuth;
-    const variantValue = () => draft().variant || meta.variants?.[0]?.id || "";
+    const variantValue = () => providerVariantValue(meta, draft());
+    const selectedVariant = () => meta.variants?.find((v) => v.id === variantValue());
     // A controlled <select>'s `value` prop is applied before its <option>
     // children exist, so the browser silently drops it and falls back to the
     // first option — which made the saved endpoint appear to reset after every
@@ -499,15 +477,19 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
       <section class="settings-section llm-provider-section">
         <h2>{meta.title}</h2>
         <Show when={meta.variants?.length}>
-          <label class="field-label">Endpoint</label>
+          <label class="field-label" for={`provider-variant-${meta.id}`}>{meta.variantLabel ?? "Endpoint"}</label>
           <select
+            id={`provider-variant-${meta.id}`}
             ref={variantSelect}
-            onChange={(e) => updateDraft(meta.id, { variant: e.currentTarget.value })}
+            onChange={(e) => updateDraft(meta.id, providerVariantPatch(meta, e.currentTarget.value))}
           >
+            {meta.selectsBaseUrl ? <option value="custom" disabled hidden={variantValue() !== "custom"}>Custom endpoint (advanced)</option> : null}
             {meta.variants!.map((v) => (
-              <option value={v.id}>{v.title} ({v.baseUrl})</option>
+              <option value={v.id}>{v.title}{meta.selectsBaseUrl ? "" : ` (${v.baseUrl})`}</option>
             ))}
           </select>
+          <Show when={meta.endpointHint}><p class="subtle">{meta.endpointHint}</p></Show>
+          <Show when={selectedVariant()?.hint}><p class="subtle">{selectedVariant()?.hint}</p></Show>
         </Show>
         <label class="field-label">Auth mode</label>
         <select
@@ -544,7 +526,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           </ActionRow>
         </Show>
         <div class="settings-row">
-          <label><span>Base URL override</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={meta.variants?.find((v) => v.id === (draft().variant || meta.variants![0].id))?.baseUrl ?? meta.defaultBaseUrl} /></label>
+          <label><span>Base URL override{meta.selectsBaseUrl ? " (advanced)" : ""}</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={selectedVariant()?.baseUrl ?? meta.defaultBaseUrl} /></label>
         </div>
       </section>
     );

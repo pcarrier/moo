@@ -289,6 +289,86 @@ describe("OpenAI-compatible provider support", () => {
     expect(provider).toMatchObject({ name: "kimi", baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k3" });
   });
 
+  test("persists the GLM Coding Plan endpoint and routes the selected model there", async () => {
+    // Legacy/API clients can still choose a variant without a URL override.
+    await llmAuthSaveCommand({ glm: { authMode: "apiKey", apiKey: "coding-key", baseUrl: "", variant: "coding" } });
+    const reloaded = await llmAuthGetCommand();
+    expect(reloaded.value.settings.providers.glm).toMatchObject({ authMode: "apiKey", variant: "coding", baseUrl: null });
+
+    const provider = await resolveProvider("glm-5.3-flash", null, "glm");
+    expect(provider).toMatchObject({ name: "glm", apiKey: "coding-key", baseUrl: "https://api.z.ai/api/coding/paas/v4", model: "glm-5.3-flash" });
+    const request = buildStreamingLLMRequest(provider, [{ role: "user", content: "hello" }], [
+      { type: "function", function: { name: "lookup", description: "Lookup a value.", parameters: { type: "object", properties: {} } } },
+    ]);
+    expect(request.url).toBe("https://api.z.ai/api/coding/paas/v4/chat/completions");
+    expect(request.transport).toBe("sse");
+    expect(request.body).toMatchObject({ model: "glm-5.3-flash", stream: true, tool_choice: "auto" });
+    expect((request.body as any).tools?.[0]?.function?.name).toBe("lookup");
+  });
+
+  test("the UI plan selection replaces an old endpoint despite environment overrides", async () => {
+    envValues.set("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4");
+    await llmAuthSaveCommand({ glm: { authMode: "apiKey", apiKey: "zai-key", baseUrl: "https://proxy.example/glm" } });
+    // Match the UI's plan-selection payload; omit the already-stored API key.
+    await llmAuthSaveCommand({ glm: { variant: "coding", baseUrl: "https://api.z.ai/api/coding/paas/v4" } });
+    expect((await llmAuthGetCommand()).value.settings.providers.glm).toMatchObject({
+      variant: "coding", baseUrl: "https://api.z.ai/api/coding/paas/v4", hasApiKey: true,
+    });
+    expect(await resolveProvider("glm-5.3-flash", null, "glm")).toMatchObject({
+      apiKey: "zai-key", model: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    });
+
+    envValues.set("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4");
+    await llmAuthSaveCommand({ glm: { variant: "platform", baseUrl: "https://api.z.ai/api/paas/v4" } });
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({
+      apiKey: "zai-key", baseUrl: "https://api.z.ai/api/paas/v4",
+    });
+  });
+
+  test("supports environment keys with the GLM Coding Plan endpoint", async () => {
+    envValues.set("ZAI_API_KEY", "coding-env-key");
+    await llmAuthSaveCommand({ glm: { authMode: "env", variant: "coding" } });
+    const provider = await resolveProvider(null, null, "glm");
+    expect(provider).toMatchObject({ name: "glm", apiKey: "coding-env-key", baseUrl: "https://api.z.ai/api/coding/paas/v4", model: "glm-5.3" });
+  });
+
+  test("preserves the GLM endpoint when saving only authentication", async () => {
+    await llmAuthSaveCommand({ glm: { authMode: "apiKey", apiKey: "coding-key", variant: "coding" } });
+    await llmAuthSaveCommand({ glm: { apiKey: "new-coding-key" } });
+    expect((await llmAuthGetCommand()).value.settings.providers.glm.variant).toBe("coding");
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ apiKey: "new-coding-key", baseUrl: "https://api.z.ai/api/coding/paas/v4" });
+  });
+
+  test("keeps explicit GLM URL overrides ahead of the Coding Plan endpoint", async () => {
+    envValues.set("ZAI_BASE_URL", "https://env.example/glm");
+    await llmAuthSaveCommand({ glm: { variant: "coding", baseUrl: "https://proxy.example/glm" } });
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://proxy.example/glm" });
+
+    await llmAuthSaveCommand({ glm: { baseUrl: "" } });
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://env.example/glm" });
+
+    envValues.delete("ZAI_BASE_URL");
+    envValues.set("GLM_BASE_URL", "https://alias.example/glm");
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://alias.example/glm" });
+
+    envValues.delete("GLM_BASE_URL");
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://api.z.ai/api/coding/paas/v4" });
+  });
+
+  test("can switch GLM back to pay-as-you-go without replacing its API key", async () => {
+    await llmAuthSaveCommand({ glm: { authMode: "apiKey", apiKey: "zai-key", variant: "coding" } });
+    await llmAuthSaveCommand({ glm: { variant: "platform" } });
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ apiKey: "zai-key", baseUrl: "https://api.z.ai/api/paas/v4" });
+  });
+
+  test("does not silently opt existing or invalid GLM settings into subscription billing", async () => {
+    await llmAuthSaveCommand({ glm: { authMode: "apiKey", apiKey: "platform-key" } });
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://api.z.ai/api/paas/v4" });
+    await llmAuthSaveCommand({ glm: { variant: "unknown" } });
+    expect((await llmAuthGetCommand()).value.settings.providers.glm.variant).toBeNull();
+    expect(await resolveProvider(null, null, "glm")).toMatchObject({ baseUrl: "https://api.z.ai/api/paas/v4" });
+  });
+
   test("routes the Kimi Code variant to api.kimi.com/coding with kimi-for-coding", async () => {
     const saved = await llmAuthSaveCommand({ kimi: { authMode: "apiKey", apiKey: "code-key", variant: "code" } });
     expect(saved.value.settings.providers.kimi).toMatchObject({ authMode: "apiKey", variant: "code" });

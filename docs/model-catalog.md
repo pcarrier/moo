@@ -10,9 +10,28 @@ Reviewed **2026-09-16**. The catalog in `harness/src/llm_models.ts` covers the s
 - OpenAI long-context rates apply above 272,000 input tokens. xAI long-context rates apply at or above 200,000 input tokens. Qwen tiers use decimal K (1,000); the applicable rate covers all tokens in that request, including output. The usage store retains the selected tier instead of pricing a chat's accumulated tokens as one request.
 - DeepSeek peak hours are Monday–Friday, **01:00–04:00 and 06:00–10:00 UTC**; other hours use the published off-peak rates. Moo chooses the tier when usage is recorded. Requests crossing a billing boundary may differ from the provider invoice.
 - Qwen Plus and Turbo have different output rates with thinking enabled; usage retains that mode. Temporary Qwen promotions are excluded. GPT-5.6 Sol's published promotional rates, valid through at least November 21, 2026, are included.
-- Subscription access (OpenAI OAuth/Codex, Kimi Code) is not a per-token invoice. API-equivalent rates, when known, are estimates of usage value. Kimi Code's subscription-only model remains explicitly unpriced.
+- Subscription access (OpenAI OAuth/Codex, Z.ai Coding Plan, Kimi Code) is not a per-token invoice. API-equivalent rates, when known, are estimates of usage value. Kimi Code's subscription-only model remains explicitly unpriced.
 - Existing usage is not rewritten. Older chats without context, thinking, Fast, or time-of-day distinctions cannot recover those distinctions retroactively. Prices are a current catalog snapshot, not a historical invoice ledger.
 - Unknown model families do not inherit a nearby model's rate. Exact aliases and documented versioned IDs resolve through catalog metadata. `MOO_LLM_PRICING` still accepts custom substring overrides.
+
+## Z.ai Coding Plan versus API Platform
+
+Z.ai uses separate endpoints and billing pools for its API Platform and Coding Plan:
+
+| GLM plan setting | Base URL | Billing |
+| --- | --- | --- |
+| API Platform (pay-as-you-go, default) | `https://api.z.ai/api/paas/v4` | Pay-as-you-go API balance/resource packages |
+| Coding Plan (subscription) | `https://api.z.ai/api/coding/paas/v4` | Eligible Coding Plan subscription quota |
+
+For a Coding Plan subscription, choose **Settings → Providers → GLM → Plan → Coding Plan (subscription)** and **Save**. Selecting a plan sets its URL automatically, replacing any previous override while keeping your API key and auth mode. No URL entry is needed. Configure your Z.ai API key if you have not already done so. On older Moo builds, set **Base URL override** to `https://api.z.ai/api/coding/paas/v4` instead. Environment-based setup can use `ZAI_API_KEY` and `ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4`.
+
+Selecting a plan stores its URL, so that choice wins over `ZAI_BASE_URL` / `GLM_BASE_URL` and other environment URL aliases. You can still edit **Base URL override (advanced)** for a gateway; the plan control then shows **Custom endpoint (advanced)**. Clearing the override restores environment URL precedence, followed by the saved variant's default. Loading settings does not rewrite existing overrides; Moo does not infer subscriptions from API keys or silently switch billing routes after an error.
+
+[HTTP 429 with Z.ai error code `1113`](https://docs.z.ai/api-reference/api-code) ("Insufficient balance or no resource package") is a balance/resource error, not an ordinary rate-limit error. When sent to the API Platform endpoint, an active Coding Plan does not supply that API balance. Selecting the subscription endpoint fixes the billing route, not account entitlement.
+
+As of this review, the [Coding Plan overview](https://docs.z.ai/devpack/overview) says all plans support GLM-5.3 and GLM-5.3-Flash; the [GLM-5.3-Flash model page](https://docs.z.ai/guides/vlm/glm-5.3-flash) explicitly confirms Coding Plan availability. Moo sends the selected model ID unchanged. Model availability remains subject to Z.ai's current plan and endpoint rules, not Moo's model catalog.
+
+**Supported-tool restriction:** Z.ai's [tool integration documentation](https://docs.z.ai/devpack/tool/others) limits subscription benefits to officially supported tools and product environments. Moo is not on the published list at this review. Confirm eligibility with Z.ai before relying on Coding Plan access from Moo; configuring a compatible endpoint does not establish permission or guaranteed access. Moo does not impersonate a listed client to bypass those restrictions. Otherwise, use the API Platform endpoint with funded API balance.
 
 ## Primary sources
 
