@@ -123,14 +123,15 @@ describe("Anthropic provider support", () => {
 
 
 describe("OpenAI fast mode", () => {
-  test("shows GPT fast variants as separate model options", async () => {
+  test("shows published Fast variants as separate model options", async () => {
     const options = await modelOptionsFor("openai", "gpt-5");
     const ids = options.map((option) => option.id);
 
     expect(ids).toContain("openai:gpt-5");
     expect(ids).toContain("openai:gpt-5#fast");
     expect(options.find((option) => option.id === "openai:gpt-5#fast")?.label).toBe("openai / gpt-5 (fast)");
-    expect(options.find((option) => option.id === "openai:o3#fast")).toBeUndefined();
+    expect(ids).toContain("openai:o3#fast");
+    expect(ids).not.toContain("openai:gpt-5.5-pro#fast");
   });
 
   test("sends priority service tier while preserving the base model slug", () => {
