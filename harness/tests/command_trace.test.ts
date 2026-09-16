@@ -561,6 +561,126 @@ describe("LLM stream provider details", () => {
     expect((accumulated.value as any).state.reasoningContent).toBe("");
   });
 
+  test.each([
+    {
+      name: "plain OpenRouter reasoning",
+      delta: { reasoning: "think" },
+      expected: "think",
+    },
+    {
+      name: "duplicate OpenRouter representations",
+      delta: {
+        reasoning: "think",
+        reasoning_details: [{ type: "reasoning.text", text: "think" }],
+      },
+      expected: "think",
+    },
+    {
+      name: "DeepSeek field precedence over OpenRouter aliases",
+      delta: {
+        reasoning_content: "native",
+        reasoning: "normalized",
+        reasoning_details: [{ type: "reasoning.text", text: "structured" }],
+      },
+      expected: "native",
+    },
+    {
+      name: "empty native field fallback to OpenRouter reasoning",
+      delta: { reasoning_content: "", reasoning: "think" },
+      expected: "think",
+    },
+    {
+      name: "malformed native field fallback to OpenRouter reasoning",
+      delta: { reasoning_content: {}, reasoning: "think" },
+      expected: "think",
+    },
+    {
+      name: "empty plain fields fallback to structured text and summary",
+      delta: {
+        reasoning_content: "",
+        reasoning: "",
+        reasoning_details: [
+          { type: "reasoning.text", text: "think " },
+          { type: "reasoning.summary", summary: "more" },
+        ],
+      },
+      expected: "think more",
+    },
+    {
+      name: "malformed plain fields fallback to legacy untyped text",
+      delta: {
+        reasoning_content: 1,
+        reasoning: {},
+        reasoning_details: [null, "bad", { text: 123 }, { text: "think" }],
+      },
+      expected: "think",
+    },
+    {
+      name: "encrypted and unknown details are not displayed",
+      delta: {
+        reasoning_details: [
+          { type: "reasoning.encrypted", data: "secret", text: "secret" },
+          { type: "unknown", text: "unknown" },
+          { type: "reasoning.summary", summary: 123 },
+        ],
+      },
+      expected: "",
+    },
+    {
+      name: "non-array details are ignored",
+      delta: { reasoning: null, reasoning_details: { text: "not a delta" } },
+      expected: "",
+    },
+  ])("accumulates reasoning with $name", async ({ delta, expected }) => {
+    const accumulated = await dispatch({
+      command: "llm-stream-accumulate",
+      chatId: "chat1",
+      state: {},
+      streamEvents: {
+        draftEvent: { kind: "draft", chatId: "chat1", draftId: "draft1" },
+      },
+      events: [JSON.stringify({ choices: [{ delta }] })],
+    } as any);
+    expect(accumulated.ok).toBe(true);
+    const { state, events } = accumulated.value as any;
+    expect(state.reasoningContent).toBe(expected);
+    expect(
+      events
+        .filter((event: any) => event.kind === "reasoning-draft")
+        .map((event: any) => event.delta),
+    ).toEqual(expected ? [expected] : []);
+  });
+
+  test("selects reasoning fallback per delta without deduplicating repeated chunks", async () => {
+    let state = {};
+    for (const delta of [
+      {
+        reasoning: "think ",
+        reasoning_details: [{ type: "reasoning.text", text: "think " }],
+      },
+      { reasoning_details: [{ type: "reasoning.text", text: "think " }] },
+      { reasoning: "more", content: "answer" },
+    ]) {
+      const accumulated = await dispatch({
+        command: "llm-stream-accumulate",
+        chatId: "chat1",
+        state,
+        events: [JSON.stringify({ choices: [{ delta }] })],
+      } as any);
+      expect(accumulated.ok).toBe(true);
+      state = (accumulated.value as any).state;
+    }
+    const finalized = await dispatch({
+      command: "llm-stream-finalize",
+      chatId: "chat1",
+      state,
+      status: 200,
+    } as any);
+    expect(finalized.ok).toBe(true);
+    expect((finalized.value as any).reasoningContent).toBe("think think more");
+    expect((finalized.value as any).content).toBe("answer");
+  });
+
   test("preserves DeepSeek reasoning content for tool-call continuations", async () => {
     const accumulated = await dispatch({
       command: "llm-stream-accumulate",

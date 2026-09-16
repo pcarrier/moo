@@ -350,8 +350,15 @@ export function normalizeProvider(value: unknown): ProviderName | null {
   return (PROVIDERS as readonly string[]).includes(id) ? id as ProviderName : null;
 }
 
+// Normalize only the known GLM namespace for local capability/effort lookups.
+// The original slug must still be sent unchanged to the gateway.
+export function glmModelBaseId(model: string | null | undefined): string {
+  const id = lower(String(model ?? ""));
+  return id.replace(/^z-ai\/(?=glm-)/, "");
+}
+
 export function inferProviderForModelId(model: string | null | undefined): ProviderName | null {
-  const id = lower(openAIBaseModelForRequest(model));
+  const id = glmModelBaseId(openAIBaseModelForRequest(model));
   if (!id) return null;
   for (const provider of PROVIDERS) {
     if (PROVIDER_METADATA[provider].inferPrefixes.some((prefix) => id.startsWith(prefix))) return provider;
@@ -360,7 +367,7 @@ export function inferProviderForModelId(model: string | null | undefined): Provi
 }
 
 export function modelMatches(metadata: ModelMetadata, model: string): boolean {
-  const id = lower(openAIBaseModelForRequest(model));
+  const id = glmModelBaseId(openAIBaseModelForRequest(model));
   if (!id) return false;
   if (id === lower(metadata.id)) return true;
   if (metadata.aliases?.some((alias) => id === lower(alias))) return true;
@@ -368,7 +375,7 @@ export function modelMatches(metadata: ModelMetadata, model: string): boolean {
 }
 
 export function modelMetadataFor(provider: ProviderName | null | undefined, model: string | null | undefined): ModelMetadata | null {
-  const id = lower(openAIBaseModelForRequest(model));
+  const id = glmModelBaseId(openAIBaseModelForRequest(model));
   if (!id) return null;
   const providers = provider ? [provider] : PROVIDERS;
   // Exact IDs and aliases must beat a longer, overlapping version pattern.

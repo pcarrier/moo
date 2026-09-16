@@ -204,6 +204,60 @@ describe("OpenAI-compatible provider support", () => {
     expect(disabled.body).toMatchObject({ reasoning: { enabled: false } });
   });
 
+  test("matches GLM gateway slugs without changing outbound model IDs", () => {
+    for (const model of ["z-ai/glm-5.3", " Z-AI/GLM-5.3 "]) {
+      expect(inferProviderForModel(model)).toBe("glm");
+      expect(modelMetadataFor("glm", model)?.id).toBe("glm-5.3");
+      expect(modelContextBudget({ name: "glm", model } as any)).toBe(
+        modelContextBudget({ name: "glm", model: "glm-5.3" } as any),
+      );
+      expect(effortLevelsForProvider({ name: "glm", model })).toEqual(["low", "high", "max"]);
+    }
+    expect(modelMetadataFor("glm", "z-ai/glm-5.3-flash")?.id).toBe("glm-5.3-flash");
+    expect(inferProviderForModel("other/glm-5.3")).toBeNull();
+    expect(effortLevelsForProvider({ name: "glm", model: "other/glm-5.3" })).toEqual([]);
+  });
+
+  test("preserves GLM 5.3 effort defaults and native request fields", () => {
+    for (const effort of [null, "none", "medium", "low", "high", "max"]) {
+      const expected = ["low", "high", "max"].includes(effort ?? "") ? effort : "max";
+      for (const model of ["glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.3-flash"]) {
+        const request = buildStreamingLLMRequest({
+          name: "glm", baseUrl: "https://openrouter.ai/api/v1", apiKey: "key", model, effort,
+        } as any, [{ role: "user", content: "Think" }], null);
+        expect(request.requestEffort).toBe(expected);
+        expect(request.body.model).toBe(model);
+        expect(request.body.reasoning).toEqual({ enabled: true, effort: expected });
+        expect(request.body.thinking).toBeUndefined();
+        expect(request.body.reasoning_effort).toBeUndefined();
+      }
+      const native = buildStreamingLLMRequest({
+        name: "glm", baseUrl: "https://api.z.ai/api/paas/v4", apiKey: "key", model: "glm-5.3", effort,
+      } as any, [{ role: "user", content: "Think" }], null);
+      expect(native.body.thinking).toEqual({ type: "enabled" });
+      expect(native.body.reasoning_effort).toBe(expected);
+      expect(native.body.reasoning).toBeUndefined();
+    }
+  });
+
+  test("recognizes OpenRouter authority, including explicit ports, without lookalikes", () => {
+    for (const [baseUrl, openRouter] of [
+      ["https://openrouter.ai:443/api/v1", true],
+      ["https://OPENROUTER.AI/api/v1/", true],
+      ["https://openrouter.ai.evil.test/api/v1", false],
+      ["https://evil.test/openrouter.ai", false],
+      ["https://openrouter.ai@evil.test/api/v1", false],
+      ["https://evil.test@openrouter.ai/api/v1", false],
+      ["ftp://openrouter.ai/api/v1", false],
+    ] as const) {
+      const request = buildStreamingLLMRequest({
+        name: "glm", baseUrl, apiKey: "key", model: "glm-5.3", effort: "high",
+      } as any, [{ role: "user", content: "Think" }], null);
+      expect(request.body.reasoning !== undefined).toBe(openRouter);
+      expect(request.body.thinking !== undefined).toBe(!openRouter);
+    }
+  });
+
   test("enables optional Kimi K2 thinking", () => {
     expect(effortLevelsForProvider({ name: "kimi", model: "kimi-k2.6-code" })).toEqual(["none", "high"]);
     expect(effortLevelsForProvider({ name: "kimi", model: "moonshot-v1-128k" })).toEqual([]);

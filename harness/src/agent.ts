@@ -30,6 +30,7 @@ import {
 import { formatTasksForPrompt } from "./tasks";
 import {
   modelContextWindow,
+  glmModelBaseId,
   modelMetadataFor,
   inferProviderForModelId,
   openAIBaseModelForRequest,
@@ -469,40 +470,23 @@ export function usesResponsesApi(provider: LLMProvider): boolean {
   return provider.name === "openai";
 }
 
-// OpenRouter routes via "vendor/model" slugs (e.g. "z-ai/glm-5.3"); strip the
-// vendor prefix and known suffixes so effort/metadata matching sees the bare
-// model id.
-export function openRouterBaseModelId(model: string | null | undefined): string {
-  const id = openAIBaseModelForRequest(model).trim().toLowerCase();
-  const slash = id.indexOf("/");
-  return slash >= 0 ? id.slice(slash + 1) : id;
-}
-
-export function isOpenRouterBaseUrl(baseUrl: string | null | undefined): boolean {
-  const raw = String(baseUrl ?? "").trim();
-  const host = raw.includes("://") ? raw.split("://")[1] ?? "" : raw;
-  const authority = host.split("/")[0] ?? "";
-  return /(^|\.)openrouter\.ai$/i.test(authority);
-}
-
-function glmModelBaseId(model: string | null | undefined): string {
-  return openRouterBaseModelId(model);
+function isOpenRouterBaseUrl(baseUrl: string): boolean {
+  // No URL global in the harness runtime. Match the complete authority, allowing
+  // an explicit port but not credentials, lookalike hosts, or arbitrary schemes.
+  return /^https?:\/\/openrouter\.ai(?::\d+)?(?:[/?#]|$)/i.test(baseUrl.trim());
 }
 
 function isGlm53Model(model: string | null | undefined): boolean {
   return /^glm-5\.3(?:[-.]|$)/.test(glmModelBaseId(model));
 }
 
-// OpenRouter normalizes reasoning across vendors via the unified "reasoning"
-// request parameter and streams it back as delta.reasoning; it does not accept
-// the vendor-specific thinking/enable_thinking fields.
+// Use OpenRouter's unified reasoning parameter rather than native Z.ai fields.
 function openRouterRequestReasoning(
-  effort: EffortLevel | null,
-): { enabled: boolean; effort?: Exclude<EffortLevel, "none"> } | null {
-  if (effort === null) return null;
+  effort: EffortLevel,
+): { enabled: boolean; effort?: Exclude<EffortLevel, "none"> } {
   return effort === "none"
     ? { enabled: false }
-    : { enabled: true, effort: effort as Exclude<EffortLevel, "none"> };
+    : { enabled: true, effort };
 }
 
 function providerForRequest(provider: LLMProvider): LLMProvider {
@@ -817,8 +801,7 @@ function applyEffort(
     const effort = requestEffortForProvider(provider);
     if (!effort) return;
     if (provider.name === "glm" && isOpenRouterBaseUrl(provider.baseUrl)) {
-      const reasoning = openRouterRequestReasoning(effort);
-      if (reasoning) body.reasoning = reasoning;
+      body.reasoning = openRouterRequestReasoning(effort);
       return;
     }
     if (provider.name === "kimi" && /^kimi-k3(?:[-.]|$)/i.test(provider.model ?? "")) {

@@ -1022,27 +1022,30 @@ function accumulateLlmStreamEvent(
   if (typeof delta.content === "string" && delta.content) {
     appendProviderContentDelta(state, delta.content, streamEvents, events);
   }
-  if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-    appendLlmReasoningDelta(
-      state,
-      delta.reasoning_content,
-      streamEvents,
-      events,
-    );
-  }
-  // OpenRouter normalizes vendor reasoning into delta.reasoning (plus
-  // reasoning_details); DeepSeek-style gateways use reasoning_content instead.
-  if (typeof delta.reasoning === "string" && delta.reasoning) {
-    appendLlmReasoningDelta(state, delta.reasoning, streamEvents, events);
-  }
-  if (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length) {
-    const text = delta.reasoning_details
-      .map((detail: unknown) =>
-        isObject(detail) && typeof detail.text === "string" ? detail.text : "",
-      )
+  // These are alternative representations of the same reasoning, not separate
+  // fragments. Preserve DeepSeek's field first, then OpenRouter's plain text;
+  // use structured details only when neither contains text in this delta.
+  let reasoning =
+    typeof delta.reasoning_content === "string" && delta.reasoning_content
+      ? delta.reasoning_content
+      : typeof delta.reasoning === "string"
+        ? delta.reasoning
+        : "";
+  if (!reasoning && Array.isArray(delta.reasoning_details)) {
+    reasoning = delta.reasoning_details
+      .map((detail: unknown) => {
+        if (!isObject(detail)) return "";
+        if (detail.type === "reasoning.summary") {
+          return typeof detail.summary === "string" ? detail.summary : "";
+        }
+        // Accept legacy untyped text details, but never display encrypted or
+        // unknown structured payloads as reasoning text.
+        if (detail.type != null && detail.type !== "reasoning.text") return "";
+        return typeof detail.text === "string" ? detail.text : "";
+      })
       .join("");
-    if (text) appendLlmReasoningDelta(state, text, streamEvents, events);
   }
+  if (reasoning) appendLlmReasoningDelta(state, reasoning, streamEvents, events);
   if (Array.isArray(delta.tool_calls)) {
     for (const rawTc of delta.tool_calls) {
       const tc = isObject(rawTc) ? rawTc : {};
