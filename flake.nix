@@ -3,8 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # Nixpkgs 26.11 dropped Intel macOS; 26.05 still receives security fixes.
-    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -12,15 +10,12 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { nixpkgs, nixpkgs-darwin, rust-overlay, crane, ... }:
+  outputs = { nixpkgs, rust-overlay, crane, ... }:
     let
       lib = nixpkgs.lib;
-      nixpkgsFor = system:
-        if system == "x86_64-darwin" then nixpkgs-darwin else nixpkgs;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       forAllSystems = lib.genAttrs systems;
@@ -30,14 +25,12 @@
       rustyV8Targets = {
         "x86_64-linux" = "x86_64-unknown-linux-gnu";
         "aarch64-linux" = "aarch64-unknown-linux-gnu";
-        "x86_64-darwin" = "x86_64-apple-darwin";
         "aarch64-darwin" = "aarch64-apple-darwin";
       };
 
       rustyV8Hashes = {
         "x86_64-linux" = "sha256-tmg+mvy3f72MssOs9F001SApqyFrMyUiyVF5wS8P7Tw=";
         "aarch64-linux" = "sha256-xAGWu/GCUy5YP2W32vAZb9uzNU5vrFmzHQU5wg+THz0=";
-        "x86_64-darwin" = "sha256-BMvBw2xM1UWcVASXddkoiTN8adk2+wsBH5sm8dRUYQ0=";
         "aarch64-darwin" = "sha256-pKVIREStS18Q3HvtFBI23Z2+q/IAbRRSDxm5NdTbQic=";
       };
 
@@ -55,7 +48,7 @@
     {
       packages = forAllSystems (system:
         let
-          pkgs = import (nixpkgsFor system) {
+          pkgs = import nixpkgs {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
@@ -313,7 +306,7 @@
 
       devShells = forAllSystems (system:
         let
-          pkgs = import (nixpkgsFor system) {
+          pkgs = import nixpkgs {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };

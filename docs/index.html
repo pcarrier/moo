@@ -161,11 +161,12 @@
           <p class="eyebrow">Run it</p>
           <h2 id="quickstart-title">Start local, then point it at work.</h2>
           <p>Use a release binary for normal use, or run the development stack from a checkout when changing Moo itself.</p>
+          <p>Release binaries support Apple Silicon macOS, x86_64 Linux, and x64 Windows. Intel macOS is not supported.</p>
         </div>
         <div class="code-grid code-grid--install">
           <article class="code-card reveal">
             <h3>Install a release</h3>
-            <pre><code># macOS / Linux
+            <pre><code># Apple Silicon macOS / x86_64 Linux
 curl -sf https://moo.pcarrier.com/install | sh
 moo serve
 # Later, upgrade in place:

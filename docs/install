@@ -14,7 +14,10 @@ uname_s="$(uname -s)"
 uname_m="$(uname -m)"
 case "$uname_s:$uname_m" in
   Linux:x86_64|Linux:amd64) target="x86_64-unknown-linux-gnu" ;;
-  Darwin:x86_64|Darwin:amd64) target="x86_64-apple-darwin" ;;
+  Darwin:x86_64|Darwin:amd64)
+    echo "unsupported platform: Intel macOS ($uname_m); macOS requires Apple Silicon (arm64)" >&2
+    exit 1
+    ;;
   Darwin:arm64|Darwin:aarch64) target="aarch64-apple-darwin" ;;
   *) echo "unsupported platform: $uname_s $uname_m" >&2; exit 1 ;;
 esac

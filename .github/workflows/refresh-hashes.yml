@@ -26,9 +26,6 @@ jobs:
           - os: ubuntu-24.04-arm
             system: aarch64-linux
             rustyV8Target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            system: x86_64-darwin
-            rustyV8Target: x86_64-apple-darwin
           - os: macos-15
             system: aarch64-darwin
             rustyV8Target: aarch64-apple-darwin
@@ -38,15 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-        if: runner.os != 'macOS' || runner.arch != 'X64'
-      # Determinate's installer and cache no longer support Intel macOS.
-      - name: Install Nix (Intel macOS)
-        if: runner.os == 'macOS' && runner.arch == 'X64'
-        uses: cachix/install-nix-action@19effe9fe722874e6d46dd7182e4b8b7a43c4a99 # v31.10.0
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-        if: runner.os != 'macOS' || runner.arch != 'X64'
 
       - name: Prefetch rusty_v8 archive
         id: rusty

@@ -17,6 +17,8 @@ Moo is a local agent harness you drive from a browser web UI and inspect while i
 
 ## Install
 
+Release binaries support Apple Silicon macOS, x86_64 Linux, and x64 Windows. Intel macOS is not supported.
+
 Use the install commands, release binaries, and platform notes on the website:
 
 [https://moo.pcarrier.com](https://moo.pcarrier.com)
