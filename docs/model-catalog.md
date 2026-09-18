@@ -1,6 +1,6 @@
 # Model catalog
 
-Reviewed **2026-09-16**. The catalog in `harness/src/llm_models.ts` covers the seven supported providers: OpenAI, Anthropic, Qwen, Z.AI/GLM, xAI, DeepSeek, and Kimi. It records model IDs, aliases, context/output limits, tool and image support, availability, and USD prices per million tokens. The picker includes models usable with Moo's tool-calling interface; restricted, retired, and incompatible models retain metadata where useful for existing chats and cost estimates.
+Reviewed **2026-09-16**. The catalog in `harness/src/llm_models.ts` covers the eight supported providers: OpenAI, Anthropic, Qwen, Z.AI/GLM, xAI, DeepSeek, Kimi, and Ollama. It records model IDs, aliases, context/output limits, tool and image support, availability, and USD prices per million tokens. The picker includes models usable with Moo's tool-calling interface; restricted, retired, and incompatible models retain metadata where useful for existing chats and cost estimates.
 
 ## Pricing conventions
 
@@ -32,6 +32,14 @@ Selecting a plan stores its URL, so that choice wins over `ZAI_BASE_URL` / `GLM_
 As of this review, the [Coding Plan overview](https://docs.z.ai/devpack/overview) says all plans support GLM-5.3 and GLM-5.3-Flash; the [GLM-5.3-Flash model page](https://docs.z.ai/guides/vlm/glm-5.3-flash) explicitly confirms Coding Plan availability. Moo sends the selected model ID unchanged. Model availability remains subject to Z.ai's current plan and endpoint rules, not Moo's model catalog.
 
 **Supported-tool restriction:** Z.ai's [tool integration documentation](https://docs.z.ai/devpack/tool/others) limits subscription benefits to officially supported tools and product environments. Moo is not on the published list at this review. Confirm eligibility with Z.ai before relying on Coding Plan access from Moo; configuring a compatible endpoint does not establish permission or guaranteed access. Moo does not impersonate a listed client to bypass those restrictions. Otherwise, use the API Platform endpoint with funded API balance.
+
+## Ollama
+
+Ollama serves a local, user-managed model library behind an OpenAI-compatible endpoint (`http://localhost:11434/v1` by default), so Moo keeps no hosted catalog or pricing for it. Configure the provider under **Settings → Providers → Ollama**: an optional base URL override (`OLLAMA_BASE_URL` also works) and a **Models** list, one reference per line, whose first entry is the default model. `OLLAMA_MODEL` and `OLLAMA_MODELS` provide the same overrides through the environment.
+
+Model references are passed to Ollama unchanged, including Hugging Face GGUF refs such as `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M`; the Ollama server must be able to pull or already host each entry. Bare `hf.co/…` refs infer the Ollama provider automatically. No API key is required by default; if the endpoint is behind an authenticating proxy, store a key or set `OLLAMA_API_KEY`.
+
+Configured Ollama models are trusted to support tool calling — the list is user-curated, and Ollama rejects models without that capability at request time. Vision support is recognized for common local families (LLaVA, Qwen VL, Gemma 3, Pixtral, Moondream, MiniCPM-V, Llama 3.2 Vision). Context windows default to 128k unless the catalog lists the model; mind the server's own context settings. Usage is recorded without a price and excluded from cost estimates.
 
 ## Primary sources
 

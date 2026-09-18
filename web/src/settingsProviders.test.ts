@@ -50,4 +50,12 @@ describe("GLM plan selection", () => {
     expect(providerVariantPatch(kimi, "code")).toEqual({ variant: "code" });
     expect(providerVariantValue(kimi, { variant: "code", baseUrl: "https://proxy.example/kimi" })).toBe("code");
   });
+
+  test("Ollama exposes a curated model list on the local endpoint", () => {
+    const ollama = PROVIDERS.find((p) => p.id === "ollama")!;
+    expect(ollama.defaultBaseUrl).toBe("http://localhost:11434/v1");
+    expect(ollama.supportsModelList).toBe(true);
+    expect(ollama.variants).toBeUndefined();
+    expect(ollama.modelListHint).toContain("hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M");
+  });
 });

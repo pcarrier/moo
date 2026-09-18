@@ -259,6 +259,8 @@ export type ProviderAuthInput = {
   model?: string | null;
   authMode?: "env" | "apiKey" | "oauth" | null;
   enabled?: boolean;
+  /** User-curated model list (Ollama); the first entry is the default model. */
+  models?: string[];
 };
 
 export type ProviderAuthConfigInput = {
@@ -269,6 +271,7 @@ export type ProviderAuthConfigInput = {
   xai?: ProviderAuthInput;
   deepseek?: ProviderAuthInput;
   kimi?: ProviderAuthInput;
+  ollama?: ProviderAuthInput;
 };
 
 export type ContentCommandInput = {

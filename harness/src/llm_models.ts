@@ -1,4 +1,4 @@
-export type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek" | "kimi";
+export type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek" | "kimi" | "ollama";
 
 export type ModelPrice = {
   /** USD per million regular input tokens. */
@@ -85,7 +85,7 @@ export const DEFAULT_CONTEXT_TOKENS = 128_000;
 export const OPENAI_FAST_MODEL_SUFFIX = "#fast";
 export const OPENAI_FAST_SERVICE_TIER = "priority";
 
-export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "glm", "xai", "deepseek", "kimi"];
+export const PROVIDERS: readonly ProviderName[] = ["openai", "anthropic", "qwen", "glm", "xai", "deepseek", "kimi", "ollama"];
 
 // Reviewed 2026-09-16. Sources and pricing scope: docs/model-catalog.md.
 export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
@@ -303,6 +303,22 @@ export const PROVIDER_METADATA: Record<ProviderName, ProviderMetadata> = {
       { id: "moonshot-v1-8k-vision-preview", contextWindow: 8192, pricing: { input: 0.2, cachedInput: 0.2, output: 2 }, capabilities: { vision: true }, defaultOption: true },
     ],
   },
+  ollama: {
+    id: "ollama",
+    title: "Ollama",
+    envKey: "OLLAMA_API_KEY",
+    baseUrlEnv: "OLLAMA_BASE_URL",
+    defaultBaseUrl: "http://localhost:11434/v1",
+    fallbackModel: "qwen3:8b",
+    inferPrefixes: ["hf.co/"],
+    // Ollama serves a user-managed local model library, so the catalog stays
+    // empty: users list their models in Settings (or OLLAMA_MODELS), including
+    // Hugging Face GGUF refs like hf.co/<org>/<repo>:<quant>. The fallback
+    // entry below exists so bare qwen3:8b still resolves known limits.
+    models: [
+      { id: "qwen3:8b", contextWindow: 131072, maxOutputTokens: 32768, capabilities: { toolCalls: true, reasoning: true }, defaultOption: true, availability: "Ollama registry fallback; configure your own models in Settings" },
+    ],
+  },
 };
 
 /**
@@ -415,6 +431,10 @@ export function modelContextWindow(provider: ProviderName | null | undefined, mo
 export function modelSupportsTools(provider: ProviderName | null | undefined, model: string | null | undefined): boolean {
   const metadata = modelMetadataFor(provider, model);
   if (metadata?.capabilities?.toolCalls != null) return metadata.capabilities.toolCalls;
+  // Ollama models come from the user's own configured list, so trust that
+  // curation: local tool-capable families (qwen3, llama3.1+, mistral, gpt-oss,
+  // …) share no common id prefix to sniff for.
+  if (provider === "ollama") return true;
   const id = lower(openAIBaseModelForRequest(model));
   if (!id) return false;
   if (id.startsWith("claude-")) return true;
@@ -437,6 +457,8 @@ export function modelSupportsVision(provider: ProviderName | null | undefined, m
   if (metadata?.capabilities?.vision != null) return metadata.capabilities.vision;
   const id = lower(openAIBaseModelForRequest(model));
   if (!id) return false;
+  // Common local vision families served by Ollama share recognizable id parts.
+  if (provider === "ollama") return /(?:^|[/:._-])(?:llava|bakllava|minicpm-v|moondream|pixtral|qwen\d(?:\.\d+)?-vl|gemma3|llama3\.2-vision)(?:[/:._-]|$)/.test(id);
   if (id.startsWith("deepseek")) return false;
   if (id.startsWith("grok")) return metadata?.capabilities?.vision === true;
   if (id.startsWith("glm-")) return /^glm-\d+(?:\.\d+)?v(?:[-.]|$)/.test(id) || /(?:^|[-.])(?:vision|vl)(?:[-.]|$)/.test(id);

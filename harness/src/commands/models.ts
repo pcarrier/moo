@@ -23,6 +23,7 @@ import {
   type ProviderName,
 } from "../llm_models";
 import type { Input } from "./_shared";
+import { readLlmAuthSettings } from "./llm_auth";
 
 export type ModelOption = {
   id: string;
@@ -254,7 +255,7 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   const out: ModelOption[] = [];
   const add = (provider: ProviderName, model: string) => {
     const trimmed = model.trim();
-    if (!trimmed || !modelSupportsToolCalls(trimmed)) return;
+    if (!trimmed || !modelSupportsTools(provider, trimmed)) return;
     out.push({
       id: modelOptionId(provider, trimmed),
       provider,
@@ -283,7 +284,17 @@ async function configuredModelOptions(): Promise<ModelOption[]> {
   for (const model of configuredModelsFrom(await moo.env.get({ name: "DEEPSEEK_MODELS" }))) addWithFastMode("deepseek", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "KIMI_MODELS" }))) addWithFastMode("kimi", splitModelId(model).model);
   for (const model of configuredModelsFrom(await moo.env.get({ name: "MOONSHOT_MODELS" }))) addWithFastMode("kimi", splitModelId(model).model);
+  // Ollama model refs carry their own ":" tag suffixes (hf.co/…:Q4_K_M), so
+  // they are taken verbatim rather than routed through splitModelId.
+  for (const model of await ollamaConfiguredModels()) add("ollama", model);
   return out;
+}
+
+/** Settings-stored Ollama list first, then the OLLAMA_MODELS env list. */
+async function ollamaConfiguredModels(): Promise<string[]> {
+  const stored = (await readLlmAuthSettings()).providers.ollama.models ?? [];
+  const fromEnv = configuredModelsFrom(await moo.env.get({ name: "OLLAMA_MODELS" }));
+  return [...stored, ...fromEnv];
 }
 
 export async function modelOptionsFor(selectedProvider: ProviderName | null, selectedModel: string | null): Promise<ModelOption[]> {
@@ -291,7 +302,7 @@ export async function modelOptionsFor(selectedProvider: ProviderName | null, sel
   const seen = new Set<string>();
   const add = (provider: ProviderName, model: string) => {
     const trimmed = model.trim();
-    if (!trimmed || !modelSupportsToolCalls(trimmed)) return;
+    if (!trimmed || !modelSupportsTools(provider, trimmed)) return;
     const id = modelOptionId(provider, trimmed);
     if (seen.has(id)) return;
     seen.add(id);

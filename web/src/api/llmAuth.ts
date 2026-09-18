@@ -1,6 +1,6 @@
 import type { ApiCommand } from "./contract";
 
-export type LlmProviderId = "openai" | "anthropic" | "qwen" | "glm" | "xai" | "deepseek" | "kimi";
+export type LlmProviderId = "openai" | "anthropic" | "qwen" | "glm" | "xai" | "deepseek" | "kimi" | "ollama";
 export type LlmAuthMode = "env" | "apiKey" | "oauth";
 
 export type LlmRetrySettings = {
@@ -30,6 +30,8 @@ export type LlmProviderAuthSettings = {
   oauthSubject?: string | null;
   baseUrl?: string | null;
   variant?: string | null;
+  /** User-curated model list (Ollama); the first entry is the default model. */
+  models?: string[];
   hasApiKey?: boolean;
   hasAccessToken?: boolean;
   hasRefreshToken?: boolean;
@@ -41,6 +43,7 @@ export type LlmProviderSaveSettings = {
   clearOAuth?: boolean;
   baseUrl?: string | null;
   variant?: string | null;
+  models?: string[];
 };
 
 export type LlmAuthSettings = {

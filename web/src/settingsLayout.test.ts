@@ -76,6 +76,16 @@ describe("settings layout", () => {
     expect(settingsView).toContain('<Show when={selectedVariant()?.hint}><p class="subtle">{selectedVariant()?.hint}</p></Show>');
   });
 
+  it("edits the Ollama model list as one reference per line", () => {
+    expect(settingsView).toContain("models: (p.models ?? []).join(\"\\n\")");
+    expect(settingsView).toContain("models: draftModels(d.ollama.models)");
+    expect(settingsView).toContain('id={`provider-models-${meta.id}`}');
+    expect(settingsView).toContain("draft().models");
+    expect(settingsView).toContain("hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M\\nqwen3:8b");
+    expect(settingsView).toContain('<Show when={meta.modelListHint}><p class="subtle">{meta.modelListHint}</p></Show>');
+    expect(settingsView).toContain('<Show when={!meta.variants?.length && meta.endpointHint}><p class="subtle">{meta.endpointHint}</p></Show>');
+  });
+
   it("defaults automatic compaction to fifty percent", () => {
     expect(settingsView).toContain("next.compaction?.thresholdPercent ?? 50");
   });

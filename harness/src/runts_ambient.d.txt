@@ -21,7 +21,7 @@ type UiAppBundle = {
 };
 
 // ---- harness/src/llm_models.d.ts ----
-type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek" | "kimi";
+type ProviderName = "openai" | "qwen" | "glm" | "anthropic" | "xai" | "deepseek" | "kimi" | "ollama";
 type ModelPrice = {
     /** USD per million regular input tokens. */
     input: number;

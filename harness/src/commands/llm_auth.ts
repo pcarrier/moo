@@ -31,6 +31,8 @@ export type LlmAuthProviderSettings = {
   baseUrl?: string | null;
   /** Selected provider variant id (e.g. kimi "platform" vs "code"). */
   variant?: string | null;
+  /** User-curated model list (Ollama); the first entry is the default model. */
+  models?: string[];
 };
 
 export type LlmCompactionSettings = {
@@ -88,10 +90,25 @@ function defaultSettings(): LlmAuthSettings {
       xai: defaultProviderSettings(),
       deepseek: defaultProviderSettings(),
       kimi: defaultProviderSettings(),
+      ollama: defaultProviderSettings(),
     },
     compaction: normalizeCompactionSettings(null),
     retries: normalizeRetryPolicy(DEFAULT_LLM_RETRY_POLICY),
   };
+}
+
+/** Trim, drop empties and duplicates, and cap a stored provider model list. */
+export function normalizeModelList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.length > 512 || out.includes(trimmed)) continue;
+    out.push(trimmed);
+    if (out.length >= 64) break;
+  }
+  return out;
 }
 
 function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuthProviderSettings {
@@ -110,6 +127,7 @@ function normalizeProviderSettings(raw: unknown, id: LlmAuthProviderId): LlmAuth
     oauthAccountId: id === "openai" && typeof r.oauthAccountId === "string" && r.oauthAccountId ? r.oauthAccountId : null,
     baseUrl: typeof r.baseUrl === "string" && r.baseUrl.trim() ? r.baseUrl.trim() : null,
     variant: normalizeVariant(id, r.variant),
+    models: normalizeModelList(r.models),
   };
 }
 
@@ -135,6 +153,7 @@ export async function readLlmAuthSettings(): Promise<LlmAuthSettings> {
       xai: normalizeProviderSettings(raw.providers?.xai, "xai"),
       deepseek: normalizeProviderSettings(raw.providers?.deepseek, "deepseek"),
       kimi: normalizeProviderSettings(raw.providers?.kimi, "kimi"),
+      ollama: normalizeProviderSettings(raw.providers?.ollama, "ollama"),
     },
     compaction: normalizeCompactionSettings(raw.compaction),
     retries: normalizeRetryPolicy(raw.retries),
@@ -168,7 +187,7 @@ async function envKeyForProvider(id: LlmAuthProviderId): Promise<string | null> 
   return null;
 }
 
-async function fallbackModelForProvider(id: LlmAuthProviderId, variantFallback?: string | null): Promise<string> {
+async function fallbackModelForProvider(id: LlmAuthProviderId, variantFallback?: string | null, configuredModels?: readonly string[]): Promise<string> {
   const providerFallback = variantFallback || PROVIDERS[id].fallbackModel;
   const generic = await moo.env.get({ name: "MOO_LLM_MODEL" });
   if (generic) {
@@ -184,9 +203,13 @@ async function fallbackModelForProvider(id: LlmAuthProviderId, variantFallback?:
     xai: "XAI_MODEL",
     deepseek: "DEEPSEEK_MODEL",
     kimi: "KIMI_MODEL",
+    ollama: "OLLAMA_MODEL",
   };
   const primary = await moo.env.get({ name: modelEnv[id] });
   if (primary) return primary;
+  // Ollama has no hosted catalog to fall back on; the user's configured model
+  // list (Settings → Providers → Ollama) supplies the default.
+  if (id === "ollama" && configuredModels?.length) return configuredModels[0];
   if (id === "kimi") return (await moo.env.get({ name: "MOONSHOT_MODEL" })) || providerFallback;
   if (id === "glm") {
     return (
@@ -214,7 +237,7 @@ export async function providerConfiguredCredential(id: LlmAuthProviderId): Promi
   // hasn't set an explicit override or env var (e.g. Kimi Code vs Moonshot).
   const variant = resolveProviderVariant(meta, provider.variant);
   const baseUrl = provider.baseUrl || envBaseUrl || variant?.baseUrl || meta.defaultBaseUrl;
-  const model = await fallbackModelForProvider(id, variant?.fallbackModel);
+  const model = await fallbackModelForProvider(id, variant?.fallbackModel, provider.models);
   if (id === "openai" && provider.authMode === "oauth") {
     const oauthBaseUrl = provider.baseUrl || "https://chatgpt.com/backend-api/codex";
     return { apiKey: provider.accessToken || null, authMode: "oauth", keyEnvHint: "OpenAI OAuth", baseUrl: oauthBaseUrl, model, oauthAccountId: provider.oauthAccountId };
@@ -252,6 +275,7 @@ function redact(settings: LlmAuthSettings) {
       xai: redactProvider(settings.providers.xai),
       deepseek: redactProvider(settings.providers.deepseek),
       kimi: redactProvider(settings.providers.kimi),
+      ollama: redactProvider(settings.providers.ollama),
     },
   };
 }
@@ -275,6 +299,7 @@ function applyProviderInput(current: LlmAuthProviderSettings, id: LlmAuthProvide
     apiKey: typeof apiKeyInput === "string" && !apiKeyInput.startsWith("••••") ? apiKeyInput.trim() || null : current.apiKey ?? null,
     baseUrl: typeof providerInput.baseUrl === "string" ? providerInput.baseUrl.trim() || null : current.baseUrl ?? null,
     variant: "variant" in providerInput ? normalizeVariant(id, providerInput.variant) : current.variant ?? null,
+    models: "models" in providerInput ? normalizeModelList(providerInput.models) : current.models ?? [],
   };
   // Preserve OpenAI OAuth credentials across auth-mode changes; only an
   // explicit disconnect should clear them.

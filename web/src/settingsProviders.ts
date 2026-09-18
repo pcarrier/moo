@@ -13,6 +13,9 @@ export type ProviderMeta = {
   /** Explicit plan selection pins the URL, ahead of stored and environment overrides. */
   selectsBaseUrl?: boolean;
   endpointHint?: string;
+  /** Show a textarea for a user-curated model list; the first entry is the default. */
+  supportsModelList?: boolean;
+  modelListHint?: string;
 };
 
 export const PROVIDERS: ProviderMeta[] = [
@@ -29,6 +32,9 @@ export const PROVIDERS: ProviderMeta[] = [
     { id: "platform", title: "Moonshot Platform", baseUrl: "https://api.moonshot.ai/v1" },
     { id: "code", title: "Kimi Code (kimi.com/code)", baseUrl: "https://api.kimi.com/coding/v1" },
   ] },
+  { id: "ollama", title: "Ollama", envLabel: "OLLAMA_API_KEY (usually unset)", defaultBaseUrl: "http://localhost:11434/v1", supportsModelList: true,
+    endpointHint: "Local OpenAI-compatible endpoint; no API key needed by default. Model refs must be pulled or pullable by the Ollama server.",
+    modelListHint: "One model reference per line; the first entry is the default. Hugging Face GGUF refs work, e.g. hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M." },
 ];
 
 export function providerVariantPatch(meta: ProviderMeta, id: string): { variant?: string; baseUrl?: string } {

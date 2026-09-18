@@ -11,6 +11,7 @@ type ProviderDraft = {
   apiKey: string;
   baseUrl: string;
   variant: string;
+  models: string;
 };
 
 type SettingsTabId = "providers" | "runtime" | "otel" | "behavior";
@@ -30,7 +31,7 @@ function numberOrBlank(value: unknown): string {
 }
 
 function blankDraft(): ProviderDraft {
-  return { authMode: "env", apiKey: "", baseUrl: "", variant: "" };
+  return { authMode: "env", apiKey: "", baseUrl: "", variant: "", models: "" };
 }
 
 function mib(bytes: number | null | undefined): string {
@@ -74,6 +75,10 @@ function errorMessage(err: unknown): string {
   return String(err || "Unknown error");
 }
 
+function draftModels(raw: string): string[] {
+  return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
 export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
   let mounted = true;
   onCleanup(() => {
@@ -98,6 +103,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
     xai: blankDraft(),
     deepseek: blankDraft(),
     kimi: blankDraft(),
+    ollama: blankDraft(),
   });
   const [compactionThresholdPercent, setCompactionThresholdPercent] = createSignal("50");
   const [maxAttempts, setMaxAttempts] = createSignal("3");
@@ -116,7 +122,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
 
   function hydrate(next: LlmAuthSettings) {
     setSettings(next);
-    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), glm: blankDraft(), xai: blankDraft(), deepseek: blankDraft(), kimi: blankDraft() };
+    const providerDrafts: Record<LlmProviderId, ProviderDraft> = { openai: blankDraft(), anthropic: blankDraft(), qwen: blankDraft(), glm: blankDraft(), xai: blankDraft(), deepseek: blankDraft(), kimi: blankDraft(), ollama: blankDraft() };
     for (const meta of PROVIDERS) {
       const p = next.providers[meta.id];
       providerDrafts[meta.id] = {
@@ -124,6 +130,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         apiKey: p.hasApiKey ? "••••" : "",
         baseUrl: p.baseUrl || "",
         variant: p.variant || meta.variants?.[0]?.id || "",
+        models: (p.models ?? []).join("\n"),
       };
     }
     setDrafts(providerDrafts);
@@ -197,6 +204,12 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           apiKey: d.kimi.apiKey === "••••" ? undefined : d.kimi.apiKey,
           baseUrl: d.kimi.baseUrl,
           variant: d.kimi.variant,
+        },
+        ollama: {
+          authMode: d.ollama.authMode,
+          apiKey: d.ollama.apiKey === "••••" ? undefined : d.ollama.apiKey,
+          baseUrl: d.ollama.baseUrl,
+          models: draftModels(d.ollama.models),
         },
         compaction: {
           thresholdPercent: Number(compactionThresholdPercent()),
@@ -491,6 +504,7 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
           <Show when={meta.endpointHint}><p class="subtle">{meta.endpointHint}</p></Show>
           <Show when={selectedVariant()?.hint}><p class="subtle">{selectedVariant()?.hint}</p></Show>
         </Show>
+        <Show when={!meta.variants?.length && meta.endpointHint}><p class="subtle">{meta.endpointHint}</p></Show>
         <label class="field-label">Auth mode</label>
         <select
           value={draft().authMode}
@@ -528,6 +542,17 @@ export function SettingsView(props: { bag: Bag; onToggleSidebar: () => void }) {
         <div class="settings-row">
           <label><span>Base URL override{meta.selectsBaseUrl ? " (advanced)" : ""}</span><input value={draft().baseUrl} onInput={(e) => updateDraft(meta.id, { baseUrl: e.currentTarget.value })} placeholder={selectedVariant()?.baseUrl ?? meta.defaultBaseUrl} /></label>
         </div>
+        <Show when={meta.supportsModelList}>
+          <label class="field-label" for={`provider-models-${meta.id}`}>Models</label>
+          <textarea
+            id={`provider-models-${meta.id}`}
+            rows={4}
+            value={draft().models}
+            onInput={(e) => updateDraft(meta.id, { models: e.currentTarget.value })}
+            placeholder={"hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M\nqwen3:8b"}
+          />
+          <Show when={meta.modelListHint}><p class="subtle">{meta.modelListHint}</p></Show>
+        </Show>
       </section>
     );
   }

@@ -2338,7 +2338,8 @@ export async function stepHandleLlmCommand(input: Input) {
       input.requestProvider === "glm" ||
       input.requestProvider === "xai" ||
       input.requestProvider === "deepseek" ||
-      input.requestProvider === "kimi"
+      input.requestProvider === "kimi" ||
+      input.requestProvider === "ollama"
         ? input.requestProvider
         : "openai";
     const requestAuthMode =

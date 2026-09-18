@@ -908,7 +908,7 @@ fn otel_config_test(_db: &str, payload: &Value) -> Value {
 
 const LLM_AUTH_SETTINGS_REF: &str = "settings";
 const LLM_AUTH_SETTINGS_KIND: &str = "llm:AuthSettings";
-const LLM_PROVIDERS: [&str; 7] = [
+const LLM_PROVIDERS: [&str; 8] = [
     "openai",
     "anthropic",
     "qwen",
@@ -916,6 +916,7 @@ const LLM_PROVIDERS: [&str; 7] = [
     "xai",
     "deepseek",
     "kimi",
+    "ollama",
 ];
 
 fn clamp_i64(value: Option<i64>, fallback: i64, min: i64, max: i64) -> i64 {
@@ -1003,6 +1004,29 @@ fn normalize_llm_variant(id: &str, raw: Option<&Value>) -> Value {
     }
 }
 
+/// Trim, drop empties and duplicates, and cap a stored provider model list.
+/// Mirrors `normalizeModelList` in harness/src/commands/llm_auth.ts.
+fn normalize_llm_models(raw: Option<&Value>) -> Value {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(items) = raw.and_then(Value::as_array) {
+        for item in items {
+            let Some(text) = item.as_str() else { continue };
+            let trimmed = text.trim();
+            if trimmed.is_empty()
+                || trimmed.chars().count() > 512
+                || out.iter().any(|existing| existing == trimmed)
+            {
+                continue;
+            }
+            out.push(trimmed.to_string());
+            if out.len() >= 64 {
+                break;
+            }
+        }
+    }
+    Value::Array(out.into_iter().map(Value::String).collect())
+}
+
 fn normalize_llm_provider(raw: Option<&Value>, id: &str) -> Value {
     let obj = raw.and_then(Value::as_object);
     let requested = obj
@@ -1020,6 +1044,7 @@ fn normalize_llm_provider(raw: Option<&Value>, id: &str) -> Value {
         "oauthAccountId": if id == "openai" { non_empty_string(obj.and_then(|o| o.get("oauthAccountId"))) } else { None },
         "baseUrl": non_empty_string(obj.and_then(|o| o.get("baseUrl"))),
         "variant": normalize_llm_variant(id, obj.and_then(|o| o.get("variant"))),
+        "models": normalize_llm_models(obj.and_then(|o| o.get("models"))),
     })
 }
 
@@ -1183,6 +1208,14 @@ fn apply_llm_provider_input(current: &Value, id: &str, input: Option<&Value>) ->
         next.insert(
             "variant".to_string(),
             input_obj.get("variant").cloned().unwrap_or(Value::Null),
+        );
+    }
+    // Same for the user-curated model list (Ollama); absent key keeps the
+    // stored list so partial provider updates don't wipe it.
+    if input_obj.contains_key("models") {
+        next.insert(
+            "models".to_string(),
+            input_obj.get("models").cloned().unwrap_or(Value::Null),
         );
     }
     // Keep OpenAI OAuth credentials when switching away from OAuth so the user
@@ -1877,6 +1910,42 @@ mod tests {
         assert!(cleared["expiresAt"].is_null());
         assert!(cleared["oauthSubject"].is_null());
         assert_eq!(cleared["oauthAccountId"], "account");
+    }
+
+    #[test]
+    fn llm_auth_save_normalizes_ollama_model_list() {
+        let saved = apply_llm_provider_input(
+            &Value::Null,
+            "ollama",
+            Some(&json!({
+                "baseUrl": "http://localhost:11434/v1",
+                "models": [
+                    " hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M ",
+                    "qwen3:8b",
+                    "",
+                    "qwen3:8b",
+                    42,
+                    null
+                ]
+            })),
+        );
+
+        assert_eq!(saved["authMode"], "env");
+        assert_eq!(
+            saved["models"],
+            json!(["hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M", "qwen3:8b"])
+        );
+
+        // Omitting the key preserves the stored list; an explicit empty array clears it.
+        let untouched = apply_llm_provider_input(&saved, "ollama", Some(&json!({})));
+        assert_eq!(untouched["models"], saved["models"]);
+        let cleared = apply_llm_provider_input(&saved, "ollama", Some(&json!({ "models": [] })));
+        assert_eq!(cleared["models"], json!([]));
+
+        // A fresh read of empty settings exposes the provider with an empty list.
+        let defaults = normalize_llm_auth_settings(&json!({}));
+        assert_eq!(defaults["providers"]["ollama"]["models"], json!([]));
+        assert_eq!(defaults["providers"]["ollama"]["authMode"], "env");
     }
 
     #[test]

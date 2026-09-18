@@ -983,6 +983,8 @@ export function llmProviderHeaders(
   const headers: Record<string, string> = {
     Authorization: "Bearer " + (provider.apiKey || ""),
   };
+  // Ollama's local endpoint ignores auth; don't send an empty Bearer token.
+  if (provider.name === "ollama" && !provider.apiKey) delete headers.Authorization;
   if (provider.name === "openai") {
     headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
   }
@@ -1398,6 +1400,7 @@ async function defaultProviderName(): Promise<ProviderName> {
   if (await moo.env.get({ name: "XAI_MODEL" })) return "xai";
   if (await moo.env.get({ name: "DEEPSEEK_MODEL" })) return "deepseek";
   if ((await moo.env.get({ name: "KIMI_MODEL" })) || (await moo.env.get({ name: "MOONSHOT_MODEL" }))) return "kimi";
+  if (await moo.env.get({ name: "OLLAMA_MODEL" })) return "ollama";
 
   if (await moo.env.get({ name: "OPENAI_API_KEY" })) return "openai";
   if (await moo.env.get({ name: "ANTHROPIC_API_KEY" })) return "anthropic";
@@ -1508,6 +1511,18 @@ export async function resolveProvider(
       baseUrl: configured.baseUrl,
       model: modelOverride || configured.model,
       effort: normalizeEffort(effortOverride) || (await defaultEffort()),
+      keyEnvHint: configured.keyEnvHint,
+      authMode: configured.authMode,
+    };
+  }
+  if (which === "ollama") {
+    const configured = await providerConfiguredCredential("ollama");
+    return {
+      name: "ollama",
+      apiKey: configured.apiKey,
+      baseUrl: configured.baseUrl,
+      model: modelOverride || configured.model,
+      effort: null,
       keyEnvHint: configured.keyEnvHint,
       authMode: configured.authMode,
     };
